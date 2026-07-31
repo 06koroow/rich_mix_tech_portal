@@ -1,0 +1,140 @@
+/* ============================================================
+   Rich Mix Tech Portal — base styles & theme tokens
+   ------------------------------------------------------------
+   RE-SKIN HERE. Every colour in the app resolves back to one of
+   these variables (Tailwind classes point at them too). Change a
+   value here and it propagates everywhere.
+   ============================================================ */
+:root {
+  --bg:        #0d1015;  /* console chassis */
+  --panel:     #161b23;  /* raised surface   */
+  --panel-2:   #1d232d;  /* input / hover    */
+  --line:      #2a323d;  /* hairline borders */
+  --ink:       #e7ecf2;  /* primary text     */
+  --muted:     #8b95a3;  /* secondary text   */
+
+  --accent:     #f52323; /* brand red — "channel active" */
+  --accent-ink: #ffffff; /* text on red */
+
+  --ok:     #34d399;     /* resolved / healthy */
+  --info:   #60a5fa;     /* in progress        */
+  --danger: #f87171;     /* open / fault       */
+
+  --sidebar-w: 248px;
+}
+
+* { -webkit-tap-highlight-color: transparent; }
+
+html, body { height: 100%; }
+body { margin: 0; overscroll-behavior-y: none; }
+
+h1, h2, h3, .font-display { font-family: '"Space Grotesk"', system-ui, sans-serif; }
+
+/* Numeric / code-like data (channel numbers, asset tags, timestamps) */
+.tabular { font-family: '"IBM Plex Mono"', ui-monospace, monospace; font-feature-settings: 'tnum'; }
+
+/* Console eyebrow label — small mono uppercase used above section titles */
+.eyebrow {
+  font-family: '"IBM Plex Mono"', ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* --- Scrollbars (dark, unobtrusive) --- */
+* { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* --- The "active channel" indicator on the current nav item --- */
+.nav-item { position: relative; transition: background-color .15s ease, color .15s ease; }
+.nav-item[aria-current="page"] { color: var(--ink); background: var(--panel-2); }
+.nav-item[aria-current="page"]::before {
+  content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 60%; border-radius: 0 3px 3px 0; background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+}
+/* Bottom-bar variant: indicator sits on top edge */
+.tab-item[aria-current="page"] { color: var(--accent); }
+.tab-item[aria-current="page"] .tab-dot { opacity: 1; transform: scale(1); }
+
+/* --- Focus visibility (quality floor / accessibility) --- */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+
+/* --- Reusable form field look --- */
+.field {
+  width: 100%; background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--ink); border-radius: 10px; padding: 10px 12px; font-size: 14px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.field::placeholder { color: var(--muted); }
+.field:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+select.field { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238b95a3' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; padding-right: 34px; }
+
+/* --- Buttons --- */
+.btn { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px;
+  border-radius: 10px; padding: 9px 14px; border: 1px solid transparent; cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease, transform .05s ease; user-select: none; }
+.btn:active { transform: translateY(1px); }
+.btn-primary { background: var(--accent); color: var(--accent-ink); }
+.btn-primary:hover { background: color-mix(in srgb, var(--accent) 85%, black); }
+.btn-ghost { background: transparent; border-color: var(--line); color: var(--ink); }
+.btn-ghost:hover { background: var(--panel-2); }
+.btn-danger { background: transparent; border-color: color-mix(in srgb, var(--danger) 50%, transparent); color: var(--danger); }
+.btn-danger:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+
+/* --- Cards / panels --- */
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; }
+
+/* --- Status pills --- */
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
+  padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); }
+.pill .dot { width: 7px; height: 7px; border-radius: 999px; }
+
+/* --- Simple fade/slide for view + modal entrances --- */
+@keyframes rmtp-fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.view-enter { animation: rmtp-fade-up .22s ease both; }
+@keyframes rmtp-modal-in { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+.modal-in { animation: rmtp-modal-in .18s ease both; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+
+/* --- Print: procedures should print cleanly (techs like paper on the wall) --- */
+@media print {
+  #app aside, #app .app-topbar, #app .app-tabbar, .no-print { display: none !important; }
+  body { background: #fff; color: #000; }
+  .panel { border-color: #ccc; }
+}
+
+/* --- QR label sheet ---
+   #print-root is hidden on screen; when body.is-printing is set it becomes
+   the only visible thing in the print output (see js/qr.js printLabels). */
+#print-root { display: none; }
+@media print {
+  body.is-printing #app,
+  body.is-printing #modal-layer,
+  body.is-printing #toast-layer { display: none !important; }
+  body.is-printing #print-root { display: block !important; }
+}
+.qr-sheet-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-family: "IBM Plex Sans", sans-serif; color: #000;
+  padding-bottom: 8px; margin-bottom: 12px; border-bottom: 1px solid #000;
+}
+.qr-sheet-head span { font-size: 11px; color: #555; }
+.qr-sheet {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+}
+.qr-label {
+  border: 1px solid #000; border-radius: 8px; padding: 10px;
+  display: flex; align-items: center; gap: 10px;
+  break-inside: avoid; page-break-inside: avoid;
+}
+.qr-label__code { width: 84px; height: 84px; flex: 0 0 84px; }
+.qr-label__meta { min-width: 0; color: #000; }
+.qr-label__name { font-family: "IBM Plex Sans", sans-serif; font-weight: 600; font-size: 13px; line-height: 1.2; }
+.qr-label__tag  { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: #333; margin-top: 2px; }

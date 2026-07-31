@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0d1015" />
+  <title>Rich Mix — Tech Portal</title>
+
+  <!-- Tailwind (Play CDN). No build step required to start.
+       For production, swap this for the Tailwind CLI build — see README. -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    // Single source of truth for theming lives in css/app.css (:root variables).
+    // Tailwind colours below point at those variables, so re-skinning the whole
+    // portal is a matter of editing the hex values in one place.
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg:        'var(--bg)',
+            panel:     'var(--panel)',
+            panel2:    'var(--panel-2)',
+            line:      'var(--line)',
+            ink:       'var(--ink)',
+            muted:     'var(--muted)',
+            accent:    'var(--accent)',
+            'accent-ink': 'var(--accent-ink)',
+            ok:        'var(--ok)',
+            info:      'var(--info)',
+            danger:    'var(--danger)',
+          },
+          fontFamily: {
+            display: ['"Space Grotesk"', 'system-ui', 'sans-serif'],
+            sans:    ['"IBM Plex Sans"', 'system-ui', 'sans-serif'],
+            mono:    ['"IBM Plex Mono"', 'ui-monospace', 'monospace'],
+          },
+          borderRadius: { xl2: '1rem' },
+        },
+      },
+    };
+  </script>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body class="bg-bg text-ink font-sans antialiased">
+
+  <!-- The whole UI is rendered into this root by js/app.js -->
+  <div id="app"></div>
+
+  <!-- Toast layer -->
+  <div id="toast-layer" class="fixed z-50 bottom-24 md:bottom-6 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 pointer-events-none"></div>
+
+  <!-- Modal layer -->
+  <div id="modal-layer"></div>
+
+  <!-- Print-only sheet target (QR labels render here) -->
+  <div id="print-root"></div>
+
+  <!-- ============================================================
+       Load order matters (no bundler): foundations first, then
+       data, then shared UI, then views (which register themselves),
+       then the router, then the bootstrap.
+       ============================================================ -->
+  <script src="js/config.js"></script>
+  <script src="data/seed.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/files.js"></script>
+
+  <!-- SharePoint backend (opt-in). Inert until js/graph-config.js has a clientId. -->
+  <script src="https://alcdn.msauth.net/browser/latest/js/msal-browser.min.js"></script>
+  <script src="js/graph-config.js"></script>
+  <script src="js/graph.js"></script>
+  <script src="js/sync.js"></script>
+
+  <!-- Vendored QR libraries (no build step; provide window.qrcode & window.Html5Qrcode) -->
+  <script src="vendor/qrcode-generator.js"></script>
+  <script src="vendor/html5-qrcode.min.js"></script>
+  <script src="js/qr.js"></script>
+
+  <script src="js/views/dashboard.js"></script>
+  <script src="js/views/procedures.js"></script>
+  <script src="js/views/maintenance.js"></script>
+  <script src="js/views/inventory.js"></script>
+  <script src="js/views/users.js"></script>
+  <script src="js/views/advancing.js"></script>
+  <script src="js/router.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

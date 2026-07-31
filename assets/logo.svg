@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" role="img" aria-label="Rich Mix Tech Portal">
+  <rect width="96" height="96" rx="22" fill="#f5a623"/>
+  <!-- fader / channel-strip motif -->
+  <g stroke="#1a1206" stroke-width="4" stroke-linecap="round">
+    <line x1="30" y1="22" x2="30" y2="74"/>
+    <line x1="48" y1="22" x2="48" y2="74"/>
+    <line x1="66" y1="22" x2="66" y2="74"/>
+  </g>
+  <g fill="#1a1206">
+    <rect x="24" y="54" width="12" height="9" rx="2"/>
+    <rect x="42" y="34" width="12" height="9" rx="2"/>
+    <rect x="60" y="46" width="12" height="9" rx="2"/>
+  </g>
+</svg>

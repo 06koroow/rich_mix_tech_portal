@@ -21,18 +21,42 @@ RMTP.qr = (function () {
   /* ---- Payload helpers ---- */
   const INV_PREFIX = 'RMTP-INV:';
 
-  function encodeItem(tag) { return INV_PREFIX + String(tag || '').trim(); }
+  /* Payload for a whole line (tag) or a specific unit (tag#unit). */
+  function encodeItem(tag, unit) {
+    const base = INV_PREFIX + String(tag || '').trim();
+    return (unit != null && unit !== '') ? base + '#' + unit : base;
+  }
 
-  /* Returns { kind:'inventory', value:<tag> } or null for foreign QRs.
-     Also tolerates a bare tag typed manually (no prefix). */
+  /* Returns { kind:'inventory', value:<tag>, unit:<n|null> } or null for
+     foreign QRs. Tolerates a bare tag typed manually, and a "#unit" suffix
+     from a per-unit label (the unit is informational; it resolves to the
+     same line). */
   function parse(text) {
     const t = String(text || '').trim();
     if (!t) return null;
-    if (t.toUpperCase().indexOf(INV_PREFIX) === 0) {
-      return { kind: 'inventory', value: t.slice(INV_PREFIX.length).trim() };
+    let raw = t;
+    if (t.toUpperCase().indexOf(INV_PREFIX) === 0) raw = t.slice(INV_PREFIX.length).trim();
+    let unit = null, value = raw;
+    const hash = raw.lastIndexOf('#');
+    if (hash > 0) {
+      const u = raw.slice(hash + 1);
+      if (/^\d+$/.test(u)) { unit = parseInt(u, 10); value = raw.slice(0, hash); }
     }
-    // Bare input from manual entry — treat as an inventory tag.
-    return { kind: 'inventory', value: t };
+    return { kind: 'inventory', value: value.trim(), unit: unit };
+  }
+
+  /* Expand inventory lines into one entry per physical unit. A line with
+     qty 8 yields 8 units (1..8); qty 1 yields a single unit. */
+  function expandUnits(items) {
+    const out = [];
+    (items || []).forEach((it) => {
+      if (!it || !(it.tag || it.id)) return;
+      const total = Math.max(1, Number(it.qty) || 1);
+      for (let u = 1; u <= total; u++) {
+        out.push({ id: it.id, name: it.name, tag: it.tag || it.id, unit: total > 1 ? u : null, total: total });
+      }
+    });
+    return out;
   }
 
   /* ---- QR image (SVG string) for printable labels ---- */
@@ -150,27 +174,27 @@ RMTP.qr = (function () {
   /* ---- Print labels ----
      Renders a print-only sheet of QR labels into #print-root and calls
      window.print(). Cleans up afterwards. Each label = name, tag, QR. */
-  function labelCard(item) {
+  function labelCard(u) {
     return '<div class="qr-label">' +
-      '<div class="qr-label__code">' + svg(encodeItem(item.tag || item.id), { margin: 1 }) + '</div>' +
+      '<div class="qr-label__code">' + svg(encodeItem(u.tag || u.id, u.unit), { margin: 1 }) + '</div>' +
       '<div class="qr-label__meta">' +
-        '<div class="qr-label__name">' + RMTP.ui.esc(item.name || '') + '</div>' +
-        '<div class="qr-label__tag">' + RMTP.ui.esc(item.tag || '') + '</div>' +
+        '<div class="qr-label__name">' + RMTP.ui.esc(u.name || '') + '</div>' +
+        '<div class="qr-label__tag">' + RMTP.ui.esc(u.tag || '') + (u.unit ? ' \u00b7 ' + u.unit + '/' + u.total : '') + '</div>' +
       '</div>' +
     '</div>';
   }
 
   function printLabels(items) {
-    const list = (items || []).filter((i) => i && (i.tag || i.id));
-    if (!list.length) { RMTP.ui.toast('Nothing to print', 'danger'); return; }
+    const units = expandUnits((items || []).filter((i) => i && (i.tag || i.id)));
+    if (!units.length) { RMTP.ui.toast('Nothing to print', 'danger'); return; }
     const root = document.getElementById('print-root');
     if (!root) { RMTP.ui.toast('Print area missing', 'danger'); return; }
     root.innerHTML =
       '<div class="qr-sheet-head">' +
         '<strong>' + RMTP.meta.name + ' — Kit labels</strong>' +
-        '<span>' + list.length + ' items · ' + RMTP.ui.formatDate(new Date().toISOString()) + '</span>' +
+        '<span>' + units.length + ' labels · ' + RMTP.ui.formatDate(new Date().toISOString()) + '</span>' +
       '</div>' +
-      '<div class="qr-sheet">' + list.map(labelCard).join('') + '</div>';
+      '<div class="qr-sheet">' + units.map(labelCard).join('') + '</div>';
     document.body.classList.add('is-printing');
     function done() {
       document.body.classList.remove('is-printing');
@@ -183,34 +207,40 @@ RMTP.qr = (function () {
     window.print();
   }
 
-  /* Preview modal before printing (shows a few labels + Print all). */
+  /* Preview modal before printing. Expands to one label per physical unit
+     and excludes fixed installations (which can't be signed out). */
   function labelPreview(items) {
     const ui = RMTP.ui;
-    const list = (items || []).filter((i) => i && (i.tag || i.id));
-    if (!list.length) { ui.toast('No items to label', 'danger'); return; }
-    const sample = list.slice(0, 6);
+    const portable = (items || []).filter((i) => i && !i.static && (i.tag || i.id));
+    const units = expandUnits(portable);
+    if (!units.length) { ui.toast('No portable kit to label', 'danger'); return; }
+    const sample = units.slice(0, 6);
+    const staticCount = (items || []).filter((i) => i && i.static).length;
     const m = ui.modal({
       title: 'Print QR labels',
       size: 'md:max-w-lg',
       body:
-        '<p class="text-sm text-muted mb-4">One label per item, encoding <span class="tabular text-ink">RMTP-INV:&lt;tag&gt;</span>. ' +
-          'Preview' + (list.length > sample.length ? ' (first ' + sample.length + ' of ' + list.length + ')' : '') + ':</p>' +
+        '<p class="text-sm text-muted mb-4">One label per <span class="text-ink">individual unit</span> \u2014 a line of 8 gets 8 codes, each encoding ' +
+          '<span class="tabular text-ink">RMTP-INV:&lt;tag&gt;#&lt;unit&gt;</span>. ' +
+          '<span class="text-ink">' + units.length + '</span> labels across ' + portable.length + ' portable lines.' +
+          (staticCount ? ' Fixed installations (' + staticCount + ') are excluded.' : '') + '</p>' +
         '<div class="grid grid-cols-3 gap-3">' +
-          sample.map((i) =>
+          sample.map((u) =>
             '<div class="panel bg-white p-2 text-center">' +
-              '<div class="w-full aspect-square">' + svg(encodeItem(i.tag || i.id), { margin: 1 }) + '</div>' +
-              '<div class="text-[11px] text-black font-semibold truncate mt-1">' + ui.esc(i.name) + '</div>' +
-              '<div class="text-[10px] text-black/60 tabular">' + ui.esc(i.tag) + '</div>' +
+              '<div class="w-full aspect-square">' + svg(encodeItem(u.tag || u.id, u.unit), { margin: 1 }) + '</div>' +
+              '<div class="text-[11px] text-black font-semibold truncate mt-1">' + ui.esc(u.name) + '</div>' +
+              '<div class="text-[10px] text-black/60 tabular">' + ui.esc(u.tag) + (u.unit ? ' \u00b7 ' + u.unit + '/' + u.total : '') + '</div>' +
             '</div>'
           ).join('') +
-        '</div>',
+        '</div>' +
+        (units.length > sample.length ? '<p class="text-xs text-muted mt-3 text-center">Showing the first ' + sample.length + ' of ' + units.length + ' labels.</p>' : ''),
       footer:
         '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
-        '<button class="btn btn-primary" data-print data-primary>' + ui.icon('print', 'w-4 h-4') + 'Print ' + list.length + ' labels</button>',
+        '<button class="btn btn-primary" data-print data-primary>' + ui.icon('print', 'w-4 h-4') + 'Print ' + units.length + ' labels</button>',
     });
     m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
-    m.root.querySelector('[data-print]').addEventListener('click', () => { m.close(); printLabels(list); });
+    m.root.querySelector('[data-print]').addEventListener('click', () => { m.close(); printLabels(portable); });
   }
 
-  return { encodeItem, parse, svg, cameraAvailable, scan, printLabels, labelPreview };
+  return { encodeItem, parse, svg, expandUnits, cameraAvailable, scan, printLabels, labelPreview };
 })();

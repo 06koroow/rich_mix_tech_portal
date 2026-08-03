@@ -25,6 +25,14 @@ RMTP.views.users = function (el) {
   function adminCount() { return store.all('users').filter((u) => u.admin).length; }
 
   render();
+  // Supabase mode: on every visit to this page, refresh the users list from
+  // the database (the source of truth), then re-render once — so approvals and
+  // new self-registrations made elsewhere show up without a manual reload.
+  if (sbMode()) {
+    RMTP.syncSb.pullCollection('users')
+      .then(() => { render(); auth.refreshShell(); })
+      .catch(() => { /* keep showing cached users */ });
+  }
 
   function render() {
     const allUsers = store.all('users');
@@ -46,11 +54,6 @@ RMTP.views.users = function (el) {
 
     const add = el.querySelector('#add-user');
     if (add) add.addEventListener('click', () => editUser());
-    // In Supabase mode, pull fresh so newly self-registered users appear without a manual reload.
-    if (sbMode() && !render._pulling) {
-      render._pulling = true;
-      RMTP.syncSb.pullCollection('users').then(() => { render._pulling = false; render(); }).catch(() => { render._pulling = false; });
-    }
     users.forEach((u) => el.querySelector('[data-open="' + u.id + '"]').addEventListener('click', () => openUser(u)));
     pending.forEach((u) => {
       const ap = el.querySelector('[data-approve="' + u.id + '"]'); if (ap) ap.addEventListener('click', () => { auth.approveUser(u.id); ui.toast(auth.displayName(u) + ' approved', 'ok'); render(); });

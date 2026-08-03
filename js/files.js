@@ -56,6 +56,7 @@ RMTP.files = (function () {
 
   function open(meta) {
     if (!meta) return;
+    if (meta.url) { window.open(meta.url, '_blank'); return; }   // remote (Supabase/SharePoint)
     const dataUrl = RMTP.store.readRaw(fileKey(meta.id), null);
     if (!dataUrl) { RMTP.ui.toast('File no longer available', 'danger'); return; }
     openDataUrl(dataUrl);
@@ -63,7 +64,22 @@ RMTP.files = (function () {
 
   /* Raw stored data URL for a saved file — used for inline <img> thumbnails. */
   function dataUrl(meta) {
+    if (meta && meta.url) return meta.url;                        // remote thumbnail src
     return meta ? RMTP.store.readRaw(fileKey(meta.id), null) : null;
+  }
+
+  /* Promote a locally-stored file to remote storage when a backend is
+     active. Returns a {url,...} meta the sync layer stores on the record.
+     No-op (returns the meta unchanged) in local mode or if already remote. */
+  async function toRemote(meta) {
+    if (!meta) return null;
+    if (meta.url) return meta;                                    // already remote
+    if (!(RMTP.supabase && RMTP.supabase.isConfigured())) return meta;
+    const raw = RMTP.store.readRaw(fileKey(meta.id), null);
+    if (!raw) return meta;
+    const safe = String(meta.name || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const url = await RMTP.supabase.uploadFile(meta.id + '-' + safe, dataUrlToBlob(raw), meta.type);
+    return { url: url, name: meta.name, type: meta.type, size: meta.size };
   }
 
   function remove(meta) {
@@ -77,5 +93,5 @@ RMTP.files = (function () {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   }
 
-  return { readAsDataUrl, persist, open, openDataUrl, dataUrl, remove, humanSize, MAX };
+  return { readAsDataUrl, persist, open, openDataUrl, dataUrl, toRemote, remove, humanSize, MAX };
 })();

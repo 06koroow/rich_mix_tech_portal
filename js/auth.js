@@ -91,13 +91,23 @@ RMTP.auth = (function () {
     RMTP.store.all('signoffs').filter((s) => s.userId === id).forEach((s) => RMTP.store.remove('signoffs', s.id));
     RMTP.store.remove('users', id);
   }
-  function signOut() { setCurrent(null); refreshShell(); showLogin(); }
+  async function signOut() {
+    if (sbActive()) { try { await RMTP.supabase.signOut(); } catch (e) { /* ignore */ } }
+    setCurrent(null); refreshShell(); showLogin();
+  }
+
+  // True when the Supabase backend is configured + loaded.
+  function sbActive() { return !!(RMTP.supabase && RMTP.supabase.isConfigured()); }
 
   /* Backend mode: map the signed-in Entra account to a Users record
      by email and make them the current user. Returns false if there's
      no active account for that email (they'd need adding/approving). */
   function signInGraphAccount(acct) {
     const email = acct && (acct.username || (acct.idTokenClaims && acct.idTokenClaims.preferred_username));
+    return signInEmail(email || '');
+  }
+  // Same, by plain email (used by the Supabase path).
+  function signInEmail(email) {
     const u = byEmail(email || '');
     if (u && u.status !== 'pending') { setCurrent(u.id); return true; }
     return false;
@@ -147,10 +157,21 @@ RMTP.auth = (function () {
           '</div>' +
           '<p class="text-sm text-muted mt-4 text-center">No account? ' +
             '<button id="a-to-signup" class="text-accent hover:underline">Request access</button></p>' +
-          '<p class="text-[11px] text-muted mt-4 text-center">Demo: <span class="tabular">alex@richmix.local</span> / <span class="tabular">demo1234</span></p>' +
-          '<p class="text-[11px] text-muted mt-2 text-center"><button id="a-reset" class="hover:text-ink underline">Reset app data</button></p>';
-        const go = () => {
-          const res = login(body.querySelector('#a-email').value, body.querySelector('#a-pass').value);
+          (sbActive() ? '' :
+            '<p class="text-[11px] text-muted mt-4 text-center">Demo: <span class="tabular">alex@richmix.local</span> / <span class="tabular">demo1234</span></p>' +
+            '<p class="text-[11px] text-muted mt-2 text-center"><button id="a-reset" class="hover:text-ink underline">Reset app data</button></p>');
+        const go = async () => {
+          const email = body.querySelector('#a-email').value.trim();
+          const pass = body.querySelector('#a-pass').value;
+          if (sbActive()) {
+            const res = await RMTP.supabase.signIn(email, pass);
+            if (!res.ok) { ui.toast('Email or password not recognised', 'danger'); return; }
+            try { await RMTP.syncSb.pullCollection('users'); } catch (e) { /* use cached */ }
+            if (signInEmail(email)) { m.close(); refreshShell(); RMTP.router.render(); ui.toast('Signed in', 'ok'); }
+            else ui.toast('No active Tech Portal account for this sign-in \u2014 an admin needs to approve you', 'info');
+            return;
+          }
+          const res = login(email, pass);
           if (res.ok) { m.close(); refreshShell(); RMTP.router.render(); ui.toast('Signed in as ' + displayName(res.user), 'ok'); }
           else if (res.reason === 'pending') ui.toast('Your access request is awaiting approval', 'info');
           else ui.toast('Email or password not recognised', 'danger');
@@ -158,7 +179,8 @@ RMTP.auth = (function () {
         body.querySelector('#a-signin').addEventListener('click', go);
         body.querySelector('#a-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
         body.querySelector('#a-to-signup').addEventListener('click', () => { mode = 'signup'; draw(); });
-        body.querySelector('#a-reset').addEventListener('click', async () => {
+        const resetBtn = body.querySelector('#a-reset');
+        if (resetBtn) resetBtn.addEventListener('click', async () => {
           const ok = await ui.confirm('Clear all local data on this device and restore the demo accounts? You can then sign in with the demo login.',
             { title: 'Reset app data', confirmLabel: 'Reset', danger: true });
           if (ok) { RMTP.store.reset(); migrateAccounts(); ui.toast('Data reset \u2014 use the demo login below', 'ok'); draw(); }
@@ -182,12 +204,26 @@ RMTP.auth = (function () {
           '</div>' +
           '<p class="text-sm text-muted mt-4 text-center">Have an account? ' +
             '<button id="s-to-signin" class="text-accent hover:underline">Sign in</button></p>';
-        body.querySelector('#s-submit').addEventListener('click', () => {
-          const res = signUp({
+        body.querySelector('#s-submit').addEventListener('click', async () => {
+          const data = {
             firstName: body.querySelector('#s-first').value.trim(), lastName: body.querySelector('#s-last').value.trim(),
-            email: body.querySelector('#s-email').value, password: body.querySelector('#s-pass').value,
+            email: body.querySelector('#s-email').value.trim(), password: body.querySelector('#s-pass').value,
             position: body.querySelector('#s-position').value, discipline: body.querySelector('#s-discipline').value,
-          });
+          };
+          if (sbActive()) {
+            if (!data.firstName && !data.lastName) { ui.toast('Enter your name', 'danger'); return; }
+            if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(data.email)) { ui.toast('Enter a valid email', 'danger'); return; }
+            if ((data.password || '').length < 6) { ui.toast('Password needs 6+ characters', 'danger'); return; }
+            const res = await RMTP.supabase.signUp(data.email, data.password);
+            if (!res.ok) { ui.toast(res.message || 'Could not create the account', 'danger'); return; }
+            RMTP.store.upsert('users', {
+              id: RMTP.store.uid('user'), firstName: data.firstName, lastName: data.lastName, email: data.email,
+              position: data.position, discipline: data.discipline, admin: false, trainer: false, status: 'pending',
+            });
+            mode = 'signin'; draw(); ui.toast('Request sent \u2014 an admin will approve your account', 'ok');
+            return;
+          }
+          const res = signUp(data);
           if (res.ok) { mode = 'signin'; draw(); ui.toast('Request sent \u2014 an admin will approve your account', 'ok'); }
           else ui.toast({ name: 'Enter your name', email: 'Enter a valid email', password: 'Password needs 6+ characters', exists: 'That email already has an account' }[res.reason] || 'Check your details', 'danger');
         });
@@ -241,7 +277,7 @@ RMTP.auth = (function () {
     displayName, initials, badges, hashPassword,
     rolesForPosition, isAutoAdminPosition,
     current, currentId, setCurrent, can,
-    login, signUp, signOut, signInGraphAccount, showLogin, ensureSession,
+    login, signUp, signOut, signInGraphAccount, signInEmail, showLogin, ensureSession,
     pendingUsers, approveUser, rejectUser, refreshShell,
   };
 })();

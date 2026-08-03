@@ -103,16 +103,30 @@
 
   // Seed first-run data, establish identity, draw chips, then route.
   (async function boot() {
-    const backend = RMTP.graph && RMTP.graph.isConfigured();
-    if (backend) {
+    const sbOn = RMTP.supabase && RMTP.supabase.isConfigured();
+    const spOn = !sbOn && RMTP.graph && RMTP.graph.isConfigured();
+
+    if (sbOn) {
+      try {
+        RMTP.supabase.init();
+        const email = await RMTP.supabase.restoreSession();   // existing session?
+        await RMTP.syncSb.pullAll();                          // hydrate cache from Supabase
+        RMTP.syncSb.wire();                                   // push local changes back
+        if (!(email && RMTP.auth.signInEmail(email))) {
+          RMTP.auth.showLogin();                              // locked login (Supabase Auth)
+        }
+      } catch (e) {
+        console.error('[boot] Supabase backend failed — running in local mode', e);
+        RMTP.store.init();
+        RMTP.auth.ensureSession();
+      }
+    } else if (spOn) {
       try {
         await RMTP.graph.init();
         await RMTP.graph.ensureSignedIn();      // Entra SSO
         await RMTP.sync.pullAll();              // hydrate the cache from SharePoint
         RMTP.sync.wire();                       // push local changes back
         if (!RMTP.auth.signInGraphAccount(RMTP.graph.currentAccount())) {
-          // No Tech Portal account for this sign-in. Stopgap: fall back to the
-          // local picker. In production, replace with an "awaiting approval" screen.
           RMTP.ui.toast('No Tech Portal account for your sign-in — ask an admin to add you', 'danger');
           RMTP.auth.ensureSession();
         }

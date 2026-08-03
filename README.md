@@ -80,7 +80,10 @@ rich-mix-tech-portal/
 ├── data/
 │   └── seed.js         First-run starter content (procedures, inventory, users…).
 ├── docs/
-│   └── BACKEND.md      Backend review, refactor seams & M365 options.
+│   ├── BACKEND.md      Backend review, refactor seams & M365 options.
+│   ├── SHAREPOINT-SETUP.md   Wire the app to SharePoint (Microsoft 365).
+│   ├── SUPABASE-SETUP.md     Wire the app to Supabase (self-serve, no admin).
+│   └── supabase-setup.sql    Paste-and-run schema + seed + RLS for Supabase.
 └── assets/
     ├── logo.svg        Placeholder mark.
     └── rm-logo.jpg     Rich Mix brand mark (shown top-left).
@@ -93,6 +96,22 @@ access** flow that creates a *pending* account which an **admin approves** (surf
 in the dashboard in-tray and on the Users page). Passwords are a non-cryptographic
 digest in localStorage — a stand-in so the flow is real; swap for Entra ID /
 Supabase Auth (see `docs/BACKEND.md`). Demo login: `alex@richmix.local` / `demo1234`.
+
+### Backends (both optional, both dormant by default)
+
+The app runs on `localStorage` out of the box. Two backend layers are wired in and
+switched **off** until you fill in their config, so double-clicking `index.html`
+keeps working:
+
+- **Supabase** (`js/supabase-config.js`) — self-serve, no Microsoft admin needed.
+  Postgres + Auth + Storage + Row-Level Security. Fill in `url` + `anonKey`, run
+  `docs/supabase-setup.sql`, and follow `docs/SUPABASE-SETUP.md`.
+- **SharePoint / Microsoft 365** (`js/graph-config.js`) — stays in your tenant,
+  needs an Entra app + admin consent. See `docs/SHAREPOINT-SETUP.md`.
+
+Both hydrate the localStorage cache on load and push changes back through
+`store.js`, so no view code changes between modes. Supabase takes priority if both
+are configured.
 
 **Roles follow position.** Technical Managers and Senior Techs are automatically
 **admins + trainers**; Duty Techs / Freelancers get base permissions and an admin

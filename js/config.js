@@ -10,7 +10,7 @@ window.RMTP = window.RMTP || {};
 RMTP.meta = {
   name: 'Rich Mix',
   product: 'Tech Portal',
-  version: '0.2.0',
+  version: '1.0.0',
   storageKey: 'rmtp',   // localStorage namespace prefix
 };
 
@@ -43,8 +43,8 @@ RMTP.slug = function (s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g,
 
 /* Conditions at or below this are "poor" — such kit is struck through
    in inventory and may only be moved to a Store (see inventory view). */
-RMTP.CONDITIONS = ['Good', 'Fair', 'Damaged', 'Out of service'];
-RMTP.POOR_CONDITIONS = ['Damaged', 'Out of service'];
+RMTP.CONDITIONS = ['Excellent', 'Good', 'Fair', 'Poor', 'Damaged', 'Out of service'];
+RMTP.POOR_CONDITIONS = ['Poor', 'Damaged', 'Out of service'];
 RMTP.isPoorCondition = function (c) { return RMTP.POOR_CONDITIONS.indexOf(c) > -1; };
 
 /* ---- Training framework ----

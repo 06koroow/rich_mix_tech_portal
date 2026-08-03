@@ -78,13 +78,7 @@ RMTP.store = (function () {
       if (adapter.get(key(name)) === null) write(name, RMTP.seed[name]);
     });
     if (adapter.get(key('maintenance')) === null) {
-      write('maintenance', [
-        { id: 'fault-seed-1', equipment: 'PSM300 pack \u2014 intermittent dropout', category: 'Sound',
-          priority: 'High', status: 'Open', space: 'The Stage', reportedBy: 'Sam Okafor',
-          description: 'RF dropout on beltpack 2 during soundcheck. Needs bench testing.',
-          itemId: 'inv-7', itemTag: 'IEM-P10', itemName: 'Shure PSM300', image: null,
-          createdAt: Date.now() - 1000 * 60 * 60 * 26 },
-      ]);
+      write('maintenance', []);
     }
   }
 

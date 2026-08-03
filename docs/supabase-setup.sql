@@ -24,6 +24,7 @@ create table if not exists public.inventory (
   "condition" text, "status" text default 'in',
   "heldBy" text default '', "outAt" text default '',
   "notes" text default '',
+  "static" boolean default false,
   "movements" jsonb default '[]'::jsonb
 );
 
@@ -106,7 +107,6 @@ begin
   end loop;
 end $$;
 
-
 -- ---------- Seed data ----------
 insert into public.users ("id", "firstName", "lastName", "email", "position", "discipline", "status", "admin", "trainer") values
   ('user-1', 'Alex', 'Morgan', 'alex@richmix.local', 'Technical Manager', 'Sound', 'active', true, true),
@@ -115,19 +115,152 @@ insert into public.users ("id", "firstName", "lastName", "email", "position", "d
   ('user-4', 'Danny', 'Cole', 'danny@richmix.local', 'Duty Tech', 'Cinema', 'active', false, true)
 on conflict ("id") do nothing;
 
-insert into public.inventory ("id","tag","name","category","location","qty","condition","status","heldBy","outAt","notes","movements") values
-  ('inv-1', 'MIC-058', 'Shure SM58', 'Microphones', 'Store', 12, 'Good', 'in', '', '', '', '[]'::jsonb),
-  ('inv-2', 'MIC-057', 'Shure SM57', 'Microphones', 'Store', 8, 'Good', 'in', '', '', '', '[]'::jsonb),
-  ('inv-3', 'DI-001', 'Radial ProDI', 'DI Boxes', 'Store', 6, 'Good', 'in', '', '', '', '[]'::jsonb),
-  ('inv-4', 'CAB-X10', 'XLR cable 10m', 'Cables', 'Cable store', 30, 'Good', 'in', '', '', '', '[]'::jsonb),
-  ('inv-5', 'CAB-IEC', 'IEC power lead', 'Cables', 'Cable store', 24, 'Good', 'in', '', '', '', '[]'::jsonb),
-  ('inv-6', 'SPK-Y7', 'd&b Y7P', 'Speakers', 'The Stage', 4, 'Good', 'in', '', '', 'Main hangs', '[{"from":"PA rack","to":"The Stage","at":"2026-07-20T09:00:00.000Z","by":"Alex Morgan"}]'::jsonb),
-  ('inv-7', 'IEM-P10', 'Shure PSM300', 'IEM', 'RF case', 4, 'Good', 'in', '', '', '', '[]'::jsonb),
-  ('inv-8', 'STD-K&M', 'K&M tall stand', 'Stands', 'Stage store', 10, 'Damaged', 'in', '', '', '2 need clutches', '[]'::jsonb)
+insert into public.inventory ("id", "tag", "name", "category", "location", "qty", "condition", "status", "heldBy", "outAt", "notes", "static", "movements") values
+  ('inv-stg-001', 'STG-001', 'Behringer Wing', 'Sound - Console/Stageboxes', 'The Stage', 1, 'Good', 'in', '', '', 'Behringer Wing digital mixing console', true, '[]'::jsonb),
+  ('inv-stg-002', 'STG-002', 'Midas S16', 'Sound - Console/Stageboxes', 'The Stage', 2, 'Good', 'in', '', '', 'Midas S16 stage box (32 in / 16 out total across 2 units)', true, '[]'::jsonb),
+  ('inv-stg-003', 'STG-003', '8-way XLR input stage box', 'Sound - Console/Stageboxes', 'The Stage', 4, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-stg-004', 'STG-004', 'JBL VRX918SP', 'Sound - PA/Speakers', 'The Stage', 4, 'Good', 'in', '', '', 'Powered bass-reflex subwoofer, 18" (under-stage)', true, '[]'::jsonb),
+  ('inv-stg-005', 'STG-005', 'JBL VRX932LAP', 'Sound - PA/Speakers', 'The Stage', 6, 'Good', 'in', '', '', 'Powered 2-way line-array speaker, 12"', true, '[]'::jsonb),
+  ('inv-stg-006', 'STG-006', 'RCF NX10-SMA', 'Sound - PA/Speakers', 'The Stage', 6, 'Good', 'in', '', '', 'Active stage monitor, full range, 400W', true, '[]'::jsonb),
+  ('inv-stg-007', 'STG-007', 'RCF NX12-SMA', 'Sound - PA/Speakers', 'The Stage', 2, 'Good', 'in', '', '', 'Active stage monitor, full range, 700W', true, '[]'::jsonb),
+  ('inv-stg-sm58', 'STG-008', 'Shure SM58', 'Sound - Microphones', 'The Stage', 8, 'Good', 'in', '', '', 'Vocal dynamic mic', false, '[]'::jsonb),
+  ('inv-stg-009', 'STG-009', 'Shure Beta 58A', 'Sound - Microphones', 'The Stage', 1, 'Good', 'in', '', '', 'Vocal dynamic mic (super-cardioid)', false, '[]'::jsonb),
+  ('inv-stg-010', 'STG-010', 'Shure SM57', 'Sound - Microphones', 'The Stage', 8, 'Good', 'in', '', '', 'Instrument dynamic mic', false, '[]'::jsonb),
+  ('inv-stg-011', 'STG-011', 'Shure Beta 91A', 'Sound - Microphones', 'The Stage', 1, 'Good', 'in', '', '', 'Kick drum mic', false, '[]'::jsonb),
+  ('inv-stg-012', 'STG-012', 'Sennheiser MD 421-II', 'Sound - Microphones', 'The Stage', 2, 'Good', 'in', '', '', 'Large-diaphragm dynamic mic', false, '[]'::jsonb),
+  ('inv-stg-013', 'STG-013', 'Sennheiser E906', 'Sound - Microphones', 'The Stage', 1, 'Good', 'in', '', '', 'Instrument dynamic mic', false, '[]'::jsonb),
+  ('inv-stg-014', 'STG-014', 'Sennheiser E602', 'Sound - Microphones', 'The Stage', 2, 'Good', 'in', '', '', 'Kick drum mic', false, '[]'::jsonb),
+  ('inv-stg-015', 'STG-015', 'Sennheiser E604', 'Sound - Microphones', 'The Stage', 6, 'Good', 'in', '', '', 'Tom/snare drum mic', false, '[]'::jsonb),
+  ('inv-stg-016', 'STG-016', 'Sennheiser E614', 'Sound - Microphones', 'The Stage', 4, 'Good', 'in', '', '', 'Instrument condenser mic', false, '[]'::jsonb),
+  ('inv-stg-017', 'STG-017', 'AKG 300B/CK91', 'Sound - Microphones', 'The Stage', 1, 'Good', 'in', '', '', 'Condenser capsule mic', false, '[]'::jsonb),
+  ('inv-stg-018', 'STG-018', 'Sennheiser E3', 'Sound - Microphones', 'The Stage', 4, 'Good', 'in', '', '', 'Radio/wireless mic system', false, '[]'::jsonb),
+  ('inv-stg-019', 'STG-019', 'Active DI box', 'Sound - DI/Stands', 'The Stage', 7, 'Good', 'in', '', '', '', false, '[]'::jsonb),
+  ('inv-stg-020', 'STG-020', 'Microphone stands, various (small and large)', 'Sound - DI/Stands', 'The Stage', 1, 'Good', 'in', '', '', 'various / unquantified', false, '[]'::jsonb),
+  ('inv-stg-021', 'STG-021', 'Yamaha Stage Custom', 'Backline', 'The Stage', 1, 'Good', 'in', '', '', 'Drum kit, Stage Custom, 20" kick (no cymbals)', false, '[]'::jsonb),
+  ('inv-stg-022', 'STG-022', 'Fender Deluxe', 'Backline', 'The Stage', 1, 'Good', 'in', '', '', 'Guitar amplifier, 180W', false, '[]'::jsonb),
+  ('inv-stg-023', 'STG-023', 'Markbass CMD 103', 'Backline', 'The Stage', 1, 'Good', 'in', '', '', 'Bass amplifier', false, '[]'::jsonb),
+  ('inv-stg-024', 'STG-024', 'Pioneer DJM850', 'DJ Equipment', 'The Stage', 1, 'Good', 'in', '', '', 'DJ mixer', false, '[]'::jsonb),
+  ('inv-stg-025', 'STG-025', 'Pioneer CDJ2000', 'DJ Equipment', 'The Stage', 2, 'Good', 'in', '', '', 'CD player/deck', false, '[]'::jsonb),
+  ('inv-stg-026', 'STG-026', 'Technics 1210 Mk5', 'DJ Equipment', 'The Stage', 2, 'Good', 'in', '', '', 'Turntable', false, '[]'::jsonb),
+  ('inv-stg-027', 'STG-027', 'FBT Jolly', 'DJ Equipment', 'The Stage', 1, 'Good', 'in', '', '', 'DJ booth monitor, 6"', false, '[]'::jsonb),
+  ('inv-stg-028', 'STG-028', 'Avolites Tiger Touch II', 'Lighting - Control', 'The Stage', 1, 'Good', 'in', '', '', 'Lighting control desk', true, '[]'::jsonb),
+  ('inv-stg-029', 'STG-029', '15A dimmer channel', 'Lighting - Control', 'The Stage', 54, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-stg-030', 'STG-030', 'Control points', 'Lighting - Control', 'The Stage', 2, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-stg-031', 'STG-031', 'Working lights (separate system)', 'Lighting - Control', 'The Stage', 1, 'Good', 'in', '', '', 'various / unquantified', true, '[]'::jsonb),
+  ('inv-stg-032', 'STG-032', 'Prolights Studio CobFC', 'Lighting - Fixtures', 'The Stage', 12, 'Good', 'in', '', '', 'LED RGB 150W parcan (moving)', true, '[]'::jsonb),
+  ('inv-stg-033', 'STG-033', 'Prolights Diamond 19', 'Lighting - Fixtures', 'The Stage', 6, 'Good', 'in', '', '', 'LED RGB moving wash light', true, '[]'::jsonb),
+  ('inv-stg-034', 'STG-034', 'Prolights CromoSpot500', 'Lighting - Fixtures', 'The Stage', 6, 'Good', 'in', '', '', 'LED RGB moving spot light', true, '[]'::jsonb),
+  ('inv-stg-035', 'STG-035', 'Prolights EclFresnel TW', 'Lighting - Fixtures', 'The Stage', 2, 'Good', 'in', '', '', 'LED stage wash fixture', true, '[]'::jsonb),
+  ('inv-stg-036', 'STG-036', '500W Fresnel (lower bars)', 'Lighting - Fixtures', 'The Stage', 9, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-stg-037', 'STG-037', 'Panasonic PT DZ770EK', 'AV - Projection/Screens', 'The Stage', 1, 'Good', 'in', '', '', 'Projector, WUXGA 1920x1200', true, '[]'::jsonb),
+  ('inv-stg-038', 'STG-038', 'Retractable ceiling screen, 5m wide (projection area 3.5m x 4.2m)', 'AV - Projection/Screens', 'The Stage', 1, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-stg-039', 'STG-039', '50" plasma screen on stage pillar (VGA feed)', 'AV - Projection/Screens', 'The Stage', 2, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-stg-040', 'STG-040', 'Extron', 'AV - Projection/Screens', 'The Stage', 1, 'Good', 'in', '', '', 'Extron HDMI routing system to projector', true, '[]'::jsonb),
+  ('inv-stu-001', 'STU-001', 'Roland M400', 'Sound - Console/Stageboxes', 'The Studio', 1, 'Good', 'in', '', '', 'Digital mixing desk', true, '[]'::jsonb),
+  ('inv-stu-002', 'STU-002', 'Stage box, 16 XLR in / 8 XLR out via Cat5', 'Sound - Console/Stageboxes', 'The Studio', 2, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-stu-003', 'STU-003', 'KV2 Audio EX10', 'Sound - PA/Speakers', 'The Studio', 1, 'Good', 'in', '', '', 'Active full-range speaker, 500W', true, '[]'::jsonb),
+  ('inv-stu-004', 'STU-004', 'KV2 Audio EX10', 'Sound - PA/Speakers', 'The Studio', 2, 'Good', 'in', '', '', 'Active monitor, 500W', true, '[]'::jsonb),
+  ('inv-stu-005', 'STU-005', 'RCF art705AS', 'Sound - PA/Speakers', 'The Studio', 2, 'Good', 'in', '', '', 'Active bass unit, 800W', true, '[]'::jsonb),
+  ('inv-stu-006', 'STU-006', 'RCF art325A', 'Sound - PA/Speakers', 'The Studio', 1, 'Good', 'in', '', '', 'Active monitor, 400W', true, '[]'::jsonb),
+  ('inv-stu-007', 'STU-007', 'Sennheiser EW300 G3', 'Sound - Microphones', 'The Studio', 3, 'Good', 'in', '', '', 'Wireless mic system', false, '[]'::jsonb),
+  ('inv-stu-008', 'STU-008', 'Sennheiser EW100 G3', 'Sound - Microphones', 'The Studio', 3, 'Good', 'in', '', '', 'Wireless mic system', false, '[]'::jsonb),
+  ('inv-stu-009', 'STU-009', 'Shure SM58', 'Sound - Microphones', 'The Studio', 4, 'Good', 'in', '', '', 'Vocal dynamic mic', false, '[]'::jsonb),
+  ('inv-stu-010', 'STU-010', 'Sennheiser EW145 G3', 'Sound - Microphones', 'The Studio', 4, 'Good', 'in', '', '', 'Wireless mic system', false, '[]'::jsonb),
+  ('inv-stu-011', 'STU-011', 'Studio Spares', 'Sound - DI/Stands', 'The Studio', 2, 'Good', 'in', '', '', 'DI box', false, '[]'::jsonb),
+  ('inv-stu-012', 'STU-012', 'Tascam CD-200', 'Sound - Playback', 'The Studio', 2, 'Good', 'in', '', '', 'CD player', false, '[]'::jsonb),
+  ('inv-stu-013', 'STU-013', 'Pioneer DJM850', 'DJ Equipment', 'The Studio', 1, 'Good', 'in', '', '', 'DJ mixer', false, '[]'::jsonb),
+  ('inv-stu-014', 'STU-014', 'Pioneer CDJ2000', 'DJ Equipment', 'The Studio', 2, 'Good', 'in', '', '', 'CD player/deck', false, '[]'::jsonb),
+  ('inv-stu-015', 'STU-015', 'Technics 1210 Mk5', 'DJ Equipment', 'The Studio', 2, 'Fair', 'in', '', '', 'Turntable', false, '[]'::jsonb),
+  ('inv-stu-016', 'STU-016', 'ETC Element 60', 'Lighting - Control', 'The Studio', 1, 'Good', 'in', '', '', 'Lighting control desk', true, '[]'::jsonb),
+  ('inv-stu-017', 'STU-017', 'Zero88 Chilli', 'Lighting - Control', 'The Studio', 48, 'Good', 'in', '', '', '2Kw dimmer (36 rig + 12 floor; 44 of 48 fully working)', true, '[]'::jsonb),
+  ('inv-stu-018', 'STU-018', '13A non-dimmed circuit', 'Lighting - Control', 'The Studio', 8, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-stu-019', 'STU-019', 'DMX outlet', 'Lighting - Control', 'The Studio', 4, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-stu-020', 'STU-020', 'Prolight EclFresnel', 'Lighting - Fixtures', 'The Studio', 12, 'Good', 'in', '', '', 'Fixed-position fixture', true, '[]'::jsonb),
+  ('inv-stu-021', 'STU-021', 'Prolight Diamond 7', 'Lighting - Fixtures', 'The Studio', 8, 'Good', 'in', '', '', 'Fixed-position fixture', true, '[]'::jsonb),
+  ('inv-stu-022', 'STU-022', 'Prolight Studio CobFC', 'Lighting - Fixtures', 'The Studio', 12, 'Good', 'in', '', '', 'LED RGB 150W parcan, fixed position', true, '[]'::jsonb),
+  ('inv-stu-023', 'STU-023', 'ETC Junior Source 4', 'Lighting - Fixtures', 'The Studio', 12, 'Good', 'in', '', '', 'Zoom profile (25/50)', true, '[]'::jsonb),
+  ('inv-stu-024', 'STU-024', 'CCT Eco', 'Lighting - Fixtures', 'The Studio', 18, 'Good', 'in', '', '', '800W Fresnel', true, '[]'::jsonb),
+  ('inv-stu-025', 'STU-025', 'CCT Minuette', 'Lighting - Fixtures', 'The Studio', 12, 'Good', 'in', '', '', '500W Fresnel', true, '[]'::jsonb),
+  ('inv-stu-026', 'STU-026', 'Parcan with CP62 head', 'Lighting - Fixtures', 'The Studio', 12, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-stu-027', 'STU-027', 'Floor can with CP62 head', 'Lighting - Fixtures', 'The Studio', 6, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-stu-028', 'STU-028', '500W flood', 'Lighting - Fixtures', 'The Studio', 4, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-stu-029', 'STU-029', 'Tank trap with 3m Ali pole', 'Lighting - Rigging/Other', 'The Studio', 6, 'Good', 'in', '', '', '', false, '[]'::jsonb),
+  ('inv-stu-030', 'STU-030', 'Single floor stand', 'Lighting - Rigging/Other', 'The Studio', 6, 'Good', 'in', '', '', '', false, '[]'::jsonb),
+  ('inv-stu-031', 'STU-031', '15amp cable, selection', 'Lighting - Rigging/Other', 'The Studio', 1, 'Good', 'in', '', '', 'various / unquantified', false, '[]'::jsonb),
+  ('inv-stu-032', 'STU-032', 'Panasonic PT DZ770EK', 'AV - Projection/Screens', 'The Studio', 1, 'Good', 'in', '', '', 'Projector, WUXGA 1920x1200, fixed position (projects 3m x 4m onto back wall)', true, '[]'::jsonb),
+  ('inv-stu-033', 'STU-033', 'Harlequin', 'Staging/Flooring', 'The Studio', 4, 'Good', 'in', '', '', 'Harlequin black vinyl dance floor, 2m x 10m', true, '[]'::jsonb),
+  ('inv-stu-034', 'STU-034', 'Staging block, 1m x 1m x 30cm', 'Staging/Flooring', 'The Studio', 8, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-stu-035', 'STU-035', 'Hard black flat, 3.5m tall x 1.5m wide', 'Staging/Flooring', 'The Studio', 2, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-mix-001', 'MIX-001', 'Soundcraft EMP12', 'Sound - Console/Stageboxes', 'The Mix', 1, 'Good', 'in', '', '', '12-way mixing desk', true, '[]'::jsonb),
+  ('inv-mix-002', 'MIX-002', 'KV2 Audio EX10', 'Sound - PA/Speakers', 'The Mix', 2, 'Good', 'in', '', '', 'Active speaker', true, '[]'::jsonb),
+  ('inv-mix-003', 'MIX-003', 'Tascam CD200', 'Sound - Playback', 'The Mix', 1, 'Good', 'in', '', '', 'CD player', false, '[]'::jsonb),
+  ('inv-mix-004', 'MIX-004', 'Sennheiser EW145 G3', 'Sound - Microphones', 'The Mix', 2, 'Good', 'in', '', '', 'Wireless mic system', false, '[]'::jsonb),
+  ('inv-mix-005', 'MIX-005', 'Microphones, various', 'Sound - Microphones', 'The Mix', 1, 'Good', 'in', '', '', 'various / unquantified', false, '[]'::jsonb),
+  ('inv-mix-006', 'MIX-006', 'Studio Spares', 'Sound - DI/Stands', 'The Mix', 2, 'Good', 'in', '', '', 'DI box', false, '[]'::jsonb),
+  ('inv-mix-007', 'MIX-007', '6-way LED controller', 'Lighting - Control', 'The Mix', 1, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-mix-008', 'MIX-008', '5A dimmer', 'Lighting - Control', 'The Mix', 3, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-mix-009', 'MIX-009', 'ETC Junior Source 4', 'Lighting - Fixtures', 'The Mix', 1, 'Good', 'in', '', '', 'Spot and track lighting, separately dimmable', true, '[]'::jsonb),
+  ('inv-mix-010', 'MIX-010', 'LED RGB 36W parcan, fixed position', 'Lighting - Fixtures', 'The Mix', 4, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-mix-011', 'MIX-011', 'Panasonic PT LB90NT', 'AV - Projection/Screens', 'The Mix', 1, 'Good', 'in', '', '', 'Projector, XGA 1024x768, 3500 ANSI lumens (projects 1.6m x 2.4m onto back wall)', true, '[]'::jsonb),
+  ('inv-mix-012', 'MIX-012', 'Le Mark', 'Staging/Flooring', 'The Mix', 3, 'Good', 'in', '', '', 'Le Mark black Sonata compression vinyl dance floor, 2m x 6m', true, '[]'::jsonb),
+  ('inv-mix-013', 'MIX-013', 'Staging block, 1m x 1m x 30cm', 'Staging/Flooring', 'The Mix', 8, 'Good', 'in', '', '', '', true, '[]'::jsonb),
+  ('inv-s1-001', 'S1-001', 'Behringer X Air 12', 'Sound - Console/Stageboxes', 'Screen One', 1, 'Excellent', 'in', '', '', '12-way mixing desk · Location: Booth', true, '[]'::jsonb),
+  ('inv-s1-002', 'S1-002', 'iPad 11"', 'Sound - Control', 'Screen One', 1, 'Excellent', 'in', '', '', 'iPad · Location: Booth', false, '[]'::jsonb),
+  ('inv-s1-003', 'S1-003', 'Christie Vive Audio LS5S', 'Sound - PA/Speakers', 'Screen One', 12, 'Good', 'in', '', '', 'Passive speaker (Surrounds) · Location: Screen', true, '[]'::jsonb),
+  ('inv-s1-004', 'S1-004', 'Martin Audio Screen 3', 'Sound - PA/Speakers', 'Screen One', 3, 'Good', 'in', '', '', 'Passive speaker (L, C, R) · Location: Screen', true, '[]'::jsonb),
+  ('inv-s1-005', 'S1-005', 'Martin Audio Sub 1A', 'Sound - PA/Speakers', 'Screen One', 1, 'Good', 'in', '', '', 'Passive speaker (Sub) · Location: Screen', true, '[]'::jsonb),
+  ('inv-s1-amp', 'S1-006', 'Christie Vive Audio CDA5 5000W', 'Sound - PA/Speakers', 'Screen One', 6, 'Fair', 'in', '', '', 'Amplifiers · Location: Booth · Amp for channels 7 & 8 faulty and removed from rack. All amps need thorough cleaning.', true, '[]'::jsonb),
+  ('inv-s1-007', 'S1-007', 'Dolby AP20', 'Sound - PA/Speakers', 'Screen One', 1, 'Good', 'in', '', '', 'Processor · Location: Booth', true, '[]'::jsonb),
+  ('inv-s1-008', 'S1-008', 'Sennheiser E3', 'Sound - Microphones', 'Screen One', 2, 'Fair', 'in', '', '', 'Wireless mic system · Location: Booth', false, '[]'::jsonb),
+  ('inv-s1-009', 'S1-009', 'Shure SM58', 'Sound - Microphones', 'Screen One', 4, 'Fair', 'in', '', '', 'Microphones, various · Location: Booth', false, '[]'::jsonb),
+  ('inv-s1-010', 'S1-010', 'Transcension SDC-6 DMX Controller', 'Lighting - Control', 'Screen One', 1, 'Fair', 'in', '', '', 'Lighting console · Location: Booth · Does the job. Power cable or input need checking, can cause lights to flicker if knocked', true, '[]'::jsonb),
+  ('inv-s1-011', 'S1-011', '1Kw flood lights', 'Lighting - Fixtures', 'Screen One', 2, 'Fair', 'in', '', '', 'Location: Screen lighting bar · I would guess these have not been cleaned since being rigged.', true, '[]'::jsonb),
+  ('inv-s1-012', 'S1-012', '500w fresnel', 'Lighting - Fixtures', 'Screen One', 2, 'Fair', 'in', '', '', 'Location: Screen lighting bar · "', true, '[]'::jsonb),
+  ('inv-s1-013', 'S1-013', 'Spot unknown wattage', 'Lighting - Fixtures', 'Screen One', 1, 'Fair', 'in', '', '', 'Location: Screen lighting bar · "', true, '[]'::jsonb),
+  ('inv-s1-014', 'S1-014', 'Christie CP4220', 'AV - Projection/Screens', 'Screen One', 1, 'Good', 'in', '', '', 'Cinema Projector · Location: Booth', true, '[]'::jsonb),
+  ('inv-s1-015', 'S1-015', 'Cine IMP2K', 'AV - Projection/Screens', 'Screen One', 1, 'Good', 'in', '', '', 'Cinema Projector expansion module · Location: Booth · Obsolete. Large 3U rack mount box. Previously in use with our old Christie CP2000 projectors. The board itself is an expansion module to allow legacy projectors to process non-cinema signals such as HDMI/VGA/DVI.', true, '[]'::jsonb),
+  ('inv-s1-016', 'S1-016', '24ft x 10.21ft silver screen', 'AV - Projection/Screens', 'Screen One', 1, 'Poor', 'in', '', '', 'Location: Screen · Screen is way past its lifespan. Silver paint is tarnishing and picture is noticeably cloudy and mottled.', true, '[]'::jsonb),
+  ('inv-s1-017', 'S1-017', 'Kramer VP-444', 'AV - Projection/Screens', 'Screen One', 1, 'Good', 'in', '', '', 'HDMI Splitter · Location: Booth rack', true, '[]'::jsonb),
+  ('inv-s2-001', 'S2-001', 'Behringer X Air 12', 'Sound - Console/Stageboxes', 'Screen Two', 1, 'Excellent', 'in', '', '', '12-way mixing desk · Location: Booth', true, '[]'::jsonb),
+  ('inv-s2-002', 'S2-002', 'iPad 11"', 'Sound - Control', 'Screen Two', 1, 'Good', 'in', '', '', 'iPad · Location: Booth', false, '[]'::jsonb),
+  ('inv-s2-003', 'S2-003', 'Christie Vive Audio LS3S', 'Sound - PA/Speakers', 'Screen Two', 12, 'Good', 'in', '', '', 'Passive speaker (Surround) · Location: Screen', true, '[]'::jsonb),
+  ('inv-s2-004', 'S2-004', 'Turbosound Impact 50', 'Sound - PA/Speakers', 'Screen Two', 2, 'Good', 'in', '', '', 'Passive speaker (Surround) · Location: Screen', true, '[]'::jsonb),
+  ('inv-s2-005', 'S2-005', 'Martin Audio Screen 2', 'Sound - PA/Speakers', 'Screen Two', 3, 'Good', 'in', '', '', 'Passive speaker (L, C, R) · Location: Screen', true, '[]'::jsonb),
+  ('inv-s2-006', 'S2-006', 'Martin Audio Sub 1A', 'Sound - PA/Speakers', 'Screen Two', 1, 'Good', 'in', '', '', 'Passive Speaker (Sub) · Location: Screen', true, '[]'::jsonb),
+  ('inv-s2-007', 'S2-007', 'Christie Vive Audio CDA5 5000W', 'Sound - PA/Speakers', 'Screen Two', 4, 'Fair', 'in', '', '', 'Amplifiers · Location: Booth · All amps need thorough cleaning.', true, '[]'::jsonb),
+  ('inv-s2-008', 'S2-008', 'Dolby AP20', 'Sound - PA/Speakers', 'Screen Two', 1, 'Good', 'in', '', '', 'Processor · Location: Booth', true, '[]'::jsonb),
+  ('inv-s2-009', 'S2-009', 'Sennheiser E3', 'Sound - Microphones', 'Screen Two', 2, 'Poor', 'in', '', '', 'Wireless mic system · Location: Booth', false, '[]'::jsonb),
+  ('inv-s2-010', 'S2-010', 'Shure SM58', 'Sound - Microphones', 'Screen Two', 4, 'Fair', 'in', '', '', 'Microphones, various · Location: Booth', false, '[]'::jsonb),
+  ('inv-s2-011', 'S2-011', 'Transcension SDC-6 DMX Controller', 'Lighting - Control', 'Screen Two', 1, 'Fair', 'in', '', '', 'Lighting console', true, '[]'::jsonb),
+  ('inv-s2-012', 'S2-012', '1Kw flood lights', 'Lighting - Fixtures', 'Screen Two', 2, 'Good', 'in', '', '', 'Location: Screen lighting bar', true, '[]'::jsonb),
+  ('inv-s2-013', 'S2-013', '500w fresnel', 'Lighting - Fixtures', 'Screen Two', 2, 'Good', 'in', '', '', 'Location: Screen lighting bar', true, '[]'::jsonb),
+  ('inv-s2-014', 'S2-014', 'Christie CP4220', 'AV - Projection/Screens', 'Screen Two', 1, 'Good', 'in', '', '', 'Cinema Projector', true, '[]'::jsonb),
+  ('inv-s2-015', 'S2-015', 'Cine IMP2K', 'AV - Projection/Screens', 'Screen Two', 1, 'Good', 'in', '', '', 'Cinema Projector expansion module · Obsolete. Large 3U rack mount box. Previously in use with our old Christie CP2000 projectors. The board itself is an expansion module to allow legacy projectors to process non-cinema signals such as HDMI/VGA/DVI.', true, '[]'::jsonb),
+  ('inv-s2-016', 'S2-016', '23ft x 9.791ft silver screen', 'AV - Projection/Screens', 'Screen Two', 1, 'Poor', 'in', '', '', 'Screen is way past its lifespan. Silver paint is tarnishing and picture is noticeably cloudy and mottled.', true, '[]'::jsonb),
+  ('inv-s2-017', 'S2-017', 'Kramer VP-444', 'AV - Projection/Screens', 'Screen Two', 1, 'Good', 'in', '', '', 'HDMI Splitter', true, '[]'::jsonb),
+  ('inv-s3-001', 'S3-001', 'Turbosound Impact 50', 'Sound - PA/Speakers', 'Screen Three', 8, 'Good', 'in', '', '', 'Passive speaker (Surrounds) · Location: Screen', true, '[]'::jsonb),
+  ('inv-s3-002', 'S3-002', 'EV Evid 6.2', 'Sound - PA/Speakers', 'Screen Three', 2, 'Good', 'in', '', '', 'Passive speaker (Surrounds) · Location: Screen', true, '[]'::jsonb),
+  ('inv-s3-003', 'S3-003', 'Martin Audio Screen 2', 'Sound - PA/Speakers', 'Screen Three', 3, 'Good', 'in', '', '', 'Passive speaker (L, C, R) · Location: Screen', true, '[]'::jsonb),
+  ('inv-s3-004', 'S3-004', 'Passive speaker (Sub)', 'Sound - PA/Speakers', 'Screen Three', 1, 'Good', 'in', '', '', 'Location: Screen · Could be Martin Audio, label not visible', true, '[]'::jsonb),
+  ('inv-s3-005', 'S3-005', 'QSC RMX145', 'Sound - PA/Speakers', 'Screen Three', 3, 'Fair', 'in', '', '', 'Amplifiers · Location: Booth · Crackly level pots, right surround known to output a lower level. Intermittently fixed by wiggling the pot. Ideally should be upgraded, but do the job well enough.', true, '[]'::jsonb),
+  ('inv-s3-006', 'S3-006', 'Dolby CP750', 'Sound - PA/Speakers', 'Screen Three', 1, 'Good', 'in', '', '', 'Processor · Location: Booth · No known issues.', true, '[]'::jsonb),
+  ('inv-s3-007', 'S3-007', 'Ultra Stereo Labs CM-680', 'Sound - PA/Speakers', 'Screen Three', 1, 'Good', 'in', '', '', 'Monitor · Location: Booth · No known issues.', true, '[]'::jsonb),
+  ('inv-s3-008', 'S3-008', 'Strand 6 Pack', 'Lighting - Control', 'Screen Three', 2, 'Fair', 'in', '', '', 'Dimmer · Location: Booth · Only dimmer 1 on the top 6 pack works to light the stage. Dimmer 2 does not work the audience lights, needs investigating. Bottom 6 Pack only operates a lecturn mic on dimmer 2.', true, '[]'::jsonb),
+  ('inv-s3-009', 'S3-009', '1Kw flood lights', 'Lighting - Fixtures', 'Screen Three', 4, 'Fair', 'in', '', '', 'Location: Screen lighting bar · Do not turn on via dimmer, could be dimmer issue, or bulb or disconnected.', true, '[]'::jsonb),
+  ('inv-s3-010', 'S3-010', 'Fresnel', 'Lighting - Fixtures', 'Screen Three', 1, 'Fair', 'in', '', '', 'Location: Screen lighting bar · Works fine, should be cleaned.', true, '[]'::jsonb),
+  ('inv-s3-011', 'S3-011', 'Birdie', 'Lighting - Fixtures', 'Screen Three', 1, 'Fair', 'in', '', '', 'Location: Screen lighting bar · Works fine, should be cleaned.', true, '[]'::jsonb),
+  ('inv-s3-012', 'S3-012', 'Christie CP2215 with Cine IPM2K', 'AV - Projection/Screens', 'Screen Three', 1, 'Good', 'in', '', '', 'Cinema Projector · Location: Booth', true, '[]'::jsonb),
+  ('inv-s3-013', 'S3-013', '16ft x 6.801ft white screen', 'AV - Projection/Screens', 'Screen Three', 1, 'Good', 'in', '', '', 'Location: Booth rack', true, '[]'::jsonb),
+  ('inv-s3-014', 'S3-014', 'Kramer VP-444', 'AV - Projection/Screens', 'Screen Three', 1, 'Good', 'in', '', '', 'HDMI Splitter · Location: Booth rack', true, '[]'::jsonb),
+  ('inv-s3-015', 'S3-015', 'AAM01', 'Network - Projection/Screens', 'Screen Three', 1, 'Good', 'in', '', '', 'Arts Alliance Media · Location: Booth rack · Rack mounted computer, runs Linux and Screenwriter software', true, '[]'::jsonb),
+  ('inv-s3-016', 'S3-016', 'LANsat Rack', 'Network - Projection/Screens', 'Screen Three', 1, 'Good', 'in', '', '', 'Omnex TMS · Location: Booth rack · This is the storage for Screenwriter. RAID setup housed in a 2U rack mount case with additional cinebox reader slot and USB port. RAID 0 configuration - approx 22tb of storage', true, '[]'::jsonb),
+  ('inv-s3-017', 'S3-017', 'D-link Managed Switch DGS-3100-24', 'Network - Projection/Screens', 'Screen Three', 1, 'Good', 'in', '', '', 'Network switch · Location: Booth rack', true, '[]'::jsonb),
+  ('inv-s3-018', 'S3-018', 'Superflex DVB-S / DVB-S2 Duo', 'Network - Projection/Screens', 'Screen Three', 1, 'Good', 'in', '', '', 'Satellite IRD · Location: Booth rack', true, '[]'::jsonb),
+  ('inv-s3-019', 'S3-019', 'APC SUA1500RMI2U', 'Power', 'Screen Three', 1, 'Good', 'in', '', '', 'Uninterruptible power supply · Location: Booth rack', true, '[]'::jsonb),
+  ('inv-s3-020', 'S3-020', 'Draytek Vigor 2830', 'Network - Projection/Screens', 'Screen Three', 1, 'Good', 'in', '', '', 'Router · Location: Booth rack', true, '[]'::jsonb),
+  ('inv-s3-021', 'S3-021', 'LANsat Rack', 'Network - Projection/Screens', 'Screen Three', 1, 'Good', 'in', '', '', 'LANsat · Location: Booth rack · Identical rack configuration as the Omnex TMS. Accessible as LANSAT via Screenwriter. It is the local storage for DCP delivery sent electronically via MPS. LANSAT comes with 12tb of storage', true, '[]'::jsonb)
 on conflict ("id") do nothing;
-insert into public.maintenance ("id", "equipment", "category", "priority", "status", "space", "description", "itemId", "itemTag", "itemName", "reportedBy", "createdAt") values
-  ('fault-seed-1', 'PSM300 pack — intermittent dropout', 'Sound', 'High', 'Open', 'The Stage', 'RF dropout on beltpack 2 during soundcheck. Needs bench testing.', 'inv-7', 'IEM-P10', 'Shure PSM300', 'Sam Okafor', 1753700000000)
-on conflict ("id") do nothing;
+
 insert into public.advancing ("id", "name", "category", "space", "date", "status", "startTime", "finishTime", "soundcheck", "doors", "curfew", "techUserId", "clientContact", "guestEngineer", "techInfo") values
   ('evt-1', 'Kokoroko — live', 'Programme', 'The Stage', '2026-07-31', 'Confirmed', '19:00', '23:00', '17:00', '19:30', '23:00', 'user-3', 'Tour manager — Jess', true, 'Guest FOH engineer touring with the band. 32-way split needed. Backline hired in.'),
   ('evt-2', 'Private hire — product launch', 'Private Hires', 'The Studio', '2026-07-31', 'Confirmed', '18:00', '22:00', '', '18:30', '22:00', 'user-4', 'Client — Aria Events', false, 'Speeches + playback from a laptop. Two handhelds, a lectern mic, HDMI to the projector.'),
@@ -135,6 +268,7 @@ insert into public.advancing ("id", "name", "category", "space", "date", "status
   ('evt-4', 'Wedding reception', 'Private Hires', 'The Mix', '2026-08-03', 'Advancing', '17:00', '00:00', '', '', '00:00', '', 'Client — the Osei family', false, 'DJ on later, playback earlier. Needs uplighters and a couple of radio mics for speeches.'),
   ('evt-5', 'Jazz night', 'Programme', 'The Stage', '2026-07-25', 'Complete', '20:00', '23:00', '18:30', '19:30', '23:00', 'user-3', '', false, 'House engineer. Standard jazz input list.')
 on conflict ("id") do nothing;
+
 insert into public.procedures ("id", "category", "title", "body", "icon") values
   ('venue-open', 'Opening & Closing', 'Venue opening checklist', '', 'power'),
   ('night-close', 'Opening & Closing', 'End-of-night shutdown', '', 'power'),
@@ -158,7 +292,8 @@ insert into public.procedures ("id", "category", "title", "body", "icon") values
   ('pat', 'Health & Safety', 'Electrical safety (PAT)', '', 'shield')
 on conflict ("id") do nothing;
 
--- reports + signoffs start empty (created in-app).
+-- maintenance, reports + signoffs start empty (created in-app).
+
 
 -- ============================================================
 --  OPTIONAL: tighten security once it's working.

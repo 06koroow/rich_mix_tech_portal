@@ -156,19 +156,22 @@ RMTP.auth = (function () {
             '<button id="a-signin" class="btn btn-primary w-full justify-center" data-primary>Sign in</button>' +
           '</div>' +
           '<p class="text-sm text-muted mt-4 text-center">No account? ' +
-            '<button id="a-to-signup" class="text-accent hover:underline">Request access</button></p>' +
-          (sbActive() ? '' :
-            '<p class="text-[11px] text-muted mt-4 text-center">Demo: <span class="tabular">alex@richmix.local</span> / <span class="tabular">demo1234</span></p>' +
-            '<p class="text-[11px] text-muted mt-2 text-center"><button id="a-reset" class="hover:text-ink underline">Reset app data</button></p>');
+            '<button id="a-to-signup" class="text-accent hover:underline">Request access</button></p>';
         const go = async () => {
           const email = body.querySelector('#a-email').value.trim();
           const pass = body.querySelector('#a-pass').value;
           if (sbActive()) {
             const res = await RMTP.supabase.signIn(email, pass);
-            if (!res.ok) { ui.toast('Email or password not recognised', 'danger'); return; }
+            if (!res.ok) {
+              const msg = res.message || '';
+              if (/confirm/i.test(msg)) ui.toast('That email hasn\u2019t been confirmed yet \u2014 confirm it in Supabase (or turn off email confirmation) and try again', 'danger');
+              else if (/invalid login/i.test(msg)) ui.toast('Email or password not recognised. If you were added by an admin, use \u201cRequest access\u201d to set your own password.', 'danger');
+              else ui.toast(msg || 'Could not sign in', 'danger');
+              return;
+            }
             try { await RMTP.syncSb.pullCollection('users'); } catch (e) { /* use cached */ }
             if (signInEmail(email)) { m.close(); refreshShell(); RMTP.router.render(); ui.toast('Signed in', 'ok'); }
-            else ui.toast('No active Tech Portal account for this sign-in \u2014 an admin needs to approve you', 'info');
+            else ui.toast('Signed in, but there\u2019s no active Tech Portal account for this email yet \u2014 an admin needs to approve you', 'info');
             return;
           }
           const res = login(email, pass);
@@ -179,12 +182,6 @@ RMTP.auth = (function () {
         body.querySelector('#a-signin').addEventListener('click', go);
         body.querySelector('#a-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
         body.querySelector('#a-to-signup').addEventListener('click', () => { mode = 'signup'; draw(); });
-        const resetBtn = body.querySelector('#a-reset');
-        if (resetBtn) resetBtn.addEventListener('click', async () => {
-          const ok = await ui.confirm('Clear all local data on this device and restore the demo accounts? You can then sign in with the demo login.',
-            { title: 'Reset app data', confirmLabel: 'Reset', danger: true });
-          if (ok) { RMTP.store.reset(); migrateAccounts(); ui.toast('Data reset \u2014 use the demo login below', 'ok'); draw(); }
-        });
       } else {
         const opt = (arr) => arr.map((v) => '<option>' + v + '</option>').join('');
         body.innerHTML =

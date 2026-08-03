@@ -12,6 +12,7 @@ RMTP.views.users = function (el) {
 
   const canManage = auth.can('users.manage');
   const canSign   = auth.can('training.signoff');
+  const sbMode = () => !!(RMTP.supabase && RMTP.supabase.isConfigured());
 
   function competencies() {
     const out = [];
@@ -34,9 +35,9 @@ RMTP.views.users = function (el) {
     el.innerHTML =
       '<div class="view-enter">' +
         ui.pageHeader('Users', 'Team',
-          canManage ? '<button id="add-user" class="btn btn-primary">' + ui.icon('plus', 'w-4 h-4') + 'Add user</button>' : '') +
+          canManage && !sbMode() ? '<button id="add-user" class="btn btn-primary">' + ui.icon('plus', 'w-4 h-4') + 'Add user</button>' : '') +
         '<p class="text-muted -mt-2 mb-6 max-w-2xl text-sm">' + users.length + ' users \u00b7 ' + total + ' competencies. ' +
-          (canManage ? 'You can add, edit and approve users.' : canSign ? 'You can sign off training.' : 'View only \u2014 ask an admin to make changes.') + '</p>' +
+          (canManage ? (sbMode() ? 'New people sign up via \u201cRequest access\u201d on the sign-in screen; approve them below and set their role.' : 'You can add, edit and approve users.') : canSign ? 'You can sign off training.' : 'View only \u2014 ask an admin to make changes.') + '</p>' +
         (canManage && pending.length ? pendingPanel(pending) : '') +
         (users.length
           ? '<div class="panel divide-y divide-line overflow-hidden">' + users.map((u) => row(u, total)).join('') + '</div>'
@@ -45,6 +46,11 @@ RMTP.views.users = function (el) {
 
     const add = el.querySelector('#add-user');
     if (add) add.addEventListener('click', () => editUser());
+    // In Supabase mode, pull fresh so newly self-registered users appear without a manual reload.
+    if (sbMode() && !render._pulling) {
+      render._pulling = true;
+      RMTP.syncSb.pullCollection('users').then(() => { render._pulling = false; render(); }).catch(() => { render._pulling = false; });
+    }
     users.forEach((u) => el.querySelector('[data-open="' + u.id + '"]').addEventListener('click', () => openUser(u)));
     pending.forEach((u) => {
       const ap = el.querySelector('[data-approve="' + u.id + '"]'); if (ap) ap.addEventListener('click', () => { auth.approveUser(u.id); ui.toast(auth.displayName(u) + ' approved', 'ok'); render(); });
@@ -216,6 +222,7 @@ RMTP.views.users = function (el) {
 
   function editUser(existing) {
     if (!canManage) { ui.toast('Only admins can manage users', 'danger'); return; }
+    if (!existing && sbMode()) { ui.toast('In this deployment, new people sign up via \u201cRequest access\u201d and you approve them \u2014 that\u2019s how they get a password.', 'info'); return; }
     const u = existing || {};
     const opt = (arr, val) => arr.map((v) => '<option ' + (v === val ? 'selected' : '') + '>' + v + '</option>').join('');
     const chk = (id, label, on) =>

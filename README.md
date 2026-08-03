@@ -187,6 +187,10 @@ checklist was removed in favour of the show information).
   QR sheet — each encodes `RMTP-INV:<tag>`. **Move** and **sign-out** take a
   **quantity**: moving fewer than all *splits the line* (e.g. 6 SM58 in The Stage,
   move 1 to The Studio → a 5 line and a 1 line), and lines merge back on return.
+  Kit marked **Fixed installation** (a static field on each item) can't be signed
+  out or moved between spaces — the app hides those actions for it. The seed is the
+  venue's real house inventory across all six spaces (~143 lines), with fixed vs
+  portable set per category (editable per item).
 - **Training** competencies come from `RMTP.TRAINING` in `config.js` — twelve
   space-specific categories (e.g. *The Stage (Sound)*, *Screen One*), each with a
   small competency list. Edit that one array to change what the team is signed off

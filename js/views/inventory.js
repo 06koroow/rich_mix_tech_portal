@@ -16,8 +16,9 @@ RMTP.views.inventory = function (el) {
   const me = auth.current();
   const isAdmin = !!(me && me.admin);
 
-  const CATEGORIES = ['Microphones', 'DI Boxes', 'Cables', 'Speakers', 'IEM', 'Stands', 'Lighting', 'AV', 'Other'];
-  const condColour = { 'Good': 'var(--ok)', 'Fair': 'var(--accent)', 'Damaged': 'var(--danger)', 'Out of service': 'var(--danger)' };
+  const CATEGORIES = ['Sound - Console/Stageboxes', 'Sound - PA/Speakers', 'Sound - Microphones', 'Sound - DI/Stands', 'Sound - Playback', 'Sound - Control', 'Backline', 'DJ Equipment', 'Lighting - Control', 'Lighting - Fixtures', 'Lighting - Rigging/Other', 'AV - Projection/Screens', 'Network - Projection/Screens', 'Power', 'Staging/Flooring', 'Other'];
+  const condColour = { 'Excellent': 'var(--ok)', 'Good': 'var(--ok)', 'Fair': 'var(--accent)', 'Poor': 'var(--danger)', 'Damaged': 'var(--danger)', 'Out of service': 'var(--danger)' };
+  const isStatic = (r) => !!r.static;
 
   let query = '';
   let spaceFilter = '';
@@ -112,6 +113,7 @@ RMTP.views.inventory = function (el) {
         rows.map((r) => {
           const isOut = r.status === 'out';
           const flagged = isFlagged(r);
+          const stat = isStatic(r);
           const locPill = RMTP.isSpace(r.location) ? ui.pill(r.location, 'var(--accent)') : '';
           return '<div class="flex items-center gap-3 px-4 py-3">' +
             '<button data-open="' + r.id + '" class="min-w-0 flex-1 text-left group">' +
@@ -119,6 +121,7 @@ RMTP.views.inventory = function (el) {
                 '<span class="tabular text-xs text-accent hidden sm:inline">' + ui.esc(r.tag) + '</span>' +
                 '<span class="font-medium truncate group-hover:text-accent transition-colors ' + (flagged ? 'line-through text-muted' : '') + '">' + ui.esc(r.name) + '</span>' +
                 (flagged ? ui.pill('Flagged', 'var(--danger)') : '') +
+                (stat ? ui.pill('Fixed', 'var(--muted)') : '') +
               '</span>' +
               '<span class="block text-xs text-muted mt-0.5 truncate">' + ui.esc(r.category) + ' \u00b7 ' + ui.esc(r.location || '\u2014') +
                 (flagged ? ' \u00b7 <span style="color:var(--danger)">' + ui.esc(flagReason(r)) + '</span>' : '') +
@@ -128,7 +131,7 @@ RMTP.views.inventory = function (el) {
               (isOut ? ui.pill('Out', 'var(--info)') : ui.pill(r.condition, condColour[r.condition] || 'var(--muted)')) + '</div>' +
             '<div class="w-10 text-right shrink-0 hidden sm:block"><span class="tabular font-semibold">' + Number(r.qty || 0) + '</span></div>' +
             '<div class="flex gap-1 shrink-0">' +
-              (canMove
+              (canMove && !stat
                 ? (isOut
                     ? '<button data-in="' + r.id + '" class="btn btn-ghost !px-2.5 !py-1.5 text-xs" title="Sign back in">' + ui.icon('check', 'w-4 h-4') + 'In</button>'
                     : '<button data-out="' + r.id + '" class="btn btn-ghost !px-2.5 !py-1.5 text-xs" title="Sign out">' + ui.icon('arrowR', 'w-4 h-4') + 'Out</button>')
@@ -170,6 +173,7 @@ RMTP.views.inventory = function (el) {
     const fresh = store.find('inventory', item.id) || item;
     const isOut = fresh.status === 'out';
     const flagged = isFlagged(fresh);
+    const stat = isStatic(fresh);
     const moves = (fresh.movements || []).slice().reverse();
     const info = [
       ['Tag', fresh.tag], ['Category', fresh.category], ['Location', fresh.location || '\u2014'],
@@ -190,14 +194,16 @@ RMTP.views.inventory = function (el) {
       title: fresh.name,
       size: 'md:max-w-lg',
       body:
+        (stat ? '<div class="panel p-3 mb-4 text-sm" style="border-color:color-mix(in srgb,var(--muted) 40%,var(--line))">' +
+          ui.icon('pin', 'w-4 h-4 inline mr-1') + 'Fixed installation \u2014 part of the room, can\u2019t be signed out or moved.</div>' : '') +
         (flagged ? '<div class="panel p-3 mb-4 text-sm" style="border-color:color-mix(in srgb,var(--danger) 40%,var(--line));color:var(--danger)">' +
-          ui.icon('alert', 'w-4 h-4 inline mr-1') + 'Flagged (' + ui.esc(flagReason(fresh)) + '). Can only be moved to a Store.</div>' : '') +
+          ui.icon('alert', 'w-4 h-4 inline mr-1') + 'Flagged (' + ui.esc(flagReason(fresh)) + ').' + (stat ? '' : ' Can only be moved to a Store.') + '</div>' : '') +
         '<dl class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 mb-5">' + info + '</dl>' +
         (fresh.notes ? '<p class="text-sm text-ink/80 mb-5">' + ui.esc(fresh.notes) + '</p>' : '') +
         '<p class="eyebrow mb-2">Movement history</p>' + history,
       footer:
-        (canMove ? '<button data-move class="btn btn-ghost mr-auto">' + ui.icon('pin', 'w-4 h-4') + 'Move</button>' : '') +
-        (canMove ? '<button data-sign class="btn btn-ghost">' + ui.icon(isOut ? 'check' : 'arrowR', 'w-4 h-4') + (isOut ? 'Sign in' : 'Sign out') + '</button>' : '') +
+        (canMove && !stat ? '<button data-move class="btn btn-ghost mr-auto">' + ui.icon('pin', 'w-4 h-4') + 'Move</button>' : '') +
+        (canMove && !stat ? '<button data-sign class="btn btn-ghost">' + ui.icon(isOut ? 'check' : 'arrowR', 'w-4 h-4') + (isOut ? 'Sign in' : 'Sign out') + '</button>' : '') +
         (canManage ? '<button data-edit class="btn btn-ghost">' + ui.icon('pen', 'w-4 h-4') + 'Edit</button>' : '') +
         (canManage ? '<button data-del class="btn btn-danger">' + ui.icon('trash', 'w-4 h-4') + 'Delete</button>' : ''),
     });
@@ -218,6 +224,7 @@ RMTP.views.inventory = function (el) {
   /* ---- Move (quantity-aware; splits a line if moving fewer than all;
      merges into an existing line at the destination; flagged=Store only) ---- */
   function moveItem(item, after) {
+    if (isStatic(item)) { ui.toast('Fixed installation \u2014 can\u2019t be moved', 'danger'); if (after) after(); return; }
     const flagged = isFlagged(item);
     const maxQty = qtyOf(item) || 1;
     const m = ui.modal({
@@ -277,7 +284,7 @@ RMTP.views.inventory = function (el) {
     const tag = parsed.value.toLowerCase();
     const lines = store.all('inventory').filter((r) => String(r.tag || '').toLowerCase() === tag);
     if (!lines.length) { ui.toast('No item with tag \u201c' + parsed.value + '\u201d', 'danger'); return; }
-    if (lines.length === 1) { const it = lines[0]; if (it.status === 'out') signIn(it); else signOut(it); return; }
+    if (lines.length === 1) { const it = lines[0]; if (isStatic(it)) { ui.toast(it.name + ' is a fixed installation \u2014 can\u2019t be signed out', 'danger'); return; } if (it.status === 'out') signIn(it); else signOut(it); return; }
     pickLine(lines, (it) => { if (it.status === 'out') signIn(it); else signOut(it); });
   }
 
@@ -301,6 +308,7 @@ RMTP.views.inventory = function (el) {
 
   /* ---- Sign out: who + quantity + destination space ---- */
   function signOut(item, after) {
+    if (isStatic(item)) { ui.toast('Fixed installation \u2014 can\u2019t be signed out', 'danger'); if (after) after(); return; }
     const prefs = store.read('prefs', {}) || {};
     const defaultHolder = prefs.lastHolder || auth.displayName(auth.current());
     const flagged = isFlagged(item);
@@ -406,6 +414,9 @@ RMTP.views.inventory = function (el) {
             fld('Quantity', '<input id="i-qty" type="number" min="0" class="field tabular" value="' + (r.qty != null ? r.qty : 1) + '" />') +
           '</div>' +
           fld('Notes', '<input id="i-notes" class="field" value="' + ui.esc(r.notes || '') + '" placeholder="Optional" />') +
+          '<label class="flex items-center gap-3 panel p-3 cursor-pointer">' +
+            '<input type="checkbox" id="i-static" class="w-4 h-4 accent-[var(--accent)]" ' + (r.static ? 'checked' : '') + ' />' +
+            '<span class="text-sm">Fixed installation <span class="text-muted">\u2014 part of the room; can\u2019t be signed out or moved between spaces</span></span></label>' +
         '</div>',
       footer:
         '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
@@ -429,6 +440,7 @@ RMTP.views.inventory = function (el) {
         location: newLocation,
         qty: Number(m.root.querySelector('#i-qty').value) || 0,
         notes: m.root.querySelector('#i-notes').value.trim(),
+        static: m.root.querySelector('#i-static').checked,
         status: r.status || 'in',
         movements: movements,
       });

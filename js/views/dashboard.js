@@ -145,28 +145,15 @@ RMTP.views.dashboard = function (el) {
 
   el.innerHTML =
     '<div class="view-enter">' +
-      ui.pageHeader('Rich Mix · ' + RMTP.meta.product, 'Good evening' + greetName,
-        RMTP.auth.can('data.reset')
-          ? '<button id="reset-demo" class="btn btn-ghost no-print">' + ui.icon('reset', 'w-4 h-4') + 'Reset demo data</button>'
-          : '') +
+      ui.pageHeader('Rich Mix · ' + RMTP.meta.product, 'Good evening' + greetName, '') +
       '<p class="text-muted -mt-2 mb-8 max-w-2xl">Quick access to the building\u2019s technical operations. ' +
-        'Pick a section to get started \u2014 everything is editable and saves to this device.</p>' +
+        'Pick a section to get started.</p>' +
 
       topPanel() +
 
       '<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">' + cardHtml + '</div>' +
 
       movementsPanel() +
-
-      '<div class="panel p-5 mt-8">' +
-        '<p class="eyebrow mb-2">Build note</p>' +
-        '<p class="text-sm text-muted leading-relaxed">Proof of concept. <span class="text-ink">Sign-in, ' +
-        'passwords and approvals</span> are a prototype stand-in (not secure) \u2014 real auth is a backend job. ' +
-        'Permissions hide controls but aren\u2019t enforced yet. <span class="text-ink">Inventory</span> supports ' +
-        'quantity splits and QR sign-out; <span class="text-ink">Procedures</span> ship as blank holding pages. ' +
-        '<span class="text-ink">Camera scanning needs https or localhost</span> \u2014 see ' +
-        '<span class="tabular text-ink">README.md</span> and <span class="tabular text-ink">docs/BACKEND.md</span>.</p>' +
-      '</div>' +
     '</div>';
 
   el.querySelectorAll('[data-tab]').forEach((btn) => btn.addEventListener('click', () => {
@@ -178,13 +165,6 @@ RMTP.views.dashboard = function (el) {
       b.classList.toggle('text-muted', !active); b.classList.toggle('border-transparent', !active);
     });
   }));
-
-  const resetBtn = el.querySelector('#reset-demo');
-  if (resetBtn) resetBtn.addEventListener('click', async () => {
-    const ok = await ui.confirm('This clears everything on this device and restores the starter data. Continue?',
-      { title: 'Reset demo data', confirmLabel: 'Reset', danger: true });
-    if (ok) { store.reset(); RMTP.auth.ensureSession(); RMTP.auth.refreshShell(); ui.toast('Demo data reset', 'ok'); RMTP.router.render(); }
-  });
 
   (RMTP.auth.pendingUsers ? RMTP.auth.pendingUsers() : []).forEach((u) => {
     const ap = el.querySelector('[data-approve="' + u.id + '"]'); if (ap) ap.addEventListener('click', () => { RMTP.auth.approveUser(u.id); ui.toast(RMTP.auth.displayName(u) + ' approved', 'ok'); RMTP.router.render(); });

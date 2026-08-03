@@ -42,8 +42,18 @@ Alternatively, sign up in-app with your real email, then in the SQL editor run:
 `update public.users set "admin"=true, "trainer"=true, "status"='active' where "email"='you@yourdomain';`
 (or insert a profile row for yourself).
 
-Everyone else can then use **Request access** in the app — they land as `pending`
-and you approve them from the dashboard in-tray or the Users page.
+### Adding the rest of the team
+In Supabase mode the app **does not** let an admin hand-create logins — creating a
+password for someone else needs Supabase's secret service key, which must never sit
+in browser code. So everyone else onboards themselves:
+
+1. They open the app and click **Request access**, entering name, email, password,
+   role. This creates their Supabase login *and* a pending profile in one step.
+2. You approve them from the dashboard in-tray or the Users page, which activates
+   their account and sets their role.
+
+That's why the admin "Add user" button is hidden when Supabase is connected — it
+can't create a working login. Approving a self-registration is the supported route.
 
 ## 6. Get your keys
 **Project Settings → API**: copy the **Project URL** and the **anon / public** key.
@@ -71,6 +81,16 @@ write end-to-end.
 ---
 
 ### Notes & gotchas
+- **"Email or password not recognised" when signing in** almost always means one of:
+  (a) the account was hand-created via the app's old Add-user form, so it has a
+  profile but no Supabase login — have that person use **Request access** instead;
+  or (b) the account exists in **Authentication → Users** but is unconfirmed — turn
+  **Confirm email** off (step 4) and have them register again, or confirm/delete the
+  stuck user from that screen. The sign-in message now reports which case it is.
+- **If you ran an earlier version of this SQL** (with 8 placeholder inventory items),
+  the `on conflict do nothing` seed won't overwrite them. To load the real 143-item
+  inventory, run `truncate public.inventory;` in the SQL editor, then re-run the
+  inventory `insert` block from this file.
 - **Files** upload to the `techfiles` bucket on save and the record stores the URL.
 - **Free projects pause after ~7 days idle** — resume from the dashboard (~30s), or
   add a scheduled ping to keep it warm. Data survives the pause.

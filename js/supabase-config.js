@@ -15,8 +15,8 @@
    database (see the SQL file). This is by design.
    ============================================================ */
 RMTP.supabaseConfig = {
-  url: '',        // Project settings → API → Project URL   (https://xxxx.supabase.co)
-  anonKey: '',    // Project settings → API → Project API keys → anon / public
+  url: 'https://xumaqyrilbmskcvpmjmk.supabase.co',        // Project settings → API → Project URL   (https://xxxx.supabase.co)
+  anonKey: 'sb_publishable_eIbRs4RTeQn1aeYKPv7lrA_ejaLzuwT',    // Project settings → API → Project API keys → anon / public
   bucket: 'techfiles',   // Storage bucket for fault photos + tech specs (create it in the dashboard)
 
   // App collection  →  database table name. These already match the

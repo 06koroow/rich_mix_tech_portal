@@ -116,9 +116,12 @@
           RMTP.auth.showLogin();                              // locked login (Supabase Auth)
         }
       } catch (e) {
-        console.error('[boot] Supabase backend failed — running in local mode', e);
-        RMTP.store.init();
-        RMTP.auth.ensureSession();
+        // Fail loud: the app is configured for Supabase but couldn't reach it.
+        // Do NOT silently fall back to local seed data — that hides the problem
+        // and shows stale/wrong data. Show a clear message with a Retry.
+        console.error('[boot] Supabase unreachable', e);
+        showBackendError(e && e.message);
+        return;
       }
     } else if (spOn) {
       try {
@@ -131,9 +134,9 @@
           RMTP.auth.ensureSession();
         }
       } catch (e) {
-        console.error('[boot] SharePoint backend failed — running in local mode', e);
-        RMTP.store.init();
-        RMTP.auth.ensureSession();
+        console.error('[boot] SharePoint unreachable', e);
+        showBackendError(e && e.message);
+        return;
       }
     } else {
       RMTP.store.init();
@@ -142,4 +145,26 @@
     refreshIdentity();
     RMTP.router.start();
   })();
+
+  // Full-screen "can't reach the database" state — replaces the old silent
+  // fallback to local mode when a backend is configured but unreachable.
+  function showBackendError(detail) {
+    const app = document.getElementById('app');
+    const modal = document.getElementById('modal-layer');
+    if (modal) modal.innerHTML = '';
+    if (!app) return;
+    app.innerHTML =
+      '<div class="min-h-[75vh] flex items-center justify-center p-6">' +
+        '<div class="panel p-8 max-w-md text-center">' +
+          RMTP.ui.icon('alert', 'w-10 h-10 mx-auto') + '<div style="color:var(--danger)"></div>' +
+          '<h1 class="text-lg font-semibold mt-4">Can\u2019t reach the database</h1>' +
+          '<p class="text-sm text-muted mt-2 leading-relaxed">This app saves to Supabase, but it couldn\u2019t connect just now. ' +
+            'To avoid showing stale data or losing changes, it hasn\u2019t loaded. Check your connection and try again.</p>' +
+          (detail ? '<p class="text-[11px] text-muted mt-3 tabular break-words">' + RMTP.ui.esc(String(detail)) + '</p>' : '') +
+          '<button id="rm-retry" class="btn btn-primary mt-5 mx-auto justify-center">Retry</button>' +
+        '</div>' +
+      '</div>';
+    const r = document.getElementById('rm-retry');
+    if (r) r.addEventListener('click', () => window.location.reload());
+  }
 })();

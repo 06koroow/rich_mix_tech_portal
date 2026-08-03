@@ -95,7 +95,7 @@ RMTP.views.procedures = function (el, params) {
         '</div>' +
         '<div class="px-5 py-5">' +
           (hasBody
-            ? '<div class="text-sm leading-relaxed whitespace-pre-wrap text-ink/90">' + ui.esc(item.body) + '</div>'
+            ? renderBody(item.body)
             : ui.empty('pen', 'This is a holding page',
                 'No content yet. Hit Edit to write the step-by-step for \u201c' + item.title + '\u201d.')) +
         '</div>' +
@@ -103,22 +103,136 @@ RMTP.views.procedures = function (el, params) {
     );
   }
 
+  /* Render a procedure body into structured HTML. Understands a light
+     markup — and also infers structure from the plain-text conventions the
+     imported docs already use, so nothing had to be re-authored:
+       ## / ###            headings (chapters / sub-sections)
+       "1 — Title"          numbered chapter heading
+       "2.1 Title"          numbered sub-section heading
+       ALL-CAPS LINE        heading
+       "1. text"            numbered step (rendered with a number badge)
+       "- text"             bullet
+       NOTE:/PLACEHOLDER:/PRINCIPLE:/IMPORTANT:/REMEMBER:/WARNING:/TIP:  callout
+       ![caption](url)      image
+       **bold**  `code`     inline
+  */
+  function renderBody(src) {
+    const esc = ui.esc;
+    const inline = (t) => esc(t)
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`]+?)`/g, '<code class="px-1 rounded bg-panel2 tabular text-[0.85em]">$1</code>');
+    const CALLOUT = /^(PLACEHOLDER|NOTE|PRINCIPLE|WORKED EXAMPLE|REMEMBER|IMPORTANT|TIP|WARNING)\b[:\u2014\-]?\s*(.*)$/;
+    const out = [];
+    let steps = null, bullets = null, para = null;
+
+    function pushHeading(text, level) {
+      if (level <= 2) out.push('<h3 class="font-display text-base font-semibold mt-6 mb-2 pb-1.5 border-b border-line" style="color:var(--accent)">' + inline(text) + '</h3>');
+      else out.push('<h4 class="font-semibold text-sm mt-4 mb-1.5 text-ink">' + inline(text) + '</h4>');
+    }
+    function flushPara() { if (para != null) { out.push('<p class="mb-3 text-ink/90">' + inline(para) + '</p>'); para = null; } }
+    function flushSteps() {
+      if (steps) {
+        out.push('<ol class="my-3 space-y-2">' + steps.map((s, i) =>
+          '<li class="flex gap-3"><span class="shrink-0 w-6 h-6 rounded-full text-xs font-semibold flex items-center justify-center" style="background:var(--accent);color:#fff">' + (i + 1) + '</span>' +
+          '<span class="pt-0.5 text-ink/90">' + inline(s) + '</span></li>').join('') + '</ol>');
+        steps = null;
+      }
+    }
+    function flushBullets() {
+      if (bullets) {
+        out.push('<ul class="my-3 space-y-1.5 list-disc pl-5 marker:text-accent">' +
+          bullets.map((b) => '<li class="text-ink/90 pl-1">' + inline(b) + '</li>').join('') + '</ul>');
+        bullets = null;
+      }
+    }
+    function flushAll() { flushPara(); flushSteps(); flushBullets(); }
+    function isAllCaps(t) {
+      const letters = t.replace(/[^A-Za-z]/g, '');
+      if (letters.length < 2) return false;
+      return (t.replace(/[^A-Z]/g, '').length / letters.length) >= 0.85 && t.length <= 66 && !/[.:]$/.test(t);
+    }
+
+    String(src || '').replace(/\r/g, '').split('\n').forEach((raw) => {
+      const t = raw.trim();
+      let m;
+      if (!t) { flushAll(); return; }
+      if ((m = t.match(/^!\[(.*?)\]\((.+?)\)\s*$/))) {
+        flushAll();
+        out.push('<figure class="my-4"><img src="' + esc(m[2]) + '" alt="' + esc(m[1]) + '" class="rounded-xl border border-line max-w-full mx-auto block" loading="lazy" />' +
+          (m[1] ? '<figcaption class="text-xs text-muted text-center mt-2">' + esc(m[1]) + '</figcaption>' : '') + '</figure>');
+        return;
+      }
+      if ((m = t.match(/^(#{1,3})\s+(.+)$/))) { flushAll(); pushHeading(m[2], m[1].length); return; }
+      if (/^\d+\s+[\u2014\u2013-]\s+.+$/.test(t)) { flushAll(); pushHeading(t, 2); return; }   // "1 — Title"
+      if (/^\d+\.\d+\s+.+$/.test(t)) { flushAll(); pushHeading(t, 3); return; }                 // "2.1 Title"
+      if ((m = t.match(/^\d+\.\s+(.+)$/))) { flushPara(); flushBullets(); (steps = steps || []).push(m[1]); return; }
+      if ((m = t.match(/^[-\u2022*]\s+(.+)$/))) { flushPara(); flushSteps(); (bullets = bullets || []).push(m[1]); return; }
+      if ((m = t.match(CALLOUT))) {
+        flushAll();
+        out.push('<div class="my-3 panel p-3 text-sm" style="border-color:color-mix(in srgb,var(--accent) 35%,var(--line))">' +
+          '<span class="eyebrow text-accent">' + esc(m[1]) + '</span> <span class="text-ink/90">' + inline(m[2]) + '</span></div>');
+        return;
+      }
+      if (isAllCaps(t)) { flushAll(); pushHeading(t, 2); return; }
+      flushSteps(); flushBullets();
+      para = para != null ? para + ' ' + t : t;
+    });
+    flushAll();
+    return '<div class="proc-body leading-relaxed">' + out.join('') + '</div>';
+  }
+
   function editBody(cat, item) {
     const m = ui.modal({
       title: 'Edit \u2014 ' + item.title,
       size: 'md:max-w-2xl',
       body:
-        '<label class="block text-sm font-medium mb-2">Procedure content</label>' +
-        '<textarea id="body-input" class="field font-mono text-[13px] leading-relaxed" rows="14" ' +
-          'placeholder="Write the step-by-step here. Plain text for now \u2014 you can add rich formatting later.">' +
-          ui.esc(item.body || '') + '</textarea>',
+        '<div class="flex items-center justify-between gap-2 mb-2">' +
+          '<label class="block text-sm font-medium">Procedure content</label>' +
+          '<label class="btn btn-ghost !py-1.5 text-xs cursor-pointer inline-flex" title="Upload an image and insert it at the cursor">' +
+            '<input type="file" accept="image/*" id="proc-img" class="sr-only" />' +
+            ui.icon('upload', 'w-4 h-4') + 'Insert image</label>' +
+        '</div>' +
+        '<textarea id="body-input" class="field font-mono text-[13px] leading-relaxed" rows="16">' +
+          ui.esc(item.body || '') + '</textarea>' +
+        '<p class="text-[11px] text-muted mt-2 leading-relaxed">Formats automatically \u2014 ' +
+          '<span class="tabular text-ink">##</span> section, ' +
+          '<span class="tabular text-ink">###</span> sub-section, ' +
+          '<span class="tabular text-ink">1.</span> steps, ' +
+          '<span class="tabular text-ink">-</span> bullets, ' +
+          '<span class="tabular text-ink">NOTE:</span> callout, ' +
+          '<span class="tabular text-ink">![caption](url)</span> image.</p>',
       footer:
         '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
         '<button class="btn btn-primary" data-save data-primary>Save changes</button>',
     });
+    const ta = m.root.querySelector('#body-input');
+    function insertAtCursor(text) {
+      const s = ta.selectionStart != null ? ta.selectionStart : ta.value.length;
+      const e = ta.selectionEnd != null ? ta.selectionEnd : s;
+      ta.value = ta.value.slice(0, s) + text + ta.value.slice(e);
+      ta.focus(); ta.selectionStart = ta.selectionEnd = s + text.length;
+    }
+    const imgInput = m.root.querySelector('#proc-img');
+    imgInput.addEventListener('change', () => {
+      const file = imgInput.files && imgInput.files[0];
+      imgInput.value = '';
+      if (!file) return;
+      if (file.size > RMTP.files.MAX) { ui.toast('Image too large (max ' + RMTP.files.humanSize(RMTP.files.MAX) + ')', 'danger'); return; }
+      const caption = file.name.replace(/\.[^.]+$/, '');
+      ui.toast('Uploading image\u2026', 'info');
+      RMTP.files.readAsDataUrl(file)
+        .then((p) => { let meta; try { meta = RMTP.files.persist(p); } catch (e) { ui.toast('Couldn\u2019t store image', 'danger'); return null; } return meta ? RMTP.files.toRemote(meta) : null; })
+        .then((remote) => {
+          if (!remote) return;
+          if (!remote.url) { ui.toast('Image upload needs Supabase Storage \u2014 create a public \u201ctechfiles\u201d bucket', 'danger'); return; }
+          insertAtCursor('\n\n![' + caption + '](' + remote.url + ')\n');
+          ui.toast('Image inserted', 'ok');
+        })
+        .catch((e) => { console.error('[procedures] image upload failed', e); ui.toast('Image upload failed', 'danger'); });
+    });
     m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
     m.root.querySelector('[data-save]').addEventListener('click', () => {
-      item.body = m.root.querySelector('#body-input').value;
+      item.body = ta.value;
       item.updated = new Date().toISOString();
       store.upsert('procedures', cat); // cat is a row in the procedures collection
       m.close(); ui.toast('Procedure saved', 'ok'); RMTP.router.render();

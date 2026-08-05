@@ -158,7 +158,7 @@ RMTP.views.procedures = function (el, params) {
       if (!t) { flushAll(); return; }
       if ((m = t.match(/^!\[(.*?)\]\((.+?)\)\s*$/))) {
         flushAll();
-        out.push('<figure class="my-4"><img src="' + esc(m[2]) + '" alt="' + esc(m[1]) + '" class="rounded-xl border border-line max-w-full mx-auto block" loading="lazy" />' +
+        out.push('<figure class="my-4 max-w-md mx-auto"><img src="' + esc(m[2]) + '" alt="' + esc(m[1]) + '" class="rounded-xl border border-line w-full mx-auto block" loading="lazy" />' +
           (m[1] ? '<figcaption class="text-xs text-muted text-center mt-2">' + esc(m[1]) + '</figcaption>' : '') + '</figure>');
         return;
       }

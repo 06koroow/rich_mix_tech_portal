@@ -1,8 +1,9 @@
 -- Rich Mix Tech Portal — load the four documented procedure pages into Supabase.
 -- Paste into the SQL Editor and Run. Safe to re-run (updates existing rows).
+-- Image URLs are relative (assets/procedures/...) and resolve on the deployed site.
 
 insert into public.procedures ("id","category","title","body","icon") values
-  ('best-practice-guide', 'Best Practice', 'Technical Best Practice Guide', $body$RICH MIX — TECHNICAL BEST PRACTICE GUIDE
+  ('best-practice-guide', 'Best Practice', 'Technical Best Practice Guide', $rmproc$RICH MIX — TECHNICAL BEST PRACTICE GUIDE
 Live Audio  ·  Live Lighting  ·  Live AV — general principles for duty technicians
 Version 0.2 (Draft). Based on Colours Hoxton Audio Documentation (2022), to be adapted further for Rich Mix.
 
@@ -444,38 +445,57 @@ PLACEHOLDER: insert the RM show-stop procedure, evacuation plan, and named roles
 - Accessibility and inclusive-practice considerations.
 
 End of draft — mark it up, cut what doesn't fit Rich Mix, and grow the sections that do.
-$body$, 'book'),
-  ('studio-startup', 'Opening & Closing', 'Studio — access & start-up', $body$ACCESS — GETTING TO THE STUDIO VIA PROJECTION BOOTH 3
+$rmproc$, 'book'),
+  ('studio-startup', 'Opening & Closing', 'Studio — access & start-up', $rmproc$Getting to the Studio means collecting the keys from Projection Booth 3, then powering the room up in the right order. The photos below show each stage.
 
-Preferred route
-1. Go to Level 1 and enter the Cinema Bar.
-2. Walk towards the Cinema entrance, through the fire door, into the Screen 1 lobby (where the lifts and stairs are).
-3. Take the lift or the staircase to Level 4.
-4. Locate Projection Booth 3, beside Screen 3. Enter the access code 375XZ to enter the booth.
-5. Collect the Studio key set. The two EVVA master keys open the Studio Main Door and the Technical Balcony Door.
-6. Leaving the booth: if Screen 3 is empty, exit via the emergency exit in the cinema, then follow the Studio signs to the Studio entrance.
+## Access — Projection Booth 3 & the Studio
 
-Alternative audience route (when Screen 3 is occupied)
-- Take the lift to Level 1 and exit via the cinema emergency doors.
-- Walk through the Cinema Bar, take the Central Lift to Level 4, then follow the Studio signs from the preferred route.
+### Step 1 — Travel to the Cinema
+![Proceed to Level 1 and enter the Cinema Bar.](assets/procedures/studio-01.jpg)
+![Walk towards the Cinema Entrance.](assets/procedures/studio-02.jpg)
 
+### Step 2 — Access the Cinema Corridor
+![Pass through the fire door.](assets/procedures/studio-03.jpg)
+![Continue into the Screen 1 lobby, where the lifts and stairs are.](assets/procedures/studio-04.jpg)
 
-POWERING UP THE STUDIO
+### Step 3 — Travel to Projection Booth 3
+![Use the lift to reach Level 4.](assets/procedures/studio-05.jpg)
+![Alternatively, use the staircase to Level 4.](assets/procedures/studio-06.jpg)
 
-The two EVVA master keys open the Studio Main Door and the Technical Balcony Door.
-1. Walk up the stairs to the Technical Balcony Door and open the fire door (marked IAM — Caution: High Voltage).
-2. Turn on the extension leads.
-3. Turn on the main switch at the end.
-4. Turn on the breakers from the top — all four of them.
-5. Turn on the remaining switches.
-6. Turn on the sound desk from the back.
-7. The lighting desk switch is at the top of the desk.
+### Step 4 — Projection Booth 3
+![Locate Projection Booth 3, beside Screen 3.](assets/procedures/studio-07.jpg)
+![Enter the access code 375XZ and enter the booth.](assets/procedures/studio-08.jpg)
 
-IMPORTANT: the Studio consoles are turned on LAST.
+### Step 5 — Collect the Studio keys
+![Collect the Studio key set.](assets/procedures/studio-09.jpg)
+![The two EVVA master keys open the Studio Main Door and the Technical Balcony Door.](assets/procedures/studio-10.jpg)
 
-Projector: mounted at the top of the space. The remote is on the table in the Tech balcony.
-$body$, 'power'),
-  ('screen-1-ops', 'AV & Presentation', 'Screen 1 — start-up & operation', $body$START-UP PROCEDURE
+### Step 6 — Preferred route
+![If Screen 3 is empty, exit via the emergency exit in the cinema.](assets/procedures/studio-11.jpg)
+![Follow the Studio signs to the Studio entrance.](assets/procedures/studio-12.jpg)
+
+### Step 7 — Alternative audience route
+![When Screen 3 is occupied, take the lift to Level 1 and exit via the cinema emergency doors.](assets/procedures/studio-13.jpg)
+![Walk through the Cinema Bar, take the Central Lift to Level 4, then follow the Studio signs from the preferred route.](assets/procedures/studio-14.jpg)
+
+## Step 8 — Powering up the Studio
+
+NOTE: The Studio consoles are powered on LAST, after everything else.
+
+![The two EVVA master keys open the Studio Main Door and the Technical Balcony Door.](assets/procedures/studio-15.jpg)
+![Walk up the stairs to the Technical Balcony Door.](assets/procedures/studio-16.jpg)
+![Open the fire door (marked IAM — Caution: High Voltage).](assets/procedures/studio-17.jpg)
+![The Studio consoles need to be turned on LAST.](assets/procedures/studio-18.jpg)
+![Turn on the extension leads.](assets/procedures/studio-19.jpg)
+![Turn on the main switch at the end.](assets/procedures/studio-20.jpg)
+![Turn on the breakers from the top — all four of them.](assets/procedures/studio-21.jpg)
+![Then the remaining switches.](assets/procedures/studio-22.jpg)
+![Turn on the sound desk from the back.](assets/procedures/studio-23.jpg)
+![The lighting desk switch is at the top of the desk.](assets/procedures/studio-24.jpg)
+![The remote is on the table in the Tech balcony.](assets/procedures/studio-25.jpg)
+![The projector is located at the top.](assets/procedures/studio-26.jpg)
+$rmproc$, 'power'),
+  ('screen-1-ops', 'AV & Presentation', 'Screen 1 — start-up & operation', $rmproc$START-UP PROCEDURE
 
 1. Enter the booth using passcode C79XZ1.
 2. At the back of the booth, find the large rack unit — this is the amp rack.
@@ -532,8 +552,8 @@ The top row of white switches controls the house lights, for manual control from
 - Exits — the fire-exit sign lights. DO NOT TOUCH.
 
 Stage lighting: the DMX controller next to the XR12 runs a pair of washes and a single spot on a bar in the screen. To operate, push the fader labelled "Master" all the way up. This gives even coverage of the small Screen 1 stage — ideal for introductions, talks and Q&As.
-$body$, 'screen'),
-  ('screen-2-ops', 'AV & Presentation', 'Screen 2 — start-up & operation', $body$START-UP PROCEDURE
+$rmproc$, 'screen'),
+  ('screen-2-ops', 'AV & Presentation', 'Screen 2 — start-up & operation', $rmproc$START-UP PROCEDURE
 
 1. Enter the booth using passcode C79XZ2.
 2. At the back of the booth, find the large rack unit on the right — this is the amp rack.
@@ -590,5 +610,5 @@ The top row of white switches controls the house lights, for manual control from
 - Exits — the fire-exit sign lights. DO NOT TOUCH.
 
 Stage lighting: the DMX controller next to the XR12 runs a pair of washes on a bar in the screen. To operate, push the fader labelled "Master" all the way up. This gives even coverage of the small Screen 2 stage — ideal for introductions, talks and Q&As.
-$body$, 'screen')
+$rmproc$, 'screen')
 on conflict ("id") do update set "category"=excluded."category", "title"=excluded."title", "body"=excluded."body", "icon"=excluded."icon";

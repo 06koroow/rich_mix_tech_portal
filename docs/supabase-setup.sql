@@ -50,7 +50,8 @@ create table if not exists public.advancing (
   "guestEngineer" boolean default false,
   "techInfo" text default '',
   "techSpec" jsonb,
-  "checklist" jsonb default '{}'::jsonb
+  "checklist" jsonb default '{}'::jsonb,
+  "artifaxId" text
 );
 
 create table if not exists public.reports (

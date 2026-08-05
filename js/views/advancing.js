@@ -42,7 +42,9 @@ RMTP.views.advancing = function (el) {
   el.innerHTML =
     '<div class="view-enter">' +
       ui.pageHeader('Advancing', isAdmin ? 'Events' : 'Your shifts',
-        canManageEvents ? '<button id="add-event" class="btn btn-primary">' + ui.icon('plus', 'w-4 h-4') + 'Add event</button>' : '') +
+        (canManageEvents && RMTP.supabase && RMTP.supabase.isConfigured()
+          ? '<button id="artifax-sync" class="btn btn-ghost" title="Pull events from Artifax">' + ui.icon('reset', 'w-4 h-4') + '<span class="hidden sm:inline">Refresh from Artifax</span></button>' : '') +
+        (canManageEvents ? '<button id="add-event" class="btn btn-primary">' + ui.icon('plus', 'w-4 h-4') + 'Add event</button>' : '')) +
       filterBar() +
       (shown.length ? '<div class="grid gap-4 lg:grid-cols-2">' + shown.map(renderEvent).join('') + '</div>'
                     : ui.empty(emptyMsg[0], emptyMsg[1], emptyMsg[2])) +
@@ -56,6 +58,21 @@ RMTP.views.advancing = function (el) {
 
   const addEv = el.querySelector('#add-event');
   if (addEv) addEv.addEventListener('click', () => openForm());
+
+  const afx = el.querySelector('#artifax-sync');
+  if (afx) afx.addEventListener('click', async () => {
+    afx.disabled = true; ui.toast('Syncing from Artifax\u2026', 'info');
+    try {
+      const res = await RMTP.supabase.invokeFunction('artifax-sync');
+      if (!res.ok) { ui.toast('Artifax sync failed: ' + (res.message || 'unknown error'), 'danger'); afx.disabled = false; return; }
+      const d = res.data || {};
+      await RMTP.syncSb.pullCollection('advancing');
+      ui.toast('Artifax: ' + (d.created || 0) + ' added, ' + (d.updated || 0) + ' updated', 'ok');
+      RMTP.router.render();
+    } catch (e) {
+      ui.toast('Artifax sync failed \u2014 is the function deployed?', 'danger'); afx.disabled = false;
+    }
+  });
   shown.forEach((ev) => {
     const q = (sel) => el.querySelector(sel);
     const e = q('[data-edit="' + ev.id + '"]'); if (e) e.addEventListener('click', () => openForm(ev));

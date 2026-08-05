@@ -76,5 +76,12 @@ RMTP.supabase = (function () {
     return data && data.publicUrl;
   }
 
-  return { isConfigured, init, restoreSession, signIn, signUp, signOut, currentEmail, selectAll, upsertRow, deleteRow, uploadFile };
+  /* ---- Edge Functions ---- */
+  async function invokeFunction(name, body) {
+    const { data, error } = await db().functions.invoke(name, { body: body || {} });
+    if (error) return { ok: false, message: error.message, error: error };
+    return { ok: true, data: data };
+  }
+
+  return { isConfigured, init, restoreSession, signIn, signUp, signOut, currentEmail, selectAll, upsertRow, deleteRow, uploadFile, invokeFunction };
 })();

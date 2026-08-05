@@ -275,7 +275,7 @@ RMTP.views.inventory = function (el) {
     }
   }
 
-  /* ---- Scan → resolve item(s) → toggle custody ---- */
+  /* ---- Scan → resolve item(s) → open the kit ---- */
   async function handleScan() {
     const decoded = await qr.scan({ title: 'Scan kit' });
     if (!decoded) return;
@@ -284,8 +284,8 @@ RMTP.views.inventory = function (el) {
     const tag = parsed.value.toLowerCase();
     const lines = store.all('inventory').filter((r) => String(r.tag || '').toLowerCase() === tag);
     if (!lines.length) { ui.toast('No item with tag \u201c' + parsed.value + '\u201d', 'danger'); return; }
-    if (lines.length === 1) { const it = lines[0]; if (isStatic(it)) { ui.toast(it.name + ' is a fixed installation \u2014 can\u2019t be signed out', 'danger'); return; } if (it.status === 'out') signIn(it); else signOut(it); return; }
-    pickLine(lines, (it) => { if (it.status === 'out') signIn(it); else signOut(it); });
+    if (lines.length === 1) { openDetail(lines[0]); return; }   // open the kit; act from there
+    pickLine(lines, (it) => openDetail(it));
   }
 
   function pickLine(lines, cb) {

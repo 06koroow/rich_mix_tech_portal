@@ -75,24 +75,42 @@ RMTP.ui = (function () {
   function modal(opts) {
     const layer = document.getElementById('modal-layer');
     const root = document.createElement('div');
-    root.className = 'fixed inset-0 z-40 flex items-end md:items-center justify-center';
+    // inset-x-0 + top set by fit(); height tracks the VISIBLE viewport so the
+    // sheet never sits behind the mobile keyboard or run off the bottom.
+    root.className = 'fixed inset-x-0 top-0 z-40 flex items-end md:items-center justify-center';
     root.innerHTML =
       '<div class="absolute inset-0 bg-black/60" data-backdrop></div>' +
       '<div class="modal-in panel relative w-full ' + (opts.size || 'md:max-w-lg') +
-        ' md:rounded-2xl rounded-t-2xl rounded-b-none max-h-[92vh] flex flex-col shadow-2xl">' +
-        '<div class="flex items-center justify-between px-5 py-4 border-b border-line">' +
+        ' md:rounded-2xl rounded-t-2xl rounded-b-none max-h-full flex flex-col shadow-2xl">' +
+        '<div class="flex items-center justify-between px-5 py-4 border-b border-line shrink-0">' +
           '<h3 class="font-display text-lg font-semibold">' + esc(opts.title || '') + '</h3>' +
           (opts.locked ? '' : '<button data-close class="text-muted hover:text-ink p-1 -mr-1" aria-label="Close">' + icon('x') + '</button>') +
         '</div>' +
-        '<div class="px-5 py-4 overflow-y-auto">' + (opts.body || '') + '</div>' +
-        (opts.footer ? '<div class="px-5 py-4 border-t border-line flex justify-end gap-2">' + opts.footer + '</div>' : '') +
+        '<div class="px-5 py-4 overflow-y-auto min-h-0">' + (opts.body || '') + '</div>' +
+        (opts.footer ? '<div class="px-5 py-4 border-t border-line flex justify-end gap-2 shrink-0">' + opts.footer + '</div>' : '') +
       '</div>';
     layer.appendChild(root);
+
+    // Size the container to the visible viewport (excludes keyboard + browser UI).
+    function fit() {
+      const vv = window.visualViewport;
+      root.style.height = (vv ? vv.height : window.innerHeight) + 'px';
+      root.style.top = (vv ? vv.offsetTop : 0) + 'px';
+    }
+    fit();
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', fit);
+      window.visualViewport.addEventListener('scroll', fit);
+    }
 
     function close() {
       root.style.opacity = '0';
       setTimeout(() => root.remove(), 150);
       document.removeEventListener('keydown', onKey);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', fit);
+        window.visualViewport.removeEventListener('scroll', fit);
+      }
     }
     function onKey(e) { if (e.key === 'Escape') close(); }
 

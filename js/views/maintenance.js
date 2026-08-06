@@ -175,10 +175,13 @@ RMTP.views.maintenance = function (el, params) {
     /* --- linked-item widget --- */
     function itemAreaHtml() {
       if (linked) {
-        return '<div class="panel bg-panel2/40 p-3 flex items-center justify-between gap-3">' +
-          '<span class="min-w-0"><span class="font-medium truncate">' + ui.esc(linked.itemName) + '</span> ' +
-            '<span class="tabular text-xs text-accent">' + ui.esc(linked.itemTag || '') + '</span></span>' +
-          '<button type="button" data-item-clear class="btn btn-ghost !p-2" title="Unlink">' + ui.icon('x', 'w-4 h-4') + '</button>' +
+        return '<div class="flex flex-wrap items-center gap-2">' +
+          '<span class="inline-flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-full text-sm" ' +
+            'style="background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 40%,var(--line))">' +
+            '<span class="font-medium">' + ui.esc(linked.itemName) + '</span>' +
+            (linked.itemTag ? '<span class="tabular text-xs text-accent">' + ui.esc(linked.itemTag) + '</span>' : '') +
+            '<button type="button" data-item-clear class="rounded-full hover:bg-panel2 p-1 -my-1" title="Remove">' + ui.icon('x', 'w-3.5 h-3.5') + '</button>' +
+          '</span>' +
         '</div>';
       }
       return '<div class="flex gap-2">' +

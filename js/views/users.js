@@ -36,7 +36,15 @@ RMTP.views.users = function (el) {
 
   function render() {
     const allUsers = store.all('users');
-    const users = allUsers.filter((u) => u.status !== 'pending');
+    const roleRank = (u) => {
+      const p = (u.position || '').toLowerCase();
+      if (/technical manager|tech manager/.test(p)) return 0;
+      if (/senior/.test(p)) return 1;
+      if (/duty/.test(p)) return 2;
+      return 3;
+    };
+    const users = allUsers.filter((u) => u.status !== 'pending')
+      .sort((a, b) => (roleRank(a) - roleRank(b)) || auth.displayName(a).localeCompare(auth.displayName(b)));
     const pending = allUsers.filter((u) => u.status === 'pending');
     const total = competencies().length;
 

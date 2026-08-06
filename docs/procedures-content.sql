@@ -1,21 +1,19 @@
--- Rich Mix Tech Portal — load the four documented procedure pages into Supabase.
+-- Rich Mix Tech Portal — load all populated procedure pages into Supabase.
 -- Paste into the SQL Editor and Run. Safe to re-run (updates existing rows).
--- Image URLs are relative (assets/procedures/...) and resolve on the deployed site.
+-- Image/file URLs are relative (assets/...) or Storage URLs and resolve on the deployed site.
 
 insert into public.procedures ("id","category","title","body","icon") values
-  ('best-practice-guide', 'Best Practice', 'Technical Best Practice Guide', $rmproc$RICH MIX — TECHNICAL BEST PRACTICE GUIDE
+  ('bp-00', 'Best Practice', 'Overview & how to use this guide', $rmproc$RICH MIX — TECHNICAL BEST PRACTICE GUIDE
 Live Audio  ·  Live Lighting  ·  Live AV — general principles for duty technicians
 Version 0.2 (Draft). Based on Colours Hoxton Audio Documentation (2022), to be adapted further for Rich Mix.
 
 This is a living document. Where it disagrees with a formal safety document, the safety document wins; where it disagrees with a manufacturer instruction, follow the manufacturer and flag the conflict to the Technical Manager. Console features are named generically — read "scenes / groups / palettes / executors" as whatever your platform calls them.
-
-
-1 — PURPOSE AND SCOPE
+$rmproc$, 'book'),
+  ('bp-01', 'Best Practice', '1 · Purpose and scope', $rmproc$1 — PURPOSE AND SCOPE
 Sets out the best-practice principles expected of anyone in a live technical role at Rich Mix — audio, lighting or AV; employed, freelance or visiting. Deliberately discipline-agnostic at the top, then specific underneath, so a duty technician covering a room outside their specialism still has a baseline. It does not replace manufacturer documentation, the venue H&S policy, method statements or risk assessments.
 PLACEHOLDER: add named contacts, on-call/escalation numbers, incident-reporting route, and links to the current H&S policy, RAMS library and asset register.
-
-
-2 — UNIVERSAL PRINCIPLES (ALL DISCIPLINES)
+$rmproc$, 'book'),
+  ('bp-02', 'Best Practice', '2 · Universal principles (all disciplines)', $rmproc$2 — UNIVERSAL PRINCIPLES (ALL DISCIPLINES)
 If you only read one section, read this one.
 
 2.1 Safety is the first deliverable
@@ -75,9 +73,8 @@ PLACEHOLDER: add the LOLER inspection regime and dates, rated capacities per roo
 - Complete a handover every session: what's working, what's broken, what changed, what's outstanding.
 - Faulty equipment is tagged, taken out of service, and logged — never quietly put back in the rack.
 PLACEHOLDER: link the fault log, standing-rig docs per room, show-file archive, and the naming convention.
-
-
-3 — RECOMMENDED WORKFLOWS
+$rmproc$, 'book'),
+  ('bp-03', 'Best Practice', '3 · Recommended workflows', $rmproc$3 — RECOMMENDED WORKFLOWS
 Understand the job, prepare offline, build methodically, verify systematically, then run.
 
 3.1 The universal arc (every job, scaled to the show — don't skip a phase)
@@ -114,9 +111,8 @@ PRINCIPLE: anything that can be done offline should be done offline.
 - Test every source end-to-end on the actual content and output settings.
 - Prepare fallbacks: holding slide, safe/black output, backup source.
 - Confirm capture/stream routing and verify it's actually recording/live before doors.
-
-
-4 — PATCH MANAGEMENT
+$rmproc$, 'book'),
+  ('bp-04', 'Best Practice', '4 · Patch management', $rmproc$4 — PATCH MANAGEMENT
 
 4.1 Principles of good patching
 - One source of truth: paper, physical and console patch must always agree.
@@ -161,9 +157,8 @@ Redundancy:
 - Label every input/output on switchers, matrices and distribution; keep a routing map with the paperwork.
 - Record the format on each leg (resolution/refresh/standard).
 - Pick the transport per run: SDI/fibre for long robust runs; keep HDMI short; plan networked video on its own switching.
-
-
-5 — LIVE AUDIO
+$rmproc$, 'book'),
+  ('bp-05', 'Best Practice', '5 · Live audio', $rmproc$5 — LIVE AUDIO
 Good live sound is discipline before taste.
 
 5.1 Signal flow and gain structure
@@ -225,9 +220,8 @@ PLACEHOLDER: attach the RM house template show file(s) and the channel-order/col
 - Confirm routing and record-arm before the first note, and verify it's actually recording.
 - Keep capture gain independent of the FOH mix where possible.
 - Confirm consent and any recording restrictions with the artist/promoter first.
-
-
-6 — LIVE LIGHTING
+$rmproc$, 'book'),
+  ('bp-06', 'Best Practice', '6 · Live lighting', $rmproc$6 — LIVE LIGHTING
 Half the job is data, power and rigging done correctly; the other half is using light to serve the performance.
 
 6.1 Rigging and focusing fixtures
@@ -276,9 +270,8 @@ Separate programming from running: a clean main cue stack numbered to match the 
 - Check haze/smoke against fire detection and building policy before running it.
 - Warn FOH and the audience where strobe/haze/smoke effects are used; display notices.
 - Keep fluid topped up and the machine maintained.
-
-
-7 — LIVE AV / VIDEO
+$rmproc$, 'book'),
+  ('bp-07', 'Best Practice', '7 · Live AV / video', $rmproc$7 — LIVE AV / VIDEO
 AV fails in the most public way possible; the defence is boring, thorough preparation.
 
 7.1 Signal flow and formats
@@ -315,9 +308,8 @@ PLACEHOLDER: add per-room AV infrastructure — projectors/screens/LED, switcher
 - Plan the network deliberately — VLANs, bandwidth, switch capability, isolation from public traffic.
 - Don't mix heavy AV traffic with the venue's business/guest network.
 - Document IP addressing and keep it consistent.
-
-
-8 — TROUBLESHOOTING (ALL DISCIPLINES)
+$rmproc$, 'book'),
+  ('bp-08', 'Best Practice', '8 · Troubleshooting (all disciplines)', $rmproc$8 — TROUBLESHOOTING (ALL DISCIPLINES)
 Faults are inevitable; flailing is optional. Method beats intuition.
 
 8.1 The universal method
@@ -374,9 +366,8 @@ Converting between them:
 - Time-box troubleshooting during a live show; switch to the fallback and keep the show running.
 - Escalate rather than dig a deeper hole.
 - Never trade safety for a fix.
-
-
-9 — WHEN THINGS GO WRONG
+$rmproc$, 'book'),
+  ('bp-09', 'Best Practice', '9 · When things go wrong', $rmproc$9 — WHEN THINGS GO WRONG
 Things break in front of audiences. How you recover is what matters.
 
 9.1 Mindset and priorities (fixed order)
@@ -414,9 +405,8 @@ PLACEHOLDER: insert the RM show-stop procedure, evacuation plan, and named roles
 - Restock and repair before the next show.
 - Feed it back to the department.
 - Go easy on yourself and your crew.
-
-
-10 — APPENDICES AND TEMPLATES
+$rmproc$, 'book'),
+  ('bp-10', 'Best Practice', '10 · Appendices and templates', $rmproc$10 — APPENDICES AND TEMPLATES
 
 10.1 Generic pre-show checklist
 - Advance read: rider, spec, running order reviewed; gaps flagged.
@@ -610,5 +600,54 @@ The top row of white switches controls the house lights, for manual control from
 - Exits — the fire-exit sign lights. DO NOT TOUCH.
 
 Stage lighting: the DMX controller next to the XR12 runs a pair of washes on a bar in the screen. To operate, push the fader labelled "Master" all the way up. This gives even coverage of the small Screen 2 stage — ideal for introductions, talks and Q&As.
+$rmproc$, 'screen'),
+  ('screenwriter-guide', 'Cinema', 'Screenwriter — running a screening', $rmproc$Screenwriter is the cinema's Theatre Management System (TMS): from one dashboard it manages content, keys, playlists and scheduling across all three screens. It controls **what plays, when, and on which screen** — the Christie panel and AP20 still handle the physical image and sound (see the Screen 1 and Screen 2 pages).
+
+## The words you'll see
+- DCP — Digital Cinema Package: the movie/trailer files.
+- CPL — the composition (playlist) inside a DCP.
+- KDM — Key Delivery Message: unlocks an encrypted DCP, locked to one server and a date/time window.
+- SPL — Show Playlist: the running order you build (pre-show + feature + cues).
+- SMS — the media server in each screen that plays the SPL.
+- Automation cue — a command in the SPL that drives lights, masking, sound format, dowser, etc.
+
+## Step 1 — Ingest the content
+1. Insert the delivery drive (CRU/USB) or pull the DCP over the network, and start the ingest.
+2. Watch the job finish on the Content page.
+3. Confirm the title and duration look right before you rely on it.
+
+## Step 2 — Load the KDM (encrypted content only)
+KDMs arrive by email from the distributor. Ingest or upload it, then check two things:
+- The validity window covers your actual screening date and time.
+- The KDM is keyed to THIS screen's server.
+NOTE: No valid, in-window KDM means it will not play — the most common reason a screening fails. Check it when content lands, not at doors.
+
+## Step 3 — Build the show (SPL)
+1. Drag content into the running order: idents, trailers and ads, the BBFC certificate card, the feature, then anything after.
+2. Drop automation cues where they fire — house lights to half at trailers; lights out and masking to Flat or Scope at the feature; the correct sound format; dowser open; lights up at the end.
+3. Save. The TMS validates that the SPL will play out properly.
+
+## Step 4 — Schedule it (or cue it manually)
+- Scheduled: add a schedule, picking the SPL, the screen, and the date and time. Screenwriter transfers it to that screen's server ahead of time.
+- One-off (a hire or a Q&A): load the SPL on the screen and start it by hand.
+
+## Step 5 — Run and monitor
+- From the monitoring dashboard, watch each screen and start, pause or stop playback.
+- Let a scheduled show auto-start, or press play.
+- For a Q&A afterwards, bring up mics on the screen's XR12 with the AP20 on NS2 Surrounds (surround-only avoids feedback) — see the Screen pages.
+
+## If it won't play — quick checks
+- No key / won't start — missing or expired KDM, or keyed to the wrong server.
+- Still greyed out — content hasn't finished ingesting, or the SPL hasn't transferred to the screen yet.
+- Wrong shape on screen — masking/aspect wrong; set Flat vs Scope on the Christie panel.
+- No or wrong sound — sound-format cue wrong, or the AP20 is on the wrong input.
+- Black screen but audio runs — dowser closed or lamp off (Screen SOP), not a Screenwriter fault.
+
+## Good habits
+- Keep a standard pre-show SPL template so you're not rebuilding it each time.
+- Ingest and test-play anything with a Q&A, premiere or visiting print the DAY BEFORE, and confirm the KDM window then.
+- After the run, the reports give you proof-of-play — useful for distributor returns.
+
+NOTE: With three screens you may actually be running AAM's Screenlighter (the up-to-four-screen sibling) rather than Screenwriter — the workflow is almost identical. Exact button and tab names vary by version, so treat the workflow as the reliable part and let the on-screen labels guide the clicks.
 $rmproc$, 'screen')
 on conflict ("id") do update set "category"=excluded."category", "title"=excluded."title", "body"=excluded."body", "icon"=excluded."icon";

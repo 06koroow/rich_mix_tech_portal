@@ -96,5 +96,9 @@ RMTP.syncSb = (function () {
     };
   }
 
-  return { pullAll, wire, pullCollection };
+  // Explicitly delete one procedure page from Supabase (item deletes don't
+  // flow through pushProcedures, which only re-upserts what still exists).
+  function deleteProcedureRow(id) { enqueue({ type: 'delete', coll: 'procedures', id: id }); }
+
+  return { pullAll, wire, pullCollection, deleteProcedureRow };
 })();

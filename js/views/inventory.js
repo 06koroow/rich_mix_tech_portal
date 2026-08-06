@@ -29,6 +29,7 @@ RMTP.views.inventory = function (el) {
     faultItemIds = new Set(store.all('maintenance').filter((f) => f.status !== 'Resolved' && f.itemId).map((f) => f.itemId));
   }
   function isFlagged(r) { return RMTP.isPoorCondition(r.condition) || faultItemIds.has(r.id); }
+  const inService = (r) => r.location === 'SERVICE';
   function flagReason(r) {
     const out = [];
     if (RMTP.isPoorCondition(r.condition)) out.push(r.condition);
@@ -114,12 +115,14 @@ RMTP.views.inventory = function (el) {
           const isOut = r.status === 'out';
           const flagged = isFlagged(r);
           const stat = isStatic(r);
+          const svc = inService(r);
           const locPill = RMTP.isSpace(r.location) ? ui.pill(r.location, 'var(--accent)') : '';
           return '<div class="flex items-center gap-3 px-4 py-3">' +
             '<button data-open="' + r.id + '" class="min-w-0 flex-1 text-left group">' +
               '<span class="flex items-center gap-2">' +
                 '<span class="tabular text-xs text-accent hidden sm:inline">' + ui.esc(r.tag) + '</span>' +
-                '<span class="font-medium truncate group-hover:text-accent transition-colors ' + (flagged ? 'line-through text-muted' : '') + '">' + ui.esc(r.name) + '</span>' +
+                '<span class="font-medium truncate group-hover:text-accent transition-colors ' + (svc ? 'line-through text-muted' : '') + '">' + ui.esc(r.name) + '</span>' +
+                (svc ? ui.pill('In service', 'var(--danger)') : '') +
                 (flagged ? ui.pill('Flagged', 'var(--danger)') : '') +
                 (stat ? ui.pill('Fixed', 'var(--muted)') : '') +
               '</span>' +
@@ -390,6 +393,7 @@ RMTP.views.inventory = function (el) {
     if (opts.blank) html += '<option value="" ' + (!val ? 'selected' : '') + '>' + ui.esc(opts.blank) + '</option>';
     if (!opts.storeOnly) html += grp('Spaces', RMTP.SPACES);
     html += grp('Stores', RMTP.STORES);
+    html += grp('Service', ['SERVICE']);
     return html + '</select>';
   }
 

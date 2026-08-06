@@ -62,9 +62,7 @@ RMTP.TRAINING = [
   { category: 'The Mix (Sound)',      items: ['System startup & line check', 'FOH mixing', 'Safe shutdown'] },
   { category: 'The Mix (Lighting)',   items: ['Console startup', 'Operation / busking', 'Safe shutdown'] },
   { category: 'The Mix (AV)',         items: ['Projector & screen startup', 'Source switching / playback', 'Safe shutdown'] },
-  { category: 'Screen One',           items: ['Projector startup', 'DCP ingest & playback', 'Sound / format check', 'Safe shutdown'] },
-  { category: 'Screen Two',           items: ['Projector startup', 'DCP ingest & playback', 'Sound / format check', 'Safe shutdown'] },
-  { category: 'Screen Three',         items: ['Projector startup', 'DCP ingest & playback', 'Sound / format check', 'Safe shutdown'] },
+  { category: 'Cinema',               items: ['Screen One \u2014 Start Up/Shutdown', 'Screen Two \u2014 Start Up/Shutdown', 'Screen Three \u2014 Start Up/Shutdown', 'DCP Ingest & Playback', 'Sound/Format Check', 'Cinema Troubleshooting', 'Basic Projector Maintenance'] },
 ];
 
 /* Flattened, most-recent-first log of kit movements across all items.

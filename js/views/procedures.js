@@ -120,7 +120,8 @@ RMTP.views.procedures = function (el, params) {
     const esc = ui.esc;
     const inline = (t) => esc(t)
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/`([^`]+?)`/g, '<code class="px-1 rounded bg-panel2 tabular text-[0.85em]">$1</code>');
+      .replace(/`([^`]+?)`/g, '<code class="px-1 rounded bg-panel2 tabular text-[0.85em]">$1</code>')
+      .replace(/(^|[^!])\[([^\]]+)\]\(([^)\s]+)\)/g, '$1<a href="$3" target="_blank" rel="noopener" class="text-accent underline hover:no-underline">$2</a>');
     const CALLOUT = /^(PLACEHOLDER|NOTE|PRINCIPLE|WORKED EXAMPLE|REMEMBER|IMPORTANT|TIP|WARNING)\b[:\u2014\-]?\s*(.*)$/;
     const out = [];
     let steps = null, bullets = null, para = null;
@@ -181,27 +182,68 @@ RMTP.views.procedures = function (el, params) {
     return '<div class="proc-body leading-relaxed">' + out.join('') + '</div>';
   }
 
+  function iconFor(name) {
+    const n = String(name).toLowerCase();
+    if (/cinema|film|screen|project/.test(n)) return 'screen';
+    if (/sound|audio|\bpa\b|mic/.test(n)) return 'wave';
+    if (/light|\blx\b/.test(n)) return 'bulb';
+    if (/stage|rig|flying/.test(n)) return 'box';
+    if (/safe|health|fire|emergency|risk/.test(n)) return 'shield';
+    if (/open|clos|power|start/.test(n)) return 'power';
+    return 'book';
+  }
+  // Find a category by name (case-insensitive), or create + persist a new one.
+  function resolveCategory(name) {
+    const found = store.all('procedures').find((c) => c.name.trim().toLowerCase() === name.trim().toLowerCase());
+    if (found) return found;
+    let base = RMTP.slug(name) || 'cat', id = base, n = 2;
+    const ids = store.all('procedures').map((c) => c.id);
+    while (ids.indexOf(id) > -1) { id = base + '-' + n; n += 1; }
+    const cat = { id: id, name: name, icon: iconFor(name), items: [] };
+    store.upsert('procedures', cat);
+    return cat;
+  }
+
   function editBody(cat, item) {
+    const isAdmin = !!(RMTP.auth.current() && RMTP.auth.current().admin);
+    const catNames = store.all('procedures').map((c) => c.name);
     const m = ui.modal({
       title: 'Edit \u2014 ' + item.title,
       size: 'md:max-w-2xl',
       body:
-        '<div class="flex items-center justify-between gap-2 mb-2">' +
-          '<label class="block text-sm font-medium">Procedure content</label>' +
-          '<label class="btn btn-ghost !py-1.5 text-xs cursor-pointer inline-flex" title="Upload an image and insert it at the cursor">' +
-            '<input type="file" accept="image/*" id="proc-img" class="sr-only" />' +
-            ui.icon('upload', 'w-4 h-4') + 'Insert image</label>' +
-        '</div>' +
-        '<textarea id="body-input" class="field font-mono text-[13px] leading-relaxed" rows="16">' +
-          ui.esc(item.body || '') + '</textarea>' +
-        '<p class="text-[11px] text-muted mt-2 leading-relaxed">Formats automatically \u2014 ' +
-          '<span class="tabular text-ink">##</span> section, ' +
-          '<span class="tabular text-ink">###</span> sub-section, ' +
-          '<span class="tabular text-ink">1.</span> steps, ' +
-          '<span class="tabular text-ink">-</span> bullets, ' +
-          '<span class="tabular text-ink">NOTE:</span> callout, ' +
-          '<span class="tabular text-ink">![caption](url)</span> image.</p>',
+        '<div class="grid gap-4">' +
+          '<div><label class="block text-sm font-medium mb-1.5">Title</label>' +
+            '<input id="p-title" class="field" value="' + ui.esc(item.title) + '" /></div>' +
+          '<div><label class="block text-sm font-medium mb-1.5">Category (tab)</label>' +
+            '<input id="p-cat" class="field" list="p-cat-list" value="' + ui.esc(cat.name) + '" placeholder="Pick one, or type a new tab name" autocomplete="off" />' +
+            '<datalist id="p-cat-list">' + catNames.map((nm) => '<option value="' + ui.esc(nm) + '"></option>').join('') + '</datalist>' +
+            '<p class="text-[11px] text-muted mt-1">Type a name that doesn\u2019t exist yet to create a new tab.</p></div>' +
+          '<div>' +
+            '<div class="flex items-center justify-between gap-2 mb-1.5">' +
+              '<label class="block text-sm font-medium">Content</label>' +
+              '<div class="flex gap-1">' +
+                '<button type="button" id="proc-link" class="btn btn-ghost !py-1.5 text-xs" title="Insert a hyperlink">' + ui.icon('link', 'w-4 h-4') + 'Link</button>' +
+                '<label class="btn btn-ghost !py-1.5 text-xs cursor-pointer inline-flex" title="Attach a file (PDF, doc) and link to it">' +
+                  '<input type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,image/*" id="proc-file" class="sr-only" />' +
+                  ui.icon('upload', 'w-4 h-4') + 'File</label>' +
+                '<label class="btn btn-ghost !py-1.5 text-xs cursor-pointer inline-flex" title="Upload an image and insert it at the cursor">' +
+                  '<input type="file" accept="image/*" id="proc-img" class="sr-only" />' +
+                  ui.icon('image', 'w-4 h-4') + 'Image</label>' +
+              '</div>' +
+            '</div>' +
+            '<textarea id="body-input" class="field font-mono text-[13px] leading-relaxed" rows="14">' + ui.esc(item.body || '') + '</textarea>' +
+            '<p class="text-[11px] text-muted mt-2 leading-relaxed">Formats automatically \u2014 ' +
+              '<span class="tabular text-ink">##</span> section, ' +
+              '<span class="tabular text-ink">###</span> sub-section, ' +
+              '<span class="tabular text-ink">1.</span> steps, ' +
+              '<span class="tabular text-ink">-</span> bullets, ' +
+              '<span class="tabular text-ink">NOTE:</span> callout, ' +
+              '<span class="tabular text-ink">[text](url)</span> link, ' +
+              '<span class="tabular text-ink">![caption](url)</span> image.</p>' +
+          '</div>' +
+        '</div>',
       footer:
+        (isAdmin ? '<button class="btn btn-danger mr-auto" data-del>' + ui.icon('trash', 'w-4 h-4') + 'Delete page</button>' : '') +
         '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
         '<button class="btn btn-primary" data-save data-primary>Save changes</button>',
     });
@@ -212,30 +254,58 @@ RMTP.views.procedures = function (el, params) {
       ta.value = ta.value.slice(0, s) + text + ta.value.slice(e);
       ta.focus(); ta.selectionStart = ta.selectionEnd = s + text.length;
     }
-    const imgInput = m.root.querySelector('#proc-img');
-    imgInput.addEventListener('change', () => {
-      const file = imgInput.files && imgInput.files[0];
-      imgInput.value = '';
+    // Upload a file (image or document) → Storage → insert markdown.
+    function uploadAndInsert(file, asImage) {
       if (!file) return;
-      if (file.size > RMTP.files.MAX) { ui.toast('Image too large (max ' + RMTP.files.humanSize(RMTP.files.MAX) + ')', 'danger'); return; }
-      const caption = file.name.replace(/\.[^.]+$/, '');
-      ui.toast('Uploading image\u2026', 'info');
+      if (file.size > RMTP.files.MAX) { ui.toast('File too large (max ' + RMTP.files.humanSize(RMTP.files.MAX) + ')', 'danger'); return; }
+      const label = file.name.replace(/\.[^.]+$/, '');
+      ui.toast('Uploading\u2026', 'info');
       RMTP.files.readAsDataUrl(file)
-        .then((p) => { let meta; try { meta = RMTP.files.persist(p); } catch (e) { ui.toast('Couldn\u2019t store image', 'danger'); return null; } return meta ? RMTP.files.toRemote(meta) : null; })
+        .then((p) => { let meta; try { meta = RMTP.files.persist(p); } catch (e) { ui.toast('Couldn\u2019t store file', 'danger'); return null; } return meta ? RMTP.files.toRemote(meta) : null; })
         .then((remote) => {
           if (!remote) return;
-          if (!remote.url) { ui.toast('Image upload needs Supabase Storage \u2014 create a public \u201ctechfiles\u201d bucket', 'danger'); return; }
-          insertAtCursor('\n\n![' + caption + '](' + remote.url + ')\n');
-          ui.toast('Image inserted', 'ok');
+          if (!remote.url) { ui.toast('File upload needs Supabase Storage \u2014 create a public \u201ctechfiles\u201d bucket', 'danger'); return; }
+          insertAtCursor(asImage ? ('\n\n![' + label + '](' + remote.url + ')\n') : ('[' + file.name + '](' + remote.url + ')'));
+          ui.toast(asImage ? 'Image inserted' : 'File linked', 'ok');
         })
-        .catch((e) => { console.error('[procedures] image upload failed', e); ui.toast('Image upload failed', 'danger'); });
-    });
+        .catch((e) => { console.error('[procedures] upload failed', e); ui.toast('Upload failed', 'danger'); });
+    }
+    m.root.querySelector('#proc-img').addEventListener('change', (ev) => { uploadAndInsert(ev.target.files && ev.target.files[0], true); ev.target.value = ''; });
+    m.root.querySelector('#proc-file').addEventListener('change', (ev) => { uploadAndInsert(ev.target.files && ev.target.files[0], false); ev.target.value = ''; });
+    m.root.querySelector('#proc-link').addEventListener('click', () => insertAtCursor('[link text](https://)'));
     m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
+
     m.root.querySelector('[data-save]').addEventListener('click', () => {
+      const title = m.root.querySelector('#p-title').value.trim() || item.title;
+      const catName = m.root.querySelector('#p-cat').value.trim() || cat.name;
+      item.title = title;
       item.body = ta.value;
       item.updated = new Date().toISOString();
-      store.upsert('procedures', cat); // cat is a row in the procedures collection
-      m.close(); ui.toast('Procedure saved', 'ok'); RMTP.router.render();
+      const target = resolveCategory(catName);
+      if (target.id !== cat.id) {
+        cat.items = cat.items.filter((x) => x.id !== item.id);   // move across tabs
+        target.items.push(item);
+        store.upsert('procedures', target);
+        if (cat.items.length) store.upsert('procedures', cat); else store.remove('procedures', cat.id);
+      } else {
+        store.upsert('procedures', cat);
+      }
+      m.close(); ui.toast('Saved', 'ok');
+      location.hash = '#/procedures/' + target.id + '/' + item.id;
+      RMTP.router.render();
+    });
+
+    const delBtn = m.root.querySelector('[data-del]');
+    if (delBtn) delBtn.addEventListener('click', async () => {
+      const ok = await ui.confirm('Delete \u201c' + item.title + '\u201d? This removes the page for everyone.',
+        { title: 'Delete procedure', confirmLabel: 'Delete', danger: true });
+      if (!ok) return;
+      cat.items = cat.items.filter((x) => x.id !== item.id);
+      if (RMTP.supabase && RMTP.supabase.isConfigured() && RMTP.syncSb.deleteProcedureRow) RMTP.syncSb.deleteProcedureRow(item.id);
+      if (cat.items.length) store.upsert('procedures', cat); else store.remove('procedures', cat.id);
+      m.close(); ui.toast('Page deleted', 'ok');
+      location.hash = '#/procedures';
+      RMTP.router.render();
     });
   }
 

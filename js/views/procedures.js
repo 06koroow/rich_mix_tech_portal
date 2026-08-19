@@ -35,7 +35,13 @@ RMTP.views.procedures = function (el, params) {
     content = renderItem(cat, item);
   } else {
     const list = cat.items.length
-      ? cat.items.map((i) => {
+  ? [...cat.items].sort((a, b) => {
+      const getNumber = (title) => {
+        const match = title.match(/^\s*(\d+)/);
+        return match ? parseInt(match[1], 10) : Infinity;
+      };
+      return getNumber(a.title) - getNumber(b.title);
+    }).map((i) => {
           const done = i.body && i.body.trim();
           return (
             '<a href="#/procedures/' + cat.id + '/' + i.id + '" class="panel p-4 flex items-center gap-3 hover:border-accent transition-colors">' +

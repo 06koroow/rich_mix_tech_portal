@@ -47,6 +47,7 @@ create table if not exists public.advancing (
   "startTime" text default '', "finishTime" text default '',
   "soundcheck" text default '', "doors" text default '', "curfew" text default '',
   "techUserId" text default '', "clientContact" text default '',
+  "technicians" jsonb default '[]'::jsonb,
   "guestEngineer" boolean default false,
   "techInfo" text default '',
   "techSpec" jsonb,
@@ -73,6 +74,14 @@ create table if not exists public.procedures (
   "category" text, "title" text,
   "body" text default '', "icon" text default 'book'
 );
+
+-- ---------- Migrations for already-live databases ----------
+-- Safe to re-run. Only needed once per environment; adds the new
+-- multi-technician column to an `advancing` table created before
+-- this feature existed. The old single "techUserId" column is left
+-- in place (unused by the app going forward, harmless to keep) so
+-- nothing is lost if you ever need to cross-check old assignments.
+alter table public.advancing add column if not exists "technicians" jsonb default '[]'::jsonb;
 
 -- ---------- Role helpers (map the signed-in email -> profile) ----------
 create or replace function public.is_admin() returns boolean

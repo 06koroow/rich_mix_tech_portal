@@ -79,7 +79,7 @@ RMTP.views.users = function (el) {
       '<div class="grid gap-2">' + pending.map((u) =>
         '<div class="flex items-center justify-between gap-3 flex-wrap">' +
           '<div class="min-w-0"><p class="font-medium truncate">' + ui.esc(auth.displayName(u)) + '</p>' +
-            '<p class="text-xs text-muted">' + ui.esc(u.email) + ' \u00b7 ' + ui.esc(u.position) + ' \u00b7 ' + ui.esc(u.discipline) + '</p></div>' +
+            '<p class="text-xs text-muted">' + ui.esc(u.email) + ' \u00b7 ' + ui.esc(u.position) + '</p></div>' +
           '<div class="flex gap-2 shrink-0">' +
             '<button data-approve="' + u.id + '" class="btn btn-primary !py-1.5 text-xs">' + ui.icon('check', 'w-4 h-4') + 'Approve</button>' +
             '<button data-reject="' + u.id + '" class="btn btn-ghost !py-1.5 text-xs">Reject</button>' +
@@ -96,7 +96,7 @@ RMTP.views.users = function (el) {
         ui.esc(auth.initials(u)) + '</div>' +
       '<div class="min-w-0 flex-1">' +
         '<p class="font-medium truncate">' + ui.esc(auth.displayName(u)) + '</p>' +
-        '<p class="text-xs text-muted mt-0.5">' + ui.esc(u.position) + ' \u00b7 ' + ui.esc(u.discipline) + '</p>' +
+        '<p class="text-xs text-muted mt-0.5">' + ui.esc(u.position) + '</p>' +
       '</div>' +
       '<div class="hidden sm:flex">' + auth.badges(u) + '</div>' +
       '<div class="w-28 shrink-0 hidden md:block">' +
@@ -161,7 +161,7 @@ RMTP.views.users = function (el) {
       body:
         '<div class="flex items-center justify-between gap-3 mb-4">' +
           '<div class="flex items-center gap-2 flex-wrap">' +
-            '<span class="text-sm text-muted">' + ui.esc(u.position) + ' \u00b7 ' + ui.esc(u.discipline) + '</span>' + auth.badges(u) +
+            '<span class="text-sm text-muted">' + ui.esc(u.position) + '</span>' + auth.badges(u) +
           '</div>' +
           (canManage ? '<button data-edit class="btn btn-ghost !px-2.5 !py-1.5 text-xs shrink-0">' + ui.icon('pen', 'w-4 h-4') + 'Edit</button>' : '') +
         '</div>' +
@@ -255,7 +255,6 @@ RMTP.views.users = function (el) {
           '</div>' +
           '<div class="grid grid-cols-2 gap-4">' +
             fld('Position', '<select id="u-position" class="field">' + opt(auth.POSITIONS, u.position || 'Duty Tech') + '</select>') +
-            fld('Preferred discipline', '<select id="u-discipline" class="field">' + opt(auth.DISCIPLINES, u.discipline || 'Sound') + '</select>') +
           '</div>' +
           '<div class="grid gap-2">' +
             '<label class="flex items-center gap-3 panel p-3 cursor-pointer">' +
@@ -303,7 +302,6 @@ RMTP.views.users = function (el) {
         firstName: firstName, lastName: lastName, email: email,
         status: u.status && u.status !== 'pending' ? u.status : 'active',
         position: position,
-        discipline: m.root.querySelector('#u-discipline').value,
         admin: roles.admin, trainer: roles.trainer,
       });
       if (pass) record.password = auth.hashPassword(pass);

@@ -61,7 +61,7 @@ RMTP.views.dashboard = function (el) {
   function inTray() {
     if (!me) return '';
     const myAdvances = store.all('advancing')
-      .filter((e) => e.techUserId === me.id && e.status !== 'Complete')
+      .filter((e) => RMTP.eventAssignedTo(e, me.id) && e.status !== 'Complete')
       .sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
     const compTotal = RMTP.TRAINING.reduce((n, c) => n + c.items.length, 0);
     const mySigned = store.all('signoffs').filter((s) => s.userId === me.id).length;
@@ -109,7 +109,7 @@ RMTP.views.dashboard = function (el) {
   function todaysShifts() {
     const today = new Date().toISOString().slice(0, 10);
     let list = store.all('advancing').filter((e) => e.date === today);
-    if (me && !me.admin) list = list.filter((e) => e.techUserId === me.id);
+    if (me && !me.admin) list = list.filter((e) => RMTP.eventAssignedTo(e, me.id));
     return list.sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
   }
   function todayInner(list) {
@@ -117,7 +117,12 @@ RMTP.views.dashboard = function (el) {
     return '<div class="grid gap-1.5">' + list.map((e) => {
       const times = [e.startTime, e.finishTime].filter(Boolean).join(' \u2013 ');
       let who = '';
-      if (me && me.admin && e.techUserId) { const u = store.find('users', e.techUserId); who = u ? RMTP.auth.displayName(u) : 'Unassigned'; }
+      if (me && me.admin) {
+        const techs = RMTP.eventTechnicians(e);
+        if (techs.length) {
+          who = techs.map((t) => { const u = store.find('users', t.userId); return u ? RMTP.auth.displayName(u) : 'Unknown'; }).join(', ');
+        }
+      }
       return '<a href="#/advancing" class="flex items-center justify-between gap-3 text-sm hover:text-accent transition-colors">' +
         '<span class="min-w-0 truncate"><span class="font-medium">' + ui.esc(e.name) + '</span>' +
           (e.space ? ' <span class="text-muted">\u00b7 ' + ui.esc(e.space) + '</span>' : '') +

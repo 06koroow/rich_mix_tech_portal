@@ -41,6 +41,23 @@ RMTP.EVENT_CATEGORIES = ['Cinema', 'Programme', 'Private Hires'];
 RMTP.isSpace = function (loc) { return RMTP.SPACES.indexOf(loc) > -1; };
 RMTP.slug = function (s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); };
 
+/* ---- Shift roles ----
+   Per-shift role a tagged technician is covering on an event —
+   distinct from a user's job title (position). An event can carry
+   several technicians, each with their own role for that shift. */
+RMTP.SHIFT_ROLES = ['Sound', 'Lighting', 'Cinema', 'AV', 'Support'];
+
+/* Normalises an event's tagged crew, falling back to the legacy
+   single `techUserId` field so events saved before multi-tagging
+   existed still show/match correctly until re-saved. */
+RMTP.eventTechnicians = function (ev) {
+  if (ev && Array.isArray(ev.technicians) && ev.technicians.length) return ev.technicians;
+  return ev && ev.techUserId ? [{ userId: ev.techUserId, role: '' }] : [];
+};
+RMTP.eventAssignedTo = function (ev, userId) {
+  return !!userId && RMTP.eventTechnicians(ev).some((t) => t.userId === userId);
+};
+
 /* Conditions at or below this are "poor" — such kit is struck through
    in inventory and may only be moved to a Store (see inventory view). */
 RMTP.CONDITIONS = ['Excellent', 'Good', 'Fair', 'Poor', 'Damaged', 'Out of service'];

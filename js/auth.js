@@ -18,7 +18,6 @@ RMTP.auth = (function () {
   const KEY = 'currentUser';
   const SALT = 'rmtp-v1';
   const POSITIONS = ['Technical Manager', 'Senior Tech', 'Duty Tech', 'Freelancer'];
-  const DISCIPLINES = ['Sound', 'Lighting', 'Cinema'];
 
   // Non-cryptographic digest (djb2). Placeholder only — see header.
   function hashPassword(pw) {
@@ -63,7 +62,7 @@ RMTP.auth = (function () {
       id: RMTP.store.uid('user'),
       firstName: data.firstName || '', lastName: data.lastName || '',
       email: String(data.email).trim(), password: hashPassword(data.password),
-      position: data.position || 'Duty Tech', discipline: data.discipline || 'Sound',
+      position: data.position || 'Duty Tech',
       admin: false, trainer: false, status: 'pending', requestedAt: new Date().toISOString(),
     };
     RMTP.store.upsert('users', u);
@@ -195,7 +194,6 @@ RMTP.auth = (function () {
             fieldRow('Password', '<input id="s-pass" type="password" class="field" placeholder="At least 6 characters" />') +
             '<div class="grid grid-cols-2 gap-4">' +
               fieldRow('Position', '<select id="s-position" class="field">' + opt(POSITIONS) + '</select>') +
-              fieldRow('Discipline', '<select id="s-discipline" class="field">' + opt(DISCIPLINES) + '</select>') +
             '</div>' +
             '<button id="s-submit" class="btn btn-primary w-full justify-center" data-primary>Request access</button>' +
           '</div>' +
@@ -205,7 +203,7 @@ RMTP.auth = (function () {
           const data = {
             firstName: body.querySelector('#s-first').value.trim(), lastName: body.querySelector('#s-last').value.trim(),
             email: body.querySelector('#s-email').value.trim(), password: body.querySelector('#s-pass').value,
-            position: body.querySelector('#s-position').value, discipline: body.querySelector('#s-discipline').value,
+            position: body.querySelector('#s-position').value,
           };
           if (sbActive()) {
             if (!data.firstName && !data.lastName) { ui.toast('Enter your name', 'danger'); return; }
@@ -215,7 +213,7 @@ RMTP.auth = (function () {
             if (!res.ok) { ui.toast(res.message || 'Could not create the account', 'danger'); return; }
             RMTP.store.upsert('users', {
               id: RMTP.store.uid('user'), firstName: data.firstName, lastName: data.lastName, email: data.email,
-              position: data.position, discipline: data.discipline, admin: false, trainer: false, status: 'pending',
+              position: data.position, admin: false, trainer: false, status: 'pending',
             });
             mode = 'signin'; draw(); ui.toast('Request sent \u2014 an admin will approve your account', 'ok');
             return;
@@ -257,7 +255,7 @@ RMTP.auth = (function () {
     const active = RMTP.store.all('users').filter((u) => u.status !== 'pending');
     if (!active.length) {
       const admin = { id: RMTP.store.uid('user'), firstName: 'Admin', lastName: 'User', email: 'admin@richmix.local',
-        password: hashPassword('demo1234'), position: 'Technical Manager', discipline: 'Sound', admin: true, trainer: true, status: 'active' };
+        password: hashPassword('demo1234'), position: 'Technical Manager', admin: true, trainer: true, status: 'active' };
       RMTP.store.upsert('users', admin);
       setCurrent(admin.id);
       return;
@@ -270,7 +268,7 @@ RMTP.auth = (function () {
   }
 
   return {
-    POSITIONS, DISCIPLINES,
+    POSITIONS,
     displayName, initials, badges, hashPassword,
     rolesForPosition, isAutoAdminPosition,
     current, currentId, setCurrent, can,

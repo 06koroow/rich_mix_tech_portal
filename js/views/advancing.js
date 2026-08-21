@@ -22,6 +22,12 @@ RMTP.views.advancing = function (el) {
   const statusColour = { 'Advancing': 'var(--info)', 'Confirmed': 'var(--accent)', 'Complete': 'var(--ok)' };
 
   function userName(id) { const u = id && store.find('users', id); return u ? auth.displayName(u) : ''; }
+  // "Technician One (Sound)" — falls back to just the name if no role was set.
+  function techLabel(t) {
+    const name = userName(t.userId);
+    if (!name) return null;
+    return t.role ? name + ' (' + t.role + ')' : name;
+  }
   function reportsFor(eventId) {
     return store.all('reports').filter((r) => r.eventId === eventId)
       .sort((a, b) => (b.submittedAt || '').localeCompare(a.submittedAt || ''));
@@ -29,7 +35,7 @@ RMTP.views.advancing = function (el) {
   function canDeleteReport(r) { const u = auth.current(); return !!u && (u.admin || r.authorId === u.id); }
 
   // Admins see every event; everyone else sees only shifts assigned to them.
-  const base = store.all('advancing').filter((e) => isAdmin || (me && e.techUserId === me.id));
+  const base = store.all('advancing').filter((e) => isAdmin || (me && RMTP.eventAssignedTo(e, me.id)));
   const shown = base
     .filter((e) => (!filters.space || e.space === filters.space) && (!filters.date || e.date === filters.date))
     .sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
@@ -99,6 +105,7 @@ RMTP.views.advancing = function (el) {
   function renderEvent(ev) {
     const reports = reportsFor(ev.id);
     const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
+    const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
 
     const info = [
       ev.date ? ['Date', ui.formatDate(ev.date)] : null,
@@ -106,7 +113,6 @@ RMTP.views.advancing = function (el) {
       ev.soundcheck ? ['Soundcheck', ev.soundcheck] : null,
       ev.doors ? ['Doors', ev.doors] : null,
       ev.curfew ? ['Curfew', ev.curfew] : null,
-      ev.techUserId ? ['Tech', userName(ev.techUserId) || 'Unassigned'] : null,
       ev.clientContact ? ['Client', ev.clientContact] : null,
     ].filter(Boolean).map(([k, v]) =>
       '<div><dt class="eyebrow">' + ui.esc(k) + '</dt><dd class="text-sm mt-0.5">' + ui.esc(v) + '</dd></div>'
@@ -133,6 +139,11 @@ RMTP.views.advancing = function (el) {
         '</div>' +
 
         (info ? '<dl class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 mt-4">' + info + '</dl>' : '') +
+        (techs.length ?
+          '<div class="mt-4">' +
+            '<dt class="eyebrow">Technicians</dt>' +
+            '<div class="flex items-center gap-1.5 flex-wrap mt-1.5">' + techs.map((t) => ui.pill(t, 'var(--info)')).join('') + '</div>' +
+          '</div>' : '') +
         (ev.techInfo ? '<p class="text-sm text-ink/80 mt-4 whitespace-pre-wrap">' + ui.esc(ev.techInfo) + '</p>' : '') +
         (ev.techSpec ?
           '<button data-spec="' + ev.id + '" class="mt-4 inline-flex items-center gap-2 text-sm text-accent hover:underline self-start">' +
@@ -244,8 +255,10 @@ RMTP.views.advancing = function (el) {
     const opt = (arr, val) => arr.map((v) => '<option ' + (v === val ? 'selected' : '') + '>' + v + '</option>').join('');
     const blankOpt = (arr, val, blank) => '<option value="" ' + (!val ? 'selected' : '') + '>' + blank + '</option>' +
       arr.map((v) => '<option ' + (v === val ? 'selected' : '') + '>' + v + '</option>').join('');
-    const userOpts = '<option value="">Unassigned</option>' + store.all('users').map((u) =>
-      '<option value="' + u.id + '" ' + (u.id === ev.techUserId ? 'selected' : '') + '>' + ui.esc(auth.displayName(u)) + '</option>').join('');
+
+    // Tagged crew for this shift: [{ userId, role }]. Falls back to the
+    // legacy single techUserId so older events migrate cleanly on first edit.
+    let techs = RMTP.eventTechnicians(ev).map((t) => ({ userId: t.userId, role: t.role || '' }));
 
     // Tech-spec state (only written to storage on save).
     const originalSpec = ev.techSpec || null;
@@ -274,10 +287,8 @@ RMTP.views.advancing = function (el) {
             fld('Doors', '<input id="e-doors" type="time" class="field" value="' + ui.esc(ev.doors || '') + '" />') +
             fld('Curfew', '<input id="e-curfew" type="time" class="field" value="' + ui.esc(ev.curfew || '') + '" />') +
           '</div>' +
-          '<div class="grid sm:grid-cols-2 gap-4">' +
-            fld('Tech assigned', '<select id="e-tech" class="field">' + userOpts + '</select>') +
-            fld('Artist / client contact', '<input id="e-contact" class="field" value="' + ui.esc(ev.clientContact || '') + '" placeholder="Tour manager / client" />') +
-          '</div>' +
+          fld('Technicians', '<div id="e-tech-area"></div>') +
+          fld('Artist / client contact', '<input id="e-contact" class="field" value="' + ui.esc(ev.clientContact || '') + '" placeholder="Tour manager / client" />') +
           fld('Tech info', '<textarea id="e-info" class="field" rows="3" placeholder="Anything the crew needs to know\u2026">' + ui.esc(ev.techInfo || '') + '</textarea>') +
           '<div>' +
             '<div class="flex items-center gap-3 mb-2">' +
@@ -290,6 +301,41 @@ RMTP.views.advancing = function (el) {
         '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
         '<button class="btn btn-primary" data-save data-primary>' + (existing ? 'Save changes' : 'Add event') + '</button>',
     });
+
+    function techAreaHtml() {
+      const allUsers = store.all('users');
+      const rows = techs.map((t, i) => {
+        const usedElsewhere = techs.filter((x, j) => j !== i).map((x) => x.userId);
+        const uOpts = '<option value="">Select technician\u2026</option>' + allUsers
+          .filter((u) => u.id === t.userId || usedElsewhere.indexOf(u.id) === -1)
+          .map((u) => '<option value="' + u.id + '" ' + (u.id === t.userId ? 'selected' : '') + '>' + ui.esc(auth.displayName(u)) + '</option>').join('');
+        const rOpts = '<option value="">Select role\u2026</option>' + RMTP.SHIFT_ROLES
+          .map((r) => '<option ' + (r === t.role ? 'selected' : '') + '>' + r + '</option>').join('');
+        return '<div class="flex items-center gap-2">' +
+          '<select data-t-user="' + i + '" class="field flex-1">' + uOpts + '</select>' +
+          '<select data-t-role="' + i + '" class="field w-36 shrink-0">' + rOpts + '</select>' +
+          '<button type="button" data-t-remove="' + i + '" class="btn btn-danger !p-2 shrink-0" title="Remove">' + ui.icon('trash', 'w-4 h-4') + '</button>' +
+        '</div>';
+      }).join('');
+      return (rows ? '<div class="grid gap-2 mb-2">' + rows + '</div>' : '<p class="text-xs text-muted mb-2">No technicians tagged yet.</p>') +
+        '<button type="button" id="e-tech-add" class="btn btn-ghost">' + ui.icon('plus', 'w-4 h-4') + 'Add technician</button>';
+    }
+    function wireTechs() {
+      const area = m.root.querySelector('#e-tech-area');
+      area.innerHTML = techAreaHtml();
+      area.querySelectorAll('[data-t-user]').forEach((sel) => sel.addEventListener('change', () => {
+        techs[+sel.getAttribute('data-t-user')].userId = sel.value; wireTechs();
+      }));
+      area.querySelectorAll('[data-t-role]').forEach((sel) => sel.addEventListener('change', () => {
+        techs[+sel.getAttribute('data-t-role')].role = sel.value;
+      }));
+      area.querySelectorAll('[data-t-remove]').forEach((btn) => btn.addEventListener('click', () => {
+        techs.splice(+btn.getAttribute('data-t-remove'), 1); wireTechs();
+      }));
+      const addBtn = m.root.querySelector('#e-tech-add');
+      if (addBtn) addBtn.addEventListener('click', () => { techs.push({ userId: '', role: '' }); wireTechs(); });
+    }
+    wireTechs();
 
     function specAreaHtml() {
       const shown = pending || (cleared ? null : specMeta);
@@ -330,6 +376,9 @@ RMTP.views.advancing = function (el) {
       const name = m.root.querySelector('#e-name').value.trim();
       if (!name) { ui.toast('Give the event a name', 'danger'); return; }
 
+      const finalTechs = techs.filter((t) => t.userId);
+      if (finalTechs.some((t) => !t.role)) { ui.toast('Pick a role for each tagged technician', 'danger'); return; }
+
       // Resolve tech-spec: persist a pending upload; drop the old blob if replaced/removed.
       let finalSpec = cleared ? null : specMeta;
       if (pending) {
@@ -352,7 +401,7 @@ RMTP.views.advancing = function (el) {
         soundcheck: m.root.querySelector('#e-sc').value,
         doors: m.root.querySelector('#e-doors').value,
         curfew: m.root.querySelector('#e-curfew').value,
-        techUserId: m.root.querySelector('#e-tech').value,
+        technicians: finalTechs,
         clientContact: m.root.querySelector('#e-contact').value.trim(),
         guestEngineer: m.root.querySelector('#e-guest').checked,
         techInfo: m.root.querySelector('#e-info').value.trim(),

@@ -45,7 +45,12 @@ create table if not exists public.advancing (
   "name" text, "category" text, "space" text,
   "date" text default '', "status" text,
   "startTime" text default '', "finishTime" text default '',
+  "screening_starts_time" text default '',
   "soundcheck" text default '', "doors" text default '', "curfew" text default '',
+  "dcp_received" boolean default false,
+  "checks_completed" boolean default false,
+  "intermission" boolean default false,
+  "qa" boolean default false,
   "techUserId" text default '', "clientContact" text default '',
   "technicians" jsonb default '[]'::jsonb,
   "guestEngineer" boolean default false,
@@ -77,11 +82,14 @@ create table if not exists public.procedures (
 
 -- ---------- Migrations for already-live databases ----------
 -- Safe to re-run. Only needed once per environment; adds the new
--- multi-technician column to an `advancing` table created before
--- this feature existed. The old single "techUserId" column is left
--- in place (unused by the app going forward, harmless to keep) so
--- nothing is lost if you ever need to cross-check old assignments.
+-- multi-technician and cinema screening columns to an `advancing`
+-- table created before these features existed.
 alter table public.advancing add column if not exists "technicians" jsonb default '[]'::jsonb;
+alter table public.advancing add column if not exists "screening_starts_time" text default '';
+alter table public.advancing add column if not exists "dcp_received" boolean default false;
+alter table public.advancing add column if not exists "checks_completed" boolean default false;
+alter table public.advancing add column if not exists "intermission" boolean default false;
+alter table public.advancing add column if not exists "qa" boolean default false;
 
 -- ---------- Role helpers (map the signed-in email -> profile) ----------
 create or replace function public.is_admin() returns boolean

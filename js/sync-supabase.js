@@ -25,7 +25,34 @@ RMTP.syncSb = (function () {
     if (coll === 'procedures') return regroupProcedures(rows);
     rows.forEach((r) => {
       if (coll === 'inventory') { r.movements = r.movements || []; r.outAt = r.outAt || ''; }
-      if (coll === 'advancing') { r.checklist = r.checklist || {}; }
+      if (coll === 'advancing') {
+        r.checklist = r.checklist || {};
+        r.technicians = Array.isArray(r.technicians) ? r.technicians : (r.techUserId ? [{ userId: r.techUserId, role: '' }] : []);
+        r.startTime = r.startTime || r.starttime || '';
+        r.finishTime = r.finishTime || r.finishtime || '';
+        r.screening_starts_time = r.screening_starts_time || r.screeningStartsTime || r.screeningstartstime || '';
+        r.dcp_received = r.dcp_received !== undefined ? r.dcp_received : (r.dcpReceived !== undefined ? r.dcpReceived : (r.dcpreceived !== undefined ? r.dcpreceived : false));
+        r.checks_completed = r.checks_completed !== undefined ? r.checks_completed : (r.checksCompleted !== undefined ? r.checksCompleted : (r.checkscompleted !== undefined ? r.checkscompleted : false));
+        r.intermission = !!r.intermission;
+        r.qa = !!r.qa;
+        r.clientContact = r.clientContact || r.clientcontact || '';
+        r.guestEngineer = r.guestEngineer !== undefined ? r.guestEngineer : (r.guestengineer !== undefined ? r.guestengineer : false);
+        r.techInfo = r.techInfo || r.techinfo || '';
+        r.techSpec = r.techSpec || r.techspec || null;
+      }
+      if (coll === 'reports') {
+        r.eventId = r.eventId || r.eventid || '';
+        r.shiftDate = r.shiftDate || r.shiftdate || '';
+        r.crew = r.crew || '';
+        r.summary = r.summary || '';
+        r.issues = r.issues || '';
+        r.followUp = r.followUp || r.followup || '';
+        r.author = r.author || '';
+        r.authorId = r.authorId || r.authorid || '';
+        r.submittedAt = r.submittedAt || r.submittedat || '';
+        r.updatedAt = r.updatedAt || r.updatedat || '';
+        r.updatedBy = r.updatedBy || r.updatedby || '';
+      }
     });
     store.write(coll, rows);
   }
@@ -46,13 +73,80 @@ RMTP.syncSb = (function () {
   async function toRow(coll, r) {
     if (coll === 'users') { const row = Object.assign({}, r); delete row.password; return row; }   // password lives in Supabase Auth, not the table
     if (coll === 'maintenance') { const row = Object.assign({}, r); row.image = await files.toRemote(r.image); return row; }
-    if (coll === 'advancing') { const row = Object.assign({}, r); row.techSpec = await files.toRemote(r.techSpec); return row; }
+    if (coll === 'advancing') {
+      const row = {
+        id: r.id,
+        name: r.name || '',
+        category: r.category || '',
+        space: r.space || '',
+        date: r.date || '',
+        status: r.status || 'Advancing',
+        startTime: r.startTime || '',
+        finishTime: r.finishTime || '',
+        screening_starts_time: r.screening_starts_time || r.screeningStartsTime || '',
+        soundcheck: r.soundcheck || '',
+        doors: r.doors || '',
+        curfew: r.curfew || '',
+        dcp_received: r.dcp_received !== undefined ? !!r.dcp_received : (r.dcpReceived !== undefined ? !!r.dcpReceived : false),
+        checks_completed: r.checks_completed !== undefined ? !!r.checks_completed : (r.checksCompleted !== undefined ? !!r.checksCompleted : false),
+        intermission: !!r.intermission,
+        qa: !!r.qa,
+        technicians: Array.isArray(r.technicians) ? r.technicians : [],
+        clientContact: r.clientContact || '',
+        guestEngineer: !!r.guestEngineer,
+        techInfo: r.techInfo || '',
+        techSpec: await files.toRemote(r.techSpec),
+        checklist: r.checklist || {},
+        artifaxId: r.artifaxId || null,
+      };
+      return row;
+    }
+    if (coll === 'reports') {
+      const row = {
+        id: r.id,
+        eventId: r.eventId || '',
+        crew: r.crew || '',
+        shiftDate: r.shiftDate || '',
+        summary: r.summary || '',
+        issues: r.issues || '',
+        followUp: r.followUp || '',
+        author: r.author || '',
+        authorId: r.authorId || null,
+        submittedAt: r.submittedAt || '',
+        updatedAt: r.updatedAt || '',
+        updatedBy: r.updatedBy || '',
+      };
+      return row;
+    }
     return r;
   }
 
   /* ---- push queue (persisted, retrying) ---- */
   let queue = [], draining = false;
-  function loadQueue() { try { queue = JSON.parse(store.readRaw('sbqueue', '[]')); } catch (e) { queue = []; } }
+  function loadQueue() {
+    try {
+      queue = JSON.parse(store.readRaw('sbqueue', '[]'));
+      if (Array.isArray(queue)) {
+        queue.forEach((op) => {
+          if (op && op.coll === 'advancing' && op.record) {
+            if (op.record.dcp_received === undefined && op.record.dcpReceived !== undefined) {
+              op.record.dcp_received = !!op.record.dcpReceived;
+            }
+            if (op.record.checks_completed === undefined && op.record.checksCompleted !== undefined) {
+              op.record.checks_completed = !!op.record.checksCompleted;
+            }
+            if (op.record.screening_starts_time === undefined && op.record.screeningStartsTime !== undefined) {
+              op.record.screening_starts_time = op.record.screeningStartsTime;
+            }
+            delete op.record.dcpReceived;
+            delete op.record.checksCompleted;
+            delete op.record.screeningStartsTime;
+          }
+        });
+        saveQueue();
+      }
+    } catch (e) { queue = []; }
+  }
   function saveQueue() { store.writeRaw('sbqueue', JSON.stringify(queue)); }
   function enqueue(op) { queue.push(op); saveQueue(); drain(); }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -100,5 +194,48 @@ RMTP.syncSb = (function () {
   // flow through pushProcedures, which only re-upserts what still exists).
   function deleteProcedureRow(id) { enqueue({ type: 'delete', coll: 'procedures', id: id }); }
 
-  return { pullAll, wire, pullCollection, deleteProcedureRow };
+  function getQueueLength() { return queue.length; }
+
+  async function verifySync() {
+    if (!sb || !sb.isConfigured()) {
+      return {
+        configured: false,
+        status: 'local',
+        message: 'Running in offline/local storage mode.',
+        queueLength: 0,
+        tables: {}
+      };
+    }
+    const result = {
+      configured: true,
+      status: 'checking',
+      tables: {},
+      queueLength: queue.length,
+      lastError: null,
+      message: ''
+    };
+    try {
+      if (queue.length) {
+        await drain();
+      }
+      result.queueLength = queue.length;
+      const advTable = tables().advancing || 'advancing';
+      const repTable = tables().reports || 'reports';
+      const [advRows, repRows] = await Promise.all([
+        sb.selectAll(advTable),
+        sb.selectAll(repTable)
+      ]);
+      result.tables.advancing = { count: advRows.length, ok: true };
+      result.tables.reports = { count: repRows.length, ok: true };
+      result.status = result.queueLength === 0 ? 'synced' : 'pending';
+      result.message = 'Supabase live & synced. Events in DB: ' + advRows.length + ', Shift reports in DB: ' + repRows.length + (result.queueLength ? ' (' + result.queueLength + ' queued)' : ' (0 pending in queue).');
+    } catch (e) {
+      result.status = 'error';
+      result.lastError = e && e.message ? e.message : String(e);
+      result.message = 'Sync verification error: ' + result.lastError;
+    }
+    return result;
+  }
+
+  return { pullAll, wire, pullCollection, deleteProcedureRow, drain, getQueueLength, verifySync };
 })();

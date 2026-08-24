@@ -31,6 +31,7 @@ RMTP.syncSb = (function () {
         r.startTime = r.startTime || r.starttime || '';
         r.finishTime = r.finishTime || r.finishtime || '';
         r.screening_starts_time = r.screening_starts_time || r.screeningStartsTime || r.screeningstartstime || '';
+        r.media_type = r.media_type || r.mediaType || r.mediatype || '';
         r.dcp_received = r.dcp_received !== undefined ? r.dcp_received : (r.dcpReceived !== undefined ? r.dcpReceived : (r.dcpreceived !== undefined ? r.dcpreceived : false));
         r.checks_completed = r.checks_completed !== undefined ? r.checks_completed : (r.checksCompleted !== undefined ? r.checksCompleted : (r.checkscompleted !== undefined ? r.checkscompleted : false));
         r.intermission = !!r.intermission;
@@ -84,6 +85,7 @@ RMTP.syncSb = (function () {
         startTime: r.startTime || '',
         finishTime: r.finishTime || '',
         screening_starts_time: r.screening_starts_time || r.screeningStartsTime || '',
+        media_type: r.media_type || r.mediaType || '',
         soundcheck: r.soundcheck || '',
         doors: r.doors || '',
         curfew: r.curfew || '',
@@ -138,9 +140,13 @@ RMTP.syncSb = (function () {
             if (op.record.screening_starts_time === undefined && op.record.screeningStartsTime !== undefined) {
               op.record.screening_starts_time = op.record.screeningStartsTime;
             }
+            if (op.record.media_type === undefined && op.record.mediaType !== undefined) {
+              op.record.media_type = op.record.mediaType;
+            }
             delete op.record.dcpReceived;
             delete op.record.checksCompleted;
             delete op.record.screeningStartsTime;
+            delete op.record.mediaType;
           }
         });
         saveQueue();

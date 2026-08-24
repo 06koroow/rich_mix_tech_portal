@@ -46,6 +46,7 @@ create table if not exists public.advancing (
   "date" text default '', "status" text,
   "startTime" text default '', "finishTime" text default '',
   "screening_starts_time" text default '',
+  "media_type" text default '',
   "soundcheck" text default '', "doors" text default '', "curfew" text default '',
   "dcp_received" boolean default false,
   "checks_completed" boolean default false,
@@ -82,10 +83,11 @@ create table if not exists public.procedures (
 
 -- ---------- Migrations for already-live databases ----------
 -- Safe to re-run. Only needed once per environment; adds the new
--- multi-technician and cinema screening columns to an `advancing`
+-- multi-technician, cinema screening, and media type columns to an `advancing`
 -- table created before these features existed.
 alter table public.advancing add column if not exists "technicians" jsonb default '[]'::jsonb;
 alter table public.advancing add column if not exists "screening_starts_time" text default '';
+alter table public.advancing add column if not exists "media_type" text default '';
 alter table public.advancing add column if not exists "dcp_received" boolean default false;
 alter table public.advancing add column if not exists "checks_completed" boolean default false;
 alter table public.advancing add column if not exists "intermission" boolean default false;

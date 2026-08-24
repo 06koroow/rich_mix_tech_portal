@@ -169,26 +169,35 @@ RMTP.views.advancing = function (el) {
     const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
     const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
     const isCinema = isScreenSpace(ev.space);
+    const mediaType = ev.media_type || ev.mediaType || '';
 
     const info = [
       ev.date ? ['Date', ui.formatDate(ev.date)] : null,
       times ? ['Running', times] : null,
-      isCinema && ev.screeningStartsTime ? ['Screening Starts', ev.screeningStartsTime] : null,
+      isCinema && (ev.screening_starts_time || ev.screeningStartsTime) ? ['Screening Starts', ev.screening_starts_time || ev.screeningStartsTime] : null,
+      isCinema && mediaType ? ['Media Type', mediaType] : null,
       ev.soundcheck ? ['Soundcheck', ev.soundcheck] : null,
       ev.doors ? ['Doors', ev.doors] : null,
       ev.curfew ? ['Curfew', ev.curfew] : null,
       ev.clientContact ? ['Client', ev.clientContact] : null,
     ].filter(Boolean).map(([k, v]) =>
-      '<div><dt class="eyebrow">' + ui.esc(k) + '</dt><dd class="text-sm mt-0.5 ' + (k === 'Screening Starts' ? 'font-semibold text-accent' : '') + '">' + ui.esc(v) + '</dd></div>'
+      '<div><dt class="eyebrow">' + ui.esc(k) + '</dt><dd class="text-sm mt-0.5 ' + (k === 'Screening Starts' || k === 'Media Type' ? 'font-semibold text-accent' : '') + '">' + ui.esc(v) + '</dd></div>'
     ).join('');
 
-    const meta = [ev.category, ev.space].filter(Boolean).map((t) => ui.pill(t, 'var(--muted)')).join('');
+    const meta = [
+      ev.category,
+      ev.space,
+      isCinema && mediaType ? ('Media: ' + mediaType) : null
+    ].filter(Boolean).map((t) => ui.pill(t, t.indexOf('Media:') === 0 ? 'var(--accent)' : 'var(--muted)')).join('');
 
     const cinemaChecksHtml = isCinema ? (
       '<div class="mt-4 pt-3 border-t border-line/60">' +
-        '<div class="flex items-center gap-1.5 mb-2">' +
-          ui.icon('film', 'w-4 h-4 text-accent') +
-          '<span class="eyebrow !text-ink font-semibold">Cinema Screening Checks</span>' +
+        '<div class="flex items-center justify-between gap-2 mb-2">' +
+          '<div class="flex items-center gap-1.5">' +
+            ui.icon('film', 'w-4 h-4 text-accent') +
+            '<span class="eyebrow !text-ink font-semibold">Cinema Screening Checks</span>' +
+          '</div>' +
+          (mediaType ? '<span class="text-xs font-semibold px-2 py-0.5 rounded bg-panel2 border border-accent/40 text-accent">Media: ' + ui.esc(mediaType) + '</span>' : '') +
         '</div>' +
         '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2">' +
           [
@@ -262,13 +271,17 @@ RMTP.views.advancing = function (el) {
     const root = document.getElementById('print-root');
     if (!root) return;
     const isCinema = isScreenSpace(ev.space);
+    const mediaTypeVal = ev.media_type || ev.mediaType || '';
     const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
     const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
     const reports = reportsFor(ev.id);
 
     const cinemaChecksHtml = isCinema ? (
       '<div class="adv-print-section">' +
-        '<div class="adv-print-section-title">Cinema Screening Checklist</div>' +
+        '<div class="adv-print-section-title" style="display:flex;justify-content:space-between;align-items:center;">' +
+          '<span>Cinema Screening Checklist & Format</span>' +
+          (mediaTypeVal ? '<span style="font-size:11px;font-family:monospace;font-weight:600;color:#0284c7;">Media Source: ' + ui.esc(mediaTypeVal) + '</span>' : '') +
+        '</div>' +
         '<div class="adv-print-grid-4">' +
           [
             { label: 'DCP Received', val: ev.dcp_received !== undefined ? !!ev.dcp_received : !!ev.dcpReceived },
@@ -325,6 +338,7 @@ RMTP.views.advancing = function (el) {
             '<div class="adv-print-field"><div class="adv-print-label">Date</div><div class="adv-print-val">' + ui.esc(ev.date ? ui.formatDate(ev.date) : 'TBC') + '</div></div>' +
             '<div class="adv-print-field"><div class="adv-print-label">Running Times</div><div class="adv-print-val">' + ui.esc(times || 'TBC') + '</div></div>' +
             (isCinema ? '<div class="adv-print-field"><div class="adv-print-label">Screening Starts</div><div class="adv-print-val">' + ui.esc(ev.screening_starts_time || ev.screeningStartsTime || 'TBC') + '</div></div>' : '') +
+            (isCinema && mediaTypeVal ? '<div class="adv-print-field"><div class="adv-print-label">Media Type</div><div class="adv-print-val font-semibold">' + ui.esc(mediaTypeVal) + '</div></div>' : '') +
             '<div class="adv-print-field"><div class="adv-print-label">Soundcheck</div><div class="adv-print-val">' + ui.esc(ev.soundcheck || 'N/A') + '</div></div>' +
             '<div class="adv-print-field"><div class="adv-print-label">Doors</div><div class="adv-print-val">' + ui.esc(ev.doors || 'N/A') + '</div></div>' +
             '<div class="adv-print-field"><div class="adv-print-label">Curfew</div><div class="adv-print-val">' + ui.esc(ev.curfew || 'N/A') + '</div></div>' +
@@ -596,7 +610,7 @@ RMTP.views.advancing = function (el) {
           '<div class="p-3 rounded-lg bg-panel2/40 border border-line">' +
             '<div class="eyebrow">Advancing Collection</div>' +
             '<div class="text-sm font-semibold mt-1">Local: ' + advLocal + ' \u00b7 Supabase: ' + advRemote + '</div>' +
-            '<div class="text-[11px] text-muted mt-0.5">Columns: dcp_received, checks_completed, screening_starts_time verified</div>' +
+            '<div class="text-[11px] text-muted mt-0.5">Columns: dcp_received, checks_completed, screening_starts_time, media_type verified</div>' +
           '</div>' +
           '<div class="p-3 rounded-lg bg-panel2/40 border border-line">' +
             '<div class="eyebrow">Reports Collection</div>' +
@@ -818,8 +832,19 @@ RMTP.views.advancing = function (el) {
             fld('Doors', '<input id="e-doors" type="time" class="field" value="' + ui.esc(ev.doors || '') + '" />') +
             fld('Curfew', '<input id="e-curfew" type="time" class="field" value="' + ui.esc(ev.curfew || '') + '" />') +
           '</div>' +
-          '<div id="e-cinema-options" class="' + (isScreenInitial ? '' : 'hidden') + ' panel bg-panel2/40 p-3">' +
-            '<label class="block text-xs font-semibold text-accent mb-2">Cinema Screening Checklist & Details</label>' +
+          '<div id="e-cinema-options" class="' + (isScreenInitial ? '' : 'hidden') + ' panel bg-panel2/40 p-3.5 rounded-xl border border-line">' +
+            '<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 pb-2 border-b border-line/60">' +
+              '<div class="flex items-center gap-1.5">' +
+                ui.icon('film', 'w-4 h-4 text-accent') +
+                '<span class="text-xs font-semibold text-accent">Cinema Screening Checklist & Details</span>' +
+              '</div>' +
+              '<div class="flex items-center gap-2">' +
+                '<label for="e-media-type" class="text-xs font-medium text-muted shrink-0">Media Type:</label>' +
+                '<select id="e-media-type" class="field !py-1 !px-2 !text-xs !w-auto">' +
+                  blankOpt(RMTP.MEDIA_TYPES, ev.media_type || ev.mediaType, 'Select Media\u2026') +
+                '</select>' +
+              '</div>' +
+            '</div>' +
             '<div class="grid grid-cols-2 sm:grid-cols-4 gap-3">' +
               '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer"><input type="checkbox" id="e-dcp" class="w-4 h-4 accent-[var(--ok)]" ' + ((ev.dcp_received !== undefined ? ev.dcp_received : ev.dcpReceived) ? 'checked' : '') + ' /><span>DCP Received</span></label>' +
               '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer"><input type="checkbox" id="e-checks" class="w-4 h-4 accent-[var(--ok)]" ' + ((ev.checks_completed !== undefined ? ev.checks_completed : ev.checksCompleted) ? 'checked' : '') + ' /><span>Checks Completed</span></label>' +
@@ -953,6 +978,7 @@ RMTP.views.advancing = function (el) {
         startTime: m.root.querySelector('#e-start').value,
         finishTime: m.root.querySelector('#e-finish').value,
         screening_starts_time: isScreen && m.root.querySelector('#e-screening-starts') ? m.root.querySelector('#e-screening-starts').value : (ev.screening_starts_time || ev.screeningStartsTime || ''),
+        media_type: isScreen && m.root.querySelector('#e-media-type') ? m.root.querySelector('#e-media-type').value : (ev.media_type || ev.mediaType || ''),
         soundcheck: m.root.querySelector('#e-sc').value,
         doors: m.root.querySelector('#e-doors').value,
         curfew: m.root.querySelector('#e-curfew').value,

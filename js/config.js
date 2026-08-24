@@ -38,6 +38,7 @@ RMTP.SPACES = ['The Stage', 'The Studio', 'The Mix', 'Screen One', 'Screen Two',
 RMTP.STORES = ['Store', 'Cable store', 'PA rack', 'RF case', 'Stage store', 'Workshop'];
 RMTP.LOCATIONS = RMTP.SPACES.concat(RMTP.STORES);
 RMTP.EVENT_CATEGORIES = ['Cinema', 'Programme', 'Private Hires'];
+RMTP.MEDIA_TYPES = ['DCP', 'Laptop via HDMI', 'Blu-Ray', 'HDMI (Other)'];
 RMTP.isSpace = function (loc) { return RMTP.SPACES.indexOf(loc) > -1; };
 RMTP.slug = function (s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); };
 

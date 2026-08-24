@@ -288,7 +288,8 @@ RMTP.seed = {
     {
       id: 'evt-3', name: 'Short film premiere', category: 'Cinema', space: 'Screen One',
       date: RMTP._seedDates.tomorrow, status: 'Advancing',
-      startTime: '19:30', finishTime: '22:00', soundcheck: '', doors: '19:00', curfew: '',
+      startTime: '19:30', finishTime: '22:00', screening_starts_time: '20:00', soundcheck: '', doors: '19:00', curfew: '',
+      media_type: 'DCP', dcp_received: true, checks_completed: false, intermission: false, qa: true,
       techUserId: 'user-3', clientContact: 'Producer \u2014 Sam', guestEngineer: false,
       techInfo: 'DCP arriving day before \u2014 ingest and test. Q&A after with two radio mics.', techSpec: null,
       checklist: {},

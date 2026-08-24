@@ -1,0 +1,10 @@
+{
+  "name": "Rich Mix Tech Portal",
+  "description": "Tech Portal for Rich Mix technical staff managing procedures, maintenance, inventory, advancing, and users.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

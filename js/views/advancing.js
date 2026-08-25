@@ -737,10 +737,20 @@ RMTP.views.advancing = function (el) {
     const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
     const isCinema = isScreenSpace(ev.space);
     const mediaType = ev.media_type || ev.mediaType || '';
+    const filmDuration = ev.film_duration || ev.filmDuration || '';
     const scheduleItems = Array.isArray(ev.schedule_items) ? ev.schedule_items : (Array.isArray(ev.scheduleItems) ? ev.scheduleItems : []);
 
     const dcpTesterName = (isCinema && ev.dcp_tester_user_id) ? userName(ev.dcp_tester_user_id) : '';
     const dcpTestTimeStr = (isCinema && ev.dcp_test_datetime) ? new Date(ev.dcp_test_datetime).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' }) : '';
+    const dcpTestEvent = ev.dcp_test_event_id ? store.find('advancing', ev.dcp_test_event_id) : null;
+    const dcpParentEvent = ev.dcp_parent_event_id ? store.find('advancing', ev.dcp_parent_event_id) : null;
+
+    const techReqs = ev.tech_requirements || ev.techRequirements || {};
+    const channelInputs = (techReqs.channel_list && Array.isArray(techReqs.channel_list.inputs)) ? techReqs.channel_list.inputs : [];
+    const channelOutputs = (techReqs.channel_list && Array.isArray(techReqs.channel_list.outputs)) ? techReqs.channel_list.outputs : [];
+
+    const linkedMaintIds = Array.isArray(ev.linked_maintenance_ids || ev.linkedMaintenanceIds) ? (ev.linked_maintenance_ids || ev.linkedMaintenanceIds) : [];
+    const linkedFaults = store.all('maintenance').filter((f) => linkedMaintIds.indexOf(f.id) !== -1);
 
     // Live Timings
     const liveTimingsHtml = !isCinema ? (
@@ -776,24 +786,111 @@ RMTP.views.advancing = function (el) {
           '<span class="text-xs font-mono text-muted">' + scheduleItems.length + ' item' + (scheduleItems.length === 1 ? '' : 's') + '</span>' +
         '</div>' +
         (scheduleItems.length ? (
-          '<div class="grid gap-1.5">' +
-            scheduleItems.map((item) => {
+          '<div class="grid gap-2">' +
+            scheduleItems.map((item, idx) => {
               const isAct = item.type === 'act';
               const isChangeover = item.type === 'changeover';
               const itemTitle = item.customName ? item.customName : (item.label || (isAct ? 'Act' : (isChangeover ? 'Changeover' : 'Item')));
               const badgeClass = isAct ? 'bg-accent/15 border-accent/40 text-accent' : (isChangeover ? 'bg-warning/15 border-warning/40 text-warning' : 'bg-info/15 border-info/40 text-info');
+
+              const hasNotes = !!(item.techNotes && item.techNotes.trim());
+              const hasFile = !!item.techFile;
+              const hasInputs = !!(Array.isArray(item.channelInputs) && item.channelInputs.length);
+              const hasOutputs = !!(Array.isArray(item.channelOutputs) && item.channelOutputs.length);
+              const hasChannels = hasInputs || hasOutputs;
+
+              let techReqBadge = '';
+              if (item.techReqType === 'text' || hasNotes) techReqBadge = '<span class="text-[10px] px-1.5 py-0.5 rounded bg-panel border border-accent/40 text-accent font-semibold">Rich Text</span>';
+              else if (item.techReqType === 'file' || hasFile) techReqBadge = '<span class="text-[10px] px-1.5 py-0.5 rounded bg-panel border border-info/40 text-info font-semibold">PDF Rider</span>';
+              else if (item.techReqType === 'channels' || hasChannels) {
+                const inCount = item.channelInputs ? item.channelInputs.length : 0;
+                const outCount = item.channelOutputs ? item.channelOutputs.length : 0;
+                techReqBadge = '<span class="text-[10px] px-1.5 py-0.5 rounded bg-panel border border-ok/40 text-ok font-semibold font-mono">' +
+                  (inCount ? inCount + ' In' : '') + (inCount && outCount ? ' \u00b7 ' : '') + (outCount ? outCount + ' Out' : (!inCount ? '0 Patch' : '')) +
+                '</span>';
+              }
+
               return (
-                '<div class="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-panel border border-line text-xs">' +
-                  '<div class="flex items-center gap-2 min-w-0">' +
-                    '<span class="px-2 py-0.5 rounded font-mono font-semibold text-[11px] border ' + badgeClass + '">' +
-                      ui.esc(item.label || (isAct ? 'Act' : (isChangeover ? 'Changeover' : 'Other'))) +
-                    '</span>' +
-                    '<span class="font-medium text-ink truncate">' + ui.esc(itemTitle) + '</span>' +
+                '<div class="p-2.5 rounded-lg bg-panel border border-line flex flex-col gap-2 text-xs">' +
+                  '<div class="flex flex-wrap items-center justify-between gap-2">' +
+                    '<div class="flex items-center gap-2 min-w-0">' +
+                      '<span class="px-2 py-0.5 rounded font-mono font-semibold text-[11px] border ' + badgeClass + '">' +
+                        ui.esc(item.label || (isAct ? 'Act' : (isChangeover ? 'Changeover' : 'Other'))) +
+                      '</span>' +
+                      '<span class="font-medium text-ink truncate">' + ui.esc(itemTitle) + '</span>' +
+                      techReqBadge +
+                    '</div>' +
+                    '<div class="flex items-center gap-3 shrink-0 font-mono text-muted">' +
+                      (item.time ? '<span>Stage: <strong class="text-ink">' + ui.esc(item.time) + '</strong></span>' : '') +
+                      (item.duration ? '<span>Set: <strong class="text-ink">' + ui.esc(item.duration) + '</strong></span>' : '') +
+                    '</div>' +
                   '</div>' +
-                  '<div class="flex items-center gap-3 shrink-0 font-mono text-muted">' +
-                    (item.time ? '<span>Stage: <strong class="text-ink">' + ui.esc(item.time) + '</strong></span>' : '') +
-                    (item.duration ? '<span>Set: <strong class="text-ink">' + ui.esc(item.duration) + '</strong></span>' : '') +
-                  '</div>' +
+
+                  // Technical Requirements detail for this act
+                  (hasNotes ? (
+                    '<div class="p-2 rounded bg-panel2/50 border border-line text-[11px] text-ink/90 whitespace-pre-wrap font-mono">' +
+                      '<div class="text-[10px] font-sans font-bold text-accent uppercase tracking-wider mb-1 flex items-center gap-1">' +
+                        ui.icon('clip', 'w-3 h-3') + '<span>Technical Notes & Requirements:</span>' +
+                      '</div>' +
+                      ui.esc(item.techNotes) +
+                    '</div>'
+                  ) : '') +
+
+                  (hasFile ? (
+                    '<div class="flex items-center gap-2 pt-1">' +
+                      '<button type="button" data-act-file-idx="' + idx + '" class="btn btn-ghost !py-1 !px-2.5 text-xs flex items-center gap-1.5 border border-line bg-panel2/60 hover:bg-panel2 text-accent">' +
+                        ui.icon('file', 'w-3.5 h-3.5') +
+                        '<span>Tech Rider: <strong>' + ui.esc(item.techFile.name) + '</strong></span>' +
+                        '<span class="text-[10px] text-muted">(' + files.humanSize(item.techFile.size) + ')</span>' +
+                      '</button>' +
+                    '</div>'
+                  ) : '') +
+
+                  (hasInputs ? (
+                    '<div class="p-2 rounded bg-panel2/40 border border-line text-[11px]">' +
+                      '<div class="text-[10px] font-sans font-bold text-accent uppercase tracking-wider mb-1.5 flex items-center justify-between">' +
+                        '<span>Act Inputs (' + item.channelInputs.length + ' Ch)</span>' +
+                      '</div>' +
+                      '<div class="grid gap-1">' +
+                        item.channelInputs.map((ch, chI) => (
+                          '<div class="flex items-center justify-between p-1 px-2 rounded bg-panel border border-line/60 font-mono text-[11px]">' +
+                            '<div class="flex items-center gap-2">' +
+                              '<span class="font-bold text-accent">Ch ' + (ch.channel || (chI + 1)) + '</span>' +
+                              '<span class="text-ink font-sans font-medium">' + ui.esc(ch.instrument || 'Input') + '</span>' +
+                              (ch.mic ? '<span class="text-muted text-[10px]">(' + ui.esc(ch.mic) + ')</span>' : '') +
+                            '</div>' +
+                            '<div class="flex items-center gap-2 text-muted text-[10px]">' +
+                              (ch.stand ? '<span>' + ui.esc(ch.stand) + '</span>' : '') +
+                              (ch.pos ? '<span>\u00b7 ' + ui.esc(ch.pos) + '</span>' : '') +
+                              (ch.phantom ? '<span class="text-danger font-bold">+48V</span>' : '') +
+                            '</div>' +
+                          '</div>'
+                        )).join('') +
+                      '</div>' +
+                    '</div>'
+                  ) : '') +
+
+                  (hasOutputs ? (
+                    '<div class="p-2 rounded bg-panel2/40 border border-line text-[11px]">' +
+                      '<div class="text-[10px] font-sans font-bold text-info uppercase tracking-wider mb-1.5 flex items-center justify-between">' +
+                        '<span>Act Outputs & Monitors (' + item.channelOutputs.length + ' Out)</span>' +
+                      '</div>' +
+                      '<div class="grid gap-1">' +
+                        item.channelOutputs.map((out, outI) => (
+                          '<div class="flex items-center justify-between p-1 px-2 rounded bg-panel border border-line/60 font-mono text-[11px]">' +
+                            '<div class="flex items-center gap-2">' +
+                              '<span class="font-bold text-info">Out ' + (out.num || (outI + 1)) + (out.stereo ? ' (St)' : '') + '</span>' +
+                              '<span class="text-ink font-sans font-medium">' + ui.esc(out.name || out.dest || 'Mix') + '</span>' +
+                              (out.type ? '<span class="text-muted text-[10px]">[' + ui.esc(out.type) + ']</span>' : '') +
+                            '</div>' +
+                            '<div class="text-muted text-[10px]">' +
+                              (out.dest ? '<span>' + ui.esc(out.dest) + '</span>' : '') +
+                            '</div>' +
+                          '</div>'
+                        )).join('') +
+                      '</div>' +
+                    '</div>'
+                  ) : '') +
                 '</div>'
               );
             }).join('') +
@@ -811,7 +908,10 @@ RMTP.views.advancing = function (el) {
               ui.icon('film', 'w-4 h-4 text-accent') +
               '<span class="text-xs font-semibold text-accent">Cinema Screening Checklist & Format</span>' +
             '</div>' +
-            (mediaType ? '<span class="text-xs font-semibold px-2 py-0.5 rounded bg-panel border border-accent/40 text-accent font-mono">Media: ' + ui.esc(mediaType) + '</span>' : '') +
+            '<div class="flex items-center gap-2">' +
+              (filmDuration ? '<span class="text-xs font-semibold px-2 py-0.5 rounded bg-panel border border-line text-ink font-mono">Duration: ' + ui.esc(filmDuration) + '</span>' : '') +
+              (mediaType ? '<span class="text-xs font-semibold px-2 py-0.5 rounded bg-panel border border-accent/40 text-accent font-mono">Media: ' + ui.esc(mediaType) + '</span>' : '') +
+            '</div>' +
           '</div>' +
           '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">' +
             [
@@ -840,6 +940,99 @@ RMTP.views.advancing = function (el) {
               '<span class="font-semibold text-ink font-mono">' + (dcpTestTimeStr ? ui.esc(dcpTestTimeStr) : '<span class="text-muted italic">Not scheduled</span>') + '</span>' +
             '</div>' +
           '</div>' +
+          (dcpTestEvent ? (
+            '<div class="mt-2 p-2 rounded-lg bg-accent/10 border border-accent/30 flex items-center justify-between text-xs">' +
+              '<span class="text-accent font-medium flex items-center gap-1.5">' + ui.icon('calendar', 'w-3.5 h-3.5') + 'Linked Calendar DCP Test Shift</span>' +
+              '<button type="button" id="btn-open-linked-dcp" class="btn btn-primary !py-1 !px-2 text-xs">View DCP Shift</button>' +
+            '</div>'
+          ) : '') +
+          (dcpParentEvent ? (
+            '<div class="mt-2 p-2 rounded-lg bg-info/10 border border-info/30 flex items-center justify-between text-xs">' +
+              '<span class="text-info font-medium flex items-center gap-1.5">' + ui.icon('film', 'w-3.5 h-3.5') + 'DCP Test for: ' + ui.esc(dcpParentEvent.name) + '</span>' +
+              '<button type="button" id="btn-open-parent-event" class="btn btn-ghost !py-1 !px-2 text-xs text-info">View Main Event</button>' +
+            '</div>'
+          ) : '') +
+        '</div>' +
+      '</div>'
+    ) : '';
+
+    // Channel list (Inputs & Outputs)
+    const channelListHtml = (channelInputs.length || channelOutputs.length) ? (
+      '<div class="p-3.5 rounded-xl bg-panel2/30 border border-line text-xs">' +
+        '<div class="flex items-center justify-between pb-2 mb-2 border-b border-line/60">' +
+          '<div class="eyebrow text-ink font-semibold flex items-center gap-1.5">' +
+            ui.icon('sliders', 'w-3.5 h-3.5 text-accent') + '<span>Global / Festival Patch List (Custom List)</span>' +
+          '</div>' +
+          '<span class="text-muted font-mono">' + channelInputs.length + ' inputs \u00b7 ' + channelOutputs.length + ' outputs</span>' +
+        '</div>' +
+        (channelInputs.length ? (
+          '<div class="mb-3">' +
+            '<div class="text-[11px] font-semibold text-muted uppercase tracking-wider mb-1.5">Input Patch</div>' +
+            '<div class="overflow-x-auto rounded-lg border border-line">' +
+              '<table class="w-full text-left text-xs border-collapse">' +
+                '<thead><tr class="bg-panel2 border-b border-line text-muted text-[11px] font-medium">' +
+                  '<th class="p-2">Ch</th><th class="p-2">Instrument</th><th class="p-2">Mic / DI</th><th class="p-2">Stand</th><th class="p-2">Position</th><th class="p-2">+48V</th>' +
+                '</tr></thead>' +
+                '<tbody class="divide-y divide-line">' +
+                  channelInputs.map((ch, i) => (
+                    '<tr class="hover:bg-panel2/40">' +
+                      '<td class="p-2 font-mono font-semibold text-accent">Ch ' + (ch.channel || (i + 1)) + '</td>' +
+                      '<td class="p-2 font-medium text-ink">' + ui.esc(ch.instrument || '—') + '</td>' +
+                      '<td class="p-2 text-muted">' + ui.esc(ch.mic || '—') + '</td>' +
+                      '<td class="p-2 text-muted">' + ui.esc(ch.stand || '—') + '</td>' +
+                      '<td class="p-2 text-muted">' + ui.esc(ch.pos || '—') + '</td>' +
+                      '<td class="p-2 font-mono ' + (ch.phantom ? 'text-danger font-bold' : 'text-muted') + '">' + (ch.phantom ? '+48V' : '—') + '</td>' +
+                    '</tr>'
+                  )).join('') +
+                '</tbody>' +
+              '</table>' +
+            '</div>' +
+          '</div>'
+        ) : '') +
+        (channelOutputs.length ? (
+          '<div>' +
+            '<div class="text-[11px] font-semibold text-muted uppercase tracking-wider mb-1.5">Outputs & Monitors</div>' +
+            '<div class="overflow-x-auto rounded-lg border border-line">' +
+              '<table class="w-full text-left text-xs border-collapse">' +
+                '<thead><tr class="bg-panel2 border-b border-line text-muted text-[11px] font-medium">' +
+                  '<th class="p-2">Out</th><th class="p-2">Label</th><th class="p-2">Type</th><th class="p-2">Destination / Mix</th>' +
+                '</tr></thead>' +
+                '<tbody class="divide-y divide-line">' +
+                  channelOutputs.map((out, i) => (
+                    '<tr class="hover:bg-panel2/40">' +
+                      '<td class="p-2 font-mono font-semibold text-info">Out ' + (out.num || (i + 1)) + (out.stereo ? ' (St)' : '') + '</td>' +
+                      '<td class="p-2 font-medium text-ink">' + ui.esc(out.name || '—') + '</td>' +
+                      '<td class="p-2 text-muted">' + ui.esc(out.type || '—') + '</td>' +
+                      '<td class="p-2 text-muted">' + ui.esc(out.dest || '—') + '</td>' +
+                    '</tr>'
+                  )).join('') +
+                '</tbody>' +
+              '</table>' +
+            '</div>' +
+          '</div>'
+        ) : '') +
+      '</div>'
+    ) : '';
+
+    // Linked Maintenance Tasks
+    const linkedMaintenanceHtml = linkedFaults.length ? (
+      '<div class="p-3.5 rounded-xl bg-panel2/40 border border-warning/30 text-xs">' +
+        '<div class="flex items-center justify-between pb-2 mb-2 border-b border-line/60">' +
+          '<div class="eyebrow text-warning font-semibold flex items-center gap-1.5">' +
+            ui.icon('tool', 'w-3.5 h-3.5 text-warning') + '<span>Linked Maintenance Tasks (' + linkedFaults.length + ')</span>' +
+          '</div>' +
+          '<a href="#/maintenance" class="text-xs text-accent hover:underline">Open Maintenance Log &rarr;</a>' +
+        '</div>' +
+        '<div class="grid gap-2">' +
+          linkedFaults.map((f) => (
+            '<div class="p-2.5 rounded-lg bg-panel border border-line flex items-center justify-between gap-3">' +
+              '<div class="min-w-0 flex-1">' +
+                '<div class="font-medium text-ink truncate">' + ui.esc(f.title || f.equipment || 'Fault') + '</div>' +
+                '<div class="text-[11px] text-muted">' + ui.esc(f.space || f.location || 'Venue') + (f.description ? ' \u00b7 ' + ui.esc(f.description) : '') + '</div>' +
+              '</div>' +
+              ui.pill(f.status || 'Reported', f.status === 'Resolved' ? 'var(--ok)' : (f.status === 'In Progress' ? 'var(--info)' : 'var(--warning)')) +
+            '</div>'
+          )).join('') +
         '</div>' +
       '</div>'
     ) : '';
@@ -855,6 +1048,7 @@ RMTP.views.advancing = function (el) {
             '</span>' +
             (isCinema && (ev.screening_starts_time || ev.screeningStartsTime) ?
               '<span class="px-2 py-0.5 rounded bg-panel border border-accent/30 text-accent font-semibold">Screening: ' + ui.esc(ev.screening_starts_time || ev.screeningStartsTime) + '</span>' : '') +
+            (filmDuration ? '<span class="px-2 py-0.5 rounded bg-panel border border-line text-ink font-semibold">Film: ' + ui.esc(filmDuration) + '</span>' : '') +
           '</div>' +
           '<div class="flex items-center gap-1.5 flex-wrap">' +
             ui.pill(ev.status, statusColour[ev.status] || 'var(--muted)') +
@@ -867,6 +1061,8 @@ RMTP.views.advancing = function (el) {
         liveTimingsHtml +
         liveScheduleItemsHtml +
         cinemaDetailsHtml +
+        channelListHtml +
+        linkedMaintenanceHtml +
 
         // Technicians
         (techs.length ? (
@@ -959,6 +1155,14 @@ RMTP.views.advancing = function (el) {
     const specBtn = m.root.querySelector('#modal-open-spec');
     if (specBtn) specBtn.addEventListener('click', () => files.open(ev.techSpec));
 
+    m.root.querySelectorAll('[data-act-file-idx]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = +btn.getAttribute('data-act-file-idx');
+        const it = scheduleItems[idx];
+        if (it && it.techFile) files.open(it.techFile);
+      });
+    });
+
     const printBtn = m.root.querySelector('#modal-print-btn');
     if (printBtn) printBtn.addEventListener('click', () => printAdvance(ev));
 
@@ -973,6 +1177,15 @@ RMTP.views.advancing = function (el) {
 
     const delBtn = m.root.querySelector('#modal-del-btn');
     if (delBtn) delBtn.addEventListener('click', () => { m.close(); del(ev); });
+
+    const linkedDcpBtn = m.root.querySelector('#btn-open-linked-dcp');
+    if (linkedDcpBtn && dcpTestEvent) {
+      linkedDcpBtn.addEventListener('click', () => { m.close(); openEventModal(dcpTestEvent); });
+    }
+    const parentEvBtn = m.root.querySelector('#btn-open-parent-event');
+    if (parentEvBtn && dcpParentEvent) {
+      parentEvBtn.addEventListener('click', () => { m.close(); openEventModal(dcpParentEvent); });
+    }
   }
 
   /* ---- PDF Export / Print ---- */
@@ -981,6 +1194,7 @@ RMTP.views.advancing = function (el) {
     if (!root) return;
     const isCinema = isScreenSpace(ev.space);
     const mediaTypeVal = ev.media_type || ev.mediaType || '';
+    const filmDurationVal = ev.film_duration || ev.filmDuration || '';
     const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
     const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
     const reports = reportsFor(ev.id);
@@ -988,6 +1202,13 @@ RMTP.views.advancing = function (el) {
 
     const dcpTesterName = (isCinema && ev.dcp_tester_user_id) ? userName(ev.dcp_tester_user_id) : '';
     const dcpTestTimeStr = (isCinema && ev.dcp_test_datetime) ? new Date(ev.dcp_test_datetime).toLocaleString('en-GB') : '';
+
+    const techReqs = ev.tech_requirements || ev.techRequirements || {};
+    const channelInputs = (techReqs.channel_list && Array.isArray(techReqs.channel_list.inputs)) ? techReqs.channel_list.inputs : [];
+    const channelOutputs = (techReqs.channel_list && Array.isArray(techReqs.channel_list.outputs)) ? techReqs.channel_list.outputs : [];
+
+    const linkedMaintIds = Array.isArray(ev.linked_maintenance_ids || ev.linkedMaintenanceIds) ? (ev.linked_maintenance_ids || ev.linkedMaintenanceIds) : [];
+    const linkedFaults = store.all('maintenance').filter((f) => linkedMaintIds.indexOf(f.id) !== -1);
 
     const liveTimingsSection = !isCinema ? (
       '<div class="adv-print-section">' +
@@ -1013,17 +1234,34 @@ RMTP.views.advancing = function (el) {
               '<th style="padding:4px 8px;">Act / Description</th>' +
               '<th style="padding:4px 8px;">Stage Time</th>' +
               '<th style="padding:4px 8px;">Duration</th>' +
+              '<th style="padding:4px 8px;">Tech Requirements</th>' +
             '</tr>' +
           '</thead>' +
           '<tbody>' +
-            scheduleItems.map((it) => (
-              '<tr style="border-bottom:1px solid #e2e8f0;">' +
-                '<td style="padding:6px 8px;font-weight:600;">' + ui.esc(it.label || it.type) + '</td>' +
-                '<td style="padding:6px 8px;">' + ui.esc(it.customName || '—') + '</td>' +
-                '<td style="padding:6px 8px;font-family:monospace;">' + ui.esc(it.time || '—') + '</td>' +
-                '<td style="padding:6px 8px;font-family:monospace;">' + ui.esc(it.duration || '—') + '</td>' +
-              '</tr>'
-            )).join('') +
+            scheduleItems.map((it) => {
+              let techReqDesc = '—';
+              if (it.techNotes && it.techNotes.trim()) {
+                techReqDesc = '<span style="font-size:11px;color:#1e293b;"><strong>Notes:</strong> ' + ui.esc(it.techNotes) + '</span>';
+              } else if (it.techFile) {
+                techReqDesc = '<span style="font-size:11px;color:#0284c7;"><strong>Rider:</strong> ' + ui.esc(it.techFile.name) + ' (' + files.humanSize(it.techFile.size) + ')</span>';
+              } else if ((Array.isArray(it.channelInputs) && it.channelInputs.length) || (Array.isArray(it.channelOutputs) && it.channelOutputs.length)) {
+                const inList = Array.isArray(it.channelInputs) ? it.channelInputs : [];
+                const outList = Array.isArray(it.channelOutputs) ? it.channelOutputs : [];
+                let parts = [];
+                if (inList.length) parts.push('<strong style="color:#059669;">' + inList.length + ' In:</strong> ' + ui.esc(inList.map((c) => (c.channel || '') + ':' + (c.instrument || 'In')).join(', ')));
+                if (outList.length) parts.push('<strong style="color:#0284c7;">' + outList.length + ' Out:</strong> ' + ui.esc(outList.map((o) => (o.num || '') + ':' + (o.name || o.dest || 'Mix')).join(', ')));
+                techReqDesc = '<div style="font-size:11px;display:flex;flex-direction:column;gap:2px;">' + parts.join('') + '</div>';
+              }
+              return (
+                '<tr style="border-bottom:1px solid #e2e8f0;">' +
+                  '<td style="padding:6px 8px;font-weight:600;">' + ui.esc(it.label || it.type) + '</td>' +
+                  '<td style="padding:6px 8px;font-weight:500;">' + ui.esc(it.customName || '—') + '</td>' +
+                  '<td style="padding:6px 8px;font-family:monospace;">' + ui.esc(it.time || '—') + '</td>' +
+                  '<td style="padding:6px 8px;font-family:monospace;">' + ui.esc(it.duration || '—') + '</td>' +
+                  '<td style="padding:6px 8px;">' + techReqDesc + '</td>' +
+                '</tr>'
+              );
+            }).join('') +
           '</tbody>' +
         '</table>' +
       '</div>'
@@ -1033,7 +1271,10 @@ RMTP.views.advancing = function (el) {
       '<div class="adv-print-section">' +
         '<div class="adv-print-section-title" style="display:flex;justify-content:space-between;align-items:center;">' +
           '<span>Cinema Screening Checklist & Testing</span>' +
-          (mediaTypeVal ? '<span style="font-size:11px;font-family:monospace;font-weight:600;color:#0284c7;">Media Source: ' + ui.esc(mediaTypeVal) + '</span>' : '') +
+          '<div style="display:flex;gap:8px;font-size:11px;font-family:monospace;font-weight:600;">' +
+            (filmDurationVal ? '<span style="color:#334155;">Film: ' + ui.esc(filmDurationVal) + '</span>' : '') +
+            (mediaTypeVal ? '<span style="color:#0284c7;">Media: ' + ui.esc(mediaTypeVal) + '</span>' : '') +
+          '</div>' +
         '</div>' +
         '<div class="adv-print-grid-4">' +
           [
@@ -1051,6 +1292,64 @@ RMTP.views.advancing = function (el) {
         '<div class="adv-print-grid" style="margin-top:8px;">' +
           '<div class="adv-print-field"><div class="adv-print-label">Testing Engineer</div><div class="adv-print-val">' + ui.esc(dcpTesterName || 'Unassigned') + '</div></div>' +
           '<div class="adv-print-field"><div class="adv-print-label">DCP Test Date/Time</div><div class="adv-print-val">' + ui.esc(dcpTestTimeStr || 'Not scheduled') + '</div></div>' +
+        '</div>' +
+      '</div>'
+    ) : '';
+
+    const channelListPrintSection = (channelInputs.length || channelOutputs.length) ? (
+      '<div class="adv-print-section">' +
+        '<div class="adv-print-section-title">Global / Festival Patch List (Custom List)</div>' +
+        (channelInputs.length ? (
+          '<div style="margin-bottom:8px;">' +
+            '<div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:4px;">Inputs (' + channelInputs.length + ')</div>' +
+            '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
+              '<thead><tr style="border-bottom:1px solid #cbd5e1;text-align:left;color:#475569;"><th style="padding:3px 6px;">Ch</th><th style="padding:3px 6px;">Instrument</th><th style="padding:3px 6px;">Mic / DI</th><th style="padding:3px 6px;">Stand</th><th style="padding:3px 6px;">Pos</th><th style="padding:3px 6px;">+48V</th></tr></thead>' +
+              '<tbody>' +
+                channelInputs.map((ch, i) => (
+                  '<tr style="border-bottom:1px solid #f1f5f9;">' +
+                    '<td style="padding:3px 6px;font-weight:600;font-family:monospace;">Ch ' + (ch.channel || (i + 1)) + '</td>' +
+                    '<td style="padding:3px 6px;font-weight:500;">' + ui.esc(ch.instrument || '—') + '</td>' +
+                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(ch.mic || '—') + '</td>' +
+                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(ch.stand || '—') + '</td>' +
+                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(ch.pos || '—') + '</td>' +
+                    '<td style="padding:3px 6px;font-family:monospace;' + (ch.phantom ? 'color:#dc2626;font-weight:700;' : 'color:#94a3b8;') + '">' + (ch.phantom ? '+48V' : '—') + '</td>' +
+                  '</tr>'
+                )).join('') +
+              '</tbody>' +
+            '</table>' +
+          '</div>'
+        ) : '') +
+        (channelOutputs.length ? (
+          '<div>' +
+            '<div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:4px;">Outputs / Monitors (' + channelOutputs.length + ')</div>' +
+            '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
+              '<thead><tr style="border-bottom:1px solid #cbd5e1;text-align:left;color:#475569;"><th style="padding:3px 6px;">Out</th><th style="padding:3px 6px;">Name</th><th style="padding:3px 6px;">Type</th><th style="padding:3px 6px;">Destination</th></tr></thead>' +
+              '<tbody>' +
+                channelOutputs.map((out, i) => (
+                  '<tr style="border-bottom:1px solid #f1f5f9;">' +
+                    '<td style="padding:3px 6px;font-weight:600;font-family:monospace;">Out ' + (out.num || (i + 1)) + (out.stereo ? ' (St)' : '') + '</td>' +
+                    '<td style="padding:3px 6px;font-weight:500;">' + ui.esc(out.name || '—') + '</td>' +
+                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(out.type || '—') + '</td>' +
+                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(out.dest || '—') + '</td>' +
+                  '</tr>'
+                )).join('') +
+              '</tbody>' +
+            '</table>' +
+          '</div>'
+        ) : '') +
+      '</div>'
+    ) : '';
+
+    const linkedMaintSection = linkedFaults.length ? (
+      '<div class="adv-print-section">' +
+        '<div class="adv-print-section-title">Linked Maintenance Tasks (' + linkedFaults.length + ')</div>' +
+        '<div style="display:flex;flex-direction:column;gap:4px;">' +
+          linkedFaults.map((f) => (
+            '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:4px;padding:6px 8px;font-size:11px;display:flex;justify-content:space-between;">' +
+              '<span><strong>' + ui.esc(f.title || f.equipment || 'Task') + '</strong> \u00b7 ' + ui.esc(f.space || f.location || 'Venue') + '</span>' +
+              '<span style="font-weight:600;color:#b45309;">' + ui.esc(f.status || 'Reported') + '</span>' +
+            '</div>'
+          )).join('') +
         '</div>' +
       '</div>'
     ) : '';
@@ -1094,7 +1393,8 @@ RMTP.views.advancing = function (el) {
           '<div class="adv-print-grid">' +
             '<div class="adv-print-field"><div class="adv-print-label">Date</div><div class="adv-print-val">' + ui.esc(ev.date ? ui.formatDate(ev.date) : 'TBC') + '</div></div>' +
             '<div class="adv-print-field"><div class="adv-print-label">Running Times</div><div class="adv-print-val">' + ui.esc(times || 'TBC') + '</div></div>' +
-            (isCinema ? '<div class="adv-print-field"><div class="adv-print-label">Screening Starts</div><div class="adv-print-val">' + ui.esc(ev.screening_starts_time || ev.screeningStartsTime || 'TBC') + '</div></div>' : '') +
+            (isCinema ? '<div class="adv-print-field"><div class="adv-print-label">Screening Start</div><div class="adv-print-val">' + ui.esc(ev.screening_starts_time || ev.screeningStartsTime || 'TBC') + '</div></div>' : '') +
+            (isCinema && filmDurationVal ? '<div class="adv-print-field"><div class="adv-print-label">Film Duration</div><div class="adv-print-val font-semibold">' + ui.esc(filmDurationVal) + '</div></div>' : '') +
             (isCinema && mediaTypeVal ? '<div class="adv-print-field"><div class="adv-print-label">Media Type</div><div class="adv-print-val font-semibold">' + ui.esc(mediaTypeVal) + '</div></div>' : '') +
           '</div>' +
         '</div>' +
@@ -1102,6 +1402,8 @@ RMTP.views.advancing = function (el) {
         liveTimingsSection +
         liveScheduleSection +
         cinemaChecksHtml +
+        channelListPrintSection +
+        linkedMaintSection +
 
         '<div class="adv-print-section">' +
           '<div class="adv-print-section-title">Crew & Contacts</div>' +
@@ -1679,9 +1981,21 @@ RMTP.views.advancing = function (el) {
 
     let techs = RMTP.eventTechnicians(ev).map((t) => ({ userId: t.userId, role: t.role || '' }));
 
-    // Dynamic schedule items for Live spaces: [{ type, label, customName, time, duration }]
-    let scheduleItems = Array.isArray(ev.schedule_items) ? JSON.parse(JSON.stringify(ev.schedule_items))
-      : (Array.isArray(ev.scheduleItems) ? JSON.parse(JSON.stringify(ev.scheduleItems)) : []);
+    // Dynamic schedule items for Live spaces: [{ type, label, customName, time, duration, techReqType, techNotes, techFile, channelInputs, channelOutputs }]
+    let scheduleItems = (Array.isArray(ev.schedule_items) ? ev.schedule_items : (Array.isArray(ev.scheduleItems) ? ev.scheduleItems : []))
+      .map((it) => {
+        const item = Object.assign({}, it);
+        if (!item.techReqType) {
+          if (item.channelInputs && item.channelInputs.length) item.techReqType = 'channels';
+          else if (item.techFile) item.techReqType = 'file';
+          else if (item.techNotes && item.techNotes.trim()) item.techReqType = 'text';
+          else item.techReqType = 'none';
+        }
+        if (!Array.isArray(item.channelInputs)) item.channelInputs = [];
+        if (!Array.isArray(item.channelOutputs)) item.channelOutputs = [];
+        if (typeof item.techNotes !== 'string') item.techNotes = '';
+        return item;
+      });
 
     const originalSpec = ev.techSpec || null;
     let specMeta = originalSpec;
@@ -1691,10 +2005,38 @@ RMTP.views.advancing = function (el) {
     const initialSpace = ev.space || RMTP.SPACES[0] || 'The Stage';
     const isScreenInitial = isScreenSpace(initialSpace);
 
+    // Channel list & tech requirements presets
+    const INPUT_INSTRUMENT_PRESETS = [
+      'Kick In', 'Kick Out', 'Snare Top', 'Snare Bottom', 'Hi-Hat', 'Tom 1', 'Tom 2', 'Floor Tom',
+      'Overhead L', 'Overhead R', 'Bass DI', 'Bass Mic', 'Gtr 1', 'Gtr 2', 'Acoustic Gtr', 'Keys L', 'Keys R',
+      'Lead Vox', 'BV 1', 'BV 2', 'Host Mic', 'DJ L', 'DJ R', 'Playback L', 'Playback R', 'Talkback'
+    ];
+    const INPUT_MIC_PRESETS = [
+      'Shure Beta 52', 'Shure SM57', 'Shure SM58', 'Shure Beta 58', 'Shure Beta 91A', 'Sennheiser e604', 'Sennheiser e906',
+      'AKG C414', 'AKG D112', 'Radial ProDI', 'Radial ProD2', 'BSS AR-133', 'DPA 4099', 'Neumann KM184', 'Wireless Handheld'
+    ];
+    const INPUT_STAND_PRESETS = ['Tall Boom', 'Short Boom', 'Straight Stand', 'Claw / Clip', 'N/A'];
+    const INPUT_POSITIONS = ['Upstage Left', 'Upstage Centre', 'Upstage Right', 'Centre Stage', 'Downstage Left', 'Downstage Centre', 'Downstage Right'];
+    const OUTPUT_TYPE_PRESETS = ['IEM', 'Wedge', 'Record Matrix', 'Stream Feed', 'Lobby / Foyer', 'Delay', 'Other'];
+
+    let techReqs = ev.tech_requirements || ev.techRequirements || {};
+    let channelInputs = (techReqs.channel_list && Array.isArray(techReqs.channel_list.inputs))
+      ? JSON.parse(JSON.stringify(techReqs.channel_list.inputs))
+      : [];
+    let channelOutputs = (techReqs.channel_list && Array.isArray(techReqs.channel_list.outputs))
+      ? JSON.parse(JSON.stringify(techReqs.channel_list.outputs))
+      : [];
+    let linkedMaintIds = Array.isArray(ev.linked_maintenance_ids || ev.linkedMaintenanceIds)
+      ? (ev.linked_maintenance_ids || ev.linkedMaintenanceIds).slice()
+      : (ev._preselectedFaultId ? [ev._preselectedFaultId] : []);
+
     const allUsers = store.all('users');
     const userOptionsHtml = (selectedId) =>
       '<option value="">Select engineer\u2026</option>' +
       allUsers.map((u) => '<option value="' + u.id + '" ' + (u.id === selectedId ? 'selected' : '') + '>' + ui.esc(auth.displayName(u)) + '</option>').join('');
+
+    const allMaintenance = store.all('maintenance');
+    const openFaults = allMaintenance.filter((f) => f.status !== 'Resolved' || linkedMaintIds.indexOf(f.id) !== -1);
 
     const m = ui.modal({
       title: existing ? 'Edit Technical Advance' : 'Create Technical Advance',
@@ -1771,13 +2113,14 @@ RMTP.views.advancing = function (el) {
             '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
               '<div class="flex items-center gap-1.5">' +
                 ui.icon('film', 'w-4 h-4 text-accent') +
-                '<span class="text-xs font-semibold text-accent">Cinema Screening Checklist & DCP Details</span>' +
+                '<span class="text-xs font-semibold text-accent">Cinema Screening Checklist, Film Duration & DCP Details</span>' +
               '</div>' +
               '<span class="text-[11px] text-muted">Auditorium Screen Advance</span>' +
             '</div>' +
 
-            '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
+            '<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">' +
               fld('Screening Starts Time', '<input id="e-screening-starts" type="time" class="field font-mono" value="' + ui.esc(ev.screening_starts_time || ev.screeningStartsTime || '') + '" />') +
+              fld('Film Duration', '<input id="e-film-duration" class="field font-mono" value="' + ui.esc(ev.film_duration || ev.filmDuration || '') + '" placeholder="e.g. 118 mins, 1h 45m" />') +
               fld('Media Type', '<select id="e-media-type" class="field">' + blankOpt(RMTP.MEDIA_TYPES, ev.media_type || ev.mediaType, 'Select Media\u2026') + '</select>') +
             '</div>' +
 
@@ -1807,6 +2150,22 @@ RMTP.views.advancing = function (el) {
               fld('Testing Engineer', '<select id="e-dcp-tester" class="field">' + userOptionsHtml(ev.dcp_tester_user_id || ev.dcpTesterUserId || '') + '</select>') +
               fld('Testing Date & Time', '<input id="e-dcp-test-datetime" type="datetime-local" class="field font-mono" value="' + ui.esc(ev.dcp_test_datetime || ev.dcpTestDatetime || '') + '" />') +
             '</div>' +
+            '<label class="flex items-center gap-2 text-xs font-semibold cursor-pointer text-accent pt-1">' +
+              '<input type="checkbox" id="e-gen-dcp-shift" class="w-4 h-4 accent-[var(--accent)]" ' + (ev.dcp_test_event_id || (!existing && (ev.category === 'Cinema' || isScreenInitial)) ? 'checked' : 'checked') + ' />' +
+              '<span>Generate / Update Linked DCP Test Shift in Calendar</span>' +
+            '</label>' +
+          '</div>' +
+
+          /* ================= MAINTENANCE TASKS SECTION ================= */
+          '<div id="section-maintenance-advancing" class="' + (ev.category === 'Maintenance' || linkedMaintIds.length ? '' : 'hidden') + ' p-4 rounded-xl bg-panel2/40 border border-warning/30 grid gap-3">' +
+            '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
+              '<div class="flex items-center gap-1.5">' +
+                ui.icon('tool', 'w-4 h-4 text-warning') +
+                '<span class="text-xs font-semibold text-warning">Link Maintenance Tasks & Faults</span>' +
+              '</div>' +
+              '<span class="text-[11px] text-muted">Assigned tasks will be tracked against this shift</span>' +
+            '</div>' +
+            '<div id="maintenance-tasks-picker" class="grid gap-2 max-h-52 overflow-y-auto pr-1"></div>' +
           '</div>' +
 
           /* ================= CREW & DETAILS SECTION ================= */
@@ -1820,6 +2179,65 @@ RMTP.views.advancing = function (el) {
             '</div>' +
           '</div>' +
           '<div><label class="block text-sm font-medium mb-2">Tech Spec (PDF)</label><div id="e-spec-area"></div></div>' +
+
+          /* ================= GLOBAL / FESTIVAL PATCH LIST (CUSTOM LIST) ================= */
+          '<div class="p-4 rounded-xl bg-panel2/40 border border-line grid gap-4 mt-2 shadow-sm">' +
+            '<div class="flex flex-wrap items-center justify-between pb-2 border-b border-line/60 gap-2">' +
+              '<div class="flex items-center gap-2">' +
+                '<span class="p-1.5 rounded-lg bg-panel border border-line text-accent">' + ui.icon('sliders', 'w-4 h-4') + '</span>' +
+                '<div>' +
+                  '<div class="text-xs font-bold text-ink uppercase tracking-wider">Global / Festival Patch List (Custom List)</div>' +
+                  '<div class="text-[11px] text-muted">Master audio input & output patch for shared festival routing or whole-venue stage configuration</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="flex items-center gap-2">' +
+                '<button type="button" id="btn-global-manage-presets" class="btn btn-ghost !py-1 !px-2 text-xs text-accent flex items-center gap-1 font-semibold" title="Manage Presets Library">' +
+                  ui.icon('sliders', 'w-3.5 h-3.5') + '<span>Manage Presets ⚙</span>' +
+                '</button>' +
+                '<span class="text-[11px] font-mono text-accent font-semibold px-2 py-0.5 rounded bg-panel border border-line">' +
+                  channelInputs.length + ' In \u00b7 ' + channelOutputs.length + ' Out' +
+                '</span>' +
+              '</div>' +
+            '</div>' +
+
+            // Input Channel List Builder
+            '<div>' +
+              '<div class="flex flex-wrap items-center justify-between gap-2 mb-2">' +
+                '<label class="text-xs font-semibold text-ink uppercase tracking-wider">Master Input Channels (' + channelInputs.length + ')</label>' +
+                '<div class="flex items-center gap-1.5 flex-wrap">' +
+                  '<select id="sel-global-inp-preset" class="field !py-0.5 !px-1.5 text-xs font-medium !w-auto bg-panel text-accent cursor-pointer">' +
+                    '<option value="">⚡ Load Input Preset\u2026</option>' +
+                    RMTP.presets.getInputs().map((p) => '<option value="' + p.id + '">' + ui.esc(p.name) + ' (' + (p.channels ? p.channels.length : 0) + ' Ch)</option>').join('') +
+                  '</select>' +
+                  '<button type="button" id="btn-global-save-inp-preset" class="btn btn-ghost !py-0.5 !px-2 text-[10px] text-accent" title="Save current inputs as reusable preset">💾 Save Preset</button>' +
+                  '<button type="button" id="btn-add-input-chan" class="btn btn-primary !py-0.5 !px-2 text-[10px] flex items-center gap-1 font-semibold">' +
+                    ui.icon('plus', 'w-3 h-3') + '<span>Add Channel</span>' +
+                  '</button>' +
+                  (channelInputs.length ? '<button type="button" id="btn-clear-input-chan" class="btn btn-danger !py-0.5 !px-1.5 text-[10px]" title="Clear Inputs">Clear</button>' : '') +
+                '</div>' +
+              '</div>' +
+              '<div id="channel-inputs-container" class="grid gap-2 max-h-64 overflow-y-auto pr-1"></div>' +
+            '</div>' +
+
+            // Output Channel List Builder
+            '<div class="pt-3 border-t border-line/60">' +
+              '<div class="flex flex-wrap items-center justify-between gap-2 mb-2">' +
+                '<label class="text-xs font-semibold text-ink uppercase tracking-wider">Master Outputs & Monitors (' + channelOutputs.length + ')</label>' +
+                '<div class="flex items-center gap-1.5 flex-wrap">' +
+                  '<select id="sel-global-out-preset" class="field !py-0.5 !px-1.5 text-xs font-medium !w-auto bg-panel text-info cursor-pointer">' +
+                    '<option value="">⚡ Load Output Preset\u2026</option>' +
+                    RMTP.presets.getOutputs().map((p) => '<option value="' + p.id + '">' + ui.esc(p.name) + ' (' + (p.channels ? p.channels.length : 0) + ' Out)</option>').join('') +
+                  '</select>' +
+                  '<button type="button" id="btn-global-save-out-preset" class="btn btn-ghost !py-0.5 !px-2 text-[10px] text-info" title="Save current outputs as reusable preset">💾 Save Preset</button>' +
+                  '<button type="button" id="btn-add-output-chan" class="btn btn-primary !py-0.5 !px-2 text-[10px] flex items-center gap-1 font-semibold">' +
+                    ui.icon('plus', 'w-3 h-3') + '<span>Add Output</span>' +
+                  '</button>' +
+                  (channelOutputs.length ? '<button type="button" id="btn-clear-output-chan" class="btn btn-danger !py-0.5 !px-1.5 text-[10px]" title="Clear Outputs">Clear</button>' : '') +
+                '</div>' +
+              '</div>' +
+              '<div id="channel-outputs-container" class="grid gap-2 max-h-52 overflow-y-auto pr-1"></div>' +
+            '</div>' +
+          '</div>' +
         '</div>',
       footer:
         '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
@@ -1828,8 +2246,10 @@ RMTP.views.advancing = function (el) {
 
     // Space Selection dynamic routing
     const spaceSelect = m.root.querySelector('#e-space');
+    const categorySelect = m.root.querySelector('#e-category');
     const liveSection = m.root.querySelector('#section-live-advancing');
     const cinemaSection = m.root.querySelector('#section-cinema-advancing');
+    const maintSection = m.root.querySelector('#section-maintenance-advancing');
 
     function updateSpaceWorkflow() {
       const isScreen = isScreenSpace(spaceSelect.value);
@@ -1837,6 +2257,432 @@ RMTP.views.advancing = function (el) {
       if (cinemaSection) cinemaSection.classList.toggle('hidden', !isScreen);
     }
     if (spaceSelect) spaceSelect.addEventListener('change', updateSpaceWorkflow);
+
+    if (categorySelect) {
+      categorySelect.addEventListener('change', () => {
+        const isMaint = categorySelect.value === 'Maintenance';
+        if (maintSection) maintSection.classList.toggle('hidden', !isMaint && !linkedMaintIds.length);
+        if (categorySelect.value === 'Cinema' && !spaceSelect.value) {
+          spaceSelect.value = 'Cinema 1';
+          updateSpaceWorkflow();
+        }
+      });
+    }
+
+    // Maintenance tasks picker
+    function renderMaintenancePicker() {
+      const picker = m.root.querySelector('#maintenance-tasks-picker');
+      if (!picker) return;
+      if (!openFaults.length) {
+        picker.innerHTML = '<div class="text-xs text-muted italic p-2 rounded bg-panel border border-line">No open maintenance tasks or faults found.</div>';
+        return;
+      }
+      picker.innerHTML = openFaults.map((f) => {
+        const isChecked = linkedMaintIds.indexOf(f.id) !== -1;
+        return (
+          '<label class="flex items-start gap-2.5 p-2.5 rounded-lg bg-panel border border-line cursor-pointer hover:border-accent/50 text-xs">' +
+            '<input type="checkbox" data-maint-id="' + f.id + '" class="w-4 h-4 mt-0.5 rounded border-line accent-[var(--accent)] shrink-0 cursor-pointer" ' + (isChecked ? 'checked' : '') + ' />' +
+            '<div class="min-w-0 flex-1">' +
+              '<div class="flex items-center justify-between gap-2">' +
+                '<span class="font-medium text-ink">' + ui.esc(f.title || f.equipment || 'Fault') + '</span>' +
+                ui.pill(f.status || 'Reported', f.status === 'Resolved' ? 'var(--ok)' : (f.status === 'In Progress' ? 'var(--info)' : 'var(--warning)')) +
+              '</div>' +
+              '<div class="text-muted text-[11px] mt-0.5">' + ui.esc(f.space || f.location || 'Venue') + (f.description ? ' \u00b7 ' + ui.esc(f.description) : '') + '</div>' +
+            '</div>' +
+          '</label>'
+        );
+      }).join('');
+
+      picker.querySelectorAll('[data-maint-id]').forEach((cb) => {
+        cb.addEventListener('change', (e) => {
+          const fid = cb.getAttribute('data-maint-id');
+          if (e.target.checked) {
+            if (linkedMaintIds.indexOf(fid) === -1) linkedMaintIds.push(fid);
+          } else {
+            linkedMaintIds = linkedMaintIds.filter((x) => x !== fid);
+          }
+        });
+      });
+    }
+    renderMaintenancePicker();
+
+    // Channel List Builder: Inputs
+    function renderChannelInputs() {
+      const container = m.root.querySelector('#channel-inputs-container');
+      if (!container) return;
+      if (!channelInputs.length) {
+        container.innerHTML = '<div class="text-xs text-muted italic p-2.5 rounded bg-panel border border-line text-center">No input channels added. Click "+ Add Input Channel" to build patch list.</div>';
+        return;
+      }
+      container.innerHTML = channelInputs.map((ch, idx) => (
+        '<div class="p-2 rounded-lg bg-panel border border-line flex flex-col gap-1.5 text-xs">' +
+          '<div class="flex items-center justify-between gap-2">' +
+            '<div class="flex items-center gap-1.5 font-mono font-semibold text-accent">' +
+              '<span>Ch ' + (ch.channel || (idx + 1)) + '</span>' +
+            '</div>' +
+            '<div class="flex items-center gap-1">' +
+              '<label class="flex items-center gap-1 text-[11px] text-muted mr-2 cursor-pointer">' +
+                '<input type="checkbox" data-inp-48v="' + idx + '" class="w-3.5 h-3.5 accent-[var(--danger)]" ' + (ch.phantom ? 'checked' : '') + ' />' +
+                '<span class="' + (ch.phantom ? 'text-danger font-bold' : '') + '">+48V</span>' +
+              '</label>' +
+              '<button type="button" data-inp-up="' + idx + '" class="btn btn-ghost !p-1" title="Move Up" ' + (idx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3 h-3') + '</button>' +
+              '<button type="button" data-inp-down="' + idx + '" class="btn btn-ghost !p-1" title="Move Down" ' + (idx === channelInputs.length - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3 h-3') + '</button>' +
+              '<button type="button" data-inp-del="' + idx + '" class="btn btn-danger !p-1" title="Remove">' + ui.icon('trash', 'w-3 h-3') + '</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2">' +
+            '<div>' +
+              '<input list="inp-inst-presets" data-inp-inst="' + idx + '" class="field !py-1 !px-2 text-xs" value="' + ui.esc(ch.instrument || '') + '" placeholder="Instrument (e.g. Kick)" />' +
+            '</div>' +
+            '<div>' +
+              '<input list="inp-mic-presets" data-inp-mic="' + idx + '" class="field !py-1 !px-2 text-xs" value="' + ui.esc(ch.mic || '') + '" placeholder="Mic/DI (e.g. SM58)" />' +
+            '</div>' +
+            '<div>' +
+              '<select data-inp-stand="' + idx + '" class="field !py-1 !px-2 text-xs">' +
+                '<option value="">Stand\u2026</option>' +
+                INPUT_STAND_PRESETS.map((s) => '<option ' + (s === ch.stand ? 'selected' : '') + '>' + s + '</option>').join('') +
+              '</select>' +
+            '</div>' +
+            '<div>' +
+              '<select data-inp-pos="' + idx + '" class="field !py-1 !px-2 text-xs">' +
+                '<option value="">Position\u2026</option>' +
+                INPUT_POSITIONS.map((p) => '<option ' + (p === ch.pos ? 'selected' : '') + '>' + p + '</option>').join('') +
+              '</select>' +
+            '</div>' +
+          '</div>' +
+        '</div>'
+      )).join('') +
+      '<datalist id="inp-inst-presets">' + INPUT_INSTRUMENT_PRESETS.map((p) => '<option value="' + p + '"></option>').join('') + '</datalist>' +
+      '<datalist id="inp-mic-presets">' + INPUT_MIC_PRESETS.map((p) => '<option value="' + p + '"></option>').join('') + '</datalist>';
+
+      container.querySelectorAll('[data-inp-inst]').forEach((inp) => {
+        inp.addEventListener('input', () => { channelInputs[+inp.getAttribute('data-inp-inst')].instrument = inp.value; });
+      });
+      container.querySelectorAll('[data-inp-mic]').forEach((inp) => {
+        inp.addEventListener('input', () => { channelInputs[+inp.getAttribute('data-inp-mic')].mic = inp.value; });
+      });
+      container.querySelectorAll('[data-inp-stand]').forEach((sel) => {
+        sel.addEventListener('change', () => { channelInputs[+sel.getAttribute('data-inp-stand')].stand = sel.value; });
+      });
+      container.querySelectorAll('[data-inp-pos]').forEach((sel) => {
+        sel.addEventListener('change', () => { channelInputs[+sel.getAttribute('data-inp-pos')].pos = sel.value; });
+      });
+      container.querySelectorAll('[data-inp-48v]').forEach((chk) => {
+        chk.addEventListener('change', () => { channelInputs[+chk.getAttribute('data-inp-48v')].phantom = chk.checked; });
+      });
+      container.querySelectorAll('[data-inp-up]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-inp-up');
+          if (idx > 0) {
+            const t = channelInputs[idx]; channelInputs[idx] = channelInputs[idx - 1]; channelInputs[idx - 1] = t;
+            renumberInputs(); renderChannelInputs();
+          }
+        });
+      });
+      container.querySelectorAll('[data-inp-down]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-inp-down');
+          if (idx < channelInputs.length - 1) {
+            const t = channelInputs[idx]; channelInputs[idx] = channelInputs[idx + 1]; channelInputs[idx + 1] = t;
+            renumberInputs(); renderChannelInputs();
+          }
+        });
+      });
+      container.querySelectorAll('[data-inp-del]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          channelInputs.splice(+btn.getAttribute('data-inp-del'), 1);
+          renumberInputs(); renderChannelInputs();
+        });
+      });
+    }
+
+    function renumberInputs() {
+      channelInputs.forEach((ch, i) => { ch.channel = i + 1; });
+    }
+
+    const addInputBtn = m.root.querySelector('#btn-add-input-chan');
+    if (addInputBtn) {
+      addInputBtn.addEventListener('click', () => {
+        channelInputs.push({
+          channel: channelInputs.length + 1,
+          instrument: '',
+          mic: '',
+          stand: 'Tall Boom',
+          pos: 'Centre Stage',
+          phantom: false
+        });
+        renderChannelInputs();
+      });
+    }
+
+    const clearInputBtn = m.root.querySelector('#btn-clear-input-chan');
+    if (clearInputBtn) {
+      clearInputBtn.addEventListener('click', () => {
+        if (confirm('Clear all master input channels?')) {
+          channelInputs = [];
+          renderChannelInputs();
+        }
+      });
+    }
+
+    // Global Festival Input Presets
+    const GLOBAL_PRESETS = {
+      band: [
+        { instrument: 'Kick In', mic: 'Shure Beta 91A', stand: 'N/A', pos: 'Upstage Centre', phantom: true },
+        { instrument: 'Kick Out', mic: 'Shure Beta 52', stand: 'Short Boom', pos: 'Upstage Centre', phantom: false },
+        { instrument: 'Snare Top', mic: 'Shure SM57', stand: 'Short Boom', pos: 'Upstage Centre', phantom: false },
+        { instrument: 'Snare Bottom', mic: 'Shure SM57', stand: 'Claw / Clip', pos: 'Upstage Centre', phantom: false },
+        { instrument: 'Hi-Hat', mic: 'AKG C414', stand: 'Tall Boom', pos: 'Upstage Centre', phantom: true },
+        { instrument: 'Rack Tom', mic: 'Sennheiser e604', stand: 'Claw / Clip', pos: 'Upstage Centre', phantom: false },
+        { instrument: 'Floor Tom', mic: 'Sennheiser e604', stand: 'Claw / Clip', pos: 'Upstage Centre', phantom: false },
+        { instrument: 'OH Left', mic: 'AKG C414', stand: 'Tall Boom', pos: 'Upstage Left', phantom: true },
+        { instrument: 'OH Right', mic: 'AKG C414', stand: 'Tall Boom', pos: 'Upstage Right', phantom: true },
+        { instrument: 'Bass DI', mic: 'Radial ProDI', stand: 'N/A', pos: 'Stage Right', phantom: false },
+        { instrument: 'Bass Mic', mic: 'Sennheiser e906', stand: 'Short Boom', pos: 'Stage Right', phantom: false },
+        { instrument: 'Gtr SL', mic: 'Shure SM57', stand: 'Short Boom', pos: 'Stage Left', phantom: false },
+        { instrument: 'Gtr SR', mic: 'Sennheiser e906', stand: 'Short Boom', pos: 'Stage Right', phantom: false },
+        { instrument: 'Keys L', mic: 'Radial ProD2', stand: 'N/A', pos: 'Stage Left', phantom: false },
+        { instrument: 'Keys R', mic: 'Radial ProD2', stand: 'N/A', pos: 'Stage Left', phantom: false },
+        { instrument: 'Lead Vox', mic: 'Shure Beta 58', stand: 'Tall Boom', pos: 'Centre Stage', phantom: false },
+        { instrument: 'Backing Vox SL', mic: 'Shure SM58', stand: 'Tall Boom', pos: 'Stage Left', phantom: false },
+        { instrument: 'Backing Vox SR', mic: 'Shure SM58', stand: 'Tall Boom', pos: 'Stage Right', phantom: false },
+      ],
+      acoustic: [
+        { instrument: 'Acoustic Gtr L', mic: 'Radial ProDI', stand: 'N/A', pos: 'Centre Stage', phantom: false },
+        { instrument: 'Acoustic Gtr R', mic: 'Radial ProDI', stand: 'N/A', pos: 'Stage Right', phantom: false },
+        { instrument: 'Vocal 1 (Lead)', mic: 'Shure Beta 58', stand: 'Tall Boom', pos: 'Centre Stage', phantom: false },
+        { instrument: 'Vocal 2', mic: 'Shure SM58', stand: 'Tall Boom', pos: 'Stage Right', phantom: false },
+        { instrument: 'Percussion / Cajon', mic: 'Shure Beta 91A', stand: 'N/A', pos: 'Upstage Centre', phantom: true },
+      ],
+      dj: [
+        { instrument: 'DJ Master L', mic: 'Radial ProD2', stand: 'N/A', pos: 'Centre Stage', phantom: false },
+        { instrument: 'DJ Master R', mic: 'Radial ProD2', stand: 'N/A', pos: 'Centre Stage', phantom: false },
+        { instrument: 'DJ Booth L', mic: 'Line In', stand: 'N/A', pos: 'Centre Stage', phantom: false },
+        { instrument: 'DJ Booth R', mic: 'Line In', stand: 'N/A', pos: 'Centre Stage', phantom: false },
+        { instrument: 'Host / MC Mic', mic: 'Wireless Handheld', stand: 'Tall Boom', pos: 'Downstage Centre', phantom: false },
+      ],
+      fest: [
+        { instrument: 'Kick', mic: 'Shure Beta 52', stand: 'Short Boom', pos: 'Upstage Centre', phantom: false },
+        { instrument: 'Snare', mic: 'Shure SM57', stand: 'Short Boom', pos: 'Upstage Centre', phantom: false },
+        { instrument: 'Hi-Hat', mic: 'AKG C414', stand: 'Tall Boom', pos: 'Upstage Centre', phantom: true },
+        { instrument: 'Tom 1', mic: 'Sennheiser e604', stand: 'Claw / Clip', pos: 'Upstage Centre', phantom: false },
+        { instrument: 'Tom 2', mic: 'Sennheiser e604', stand: 'Claw / Clip', pos: 'Upstage Centre', phantom: false },
+        { instrument: 'Tom 3', mic: 'Sennheiser e604', stand: 'Claw / Clip', pos: 'Upstage Centre', phantom: false },
+        { instrument: 'OH L', mic: 'AKG C414', stand: 'Tall Boom', pos: 'Upstage Left', phantom: true },
+        { instrument: 'OH R', mic: 'AKG C414', stand: 'Tall Boom', pos: 'Upstage Right', phantom: true },
+        { instrument: 'Bass DI', mic: 'Radial ProDI', stand: 'N/A', pos: 'Stage Right', phantom: false },
+        { instrument: 'Gtr 1', mic: 'Shure SM57', stand: 'Short Boom', pos: 'Stage Left', phantom: false },
+        { instrument: 'Gtr 2', mic: 'Sennheiser e906', stand: 'Short Boom', pos: 'Stage Right', phantom: false },
+        { instrument: 'Keys L', mic: 'Radial ProD2', stand: 'N/A', pos: 'Stage Left', phantom: false },
+        { instrument: 'Keys R', mic: 'Radial ProD2', stand: 'N/A', pos: 'Stage Left', phantom: false },
+        { instrument: 'Vox 1', mic: 'Shure Beta 58', stand: 'Tall Boom', pos: 'Downstage Left', phantom: false },
+        { instrument: 'Vox 2 (Main)', mic: 'Shure Beta 58', stand: 'Tall Boom', pos: 'Downstage Centre', phantom: false },
+        { instrument: 'Vox 3', mic: 'Shure Beta 58', stand: 'Tall Boom', pos: 'Downstage Right', phantom: false },
+      ]
+    };
+
+    // Global input preset selector
+    const selGlobalInpPreset = m.root.querySelector('#sel-global-inp-preset');
+    if (selGlobalInpPreset) {
+      selGlobalInpPreset.addEventListener('change', () => {
+        const pid = selGlobalInpPreset.value;
+        if (!pid) return;
+        const allPresets = RMTP.presets.getInputs();
+        const p = allPresets.find((x) => x.id === pid);
+        if (p && Array.isArray(p.channels)) {
+          p.channels.forEach((item) => {
+            channelInputs.push(Object.assign({ channel: channelInputs.length + 1 }, item));
+          });
+          renderChannelInputs();
+          ui.toast('Loaded preset: ' + p.name, 'ok');
+        }
+        selGlobalInpPreset.value = '';
+      });
+    }
+
+    // Global save input preset
+    const btnGlobalSaveInp = m.root.querySelector('#btn-global-save-inp-preset');
+    if (btnGlobalSaveInp) {
+      btnGlobalSaveInp.addEventListener('click', () => {
+        if (!channelInputs.length) {
+          ui.toast('No input channels to save as a preset', 'warning');
+          return;
+        }
+        RMTP.presets.openSaveAsModal('input', channelInputs, (newP) => {
+          // Re-populate dropdown
+          if (selGlobalInpPreset) {
+            selGlobalInpPreset.innerHTML = '<option value="">⚡ Load Input Preset\u2026</option>' +
+              RMTP.presets.getInputs().map((p) => '<option value="' + p.id + '">' + ui.esc(p.name) + ' (' + (p.channels ? p.channels.length : 0) + ' Ch)</option>').join('');
+          }
+        });
+      });
+    }
+
+    // Global Manage Presets button
+    const btnGlobalManage = m.root.querySelector('#btn-global-manage-presets');
+    if (btnGlobalManage) {
+      btnGlobalManage.addEventListener('click', () => {
+        RMTP.presets.openEditorModal(null, 'input', () => {
+          // Re-populate dropdowns
+          if (selGlobalInpPreset) {
+            selGlobalInpPreset.innerHTML = '<option value="">⚡ Load Input Preset\u2026</option>' +
+              RMTP.presets.getInputs().map((p) => '<option value="' + p.id + '">' + ui.esc(p.name) + ' (' + (p.channels ? p.channels.length : 0) + ' Ch)</option>').join('');
+          }
+          if (selGlobalOutPreset) {
+            selGlobalOutPreset.innerHTML = '<option value="">⚡ Load Output Preset\u2026</option>' +
+              RMTP.presets.getOutputs().map((p) => '<option value="' + p.id + '">' + ui.esc(p.name) + ' (' + (p.channels ? p.channels.length : 0) + ' Out)</option>').join('');
+          }
+        });
+      });
+    }
+
+    renderChannelInputs();
+
+    // Channel List Builder: Outputs
+    function renderChannelOutputs() {
+      const container = m.root.querySelector('#channel-outputs-container');
+      if (!container) return;
+      if (!channelOutputs.length) {
+        container.innerHTML = '<div class="text-xs text-muted italic p-2.5 rounded bg-panel border border-line text-center">No master outputs added. Click "+ Add Output" or use preset buttons.</div>';
+        return;
+      }
+      container.innerHTML = channelOutputs.map((out, idx) => (
+        '<div class="p-2 rounded-lg bg-panel border border-line flex flex-col gap-1.5 text-xs">' +
+          '<div class="flex items-center justify-between gap-2">' +
+            '<div class="flex items-center gap-1.5 font-mono font-semibold text-info">' +
+              '<span>Out ' + (out.num || (idx + 1)) + '</span>' +
+              (out.stereo ? '<span class="px-1 py-0.2 rounded bg-info/20 text-[10px]">Stereo</span>' : '') +
+            '</div>' +
+            '<div class="flex items-center gap-1">' +
+              '<label class="flex items-center gap-1 text-[11px] text-muted mr-2 cursor-pointer">' +
+                '<input type="checkbox" data-out-stereo="' + idx + '" class="w-3.5 h-3.5 accent-[var(--info)]" ' + (out.stereo ? 'checked' : '') + ' />' +
+                '<span>Stereo</span>' +
+              '</label>' +
+              '<button type="button" data-out-up="' + idx + '" class="btn btn-ghost !p-1" title="Move Up" ' + (idx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3 h-3') + '</button>' +
+              '<button type="button" data-out-down="' + idx + '" class="btn btn-ghost !p-1" title="Move Down" ' + (idx === channelOutputs.length - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3 h-3') + '</button>' +
+              '<button type="button" data-out-del="' + idx + '" class="btn btn-danger !p-1" title="Remove">' + ui.icon('trash', 'w-3 h-3') + '</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="grid grid-cols-1 sm:grid-cols-3 gap-2">' +
+            '<div>' +
+              '<input data-out-name="' + idx + '" class="field !py-1 !px-2 text-xs" value="' + ui.esc(out.name || '') + '" placeholder="Label (e.g. Mix 1 Lead Wedge)" />' +
+            '</div>' +
+            '<div>' +
+              '<select data-out-type="' + idx + '" class="field !py-1 !px-2 text-xs">' +
+                OUTPUT_TYPE_PRESETS.map((t) => '<option ' + (t === out.type ? 'selected' : '') + '>' + t + '</option>').join('') +
+              '</select>' +
+            '</div>' +
+            '<div>' +
+              '<input data-out-dest="' + idx + '" class="field !py-1 !px-2 text-xs" value="' + ui.esc(out.dest || '') + '" placeholder="Stage Destination / Mix" />' +
+            '</div>' +
+          '</div>' +
+        '</div>'
+      )).join('');
+
+      container.querySelectorAll('[data-out-name]').forEach((inp) => {
+        inp.addEventListener('input', () => { channelOutputs[+inp.getAttribute('data-out-name')].name = inp.value; });
+      });
+      container.querySelectorAll('[data-out-type]').forEach((sel) => {
+        sel.addEventListener('change', () => { channelOutputs[+sel.getAttribute('data-out-type')].type = sel.value; });
+      });
+      container.querySelectorAll('[data-out-dest]').forEach((inp) => {
+        inp.addEventListener('input', () => { channelOutputs[+inp.getAttribute('data-out-dest')].dest = inp.value; });
+      });
+      container.querySelectorAll('[data-out-stereo]').forEach((chk) => {
+        chk.addEventListener('change', () => { channelOutputs[+chk.getAttribute('data-out-stereo')].stereo = chk.checked; renderChannelOutputs(); });
+      });
+      container.querySelectorAll('[data-out-up]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-out-up');
+          if (idx > 0) {
+            const t = channelOutputs[idx]; channelOutputs[idx] = channelOutputs[idx - 1]; channelOutputs[idx - 1] = t;
+            renumberOutputs(); renderChannelOutputs();
+          }
+        });
+      });
+      container.querySelectorAll('[data-out-down]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-out-down');
+          if (idx < channelOutputs.length - 1) {
+            const t = channelOutputs[idx]; channelOutputs[idx] = channelOutputs[idx + 1]; channelOutputs[idx + 1] = t;
+            renumberOutputs(); renderChannelOutputs();
+          }
+        });
+      });
+      container.querySelectorAll('[data-out-del]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          channelOutputs.splice(+btn.getAttribute('data-out-del'), 1);
+          renumberOutputs(); renderChannelOutputs();
+        });
+      });
+    }
+
+    function renumberOutputs() {
+      channelOutputs.forEach((out, i) => { out.num = i + 1; });
+    }
+
+    const addOutputBtn = m.root.querySelector('#btn-add-output-chan');
+    if (addOutputBtn) {
+      addOutputBtn.addEventListener('click', () => {
+        channelOutputs.push({
+          num: channelOutputs.length + 1,
+          name: '',
+          type: 'Wedge',
+          dest: 'Stage Left',
+          stereo: false
+        });
+        renderChannelOutputs();
+      });
+    }
+
+    const clearOutputBtn = m.root.querySelector('#btn-clear-output-chan');
+    if (clearOutputBtn) {
+      clearOutputBtn.addEventListener('click', () => {
+        if (confirm('Clear all master outputs?')) {
+          channelOutputs = [];
+          renderChannelOutputs();
+        }
+      });
+    }
+
+    // Global output preset selector
+    const selGlobalOutPreset = m.root.querySelector('#sel-global-out-preset');
+    if (selGlobalOutPreset) {
+      selGlobalOutPreset.addEventListener('change', () => {
+        const pid = selGlobalOutPreset.value;
+        if (!pid) return;
+        const allPresets = RMTP.presets.getOutputs();
+        const p = allPresets.find((x) => x.id === pid);
+        if (p && Array.isArray(p.channels)) {
+          p.channels.forEach((item) => {
+            channelOutputs.push(Object.assign({ num: channelOutputs.length + 1 }, item));
+          });
+          renderChannelOutputs();
+          ui.toast('Loaded preset: ' + p.name, 'ok');
+        }
+        selGlobalOutPreset.value = '';
+      });
+    }
+
+    // Global save output preset
+    const btnGlobalSaveOut = m.root.querySelector('#btn-global-save-out-preset');
+    if (btnGlobalSaveOut) {
+      btnGlobalSaveOut.addEventListener('click', () => {
+        if (!channelOutputs.length) {
+          ui.toast('No output channels to save as a preset', 'warning');
+          return;
+        }
+        RMTP.presets.openSaveAsModal('output', channelOutputs, (newP) => {
+          // Re-populate dropdown
+          if (selGlobalOutPreset) {
+            selGlobalOutPreset.innerHTML = '<option value="">⚡ Load Output Preset\u2026</option>' +
+              RMTP.presets.getOutputs().map((p) => '<option value="' + p.id + '">' + ui.esc(p.name) + ' (' + (p.channels ? p.channels.length : 0) + ' Out)</option>').join('');
+          }
+        });
+      });
+    }
+
+    renderChannelOutputs();
 
     /* ---- Live Schedule Builder UI Wiring ---- */
     const menuBtn = m.root.querySelector('#btn-add-schedule-menu');
@@ -1861,7 +2707,12 @@ RMTP.views.advancing = function (el) {
             label: 'Act ' + actCount,
             customName: '',
             time: '',
-            duration: '00:30'
+            duration: '00:30',
+            techReqType: 'none',
+            techNotes: '',
+            techFile: null,
+            channelInputs: [],
+            channelOutputs: []
           });
         } else if (type === 'changeover') {
           scheduleItems.push({
@@ -1869,7 +2720,8 @@ RMTP.views.advancing = function (el) {
             label: 'Changeover',
             customName: '',
             time: '',
-            duration: '00:15'
+            duration: '00:15',
+            techReqType: 'none'
           });
         } else {
           scheduleItems.push({
@@ -1877,7 +2729,12 @@ RMTP.views.advancing = function (el) {
             label: 'Other',
             customName: '',
             time: '',
-            duration: '00:30'
+            duration: '00:30',
+            techReqType: 'none',
+            techNotes: '',
+            techFile: null,
+            channelInputs: [],
+            channelOutputs: []
           });
         }
         renderScheduleBuilder();
@@ -1898,8 +2755,16 @@ RMTP.views.advancing = function (el) {
         const isChangeover = item.type === 'changeover';
         const isOther = item.type === 'other';
 
+        const reqType = item.techReqType || 'none';
+        const itemFile = item.pendingFile || (item.clearedFile ? null : item.techFile);
+        const inList = Array.isArray(item.channelInputs) ? item.channelInputs : [];
+        const outList = Array.isArray(item.channelOutputs) ? item.channelOutputs : [];
+        const inCount = inList.length;
+        const outCount = outList.length;
+        const actTab = item._actTab || 'inputs';
+
         return (
-          '<div class="p-3 rounded-lg bg-panel border border-line flex flex-col gap-2 relative group">' +
+          '<div class="p-3 rounded-lg bg-panel border border-line flex flex-col gap-2.5 relative group shadow-sm">' +
             '<div class="flex items-center justify-between gap-2">' +
               '<div class="flex items-center gap-2">' +
                 (isAct ? (
@@ -1935,11 +2800,169 @@ RMTP.views.advancing = function (el) {
                 '<input data-sch-dur="' + idx + '" type="text" pattern="[0-9]{2}:[0-9]{2}" class="field !py-1 !px-2 font-mono text-xs flex-1" value="' + ui.esc(item.duration || '') + '" placeholder="00:30" title="Format: HH:MM (e.g. 00:30 for 30 mins)" />' +
               '</div>' +
             '</div>' +
+
+            // Technical Requirements linking per act
+            (!isChangeover ? (
+              '<div class="mt-2 pt-2 border-t border-line/60 flex flex-col gap-2">' +
+                '<div class="flex flex-wrap items-center justify-between gap-2">' +
+                  '<div class="flex items-center gap-1.5 text-xs font-semibold text-ink">' +
+                    '<span class="text-accent">' + ui.icon('gear', 'w-3.5 h-3.5') + '</span>' +
+                    '<span>Tech Requirements:</span>' +
+                  '</div>' +
+                  '<div class="flex items-center gap-1 flex-wrap">' +
+                    '<button type="button" data-act-mode="none" data-act-idx="' + idx + '" class="px-2 py-0.5 rounded text-[11px] font-medium border ' + (reqType === 'none' ? 'bg-panel2 border-accent text-accent font-semibold' : 'border-line text-muted hover:text-ink') + '">None</button>' +
+                    '<button type="button" data-act-mode="text" data-act-idx="' + idx + '" class="px-2 py-0.5 rounded text-[11px] font-medium border ' + (reqType === 'text' ? 'bg-panel2 border-accent text-accent font-semibold' : 'border-line text-muted hover:text-ink') + '">Rich Text</button>' +
+                    '<button type="button" data-act-mode="file" data-act-idx="' + idx + '" class="px-2 py-0.5 rounded text-[11px] font-medium border ' + (reqType === 'file' ? 'bg-panel2 border-accent text-accent font-semibold' : 'border-line text-muted hover:text-ink') + '">File Upload' + (itemFile ? ' (1)' : '') + '</button>' +
+                    '<button type="button" data-act-mode="channels" data-act-idx="' + idx + '" class="px-2 py-0.5 rounded text-[11px] font-medium border ' + (reqType === 'channels' ? 'bg-panel2 border-accent text-accent font-semibold' : 'border-line text-muted hover:text-ink') + '">Custom List (' + inCount + ' In \u00b7 ' + outCount + ' Out)</button>' +
+                  '</div>' +
+                '</div>' +
+
+                // 1. Rich Text View
+                (reqType === 'text' ? (
+                  '<div class="mt-1">' +
+                    '<textarea data-act-notes="' + idx + '" class="field text-xs leading-relaxed" rows="3" placeholder="Stage requirements, artist rider notes, vocal mics, DI requirements, backline notes, monitor mixes...">' + ui.esc(item.techNotes || '') + '</textarea>' +
+                  '</div>'
+                ) : '') +
+
+                // 2. File Upload View
+                (reqType === 'file' ? (
+                  '<div class="mt-1">' +
+                    (itemFile ? (
+                      '<div class="p-2.5 rounded bg-panel2/60 border border-line flex items-center justify-between gap-2 text-xs">' +
+                        '<div class="flex items-center gap-2 min-w-0">' +
+                          '<span class="text-accent">' + ui.icon('file', 'w-4 h-4') + '</span>' +
+                          '<span class="font-medium truncate text-ink">' + ui.esc(itemFile.name) + '</span>' +
+                          '<span class="text-[10px] text-muted shrink-0">' + files.humanSize(itemFile.size) + (item.pendingFile ? ' \u00b7 unsaved' : '') + '</span>' +
+                        '</div>' +
+                        '<div class="flex items-center gap-1 shrink-0">' +
+                          '<button type="button" data-act-file-view="' + idx + '" class="btn btn-ghost !p-1.5" title="View Rider">' + ui.icon('arrowR', 'w-3.5 h-3.5') + '</button>' +
+                          '<button type="button" data-act-file-remove="' + idx + '" class="btn btn-danger !p-1.5" title="Remove PDF">' + ui.icon('trash', 'w-3.5 h-3.5') + '</button>' +
+                        '</div>' +
+                      '</div>'
+                    ) : (
+                      '<label class="btn btn-ghost !py-2 !px-3 text-xs cursor-pointer border border-dashed border-line hover:border-accent inline-flex items-center gap-2 text-accent">' +
+                        '<input type="file" accept="application/pdf,.pdf" data-act-file-inp="' + idx + '" class="sr-only" />' +
+                        ui.icon('upload', 'w-3.5 h-3.5') +
+                        '<span>Upload Act Tech Spec / Rider (PDF up to ' + files.humanSize(files.MAX) + ')</span>' +
+                      '</label>'
+                    )) +
+                  '</div>'
+                ) : '') +
+
+                // 3. Custom List View (Inputs & Outputs)
+                (reqType === 'channels' ? (
+                  '<div class="mt-1 flex flex-col gap-2 p-2.5 rounded-lg bg-panel2/40 border border-line">' +
+                    // Sub-tabs: Inputs vs Outputs
+                    '<div class="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-line/60">' +
+                      '<div class="flex items-center gap-1.5">' +
+                        '<button type="button" data-act-subtab="inputs" data-act-idx="' + idx + '" class="px-2.5 py-1 rounded text-xs font-semibold ' + (actTab === 'inputs' ? 'bg-accent text-white shadow-xs' : 'bg-panel text-muted hover:text-ink border border-line') + '">Act Inputs (' + inCount + ')</button>' +
+                        '<button type="button" data-act-subtab="outputs" data-act-idx="' + idx + '" class="px-2.5 py-1 rounded text-xs font-semibold ' + (actTab === 'outputs' ? 'bg-info text-white shadow-xs' : 'bg-panel text-muted hover:text-ink border border-line') + '">Act Outputs & Monitors (' + outCount + ')</button>' +
+                      '</div>' +
+                      '<div class="flex items-center gap-1.5 flex-wrap">' +
+                        (actTab === 'inputs' ? (
+                          '<select data-act-inp-preset-sel="' + idx + '" class="field !py-0.5 !px-1.5 text-[11px] font-medium !w-auto bg-panel text-accent cursor-pointer">' +
+                            '<option value="">⚡ Load Input Preset\u2026</option>' +
+                            RMTP.presets.getInputs().map((p) => '<option value="' + p.id + '">' + ui.esc(p.name) + ' (' + (p.channels ? p.channels.length : 0) + ' Ch)</option>').join('') +
+                          '</select>' +
+                          '<button type="button" data-act-save-inp-preset="' + idx + '" class="btn btn-ghost !py-0.5 !px-2 text-[10px] text-accent" title="Save this act\'s inputs as a preset">💾 Save Preset</button>' +
+                          '<button type="button" data-act-add-input="' + idx + '" class="btn btn-primary !py-0.5 !px-2 text-[10px] flex items-center gap-1 font-semibold">' +
+                            ui.icon('plus', 'w-3 h-3') + '<span>Add Channel</span>' +
+                          '</button>' +
+                          (inCount ? '<button type="button" data-act-clear-input="' + idx + '" class="btn btn-danger !py-0.5 !px-1.5 text-[10px]" title="Clear Inputs">Clear</button>' : '')
+                        ) : (
+                          '<select data-act-out-preset-sel="' + idx + '" class="field !py-0.5 !px-1.5 text-[11px] font-medium !w-auto bg-panel text-info cursor-pointer">' +
+                            '<option value="">⚡ Load Output Preset\u2026</option>' +
+                            RMTP.presets.getOutputs().map((p) => '<option value="' + p.id + '">' + ui.esc(p.name) + ' (' + (p.channels ? p.channels.length : 0) + ' Out)</option>').join('') +
+                          '</select>' +
+                          '<button type="button" data-act-save-out-preset="' + idx + '" class="btn btn-ghost !py-0.5 !px-2 text-[10px] text-info" title="Save this act\'s outputs as a preset">💾 Save Preset</button>' +
+                          '<button type="button" data-act-add-output="' + idx + '" class="btn btn-primary !py-0.5 !px-2 text-[10px] flex items-center gap-1 font-semibold">' +
+                            ui.icon('plus', 'w-3 h-3') + '<span>Add Output</span>' +
+                          '</button>' +
+                          (outCount ? '<button type="button" data-act-clear-output="' + idx + '" class="btn btn-danger !py-0.5 !px-1.5 text-[10px]" title="Clear Outputs">Clear</button>' : '')
+                        )) +
+                      '</div>' +
+                    '</div>' +
+
+                    // Tab Body: Inputs
+                    (actTab === 'inputs' ? (
+                      !inCount ? (
+                        '<div class="text-[11px] text-muted italic text-center py-2.5">No input channels for this act yet. Click "+ Add Channel" or choose an input preset above.</div>'
+                      ) : (
+                        '<div class="grid gap-1.5 max-h-60 overflow-y-auto pr-1">' +
+                          inList.map((ch, chIdx) => (
+                            '<div class="p-1.5 rounded bg-panel border border-line flex flex-col gap-1 text-xs">' +
+                              '<div class="flex items-center justify-between gap-2">' +
+                                '<span class="font-mono font-bold text-accent text-[11px]">Ch ' + (ch.channel || (chIdx + 1)) + '</span>' +
+                                '<div class="flex items-center gap-1">' +
+                                  '<label class="flex items-center gap-1 text-[11px] text-muted mr-1.5 cursor-pointer">' +
+                                    '<input type="checkbox" data-act-ch-48v="' + idx + '-' + chIdx + '" class="w-3.5 h-3.5 accent-[var(--danger)]" ' + (ch.phantom ? 'checked' : '') + ' />' +
+                                    '<span class="' + (ch.phantom ? 'text-danger font-bold' : '') + '">+48V</span>' +
+                                  '</label>' +
+                                  '<button type="button" data-act-ch-up="' + idx + '-' + chIdx + '" class="btn btn-ghost !p-1" title="Move Up" ' + (chIdx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3 h-3') + '</button>' +
+                                  '<button type="button" data-act-ch-down="' + idx + '-' + chIdx + '" class="btn btn-ghost !p-1" title="Move Down" ' + (chIdx === inCount - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3 h-3') + '</button>' +
+                                  '<button type="button" data-act-ch-del="' + idx + '-' + chIdx + '" class="btn btn-danger !p-1" title="Delete Channel">' + ui.icon('trash', 'w-3 h-3') + '</button>' +
+                                '</div>' +
+                              '</div>' +
+                              '<div class="grid grid-cols-2 sm:grid-cols-4 gap-1.5">' +
+                                '<input list="inp-inst-presets" data-act-ch-inst="' + idx + '-' + chIdx + '" class="field !py-0.5 !px-1.5 text-xs" value="' + ui.esc(ch.instrument || '') + '" placeholder="Instrument (e.g. Kick)" />' +
+                                '<input list="inp-mic-presets" data-act-ch-mic="' + idx + '-' + chIdx + '" class="field !py-0.5 !px-1.5 text-xs" value="' + ui.esc(ch.mic || '') + '" placeholder="Mic/DI (e.g. SM58)" />' +
+                                '<select data-act-ch-stand="' + idx + '-' + chIdx + '" class="field !py-0.5 !px-1 text-xs">' +
+                                  '<option value="">Stand\u2026</option>' +
+                                  INPUT_STAND_PRESETS.map((s) => '<option ' + (s === ch.stand ? 'selected' : '') + '>' + s + '</option>').join('') +
+                                '</select>' +
+                                '<select data-act-ch-pos="' + idx + '-' + chIdx + '" class="field !py-0.5 !px-1 text-xs">' +
+                                  '<option value="">Pos\u2026</option>' +
+                                  INPUT_POSITIONS.map((p) => '<option ' + (p === ch.pos ? 'selected' : '') + '>' + p + '</option>').join('') +
+                                '</select>' +
+                              '</div>' +
+                            '</div>'
+                          )).join('') +
+                        '</div>'
+                      )
+                    ) : (
+                      // Tab Body: Outputs
+                      !outCount ? (
+                        '<div class="text-[11px] text-muted italic text-center py-2.5">No output mixes configured for this act yet. Click "+ Add Output" or choose an output preset above.</div>'
+                      ) : (
+                        '<div class="grid gap-1.5 max-h-60 overflow-y-auto pr-1">' +
+                          outList.map((out, outIdx) => (
+                            '<div class="p-1.5 rounded bg-panel border border-line flex flex-col gap-1 text-xs">' +
+                              '<div class="flex items-center justify-between gap-2">' +
+                                '<div class="flex items-center gap-1.5 font-mono font-semibold text-info text-[11px]">' +
+                                  '<span>Out ' + (out.num || (outIdx + 1)) + '</span>' +
+                                  (out.stereo ? '<span class="px-1 py-0.2 rounded bg-info/20 text-[9px]">Stereo</span>' : '') +
+                                '</div>' +
+                                '<div class="flex items-center gap-1">' +
+                                  '<label class="flex items-center gap-1 text-[11px] text-muted mr-1.5 cursor-pointer">' +
+                                    '<input type="checkbox" data-act-out-stereo="' + idx + '-' + outIdx + '" class="w-3.5 h-3.5 accent-[var(--info)]" ' + (out.stereo ? 'checked' : '') + ' />' +
+                                    '<span>Stereo</span>' +
+                                  '</label>' +
+                                  '<button type="button" data-act-out-up="' + idx + '-' + outIdx + '" class="btn btn-ghost !p-1" title="Move Up" ' + (outIdx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3 h-3') + '</button>' +
+                                  '<button type="button" data-act-out-down="' + idx + '-' + outIdx + '" class="btn btn-ghost !p-1" title="Move Down" ' + (outIdx === outCount - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3 h-3') + '</button>' +
+                                  '<button type="button" data-act-out-del="' + idx + '-' + outIdx + '" class="btn btn-danger !p-1" title="Delete Output">' + ui.icon('trash', 'w-3 h-3') + '</button>' +
+                                '</div>' +
+                              '</div>' +
+                              '<div class="grid grid-cols-1 sm:grid-cols-3 gap-1.5">' +
+                                '<input data-act-out-name="' + idx + '-' + outIdx + '" class="field !py-0.5 !px-1.5 text-xs" value="' + ui.esc(out.name || '') + '" placeholder="Label (e.g. Lead Wedge)" />' +
+                                '<select data-act-out-type="' + idx + '-' + outIdx + '" class="field !py-0.5 !px-1 text-xs">' +
+                                  OUTPUT_TYPE_PRESETS.map((t) => '<option ' + (t === out.type ? 'selected' : '') + '>' + t + '</option>').join('') +
+                                '</select>' +
+                                '<input data-act-out-dest="' + idx + '-' + outIdx + '" class="field !py-0.5 !px-1.5 text-xs" value="' + ui.esc(out.dest || '') + '" placeholder="Stage Destination / Mix" />' +
+                              '</div>' +
+                            '</div>'
+                          )).join('') +
+                        '</div>'
+                      )
+                    )) +
+                  '</div>'
+                ) : '') +
+              '</div>'
+            ) : '') +
           '</div>'
         );
       }).join('');
 
-      // Wire schedule events
+      // Wire schedule base events
       container.querySelectorAll('[data-sch-label]').forEach((inp) => {
         inp.addEventListener('input', () => { scheduleItems[+inp.getAttribute('data-sch-label')].label = inp.value; });
       });
@@ -1979,6 +3002,366 @@ RMTP.views.advancing = function (el) {
           const idx = +btn.getAttribute('data-sch-del');
           scheduleItems.splice(idx, 1);
           renderScheduleBuilder();
+        });
+      });
+
+      // Wire per-act mode switcher
+      container.querySelectorAll('[data-act-mode]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const mode = btn.getAttribute('data-act-mode');
+          const idx = +btn.getAttribute('data-act-idx');
+          if (scheduleItems[idx]) {
+            scheduleItems[idx].techReqType = mode;
+            renderScheduleBuilder();
+          }
+        });
+      });
+
+      // Wire per-act subtab switcher (Inputs vs Outputs)
+      container.querySelectorAll('[data-act-subtab]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const subtab = btn.getAttribute('data-act-subtab');
+          const idx = +btn.getAttribute('data-act-idx');
+          if (scheduleItems[idx]) {
+            scheduleItems[idx]._actTab = subtab;
+            renderScheduleBuilder();
+          }
+        });
+      });
+
+      // Wire per-act rich text notes
+      container.querySelectorAll('[data-act-notes]').forEach((ta) => {
+        ta.addEventListener('input', () => {
+          const idx = +ta.getAttribute('data-act-notes');
+          if (scheduleItems[idx]) scheduleItems[idx].techNotes = ta.value;
+        });
+      });
+
+      // Wire per-act file upload
+      container.querySelectorAll('[data-act-file-inp]').forEach((inp) => {
+        inp.addEventListener('change', (e) => {
+          const idx = +inp.getAttribute('data-act-file-inp');
+          const file = e.target.files && e.target.files[0];
+          if (!file || !scheduleItems[idx]) return;
+          if (file.type && file.type.indexOf('pdf') === -1) { ui.toast('PDF files only', 'danger'); return; }
+          files.readAsDataUrl(file).then((p) => {
+            scheduleItems[idx].pendingFile = p;
+            scheduleItems[idx].clearedFile = false;
+            renderScheduleBuilder();
+            ui.toast('Attached rider for ' + (scheduleItems[idx].customName || scheduleItems[idx].label), 'ok');
+          }).catch((err) => {
+            ui.toast(err && err.message === 'too-large' ? 'File too large (max ' + files.humanSize(files.MAX) + ')' : 'Could not read file', 'danger');
+          });
+        });
+      });
+
+      // Wire per-act file view
+      container.querySelectorAll('[data-act-file-view]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-act-file-view');
+          const it = scheduleItems[idx];
+          if (!it) return;
+          if (it.pendingFile) files.openDataUrl(it.pendingFile.dataUrl);
+          else if (it.techFile) files.open(it.techFile);
+        });
+      });
+
+      // Wire per-act file remove
+      container.querySelectorAll('[data-act-file-remove]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-act-file-remove');
+          const it = scheduleItems[idx];
+          if (!it) return;
+          if (it.pendingFile) {
+            it.pendingFile = null;
+          } else {
+            it.clearedFile = true;
+            it.originalTechFile = it.techFile;
+            it.techFile = null;
+          }
+          renderScheduleBuilder();
+        });
+      });
+
+      // Wire per-act add input channel
+      container.querySelectorAll('[data-act-add-input]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-act-add-input');
+          const it = scheduleItems[idx];
+          if (!it) return;
+          if (!Array.isArray(it.channelInputs)) it.channelInputs = [];
+          it.channelInputs.push({
+            channel: it.channelInputs.length + 1,
+            instrument: '',
+            mic: '',
+            stand: 'Tall Boom',
+            pos: 'Centre Stage',
+            phantom: false
+          });
+          renderScheduleBuilder();
+        });
+      });
+
+      // Wire per-act clear inputs
+      container.querySelectorAll('[data-act-clear-input]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-act-clear-input');
+          const it = scheduleItems[idx];
+          if (!it) return;
+          if (confirm('Clear all inputs for this act?')) {
+            it.channelInputs = [];
+            renderScheduleBuilder();
+          }
+        });
+      });
+
+      // Wire per-act add output
+      container.querySelectorAll('[data-act-add-output]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-act-add-output');
+          const it = scheduleItems[idx];
+          if (!it) return;
+          if (!Array.isArray(it.channelOutputs)) it.channelOutputs = [];
+          it.channelOutputs.push({
+            num: it.channelOutputs.length + 1,
+            name: '',
+            type: 'Wedge',
+            dest: 'Stage Left',
+            stereo: false
+          });
+          renderScheduleBuilder();
+        });
+      });
+
+      // Wire per-act clear outputs
+      container.querySelectorAll('[data-act-clear-output]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-act-clear-output');
+          const it = scheduleItems[idx];
+          if (!it) return;
+          if (confirm('Clear all outputs for this act?')) {
+            it.channelOutputs = [];
+            renderScheduleBuilder();
+          }
+        });
+      });
+
+      // Wire per-act input preset dropdown loader
+      container.querySelectorAll('[data-act-inp-preset-sel]').forEach((sel) => {
+        sel.addEventListener('change', () => {
+          const pid = sel.value;
+          const idx = +sel.getAttribute('data-act-inp-preset-sel');
+          const it = scheduleItems[idx];
+          if (!pid || !it) return;
+          const p = RMTP.presets.getInputs().find((x) => x.id === pid);
+          if (p && Array.isArray(p.channels)) {
+            if (!Array.isArray(it.channelInputs)) it.channelInputs = [];
+            p.channels.forEach((itemCh) => {
+              it.channelInputs.push(Object.assign({ channel: it.channelInputs.length + 1 }, itemCh));
+            });
+            renderScheduleBuilder();
+            ui.toast('Loaded input preset: ' + p.name, 'ok');
+          }
+        });
+      });
+
+      // Wire per-act save input preset
+      container.querySelectorAll('[data-act-save-inp-preset]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-act-save-inp-preset');
+          const it = scheduleItems[idx];
+          if (!it || !Array.isArray(it.channelInputs) || !it.channelInputs.length) {
+            ui.toast('No input channels to save as a preset', 'warning');
+            return;
+          }
+          RMTP.presets.openSaveAsModal('input', it.channelInputs, (newP) => {
+            renderScheduleBuilder();
+          });
+        });
+      });
+
+      // Wire per-act output preset dropdown loader
+      container.querySelectorAll('[data-act-out-preset-sel]').forEach((sel) => {
+        sel.addEventListener('change', () => {
+          const pid = sel.value;
+          const idx = +sel.getAttribute('data-act-out-preset-sel');
+          const it = scheduleItems[idx];
+          if (!pid || !it) return;
+          const p = RMTP.presets.getOutputs().find((x) => x.id === pid);
+          if (p && Array.isArray(p.channels)) {
+            if (!Array.isArray(it.channelOutputs)) it.channelOutputs = [];
+            p.channels.forEach((itemCh) => {
+              it.channelOutputs.push(Object.assign({ num: it.channelOutputs.length + 1 }, itemCh));
+            });
+            renderScheduleBuilder();
+            ui.toast('Loaded output preset: ' + p.name, 'ok');
+          }
+        });
+      });
+
+      // Wire per-act save output preset
+      container.querySelectorAll('[data-act-save-out-preset]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-act-save-out-preset');
+          const it = scheduleItems[idx];
+          if (!it || !Array.isArray(it.channelOutputs) || !it.channelOutputs.length) {
+            ui.toast('No output channels to save as a preset', 'warning');
+            return;
+          }
+          RMTP.presets.openSaveAsModal('output', it.channelOutputs, (newP) => {
+            renderScheduleBuilder();
+          });
+        });
+      });
+
+      // Input row fields wiring
+      container.querySelectorAll('[data-act-ch-inst]').forEach((inp) => {
+        inp.addEventListener('input', () => {
+          const [sIdx, cIdx] = inp.getAttribute('data-act-ch-inst').split('-').map(Number);
+          if (scheduleItems[sIdx] && scheduleItems[sIdx].channelInputs[cIdx]) {
+            scheduleItems[sIdx].channelInputs[cIdx].instrument = inp.value;
+          }
+        });
+      });
+      container.querySelectorAll('[data-act-ch-mic]').forEach((inp) => {
+        inp.addEventListener('input', () => {
+          const [sIdx, cIdx] = inp.getAttribute('data-act-ch-mic').split('-').map(Number);
+          if (scheduleItems[sIdx] && scheduleItems[sIdx].channelInputs[cIdx]) {
+            scheduleItems[sIdx].channelInputs[cIdx].mic = inp.value;
+          }
+        });
+      });
+      container.querySelectorAll('[data-act-ch-stand]').forEach((sel) => {
+        sel.addEventListener('change', () => {
+          const [sIdx, cIdx] = sel.getAttribute('data-act-ch-stand').split('-').map(Number);
+          if (scheduleItems[sIdx] && scheduleItems[sIdx].channelInputs[cIdx]) {
+            scheduleItems[sIdx].channelInputs[cIdx].stand = sel.value;
+          }
+        });
+      });
+      container.querySelectorAll('[data-act-ch-pos]').forEach((sel) => {
+        sel.addEventListener('change', () => {
+          const [sIdx, cIdx] = sel.getAttribute('data-act-ch-pos').split('-').map(Number);
+          if (scheduleItems[sIdx] && scheduleItems[sIdx].channelInputs[cIdx]) {
+            scheduleItems[sIdx].channelInputs[cIdx].pos = sel.value;
+          }
+        });
+      });
+      container.querySelectorAll('[data-act-ch-48v]').forEach((chk) => {
+        chk.addEventListener('change', () => {
+          const [sIdx, cIdx] = chk.getAttribute('data-act-ch-48v').split('-').map(Number);
+          if (scheduleItems[sIdx] && scheduleItems[sIdx].channelInputs[cIdx]) {
+            scheduleItems[sIdx].channelInputs[cIdx].phantom = chk.checked;
+          }
+        });
+      });
+      container.querySelectorAll('[data-act-ch-up]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const [sIdx, cIdx] = btn.getAttribute('data-act-ch-up').split('-').map(Number);
+          const it = scheduleItems[sIdx];
+          if (it && it.channelInputs && cIdx > 0) {
+            const temp = it.channelInputs[cIdx];
+            it.channelInputs[cIdx] = it.channelInputs[cIdx - 1];
+            it.channelInputs[cIdx - 1] = temp;
+            it.channelInputs.forEach((c, i) => { c.channel = i + 1; });
+            renderScheduleBuilder();
+          }
+        });
+      });
+      container.querySelectorAll('[data-act-ch-down]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const [sIdx, cIdx] = btn.getAttribute('data-act-ch-down').split('-').map(Number);
+          const it = scheduleItems[sIdx];
+          if (it && it.channelInputs && cIdx < it.channelInputs.length - 1) {
+            const temp = it.channelInputs[cIdx];
+            it.channelInputs[cIdx] = it.channelInputs[cIdx + 1];
+            it.channelInputs[cIdx + 1] = temp;
+            it.channelInputs.forEach((c, i) => { c.channel = i + 1; });
+            renderScheduleBuilder();
+          }
+        });
+      });
+      container.querySelectorAll('[data-act-ch-del]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const [sIdx, cIdx] = btn.getAttribute('data-act-ch-del').split('-').map(Number);
+          const it = scheduleItems[sIdx];
+          if (it && it.channelInputs) {
+            it.channelInputs.splice(cIdx, 1);
+            it.channelInputs.forEach((c, i) => { c.channel = i + 1; });
+            renderScheduleBuilder();
+          }
+        });
+      });
+
+      // Output row fields wiring
+      container.querySelectorAll('[data-act-out-name]').forEach((inp) => {
+        inp.addEventListener('input', () => {
+          const [sIdx, oIdx] = inp.getAttribute('data-act-out-name').split('-').map(Number);
+          if (scheduleItems[sIdx] && scheduleItems[sIdx].channelOutputs[oIdx]) {
+            scheduleItems[sIdx].channelOutputs[oIdx].name = inp.value;
+          }
+        });
+      });
+      container.querySelectorAll('[data-act-out-type]').forEach((sel) => {
+        sel.addEventListener('change', () => {
+          const [sIdx, oIdx] = sel.getAttribute('data-act-out-type').split('-').map(Number);
+          if (scheduleItems[sIdx] && scheduleItems[sIdx].channelOutputs[oIdx]) {
+            scheduleItems[sIdx].channelOutputs[oIdx].type = sel.value;
+          }
+        });
+      });
+      container.querySelectorAll('[data-act-out-dest]').forEach((inp) => {
+        inp.addEventListener('input', () => {
+          const [sIdx, oIdx] = inp.getAttribute('data-act-out-dest').split('-').map(Number);
+          if (scheduleItems[sIdx] && scheduleItems[sIdx].channelOutputs[oIdx]) {
+            scheduleItems[sIdx].channelOutputs[oIdx].dest = inp.value;
+          }
+        });
+      });
+      container.querySelectorAll('[data-act-out-stereo]').forEach((chk) => {
+        chk.addEventListener('change', () => {
+          const [sIdx, oIdx] = chk.getAttribute('data-act-out-stereo').split('-').map(Number);
+          if (scheduleItems[sIdx] && scheduleItems[sIdx].channelOutputs[oIdx]) {
+            scheduleItems[sIdx].channelOutputs[oIdx].stereo = chk.checked;
+            renderScheduleBuilder();
+          }
+        });
+      });
+      container.querySelectorAll('[data-act-out-up]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const [sIdx, oIdx] = btn.getAttribute('data-act-out-up').split('-').map(Number);
+          const it = scheduleItems[sIdx];
+          if (it && it.channelOutputs && oIdx > 0) {
+            const temp = it.channelOutputs[oIdx];
+            it.channelOutputs[oIdx] = it.channelOutputs[oIdx - 1];
+            it.channelOutputs[oIdx - 1] = temp;
+            it.channelOutputs.forEach((o, i) => { o.num = i + 1; });
+            renderScheduleBuilder();
+          }
+        });
+      });
+      container.querySelectorAll('[data-act-out-down]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const [sIdx, oIdx] = btn.getAttribute('data-act-out-down').split('-').map(Number);
+          const it = scheduleItems[sIdx];
+          if (it && it.channelOutputs && oIdx < it.channelOutputs.length - 1) {
+            const temp = it.channelOutputs[oIdx];
+            it.channelOutputs[oIdx] = it.channelOutputs[oIdx + 1];
+            it.channelOutputs[oIdx + 1] = temp;
+            it.channelOutputs.forEach((o, i) => { o.num = i + 1; });
+            renderScheduleBuilder();
+          }
+        });
+      });
+      container.querySelectorAll('[data-act-out-del]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const [sIdx, oIdx] = btn.getAttribute('data-act-out-del').split('-').map(Number);
+          const it = scheduleItems[sIdx];
+          if (it && it.channelOutputs) {
+            it.channelOutputs.splice(oIdx, 1);
+            it.channelOutputs.forEach((o, i) => { o.num = i + 1; });
+            renderScheduleBuilder();
+          }
         });
       });
     }
@@ -2071,8 +3454,29 @@ RMTP.views.advancing = function (el) {
         files.remove(originalSpec);
       }
 
+      // Persist any pending per-act rider files
+      const processedScheduleItems = scheduleItems.map((it) => {
+        const itemCopy = Object.assign({}, it);
+        if (itemCopy.pendingFile) {
+          try {
+            itemCopy.techFile = files.persist(itemCopy.pendingFile);
+          } catch (e) {
+            ui.toast('Couldn\u2019t store rider file for ' + (itemCopy.customName || itemCopy.label), 'danger');
+          }
+          delete itemCopy.pendingFile;
+        } else if (itemCopy.clearedFile && itemCopy.originalTechFile) {
+          files.remove(itemCopy.originalTechFile);
+          itemCopy.techFile = null;
+          delete itemCopy.clearedFile;
+          delete itemCopy.originalTechFile;
+        }
+        return itemCopy;
+      });
+
       const chosenSpace = m.root.querySelector('#e-space').value;
       const isScreen = isScreenSpace(chosenSpace);
+      const dcpTesterId = isScreen && m.root.querySelector('#e-dcp-tester') ? m.root.querySelector('#e-dcp-tester').value : (ev.dcp_tester_user_id || ev.dcpTesterUserId || '');
+      const dcpTestDatetime = isScreen && m.root.querySelector('#e-dcp-test-datetime') ? m.root.querySelector('#e-dcp-test-datetime').value : (ev.dcp_test_datetime || ev.dcpTestDatetime || '');
 
       const record = Object.assign({}, ev, {
         id: ev.id || store.uid('evt'),
@@ -2091,17 +3495,26 @@ RMTP.views.advancing = function (el) {
         off_stage: !isScreen && m.root.querySelector('#e-off-stage') ? m.root.querySelector('#e-off-stage').value : (ev.off_stage || ev.offStage || ''),
         curfew: !isScreen && m.root.querySelector('#e-curfew') ? m.root.querySelector('#e-curfew').value : (ev.curfew || ''),
         load_out: !isScreen && m.root.querySelector('#e-load-out') ? m.root.querySelector('#e-load-out').value : (ev.load_out || ev.loadOut || ''),
-        schedule_items: !isScreen ? scheduleItems : (ev.schedule_items || ev.scheduleItems || []),
+        schedule_items: !isScreen ? processedScheduleItems : (ev.schedule_items || ev.scheduleItems || []),
 
         // Cinema space timings & checks
         screening_starts_time: isScreen && m.root.querySelector('#e-screening-starts') ? m.root.querySelector('#e-screening-starts').value : (ev.screening_starts_time || ev.screeningStartsTime || ''),
+        film_duration: isScreen && m.root.querySelector('#e-film-duration') ? m.root.querySelector('#e-film-duration').value.trim() : (ev.film_duration || ev.filmDuration || ''),
         media_type: isScreen && m.root.querySelector('#e-media-type') ? m.root.querySelector('#e-media-type').value : (ev.media_type || ev.mediaType || ''),
         dcp_received: isScreen && m.root.querySelector('#e-dcp') ? m.root.querySelector('#e-dcp').checked : (ev.dcp_received !== undefined ? !!ev.dcp_received : !!ev.dcpReceived),
         checks_completed: isScreen && m.root.querySelector('#e-checks') ? m.root.querySelector('#e-checks').checked : (ev.checks_completed !== undefined ? !!ev.checks_completed : !!ev.checksCompleted),
         intermission: isScreen && m.root.querySelector('#e-intermission') ? m.root.querySelector('#e-intermission').checked : !!ev.intermission,
         qa: isScreen && m.root.querySelector('#e-qa') ? m.root.querySelector('#e-qa').checked : !!ev.qa,
-        dcp_tester_user_id: isScreen && m.root.querySelector('#e-dcp-tester') ? m.root.querySelector('#e-dcp-tester').value : (ev.dcp_tester_user_id || ev.dcpTesterUserId || ''),
-        dcp_test_datetime: isScreen && m.root.querySelector('#e-dcp-test-datetime') ? m.root.querySelector('#e-dcp-test-datetime').value : (ev.dcp_test_datetime || ev.dcpTestDatetime || ''),
+        dcp_tester_user_id: dcpTesterId,
+        dcp_test_datetime: dcpTestDatetime,
+
+        tech_requirements: {
+          channel_list: {
+            inputs: channelInputs,
+            outputs: channelOutputs
+          }
+        },
+        linked_maintenance_ids: linkedMaintIds,
 
         technicians: finalTechs,
         clientContact: m.root.querySelector('#e-contact').value.trim(),
@@ -2111,6 +3524,42 @@ RMTP.views.advancing = function (el) {
         techSpec: finalSpec,
         checklist: ev.checklist || { techSpecSent: false, inputListReceived: false, stagePlot: false, schedule: false, backline: false, hospitality: false, parkingAccess: false },
       });
+
+      // Automated DCP Test Shift generation
+      const genDcpCheck = m.root.querySelector('#e-gen-dcp-shift');
+      const shouldGenDcp = isScreen && genDcpCheck && genDcpCheck.checked && (dcpTestDatetime || record.date);
+
+      let linkedDcpId = ev.dcp_test_event_id || null;
+      if (shouldGenDcp) {
+        const dcpDate = dcpTestDatetime ? dcpTestDatetime.slice(0, 10) : record.date;
+        const dcpTime = (dcpTestDatetime && dcpTestDatetime.length >= 16) ? dcpTestDatetime.slice(11, 16) : '10:00';
+        let finishTime = '11:00';
+        if (dcpTime && dcpTime.indexOf(':') > -1) {
+          const [hh, mm] = dcpTime.split(':').map(Number);
+          const endH = ((hh || 0) + 1) % 24;
+          finishTime = (endH < 10 ? '0' : '') + endH + ':' + ((mm || 0) < 10 ? '0' : '') + (mm || 0);
+        }
+
+        const dcpShift = {
+          id: linkedDcpId || store.uid('evt'),
+          name: 'DCP Test: ' + name,
+          category: 'Cinema',
+          space: chosenSpace,
+          date: dcpDate,
+          startTime: dcpTime,
+          finishTime: finishTime,
+          status: 'Confirmed',
+          technicians: dcpTesterId ? [{ userId: dcpTesterId, role: 'Cinema' }] : [],
+          dcp_parent_event_id: record.id,
+          techInfo: 'Automated DCP Test Shift for screening: ' + name + (dcpTestDatetime ? ' scheduled at ' + dcpTestDatetime : ''),
+          checklist: { techSpecSent: false, inputListReceived: false, stagePlot: false, schedule: false, backline: false, hospitality: false, parkingAccess: false },
+          dcp_received: true,
+          checks_completed: false
+        };
+        store.upsert('advancing', dcpShift);
+        linkedDcpId = dcpShift.id;
+      }
+      record.dcp_test_event_id = linkedDcpId;
 
       store.upsert('advancing', record);
       m.close();

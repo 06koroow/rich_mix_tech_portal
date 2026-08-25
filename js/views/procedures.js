@@ -18,6 +18,9 @@ RMTP.views.procedures = function (el, params) {
   const itemId = params[1];
   const item = itemId ? cat.items.find((i) => i.id === itemId) : null;
 
+  const me = RMTP.auth.current();
+  const isAdmin = !!(me && me.admin);
+
   /* --- Left: category sub-nav (vertical on desktop, chips on mobile) --- */
   const catNav = cats.map((c) =>
     '<a href="#/procedures/' + c.id + '" ' +
@@ -35,26 +38,28 @@ RMTP.views.procedures = function (el, params) {
     content = renderItem(cat, item);
   } else {
     const list = cat.items.length
-  ? [...cat.items].sort((a, b) => {
-      const getNumber = (title) => {
-        const match = title.match(/^\s*(\d+)/);
-        return match ? parseInt(match[1], 10) : Infinity;
-      };
-      return getNumber(a.title) - getNumber(b.title);
-    }).map((i) => {
+      ? cat.items.map((i, idx) => {
           const done = i.body && i.body.trim();
           return (
-            '<a href="#/procedures/' + cat.id + '/' + i.id + '" class="panel p-4 flex items-center gap-3 hover:border-accent transition-colors">' +
-              '<span class="w-9 h-9 rounded-lg bg-panel2 border border-line flex items-center justify-center ' +
-                (done ? 'text-accent' : 'text-muted') + '">' + ui.icon('book', 'w-4 h-4') + '</span>' +
-              '<span class="min-w-0">' +
-                '<span class="block font-medium truncate">' + ui.esc(i.title) + '</span>' +
-                '<span class="block text-xs text-muted mt-0.5">' +
-                  (done ? ('Updated ' + (i.updated ? ui.formatDate(i.updated) : 'recently')) : 'Holding page \u2014 no content yet') +
+            '<div class="panel p-3.5 sm:p-4 flex items-center gap-3 hover:border-accent transition-colors group">' +
+              '<a href="#/procedures/' + cat.id + '/' + i.id + '" class="flex items-center gap-3 min-w-0 flex-1">' +
+                '<span class="w-9 h-9 rounded-lg bg-panel2 border border-line flex items-center justify-center shrink-0 ' +
+                  (done ? 'text-accent' : 'text-muted') + '">' + ui.icon('book', 'w-4 h-4') + '</span>' +
+                '<span class="min-w-0">' +
+                  '<span class="block font-medium truncate group-hover:text-accent transition-colors">' + ui.esc(i.title) + '</span>' +
+                  '<span class="block text-xs text-muted mt-0.5">' +
+                    (done ? ('Updated ' + (i.updated ? ui.formatDate(i.updated) : 'recently')) : 'Holding page \u2014 no content yet') +
+                  '</span>' +
                 '</span>' +
-              '</span>' +
-              '<span class="ml-auto text-muted">' + ui.icon('chevR', 'w-4 h-4') + '</span>' +
-            '</a>'
+              '</a>' +
+              (isAdmin ? (
+                '<div class="flex items-center gap-1 shrink-0 opacity-80 group-hover:opacity-100">' +
+                  '<button type="button" data-proc-up="' + idx + '" class="btn btn-ghost !p-1.5" title="Move Up" ' + (idx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3.5 h-3.5') + '</button>' +
+                  '<button type="button" data-proc-down="' + idx + '" class="btn btn-ghost !p-1.5" title="Move Down" ' + (idx === cat.items.length - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</button>' +
+                '</div>'
+              ) : '') +
+              '<a href="#/procedures/' + cat.id + '/' + i.id + '" class="text-muted group-hover:text-ink pl-1 shrink-0">' + ui.icon('chevR', 'w-4 h-4') + '</a>' +
+            '</div>'
           );
         }).join('')
       : ui.empty('book', 'No procedures in ' + cat.name + ' yet', 'Add the first one to get started.');
@@ -63,7 +68,10 @@ RMTP.views.procedures = function (el, params) {
 
   const headerAction = item
     ? ''
-    : '<button id="add-proc" class="btn btn-ghost no-print">' + ui.icon('plus', 'w-4 h-4') + 'Add procedure</button>';
+    : '<div class="flex items-center gap-2">' +
+        (isAdmin ? '<button id="edit-tab-btn" class="btn btn-ghost no-print">' + ui.icon('pen', 'w-4 h-4') + 'Edit Tab / Reorder</button>' : '') +
+        '<button id="add-proc" class="btn btn-ghost no-print">' + ui.icon('plus', 'w-4 h-4') + 'Add procedure</button>' +
+      '</div>';
 
   el.innerHTML =
     '<div class="view-enter">' +
@@ -77,6 +85,42 @@ RMTP.views.procedures = function (el, params) {
   /* --- wiring --- */
   const addBtn = el.querySelector('#add-proc');
   if (addBtn) addBtn.addEventListener('click', () => addProcedure(cat));
+
+  const editTabBtn = el.querySelector('#edit-tab-btn');
+  if (editTabBtn) editTabBtn.addEventListener('click', () => editTabModal(cat));
+
+  if (!item && isAdmin) {
+    el.querySelectorAll('[data-proc-up]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const idx = +btn.getAttribute('data-proc-up');
+        if (idx > 0) {
+          const temp = cat.items[idx];
+          cat.items[idx] = cat.items[idx - 1];
+          cat.items[idx - 1] = temp;
+          store.upsert('procedures', cat);
+          ui.toast('Reordered', 'ok');
+          RMTP.views.procedures(el, params);
+        }
+      });
+    });
+    el.querySelectorAll('[data-proc-down]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const idx = +btn.getAttribute('data-proc-down');
+        if (idx < cat.items.length - 1) {
+          const temp = cat.items[idx];
+          cat.items[idx] = cat.items[idx + 1];
+          cat.items[idx + 1] = temp;
+          store.upsert('procedures', cat);
+          ui.toast('Reordered', 'ok');
+          RMTP.views.procedures(el, params);
+        }
+      });
+    });
+  }
 
   if (item) {
     el.querySelector('#edit-body').addEventListener('click', () => editBody(cat, item));
@@ -334,6 +378,90 @@ RMTP.views.procedures = function (el, params) {
       store.upsert('procedures', cat);
       m.close(); ui.toast('Procedure added', 'ok');
       location.hash = '#/procedures/' + cat.id + '/' + id;
+    });
+  }
+
+  function editTabModal(cat) {
+    let itemsCopy = cat.items.slice();
+
+    function renderTabItems() {
+      const container = m.root.querySelector('#tab-proc-list');
+      if (!container) return;
+      if (!itemsCopy.length) {
+        container.innerHTML = '<p class="text-xs text-muted py-2">No procedures in this tab.</p>';
+        return;
+      }
+      container.innerHTML = itemsCopy.map((item, idx) => {
+        return (
+          '<div class="p-2.5 rounded-lg bg-panel2 border border-line flex items-center justify-between gap-2">' +
+            '<span class="text-xs font-semibold text-muted font-mono w-6">#' + (idx + 1) + '</span>' +
+            '<span class="text-sm font-medium text-ink truncate flex-1">' + ui.esc(item.title) + '</span>' +
+            '<div class="flex items-center gap-1 shrink-0">' +
+              '<button type="button" data-m-up="' + idx + '" class="btn btn-ghost !p-1 text-xs" title="Move Up" ' + (idx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3.5 h-3.5') + '</button>' +
+              '<button type="button" data-m-down="' + idx + '" class="btn btn-ghost !p-1 text-xs" title="Move Down" ' + (idx === itemsCopy.length - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</button>' +
+            '</div>' +
+          '</div>'
+        );
+      }).join('');
+
+      container.querySelectorAll('[data-m-up]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-m-up');
+          if (idx > 0) {
+            const temp = itemsCopy[idx];
+            itemsCopy[idx] = itemsCopy[idx - 1];
+            itemsCopy[idx - 1] = temp;
+            renderTabItems();
+          }
+        });
+      });
+
+      container.querySelectorAll('[data-m-down]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-m-down');
+          if (idx < itemsCopy.length - 1) {
+            const temp = itemsCopy[idx];
+            itemsCopy[idx] = itemsCopy[idx + 1];
+            itemsCopy[idx + 1] = temp;
+            renderTabItems();
+          }
+        });
+      });
+    }
+
+    const m = ui.modal({
+      title: 'Edit Tab & Reorder Procedures',
+      size: 'md:max-w-lg',
+      body:
+        '<div class="grid gap-4">' +
+          '<div>' +
+            '<label class="block text-sm font-medium mb-1.5">Tab / Category Name</label>' +
+            '<input id="tab-name" class="field" value="' + ui.esc(cat.name) + '" />' +
+          '</div>' +
+          '<div>' +
+            '<div class="flex items-center justify-between mb-2">' +
+              '<label class="block text-sm font-medium">Reorder Procedures</label>' +
+              '<span class="text-xs text-muted font-mono">' + itemsCopy.length + ' documents</span>' +
+            '</div>' +
+            '<div id="tab-proc-list" class="grid gap-2 max-h-72 overflow-y-auto pr-1"></div>' +
+          '</div>' +
+        '</div>',
+      footer:
+        '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
+        '<button class="btn btn-primary" data-save data-primary>Save Order</button>',
+    });
+
+    renderTabItems();
+
+    m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
+    m.root.querySelector('[data-save]').addEventListener('click', () => {
+      const newName = m.root.querySelector('#tab-name').value.trim() || cat.name;
+      cat.name = newName;
+      cat.items = itemsCopy;
+      store.upsert('procedures', cat);
+      m.close();
+      ui.toast('Tab and procedure order saved', 'ok');
+      RMTP.views.procedures(el, params);
     });
   }
 };

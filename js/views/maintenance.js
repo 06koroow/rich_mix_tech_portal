@@ -62,6 +62,10 @@ RMTP.views.maintenance = function (el, params) {
     const st = q('[data-status="' + r.id + '"]'); if (st) st.addEventListener('change', (ev) => setStatus(r, ev.target.value));
     const rv = q('[data-resolve="' + r.id + '"]'); if (rv) rv.addEventListener('click', () => resolveFault(r));
     const ro = q('[data-reopen="' + r.id + '"]'); if (ro) ro.addEventListener('click', () => reopenFault(r));
+    const sc = q('[data-schedule-shift="' + r.id + '"]');
+    if (sc) sc.addEventListener('click', () => {
+      location.hash = '#/advancing?action=schedule-maintenance&faultId=' + encodeURIComponent(r.id);
+    });
     const img = q('[data-img="' + r.id + '"]'); if (img) img.addEventListener('click', () => files.open(r.image));
   });
 
@@ -127,6 +131,9 @@ RMTP.views.maintenance = function (el, params) {
                   'style="border-color:color-mix(in srgb,' + statusColour[r.status] + ' 45%,var(--line))">' +
                   SELECTABLE.map((s) => '<option ' + (s === r.status ? 'selected' : '') + '>' + s + '</option>').join('') +
                 '</select>' +
+                '<button data-schedule-shift="' + r.id + '" class="btn btn-ghost !py-1 !px-2 text-xs flex items-center gap-1 text-accent hover:bg-accent/10" title="Schedule Maintenance Shift in Advancing">' +
+                  ui.icon('clock', 'w-3.5 h-3.5') + '<span>Schedule Shift</span>' +
+                '</button>' +
                 (isAdmin ? '<button data-resolve="' + r.id + '" class="btn btn-primary !py-1.5 !px-2.5 text-xs">' + ui.icon('check', 'w-4 h-4') + 'Resolve</button>' : '')) +
             '<div class="flex gap-1">' +
               '<button data-edit="' + r.id + '" class="btn btn-ghost !p-2" title="Edit">' + ui.icon('pen', 'w-4 h-4') + '</button>' +

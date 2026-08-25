@@ -45,6 +45,7 @@ RMTP.syncSb = (function () {
         r.load_out = r.load_out || r.loadOut || r.loadout || prev.load_out || prev.loadOut || '';
         r.schedule_items = Array.isArray(r.schedule_items) ? r.schedule_items : (Array.isArray(r.scheduleItems) ? r.scheduleItems : (Array.isArray(prev.schedule_items) ? prev.schedule_items : (Array.isArray(prev.scheduleItems) ? prev.scheduleItems : [])));
         r.screening_starts_time = r.screening_starts_time || r.screeningStartsTime || r.screeningstartstime || prev.screening_starts_time || prev.screeningStartsTime || '';
+        r.film_duration = r.film_duration || r.filmDuration || r.filmduration || prev.film_duration || prev.filmDuration || '';
         r.media_type = r.media_type || r.mediaType || r.mediatype || prev.media_type || prev.mediaType || '';
         r.dcp_received = r.dcp_received !== undefined ? r.dcp_received : (r.dcpReceived !== undefined ? r.dcpReceived : (prev.dcp_received !== undefined ? prev.dcp_received : (prev.dcpReceived !== undefined ? prev.dcpReceived : false)));
         r.checks_completed = r.checks_completed !== undefined ? r.checks_completed : (r.checksCompleted !== undefined ? r.checksCompleted : (prev.checks_completed !== undefined ? prev.checks_completed : (prev.checksCompleted !== undefined ? prev.checksCompleted : false)));
@@ -52,9 +53,14 @@ RMTP.syncSb = (function () {
         r.qa = r.qa !== undefined ? !!r.qa : (prev.qa !== undefined ? !!prev.qa : false);
         r.dcp_tester_user_id = r.dcp_tester_user_id || r.dcpTesterUserId || r.dcptesteruserid || prev.dcp_tester_user_id || prev.dcpTesterUserId || '';
         r.dcp_test_datetime = r.dcp_test_datetime || r.dcpTestDatetime || r.dcptestdatetime || prev.dcp_test_datetime || prev.dcpTestDatetime || '';
+        r.parent_event_id = r.parent_event_id || r.parentEventId || prev.parent_event_id || prev.parentEventId || null;
+        r.dcp_test_event_id = r.dcp_test_event_id || r.dcpTestEventId || prev.dcp_test_event_id || prev.dcpTestEventId || null;
+        r.linked_maintenance_ids = Array.isArray(r.linked_maintenance_ids) ? r.linked_maintenance_ids : (Array.isArray(r.linkedMaintenanceIds) ? r.linkedMaintenanceIds : (Array.isArray(prev.linked_maintenance_ids) ? prev.linked_maintenance_ids : []));
         r.clientContact = r.clientContact || r.clientcontact || prev.clientContact || '';
         r.guestEngineer = r.guestEngineer !== undefined ? r.guestEngineer : (prev.guestEngineer !== undefined ? prev.guestEngineer : false);
         r.techInfo = r.techInfo || r.techinfo || prev.techInfo || '';
+        r.email_recipients = r.email_recipients || r.emailRecipients || prev.email_recipients || prev.emailRecipients || '';
+        r.tech_requirements = r.tech_requirements || r.techRequirements || prev.tech_requirements || prev.techRequirements || {};
         r.techSpec = r.techSpec || r.techspec || prev.techSpec || null;
       }
       if (coll === 'reports') {
@@ -108,6 +114,7 @@ RMTP.syncSb = (function () {
         load_out: r.load_out || r.loadOut || '',
         schedule_items: Array.isArray(r.schedule_items) ? r.schedule_items : (Array.isArray(r.scheduleItems) ? r.scheduleItems : []),
         screening_starts_time: r.screening_starts_time || r.screeningStartsTime || '',
+        film_duration: r.film_duration || r.filmDuration || '',
         media_type: r.media_type || r.mediaType || '',
         dcp_received: r.dcp_received !== undefined ? !!r.dcp_received : (r.dcpReceived !== undefined ? !!r.dcpReceived : false),
         checks_completed: r.checks_completed !== undefined ? !!r.checks_completed : (r.checksCompleted !== undefined ? !!r.checksCompleted : false),
@@ -115,10 +122,15 @@ RMTP.syncSb = (function () {
         qa: !!r.qa,
         dcp_tester_user_id: r.dcp_tester_user_id || r.dcpTesterUserId || '',
         dcp_test_datetime: r.dcp_test_datetime || r.dcpTestDatetime || '',
+        parent_event_id: r.parent_event_id || r.parentEventId || null,
+        dcp_test_event_id: r.dcp_test_event_id || r.dcpTestEventId || null,
+        linked_maintenance_ids: Array.isArray(r.linked_maintenance_ids) ? r.linked_maintenance_ids : (Array.isArray(r.linkedMaintenanceIds) ? r.linkedMaintenanceIds : []),
         technicians: Array.isArray(r.technicians) ? r.technicians : [],
         clientContact: r.clientContact || '',
         guestEngineer: !!r.guestEngineer,
         techInfo: r.techInfo || '',
+        email_recipients: r.email_recipients || r.emailRecipients || '',
+        tech_requirements: r.tech_requirements || r.techRequirements || {},
         techSpec: await files.toRemote(r.techSpec),
         checklist: r.checklist || {},
         artifaxId: r.artifaxId || null,

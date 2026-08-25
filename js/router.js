@@ -8,20 +8,28 @@ RMTP.router = (function () {
 
   function parse() {
     const raw = (location.hash || '').replace(/^#\/?/, '');   // strip "#/" or "#"
-    const segments = raw.split('/').filter(Boolean);
+    const [pathPart, queryPart] = raw.split('?');
+    const segments = (pathPart || '').split('/').filter(Boolean);
     const view = segments[0] || RMTP.HOME;
-    return { view, params: segments.slice(1) };
+    const query = {};
+    if (queryPart) {
+      queryPart.split('&').forEach((pair) => {
+        const [k, v] = pair.split('=');
+        if (k) query[decodeURIComponent(k)] = decodeURIComponent(v || '');
+      });
+    }
+    return { view, params: segments.slice(1), query };
   }
 
   function render() {
-    const { view, params } = parse();
+    const { view, params, query } = parse();
     const id = RMTP.views[view] ? view : RMTP.HOME;
     const content = document.getElementById('content');
     if (!content) return;
 
     content.innerHTML = '';
     try {
-      RMTP.views[id](content, params);
+      RMTP.views[id](content, params, query);
     } catch (e) {
       console.error('[router] view "' + id + '" failed', e);
       content.innerHTML = '<div class="panel p-6"><p class="font-display font-semibold text-danger">Something went wrong</p>' +

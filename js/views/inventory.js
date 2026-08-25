@@ -22,6 +22,8 @@ RMTP.views.inventory = function (el) {
 
   let query = '';
   let spaceFilter = '';
+  let selectedIds = new Set();
+  let selectMode = false;
 
   // Which items have an unresolved fault (recomputed each render).
   let faultItemIds = new Set();
@@ -37,27 +39,44 @@ RMTP.views.inventory = function (el) {
     return out.join(' \u00b7 ');
   }
 
+  function getHeaderActions() {
+    return (canMove ? '<button id="toggle-select-mode" class="btn ' + (selectMode ? 'btn-primary' : 'btn-ghost') + '">' + ui.icon('check', 'w-4 h-4') + (selectMode ? 'Done' : 'Select Multiple') + '</button>' : '') +
+      (canMove ? '<button id="scan-item" class="btn btn-primary">' + ui.icon('qr', 'w-4 h-4') + 'Scan QR</button>' : '') +
+      (canManage ? '<button id="print-labels" class="btn btn-ghost">' + ui.icon('print', 'w-4 h-4') + 'Labels</button>' : '') +
+      (canManage ? '<button id="add-item" class="btn btn-ghost">' + ui.icon('plus', 'w-4 h-4') + 'Add</button>' : '');
+  }
+
   el.innerHTML =
     '<div class="view-enter">' +
-      ui.pageHeader('Inventory', 'Equipment',
-        (canMove ? '<button id="scan-item" class="btn btn-primary">' + ui.icon('search', 'w-4 h-4') + 'Scan</button>' : '') +
-        (canManage ? '<button id="print-labels" class="btn btn-ghost">' + ui.icon('print', 'w-4 h-4') + 'Labels</button>' : '') +
-        (canManage ? '<button id="add-item" class="btn btn-ghost">' + ui.icon('plus', 'w-4 h-4') + 'Add</button>' : '')) +
+      '<div id="inv-header-wrap"></div>' +
       '<div class="relative mb-4 max-w-md">' +
         '<span class="absolute left-3 top-1/2 -translate-y-1/2 text-muted">' + ui.icon('search', 'w-4 h-4') + '</span>' +
         '<input id="inv-search" class="field !pl-10" placeholder="Search name, tag, location, holder\u2026" />' +
       '</div>' +
       '<div id="inv-filters" class="flex flex-wrap gap-2 mb-5"></div>' +
+      '<div id="inv-bulk-bar" class="mb-4 hidden"></div>' +
       '<div id="inv-list"></div>' +
       '<div id="inv-moves" class="mt-8"></div>' +
     '</div>';
 
-  const addBtn = el.querySelector('#add-item');
-  if (addBtn) addBtn.addEventListener('click', () => openForm());
-  const scanBtn = el.querySelector('#scan-item');
-  if (scanBtn) scanBtn.addEventListener('click', handleScan);
-  const labelsBtn = el.querySelector('#print-labels');
-  if (labelsBtn) labelsBtn.addEventListener('click', () => qr.labelPreview(store.all('inventory')));
+  function renderHeader() {
+    const hw = el.querySelector('#inv-header-wrap');
+    if (!hw) return;
+    hw.innerHTML = ui.pageHeader('Inventory', 'Equipment', getHeaderActions());
+    const addBtn = hw.querySelector('#add-item');
+    if (addBtn) addBtn.addEventListener('click', () => openForm());
+    const scanBtn = hw.querySelector('#scan-item');
+    if (scanBtn) scanBtn.addEventListener('click', handleScan);
+    const labelsBtn = hw.querySelector('#print-labels');
+    if (labelsBtn) labelsBtn.addEventListener('click', () => qr.labelPreview(store.all('inventory')));
+    const toggleSelectBtn = hw.querySelector('#toggle-select-mode');
+    if (toggleSelectBtn) toggleSelectBtn.addEventListener('click', () => {
+      selectMode = !selectMode;
+      if (!selectMode) selectedIds.clear();
+      render();
+    });
+  }
+
   el.querySelector('#inv-search').addEventListener('input', (e) => { query = e.target.value.toLowerCase().trim(); render(); });
 
   render();
@@ -74,9 +93,45 @@ RMTP.views.inventory = function (el) {
 
   function render() {
     refreshFaults();
+    renderHeader();
     renderFilters();
+    renderBulkBar();
     renderList();
     renderMoves();
+  }
+
+  function renderBulkBar() {
+    const bar = el.querySelector('#inv-bulk-bar');
+    if (!bar) return;
+    const count = selectedIds.size;
+    if (!selectMode || !count) {
+      bar.classList.add('hidden');
+      bar.innerHTML = '';
+      return;
+    }
+    bar.classList.remove('hidden');
+    bar.innerHTML =
+      '<div class="panel p-3 bg-panel2 border-accent flex flex-wrap items-center justify-between gap-3 shadow-md">' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="w-2.5 h-2.5 rounded-full bg-accent animate-pulse"></span>' +
+          '<span class="font-semibold text-sm">' + count + ' item' + (count > 1 ? 's' : '') + ' selected</span>' +
+        '</div>' +
+        '<div class="flex flex-wrap items-center gap-2">' +
+          '<button id="bulk-sign-out" class="btn btn-primary !py-1.5 !px-3 text-xs">' + ui.icon('arrowR', 'w-3.5 h-3.5') + 'Sign Out (' + count + ')</button>' +
+          '<button id="bulk-sign-in" class="btn btn-ghost !py-1.5 !px-3 text-xs">' + ui.icon('check', 'w-3.5 h-3.5') + 'Sign In (' + count + ')</button>' +
+          '<button id="bulk-move" class="btn btn-ghost !py-1.5 !px-3 text-xs">' + ui.icon('pin', 'w-3.5 h-3.5') + 'Move (' + count + ')</button>' +
+          '<button id="bulk-clear" class="btn btn-ghost !py-1.5 !px-2.5 text-xs text-muted">Clear</button>' +
+        '</div>' +
+      '</div>';
+
+    const bSo = bar.querySelector('#bulk-sign-out');
+    if (bSo) bSo.addEventListener('click', bulkSignOut);
+    const bSi = bar.querySelector('#bulk-sign-in');
+    if (bSi) bSi.addEventListener('click', bulkSignIn);
+    const bMv = bar.querySelector('#bulk-move');
+    if (bMv) bMv.addEventListener('click', bulkMove);
+    const bClr = bar.querySelector('#bulk-clear');
+    if (bClr) bClr.addEventListener('click', () => { selectedIds.clear(); render(); });
   }
 
   function renderFilters() {
@@ -108,16 +163,28 @@ RMTP.views.inventory = function (el) {
         (query || spaceFilter) ? 'Try a different search or filter.' : 'Add your first asset with \u201cAdd\u201d.');
       return;
     }
+
+    const allChecked = rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
+
     list.innerHTML =
-      (outCount ? '<p class="text-xs text-muted mb-3">' + ui.pill(outCount + ' signed out', 'var(--info)') + '</p>' : '') +
+      (selectMode || outCount ? (
+        '<div class="flex items-center justify-between gap-3 mb-3">' +
+          '<div class="flex items-center gap-2">' +
+            (canMove && selectMode ? '<label class="flex items-center gap-2 text-xs text-muted cursor-pointer hover:text-ink select-none"><input type="checkbox" id="select-all-inv" class="w-4 h-4 rounded border-line accent-[var(--accent)]" ' + (allChecked ? 'checked' : '') + ' /> Select visible (' + rows.length + ')</label>' : '') +
+          '</div>' +
+          (outCount ? '<p class="text-xs text-muted">' + ui.pill(outCount + ' signed out', 'var(--info)') + '</p>' : '') +
+        '</div>'
+      ) : '') +
       '<div class="panel divide-y divide-line overflow-hidden">' +
         rows.map((r) => {
           const isOut = r.status === 'out';
           const flagged = isFlagged(r);
           const stat = isStatic(r);
           const svc = inService(r);
+          const isSelected = selectedIds.has(r.id);
           const locPill = RMTP.isSpace(r.location) ? ui.pill(r.location, 'var(--accent)') : '';
-          return '<div class="flex items-center gap-3 px-4 py-3">' +
+          return '<div class="flex items-center gap-3 px-4 py-3 ' + (isSelected ? 'bg-panel2/60' : '') + '">' +
+            (canMove && selectMode ? '<input type="checkbox" data-check="' + r.id + '" class="w-4 h-4 rounded border-line accent-[var(--accent)] shrink-0 cursor-pointer" ' + (isSelected ? 'checked' : '') + ' />' : '') +
             '<button data-open="' + r.id + '" class="min-w-0 flex-1 text-left group">' +
               '<span class="flex items-center gap-2">' +
                 '<span class="tabular text-xs text-accent hidden sm:inline">' + ui.esc(r.tag) + '</span>' +
@@ -146,8 +213,28 @@ RMTP.views.inventory = function (el) {
       '</div>' +
       '<p class="text-xs text-muted mt-3 tabular">' + rows.length + ' of ' + all.length + ' items</p>';
 
+    const selectAllBox = list.querySelector('#select-all-inv');
+    if (selectAllBox) {
+      selectAllBox.addEventListener('change', (e) => {
+        if (e.target.checked) {
+          rows.forEach((r) => selectedIds.add(r.id));
+        } else {
+          rows.forEach((r) => selectedIds.delete(r.id));
+        }
+        render();
+      });
+    }
+
     rows.forEach((r) => {
       const q = (sel) => list.querySelector(sel);
+      const chk = q('[data-check="' + r.id + '"]');
+      if (chk) {
+        chk.addEventListener('change', (e) => {
+          if (e.target.checked) selectedIds.add(r.id);
+          else selectedIds.delete(r.id);
+          render();
+        });
+      }
       const eOpen = q('[data-open="' + r.id + '"]'); if (eOpen) eOpen.addEventListener('click', () => openDetail(r));
       const eOut = q('[data-out="' + r.id + '"]'); if (eOut) eOut.addEventListener('click', () => signOut(r));
       const eIn = q('[data-in="' + r.id + '"]'); if (eIn) eIn.addEventListener('click', () => signIn(r));
@@ -457,6 +544,115 @@ RMTP.views.inventory = function (el) {
     const ok = await ui.confirm('Remove \u201c' + r.name + '\u201d from inventory?',
       { title: 'Delete item', confirmLabel: 'Delete', danger: true });
     if (ok) { store.remove('inventory', r.id); ui.toast('Item removed', 'ok'); render(); }
+  }
+
+  /* ---- Bulk operations ---- */
+  function getSelectedItems() {
+    return Array.from(selectedIds)
+      .map((id) => store.find('inventory', id))
+      .filter(Boolean);
+  }
+
+  function bulkSignOut() {
+    const items = getSelectedItems().filter((it) => !isStatic(it));
+    if (!items.length) { ui.toast('No movable items selected', 'danger'); return; }
+    const prefs = store.read('prefs', {}) || {};
+    const defaultHolder = prefs.lastHolder || auth.displayName(auth.current());
+    const anyFlagged = items.some((it) => isFlagged(it));
+
+    const m = ui.modal({
+      title: 'Bulk Sign Out (' + items.length + ' items)',
+      size: 'md:max-w-md',
+      body:
+        '<p class="text-sm text-muted mb-4">Signing out <span class="font-medium text-ink">' + items.length + ' selected item' + (items.length > 1 ? 's' : '') + '</span>:</p>' +
+        '<div class="max-h-36 overflow-y-auto panel p-2 mb-4 text-xs divide-y divide-line">' +
+          items.map((it) => '<div class="py-1 flex justify-between"><span>' + ui.esc(it.name) + '</span><span class="tabular text-accent font-mono">' + ui.esc(it.tag) + '</span></div>').join('') +
+        '</div>' +
+        '<label class="block text-sm font-medium mb-2">Who\u2019s taking them?</label>' +
+        '<input id="bulk-so-holder" class="field mb-4" value="' + ui.esc(defaultHolder || '') + '" placeholder="Name" autocomplete="off" />' +
+        '<label class="block text-sm font-medium mb-2">Destination Space / Location</label>' +
+        (anyFlagged ? '<p class="text-xs mb-2" style="color:var(--danger)">Some selected items are flagged \u2014 Store only.</p>' : '') +
+        locationSelect('bulk-so-space', '', { blank: '\u2014 Keep in current place', storeOnly: anyFlagged }),
+      footer:
+        '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
+        '<button class="btn btn-primary" data-ok data-primary>' + ui.icon('arrowR', 'w-4 h-4') + 'Sign Out All (' + items.length + ')</button>',
+    });
+
+    m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
+    m.root.querySelector('[data-ok]').addEventListener('click', () => {
+      const holder = m.root.querySelector('#bulk-so-holder').value.trim();
+      if (!holder) { ui.toast('Enter a name', 'danger'); return; }
+      const dest = m.root.querySelector('#bulk-so-space').value;
+      if (dest && anyFlagged && RMTP.isSpace(dest)) { ui.toast('Flagged kit can only go to a Store', 'danger'); return; }
+
+      items.forEach((it) => {
+        const qty = qtyOf(it) || 1;
+        signOutQty(it, qty, holder, dest);
+      });
+
+      store.write('prefs', Object.assign({}, prefs, { lastHolder: holder }));
+      selectedIds.clear();
+      m.close();
+      ui.toast(items.length + ' items signed out to ' + holder, 'ok');
+      render();
+    });
+  }
+
+  async function bulkSignIn() {
+    const items = getSelectedItems();
+    if (!items.length) { ui.toast('No items selected', 'danger'); return; }
+    const ok = await ui.confirm('Sign ' + items.length + ' item' + (items.length > 1 ? 's' : '') + ' back in?',
+      { title: 'Bulk sign in', confirmLabel: 'Sign in (' + items.length + ')' });
+    if (!ok) return;
+
+    items.forEach((item) => {
+      const target = findMergeTarget(item.tag, item.location, item.condition, item.id);
+      if (target) {
+        store.upsert('inventory', Object.assign({}, target, { qty: qtyOf(target) + qtyOf(item), movements: (target.movements || []).concat({ from: item.location || '', to: item.location || '', at: new Date().toISOString(), by: actor(), note: 'Signed in ' + qtyOf(item) }) }));
+        store.remove('inventory', item.id);
+      } else {
+        store.upsert('inventory', Object.assign({}, item, { status: 'in', heldBy: '', outAt: '' }));
+      }
+    });
+
+    selectedIds.clear();
+    ui.toast(items.length + ' items signed in', 'ok');
+    render();
+  }
+
+  function bulkMove() {
+    const items = getSelectedItems().filter((it) => !isStatic(it));
+    if (!items.length) { ui.toast('No movable items selected', 'danger'); return; }
+    const anyFlagged = items.some((it) => isFlagged(it));
+
+    const m = ui.modal({
+      title: 'Bulk Move (' + items.length + ' items)',
+      size: 'md:max-w-md',
+      body:
+        '<p class="text-sm text-muted mb-4">Moving <span class="font-medium text-ink">' + items.length + ' selected item' + (items.length > 1 ? 's' : '') + '</span> to a new location:</p>' +
+        (anyFlagged ? '<p class="text-xs mb-2" style="color:var(--danger)">Some selected items are flagged \u2014 Store only.</p>' : '') +
+        '<label class="block text-sm font-medium mb-2">Destination Location</label>' +
+        locationSelect('bulk-mv-loc', 'Store', { storeOnly: anyFlagged }),
+      footer:
+        '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
+        '<button class="btn btn-primary" data-ok data-primary>' + ui.icon('pin', 'w-4 h-4') + 'Move All (' + items.length + ')</button>',
+    });
+
+    m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
+    m.root.querySelector('[data-ok]').addEventListener('click', () => {
+      const to = m.root.querySelector('#bulk-mv-loc').value;
+      if (anyFlagged && RMTP.isSpace(to)) { ui.toast('Flagged kit can only go to a Store', 'danger'); return; }
+
+      items.forEach((item) => {
+        const qty = qtyOf(item) || 1;
+        moveQty(item, qty, to);
+      });
+
+      selectedIds.clear();
+      m.close();
+      ui.toast(items.length + ' items moved to ' + to, 'ok');
+      render();
+    });
   }
 
   function inner(label, control) { return '<label class="block text-sm font-medium mb-2">' + ui.esc(label) + '</label>' + control; }

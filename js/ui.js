@@ -164,12 +164,12 @@ RMTP.ui = (function () {
 
   /* --- Page header used by every view --- */
   function pageHeader(eyebrow, title, actionsHtml) {
-    return '<div class="flex items-start justify-between gap-4 mb-6">' +
-      '<div>' +
+    return '<div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6 w-full">' +
+      '<div class="min-w-0 flex-1">' +
         '<p class="eyebrow mb-1">' + esc(eyebrow) + '</p>' +
-        '<h1 class="font-display text-2xl md:text-3xl font-bold tracking-tight">' + esc(title) + '</h1>' +
+        '<h1 class="font-display text-2xl sm:text-3xl font-bold tracking-tight text-ink">' + esc(title) + '</h1>' +
       '</div>' +
-      (actionsHtml ? '<div class="flex items-center gap-2 shrink-0">' + actionsHtml + '</div>' : '') +
+      (actionsHtml ? '<div class="flex items-center flex-wrap gap-2 shrink-0 w-full lg:w-auto justify-start lg:justify-end">' + actionsHtml + '</div>' : '') +
     '</div>';
   }
 

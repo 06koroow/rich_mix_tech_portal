@@ -15,6 +15,7 @@ RMTP.views.advancing = function (el) {
   const canManageEvents = auth.can('advancing.manage');
   const canReport = auth.can('report.edit');
   const filters = (RMTP._advFilters = RMTP._advFilters || { space: '', date: '', tab: 'upcoming' });
+  let mobileFiltersOpen = (RMTP._advMobileFiltersOpen !== undefined ? RMTP._advMobileFiltersOpen : false);
   const expandedEvents = (RMTP._expandedAdvEvents = RMTP._expandedAdvEvents || new Set());
 
   function getTodayString() {
@@ -80,9 +81,9 @@ RMTP.views.advancing = function (el) {
   el.innerHTML =
     '<div class="view-enter">' +
       ui.pageHeader('Advancing', isAdmin ? 'Events & Production Schedules' : 'Your shifts & Production Advancing',
-        '<button id="verify-sync-btn" class="btn btn-ghost" title="Check Supabase database sync status">' + ui.icon('shield', 'w-4 h-4') + '<span class="hidden sm:inline">Verify Sync</span></button>' +
-        '<button id="email-recipients-btn" class="btn btn-ghost" title="Configure shift report email recipients">' + ui.icon('mail', 'w-4 h-4') + '<span class="hidden sm:inline">Email Recipients</span></button>' +
-        (canManageEvents && RMTP.supabase && RMTP.supabase.isConfigured()
+        (isAdmin ? '<button id="verify-sync-btn" class="btn btn-ghost" title="Check Supabase database sync status">' + ui.icon('shield', 'w-4 h-4') + '<span class="hidden sm:inline">Verify Sync</span></button>' : '') +
+        (isAdmin ? '<button id="email-recipients-btn" class="btn btn-ghost" title="Configure shift report email recipients">' + ui.icon('mail', 'w-4 h-4') + '<span class="hidden sm:inline">Email Recipients</span></button>' : '') +
+        (isAdmin && canManageEvents && RMTP.supabase && RMTP.supabase.isConfigured()
           ? '<button id="artifax-sync" class="btn btn-ghost" title="Pull events from Artifax">' + ui.icon('reset', 'w-4 h-4') + '<span class="hidden sm:inline">Refresh from Artifax</span></button>' : '') +
         (canManageEvents ? '<button id="add-event" class="btn btn-primary">' + ui.icon('plus', 'w-4 h-4') + 'Add event</button>' : '')) +
       tabBar() +
@@ -93,10 +94,16 @@ RMTP.views.advancing = function (el) {
 
   // Header button wiring
   const syncBtn = el.querySelector('#verify-sync-btn');
-  if (syncBtn) syncBtn.addEventListener('click', () => openSyncVerificationModal());
+  if (syncBtn) syncBtn.addEventListener('click', () => {
+    if (!isAdmin) { ui.toast('Admin permission required', 'danger'); return; }
+    openSyncVerificationModal();
+  });
 
   const recBtn = el.querySelector('#email-recipients-btn');
-  if (recBtn) recBtn.addEventListener('click', () => openRecipientConfigModal());
+  if (recBtn) recBtn.addEventListener('click', () => {
+    if (!isAdmin) { ui.toast('Admin permission required', 'danger'); return; }
+    openRecipientConfigModal();
+  });
 
   // Tab bar wiring
   el.querySelectorAll('[data-adv-tab]').forEach((b) => b.addEventListener('click', () => {
@@ -104,8 +111,18 @@ RMTP.views.advancing = function (el) {
     RMTP.router.render();
   }));
 
+  // Mobile filters toggle
+  const toggleFiltersBtn = el.querySelector('#adv-toggle-filters');
+  if (toggleFiltersBtn) toggleFiltersBtn.addEventListener('click', () => {
+    RMTP._advMobileFiltersOpen = !mobileFiltersOpen;
+    RMTP.router.render();
+  });
+
   // Filter bar wiring
-  el.querySelectorAll('[data-space]').forEach((b) => b.addEventListener('click', () => { filters.space = b.getAttribute('data-space'); RMTP.router.render(); }));
+  el.querySelectorAll('[data-space]').forEach((b) => b.addEventListener('click', () => {
+    filters.space = b.getAttribute('data-space');
+    RMTP.router.render();
+  }));
   const dateIn = el.querySelector('#adv-date'); if (dateIn) dateIn.addEventListener('change', () => { filters.date = dateIn.value; RMTP.router.render(); });
   const todayBtn = el.querySelector('#adv-today'); if (todayBtn) todayBtn.addEventListener('click', () => { filters.date = getTodayString(); RMTP.router.render(); });
   const clearBtn = el.querySelector('#adv-clear'); if (clearBtn) clearBtn.addEventListener('click', () => { filters.space = ''; filters.date = ''; RMTP.router.render(); });
@@ -152,16 +169,16 @@ RMTP.views.advancing = function (el) {
 
   function tabBar() {
     return (
-      '<div class="flex items-center gap-2 mb-4 p-1 bg-panel2 rounded-lg border border-line w-fit">' +
-        '<button data-adv-tab="upcoming" class="px-4 py-2 text-sm font-semibold rounded-md transition-all flex items-center gap-2 ' +
+      '<div class="flex items-center gap-2 mb-4 p-1 bg-panel2 rounded-lg border border-line w-full sm:w-fit overflow-x-auto">' +
+        '<button data-adv-tab="upcoming" class="flex-1 sm:flex-initial px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 sm:gap-2 ' +
           (currentTab === 'upcoming' ? 'bg-accent text-accent-ink shadow-sm' : 'text-muted hover:text-ink') + '">' +
-          ui.icon('clip', 'w-4 h-4') + '<span>Upcoming Events</span>' +
-          '<span class="px-1.5 py-0.5 rounded text-xs ' + (currentTab === 'upcoming' ? 'bg-black/20 text-accent-ink' : 'bg-line text-muted') + '">' + upcomingCount + '</span>' +
+          ui.icon('clip', 'w-4 h-4') + '<span>Upcoming</span>' +
+          '<span class="px-1.5 py-0.5 rounded text-[11px] ' + (currentTab === 'upcoming' ? 'bg-black/20 text-accent-ink' : 'bg-line text-muted') + '">' + upcomingCount + '</span>' +
         '</button>' +
-        '<button data-adv-tab="past" class="px-4 py-2 text-sm font-semibold rounded-md transition-all flex items-center gap-2 ' +
+        '<button data-adv-tab="past" class="flex-1 sm:flex-initial px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 sm:gap-2 ' +
           (currentTab === 'past' ? 'bg-accent text-accent-ink shadow-sm' : 'text-muted hover:text-ink') + '">' +
           ui.icon('clock', 'w-4 h-4') + '<span>Past Events</span>' +
-          '<span class="px-1.5 py-0.5 rounded text-xs ' + (currentTab === 'past' ? 'bg-black/20 text-accent-ink' : 'bg-line text-muted') + '">' + pastCount + '</span>' +
+          '<span class="px-1.5 py-0.5 rounded text-[11px] ' + (currentTab === 'past' ? 'bg-black/20 text-accent-ink' : 'bg-line text-muted') + '">' + pastCount + '</span>' +
         '</button>' +
       '</div>'
     );
@@ -170,17 +187,45 @@ RMTP.views.advancing = function (el) {
   function filterBar() {
     const tabPool = base.filter((e) => (currentTab === 'past' ? isPastEvent(e.date) : !isPastEvent(e.date)));
     const chip = (id, label, n, active) =>
-      '<button data-space="' + ui.esc(id) + '" class="px-3 py-1.5 rounded-lg text-sm font-medium border ' +
-        (active ? 'bg-panel2 border-accent text-ink' : 'border-line text-muted hover:text-ink') + '">' +
-        ui.esc(label) + ' <span class="tabular text-xs opacity-70">' + n + '</span></button>';
-    const chips = [chip('', 'All', tabPool.length, !filters.space)]
+      '<button data-space="' + ui.esc(id) + '" class="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium border transition-colors ' +
+        (active ? 'bg-panel2 border-accent text-ink font-semibold' : 'border-line text-muted hover:text-ink') + '">' +
+        ui.esc(label) + ' <span class="tabular text-[11px] opacity-70">(' + n + ')</span></button>';
+    const chips = [chip('', 'All Spaces', tabPool.length, !filters.space)]
       .concat(RMTP.SPACES.map((s) => chip(s, s, tabPool.filter((e) => e.space === s).length, filters.space === s))).join('');
-    return '<div class="flex flex-wrap items-center gap-2 mb-5">' + chips +
-      '<span class="w-px h-6 bg-line mx-1 hidden sm:block"></span>' +
-      '<input id="adv-date" type="date" class="field !w-auto !py-1.5" value="' + ui.esc(filters.date || '') + '" />' +
-      '<button id="adv-today" class="btn btn-ghost !py-1.5 text-xs">Today</button>' +
-      ((filters.date || filters.space) ? '<button id="adv-clear" class="btn btn-ghost !py-1.5 text-xs">' + ui.icon('x', 'w-4 h-4') + 'Clear</button>' : '') +
-    '</div>';
+
+    const activeSpaceLabel = filters.space ? filters.space : 'All Spaces';
+
+    return (
+      '<div class="mb-5 w-full">' +
+        // Mobile Filter Accordion Toggle
+        '<div class="sm:hidden mb-2.5 flex items-center justify-between gap-2">' +
+          '<button id="adv-toggle-filters" class="btn btn-ghost !py-2 !px-3 text-xs w-full flex items-center justify-between border-line bg-panel2/60">' +
+            '<span class="flex items-center gap-2 font-medium text-ink">' +
+              ui.icon('search', 'w-3.5 h-3.5 text-accent') +
+              '<span>Space: <strong class="text-accent">' + ui.esc(activeSpaceLabel) + '</strong></span>' +
+            '</span>' +
+            '<span class="flex items-center gap-1 text-muted text-[11px]">' +
+              '<span>' + (mobileFiltersOpen ? 'Hide' : 'Filter') + '</span>' +
+              '<span class="transition-transform ' + (mobileFiltersOpen ? 'rotate-180 text-accent' : '') + '">' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</span>' +
+            '</span>' +
+          '</button>' +
+        '</div>' +
+
+        // Spaces list (Collapsible on mobile, always visible on desktop)
+        '<div class="' + (mobileFiltersOpen ? 'flex' : 'hidden') + ' sm:flex flex-wrap items-center gap-1.5 sm:gap-2 p-2 sm:p-0 rounded-xl bg-panel sm:bg-transparent border border-line sm:border-0 mb-3 sm:mb-0 animate-fadeIn">' +
+          chips +
+        '</div>' +
+
+        // Date and Clear tools
+        '<div class="flex flex-wrap items-center gap-2 mt-2.5 sm:mt-3 pt-2.5 sm:pt-0 border-t border-line/40 sm:border-0">' +
+          '<div class="flex items-center gap-2 flex-1 sm:flex-initial">' +
+            '<input id="adv-date" type="date" class="field !w-full sm:!w-auto !py-1.5 text-xs" value="' + ui.esc(filters.date || '') + '" />' +
+            '<button id="adv-today" class="btn btn-ghost !py-1.5 text-xs shrink-0">Today</button>' +
+          '</div>' +
+          ((filters.date || filters.space) ? '<button id="adv-clear" class="btn btn-ghost !py-1.5 text-xs text-danger hover:border-danger shrink-0">' + ui.icon('x', 'w-3.5 h-3.5') + 'Clear filters</button>' : '') +
+        '</div>' +
+      '</div>'
+    );
   }
 
   /* ---- Compact Event Card in List View ---- */
@@ -202,19 +247,19 @@ RMTP.views.advancing = function (el) {
       : 0;
 
     return (
-      '<div data-event-card="' + ev.id + '" class="panel p-4 sm:p-5 transition-all hover:border-accent hover:shadow-lg cursor-pointer group select-none relative flex flex-col justify-between">' +
-        '<div class="flex items-start justify-between gap-3">' +
-          '<div class="min-w-0 flex-1">' +
+      '<div data-event-card="' + ev.id + '" class="panel w-full p-4 sm:p-5 transition-all hover:border-accent hover:shadow-lg cursor-pointer group select-none relative flex flex-col justify-between gap-3">' +
+        '<div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3 w-full">' +
+          '<div class="min-w-0 flex-1 w-full">' +
             '<div class="flex items-center gap-2 flex-wrap mb-1.5">' +
-              '<h3 class="font-display text-base sm:text-lg font-semibold text-ink group-hover:text-accent transition-colors truncate">' + ui.esc(ev.name) + '</h3>' +
+              '<h3 class="font-display text-base sm:text-lg font-semibold text-ink group-hover:text-accent transition-colors break-words">' + ui.esc(ev.name) + '</h3>' +
               ui.pill(ev.status, statusColour[ev.status] || 'var(--muted)') +
               ui.pill(ev.space, isCinema ? 'var(--accent)' : 'var(--info)') +
               (ev.category ? ui.pill(ev.category, 'var(--muted)') : '') +
               (ev.guestEngineer ? ui.pill('Guest Engineer', 'var(--info)') : '') +
             '</div>' +
-            '<div class="flex items-center gap-3 text-xs text-muted flex-wrap">' +
+            '<div class="flex items-center gap-2 sm:gap-3 text-xs text-muted flex-wrap">' +
               (ev.date ? '<span class="flex items-center gap-1 font-medium text-ink">' + ui.icon('clock', 'w-3.5 h-3.5 text-accent') + ui.formatDate(ev.date) + (times ? ' (' + times + ')' : '') + '</span>' : '') +
-              '<span class="w-1 h-1 rounded-full bg-line"></span>' +
+              '<span class="w-1 h-1 rounded-full bg-line hidden sm:inline-block"></span>' +
               '<span>Techs: <strong class="text-ink font-normal">' + ui.esc(leadTechStr) + '</strong></span>' +
               '<span class="w-1 h-1 rounded-full bg-line"></span>' +
               '<span class="text-accent font-medium">' + ui.esc(scheduleSummary) + '</span>' +
@@ -223,9 +268,9 @@ RMTP.views.advancing = function (el) {
             '</div>' +
           '</div>' +
 
-          '<div class="flex items-center gap-1 shrink-0">' +
-            '<button data-open-modal="' + ev.id + '" class="btn btn-ghost !py-1.5 !px-3 text-xs font-semibold text-accent flex items-center gap-1.5 hover:bg-accent/10 rounded-lg">' +
-              ui.icon('eye', 'w-4 h-4') + '<span class="hidden sm:inline">View Advance</span>' +
+          '<div class="flex items-center gap-1.5 shrink-0 self-end sm:self-start w-full sm:w-auto justify-end pt-2 sm:pt-0 border-t sm:border-t-0 border-line/40">' +
+            '<button data-open-modal="' + ev.id + '" class="btn btn-ghost !py-1.5 !px-3 text-xs font-semibold text-accent flex items-center gap-1.5 hover:bg-accent/10 rounded-lg flex-1 sm:flex-initial justify-center">' +
+              ui.icon('eye', 'w-4 h-4') + '<span>View Advance</span>' +
             '</button>' +
             '<button data-print="' + ev.id + '" class="btn btn-ghost !p-2" title="Export Advance PDF">' + ui.icon('print', 'w-4 h-4') + '</button>' +
             '<button data-reports="' + ev.id + '" class="btn btn-ghost !p-2" title="Shift Reports">' + ui.icon('clip', 'w-4 h-4') + '</button>' +
@@ -743,6 +788,10 @@ RMTP.views.advancing = function (el) {
   }
 
   function openRecipientConfigModal() {
+    if (!isAdmin) {
+      ui.toast('Admin permission required to configure email recipients', 'danger');
+      return;
+    }
     let list = getReportRecipients();
     const m = ui.modal({
       title: 'Shift Report Email Recipients',
@@ -811,6 +860,10 @@ RMTP.views.advancing = function (el) {
 
   /* ---- Database Sync Verification Inspector ---- */
   async function openSyncVerificationModal() {
+    if (!isAdmin) {
+      ui.toast('Admin permission required to verify database sync', 'danger');
+      return;
+    }
     const m = ui.modal({
       title: 'Database Sync Verification',
       size: 'md:max-w-xl',
@@ -933,7 +986,7 @@ RMTP.views.advancing = function (el) {
       body:
         '<div class="flex items-center justify-between mb-3 pb-2 border-b border-line">' +
           '<button id="rep-print-btn" class="btn btn-ghost !py-1.5 text-xs">' + ui.icon('print', 'w-3.5 h-3.5') + 'Export Advance PDF</button>' +
-          '<button id="rep-recipients-btn" class="btn btn-ghost !py-1.5 text-xs">' + ui.icon('mail', 'w-3.5 h-3.5') + 'Email Recipients</button>' +
+          (isAdmin ? '<button id="rep-recipients-btn" class="btn btn-ghost !py-1.5 text-xs">' + ui.icon('mail', 'w-3.5 h-3.5') + 'Email Recipients</button>' : '') +
         '</div>' +
         '<div class="grid gap-3">' + list + '</div>',
       footer:

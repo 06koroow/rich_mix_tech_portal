@@ -63,6 +63,21 @@ RMTP.views.dashboard = function (el) {
     const myAdvances = store.all('advancing')
       .filter((e) => RMTP.eventAssignedTo(e, me.id) && e.status !== 'Complete')
       .sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
+
+    // DCP Tests assigned to this engineer that have not had checks completed yet
+    const myDcpTests = store.all('advancing')
+      .filter((e) => {
+        const isTester = (e.dcp_tester_user_id === me.id || e.dcpTesterUserId === me.id);
+        const hasTime = !!(e.dcp_test_datetime || e.dcpTestDatetime);
+        const isChecked = (e.checks_completed !== undefined ? !!e.checks_completed : !!e.checksCompleted);
+        return isTester && hasTime && !isChecked && e.status !== 'Complete';
+      })
+      .sort((a, b) => {
+        const timeA = a.dcp_test_datetime || a.dcpTestDatetime || '';
+        const timeB = b.dcp_test_datetime || b.dcpTestDatetime || '';
+        return timeA.localeCompare(timeB);
+      });
+
     const compTotal = RMTP.TRAINING.reduce((n, c) => n + c.items.length, 0);
     const mySigned = store.all('signoffs').filter((s) => s.userId === me.id).length;
     const outstanding = Math.max(0, compTotal - mySigned);
@@ -82,6 +97,53 @@ RMTP.views.dashboard = function (el) {
               '<button data-reject="' + u.id + '" class="btn btn-ghost !py-1.5 text-xs">Reject</button>' +
             '</div></div>').join('') + '</div></div>');
     }
+
+    if (myDcpTests.length) {
+      const nowIso = new Date().toISOString();
+      sections.push('<div>' +
+        '<div class="flex items-center justify-between gap-2 mb-2.5">' +
+          '<div class="flex items-center gap-2">' +
+            ui.icon('film', 'w-4 h-4 text-accent') +
+            '<p class="eyebrow text-ink font-semibold">Scheduled DCP Tests \u00b7 ' + myDcpTests.length + '</p>' +
+          '</div>' +
+          '<span class="text-[11px] text-accent font-medium">Screening QA</span>' +
+        '</div>' +
+        '<div class="grid gap-2">' + myDcpTests.map((e) => {
+          const testTime = e.dcp_test_datetime || e.dcpTestDatetime || '';
+          const isOverdue = testTime && testTime < nowIso.slice(0, 16);
+          const formattedTime = testTime ? new Date(testTime).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' }) : 'TBC';
+          const media = e.media_type || e.mediaType || 'DCP';
+          const dcpRcvd = e.dcp_received !== undefined ? !!e.dcp_received : !!e.dcpReceived;
+
+          return (
+            '<div class="p-3 rounded-xl bg-panel2/60 border border-line flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-accent/40 transition-colors">' +
+              '<div class="min-w-0 flex-1">' +
+                '<div class="flex items-center gap-2 flex-wrap mb-1">' +
+                  '<span class="font-semibold text-sm text-ink">' + ui.esc(e.name) + '</span>' +
+                  ui.pill(e.space || 'Cinema', 'var(--accent)') +
+                  ui.pill(media, 'var(--info)') +
+                  (dcpRcvd ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-ok/15 text-ok border border-ok/30">DCP Received</span>'
+                           : '<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-warning/15 text-warning border border-warning/30">DCP Pending</span>') +
+                '</div>' +
+                '<div class="flex items-center gap-2.5 text-xs text-muted flex-wrap">' +
+                  '<span class="flex items-center gap-1 ' + (isOverdue ? 'text-danger font-semibold' : 'text-ink') + '">' +
+                    ui.icon('clock', 'w-3.5 h-3.5 ' + (isOverdue ? 'text-danger' : 'text-accent')) +
+                    'Test scheduled: ' + ui.esc(formattedTime) + (isOverdue ? ' (Overdue)' : '') +
+                  '</span>' +
+                  (e.date ? '<span class="w-1 h-1 rounded-full bg-line"></span><span>Show: ' + ui.formatDate(e.date) + '</span>' : '') +
+                '</div>' +
+              '</div>' +
+              '<div class="flex items-center gap-2 shrink-0 self-end sm:self-center">' +
+                '<a href="#/advancing" class="btn btn-ghost !py-1.5 !px-2.5 text-xs">View Advance</a>' +
+                '<button data-complete-dcp="' + e.id + '" class="btn btn-primary !py-1.5 !px-3 text-xs flex items-center gap-1.5">' +
+                  ui.icon('check', 'w-3.5 h-3.5') + '<span>Complete Test</span>' +
+                '</button>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join('') + '</div></div>');
+    }
+
     if (myAdvances.length) {
       sections.push('<div>' +
         '<div class="flex items-center gap-2 mb-2">' + ui.icon('clip', 'w-4 h-4 text-accent') +
@@ -176,6 +238,30 @@ RMTP.views.dashboard = function (el) {
     const rj = el.querySelector('[data-reject="' + u.id + '"]'); if (rj) rj.addEventListener('click', async () => {
       const ok = await ui.confirm('Reject and delete ' + RMTP.auth.displayName(u) + '\u2019s request?', { title: 'Reject request', confirmLabel: 'Reject', danger: true });
       if (ok) { RMTP.auth.rejectUser(u.id); ui.toast('Request rejected', 'ok'); RMTP.router.render(); }
+    });
+  });
+
+  // Complete DCP test quick action
+  el.querySelectorAll('[data-complete-dcp]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const evId = btn.getAttribute('data-complete-dcp');
+      const ev = store.find('advancing', evId);
+      if (!ev) return;
+      const ok = await ui.confirm('Mark DCP checks and testing as completed for \u201c' + ev.name + '\u201d?', {
+        title: 'Complete DCP Test',
+        confirmLabel: 'Mark Completed',
+      });
+      if (ok) {
+        const updated = Object.assign({}, ev, {
+          checks_completed: true,
+          checksCompleted: true,
+          dcp_received: true,
+          dcpReceived: true
+        });
+        store.upsert('advancing', updated);
+        ui.toast('DCP test marked as completed', 'ok');
+        RMTP.router.render();
+      }
     });
   });
 };

@@ -1,12 +1,11 @@
 /* ============================================================
    views/advancing.js — event advancing, checklists & shift reports
    ------------------------------------------------------------
-   Events carry: category, space, times, an assigned tech (user),
-   a tech-info note, an optional tech-spec PDF, and a guest-engineer
-   flag. End-of-shift reports live in their own `reports` collection
-   keyed by eventId (see below). Permissions (auth.js): event
-   create/edit/delete = admin; checklist ticks = anyone; filing/
-   editing a report = report.edit; deleting = author or admin.
+   Events carry: category, space, times, assigned technicians,
+   live schedule / set pieces (for live spaces), screening checks &
+   DCP testing info (for cinema spaces), tech-info note, tech-spec PDF,
+   and guest-engineer flag. End-of-shift reports live in `reports`
+   collection keyed by eventId.
    ============================================================ */
 RMTP.views.advancing = function (el) {
   const ui = RMTP.ui, store = RMTP.store, auth = RMTP.auth, files = RMTP.files;
@@ -16,6 +15,7 @@ RMTP.views.advancing = function (el) {
   const canManageEvents = auth.can('advancing.manage');
   const canReport = auth.can('report.edit');
   const filters = (RMTP._advFilters = RMTP._advFilters || { space: '', date: '', tab: 'upcoming' });
+  const expandedEvents = (RMTP._expandedAdvEvents = RMTP._expandedAdvEvents || new Set());
 
   function getTodayString() {
     const now = new Date();
@@ -38,17 +38,23 @@ RMTP.views.advancing = function (el) {
   const STATUSES = ['Advancing', 'Confirmed', 'Complete'];
   const statusColour = { 'Advancing': 'var(--info)', 'Confirmed': 'var(--accent)', 'Complete': 'var(--ok)' };
 
-  function userName(id) { const u = id && store.find('users', id); return u ? auth.displayName(u) : ''; }
-  // "Technician One (Sound)" — falls back to just the name if no role was set.
+  function userName(id) {
+    if (!id) return '';
+    const u = store.find('users', id);
+    return u ? auth.displayName(u) : '';
+  }
+
   function techLabel(t) {
     const name = userName(t.userId);
     if (!name) return null;
     return t.role ? name + ' (' + t.role + ')' : name;
   }
+
   function reportsFor(eventId) {
     return store.all('reports').filter((r) => r.eventId === eventId)
       .sort((a, b) => (b.submittedAt || '').localeCompare(a.submittedAt || ''));
   }
+
   function canDeleteReport(r) { const u = auth.current(); return !!u && (u.admin || r.authorId === u.id); }
 
   // Admins see every event; everyone else sees only shifts assigned to them.
@@ -73,7 +79,7 @@ RMTP.views.advancing = function (el) {
 
   el.innerHTML =
     '<div class="view-enter">' +
-      ui.pageHeader('Advancing', isAdmin ? 'Events' : 'Your shifts',
+      ui.pageHeader('Advancing', isAdmin ? 'Events & Production Schedules' : 'Your shifts & Production Advancing',
         '<button id="verify-sync-btn" class="btn btn-ghost" title="Check Supabase database sync status">' + ui.icon('shield', 'w-4 h-4') + '<span class="hidden sm:inline">Verify Sync</span></button>' +
         '<button id="email-recipients-btn" class="btn btn-ghost" title="Configure shift report email recipients">' + ui.icon('mail', 'w-4 h-4') + '<span class="hidden sm:inline">Email Recipients</span></button>' +
         (canManageEvents && RMTP.supabase && RMTP.supabase.isConfigured()
@@ -81,7 +87,7 @@ RMTP.views.advancing = function (el) {
         (canManageEvents ? '<button id="add-event" class="btn btn-primary">' + ui.icon('plus', 'w-4 h-4') + 'Add event</button>' : '')) +
       tabBar() +
       filterBar() +
-      (shown.length ? '<div class="grid gap-4 lg:grid-cols-2">' + shown.map(renderEvent).join('') + '</div>'
+      (shown.length ? '<div class="grid gap-3.5">' + shown.map(renderEventCard).join('') + '</div>'
                     : ui.empty(emptyMsg[0], emptyMsg[1], emptyMsg[2])) +
     '</div>';
 
@@ -122,13 +128,26 @@ RMTP.views.advancing = function (el) {
     }
   });
 
+  // Card interactive listeners
   shown.forEach((ev) => {
     const q = (sel) => el.querySelector(sel);
-    const e = q('[data-edit="' + ev.id + '"]'); if (e) e.addEventListener('click', () => openForm(ev));
-    const d = q('[data-del="' + ev.id + '"]'); if (d) d.addEventListener('click', () => del(ev));
-    const rp = q('[data-reports="' + ev.id + '"]'); if (rp) rp.addEventListener('click', () => openReports(ev));
-    const sp = q('[data-spec="' + ev.id + '"]'); if (sp) sp.addEventListener('click', () => files.open(ev.techSpec));
-    const pr = q('[data-print="' + ev.id + '"]'); if (pr) pr.addEventListener('click', () => printAdvance(ev));
+    
+    // Open pop-over modal on card click or view button
+    const card = q('[data-event-card="' + ev.id + '"]');
+    const openPop = (e) => {
+      if (e.target.closest('button') && !e.target.closest('[data-open-modal]')) return;
+      openEventModal(ev);
+    };
+    if (card) card.addEventListener('click', openPop);
+
+    const openBtn = q('[data-open-modal="' + ev.id + '"]');
+    if (openBtn) openBtn.addEventListener('click', (evt) => { evt.stopPropagation(); openEventModal(ev); });
+
+    const e = q('[data-edit="' + ev.id + '"]'); if (e) e.addEventListener('click', (evt) => { evt.stopPropagation(); openForm(ev); });
+    const d = q('[data-del="' + ev.id + '"]'); if (d) d.addEventListener('click', (evt) => { evt.stopPropagation(); del(ev); });
+    const rp = q('[data-reports="' + ev.id + '"]'); if (rp) rp.addEventListener('click', (evt) => { evt.stopPropagation(); openReports(ev); });
+    const sp = q('[data-spec="' + ev.id + '"]'); if (sp) sp.addEventListener('click', (evt) => { evt.stopPropagation(); files.open(ev.techSpec); });
+    const pr = q('[data-print="' + ev.id + '"]'); if (pr) pr.addEventListener('click', (evt) => { evt.stopPropagation(); printAdvance(ev); });
   });
 
   function tabBar() {
@@ -164,106 +183,304 @@ RMTP.views.advancing = function (el) {
     '</div>';
   }
 
-  function renderEvent(ev) {
+  /* ---- Compact Event Card in List View ---- */
+  function renderEventCard(ev) {
     const reports = reportsFor(ev.id);
     const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
     const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
     const isCinema = isScreenSpace(ev.space);
     const mediaType = ev.media_type || ev.mediaType || '';
+    const scheduleItems = Array.isArray(ev.schedule_items) ? ev.schedule_items : (Array.isArray(ev.scheduleItems) ? ev.scheduleItems : []);
 
-    const info = [
-      ev.date ? ['Date', ui.formatDate(ev.date)] : null,
-      times ? ['Running', times] : null,
-      isCinema && (ev.screening_starts_time || ev.screeningStartsTime) ? ['Screening Starts', ev.screening_starts_time || ev.screeningStartsTime] : null,
-      isCinema && mediaType ? ['Media Type', mediaType] : null,
-      ev.soundcheck ? ['Soundcheck', ev.soundcheck] : null,
-      ev.doors ? ['Doors', ev.doors] : null,
-      ev.curfew ? ['Curfew', ev.curfew] : null,
-      ev.clientContact ? ['Client', ev.clientContact] : null,
-    ].filter(Boolean).map(([k, v]) =>
-      '<div><dt class="eyebrow">' + ui.esc(k) + '</dt><dd class="text-sm mt-0.5 ' + (k === 'Screening Starts' || k === 'Media Type' ? 'font-semibold text-accent' : '') + '">' + ui.esc(v) + '</dd></div>'
-    ).join('');
+    const leadTechStr = techs.length ? techs.join(', ') : 'Unassigned';
+    const scheduleSummary = isCinema
+      ? (mediaType ? 'Media: ' + mediaType : 'Cinema Screening')
+      : (scheduleItems.length ? scheduleItems.length + ' set piece' + (scheduleItems.length > 1 ? 's' : '') : (ev.doors ? 'Doors ' + ev.doors : 'Live Event'));
 
-    const meta = [
-      ev.category,
-      ev.space,
-      isCinema && mediaType ? ('Media: ' + mediaType) : null
-    ].filter(Boolean).map((t) => ui.pill(t, t.indexOf('Media:') === 0 ? 'var(--accent)' : 'var(--muted)')).join('');
-
-    const cinemaChecksHtml = isCinema ? (
-      '<div class="mt-4 pt-3 border-t border-line/60">' +
-        '<div class="flex items-center justify-between gap-2 mb-2">' +
-          '<div class="flex items-center gap-1.5">' +
-            ui.icon('film', 'w-4 h-4 text-accent') +
-            '<span class="eyebrow !text-ink font-semibold">Cinema Screening Checks</span>' +
-          '</div>' +
-          (mediaType ? '<span class="text-xs font-semibold px-2 py-0.5 rounded bg-panel2 border border-accent/40 text-accent">Media: ' + ui.esc(mediaType) + '</span>' : '') +
-        '</div>' +
-        '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2">' +
-          [
-            { key: 'dcp_received', alt: 'dcpReceived', label: 'DCP Received?' },
-            { key: 'checks_completed', alt: 'checksCompleted', label: 'Checks Completed' },
-            { key: 'intermission', alt: 'intermission', label: 'Intermission?' },
-            { key: 'qa', alt: 'qa', label: 'Q&A?' },
-          ].map((c) => {
-            const active = ev[c.key] !== undefined ? !!ev[c.key] : !!ev[c.alt];
-            return (
-              '<div class="flex items-center justify-between p-2 rounded-lg border ' +
-                (active ? 'bg-ok/10 border-ok/30' : 'bg-panel2/60 border-line') + '">' +
-                '<span class="text-xs text-muted font-medium">' + ui.esc(c.label) + '</span>' +
-                '<span class="text-xs font-semibold ' + (active ? 'text-ok' : 'text-danger') + '">' + (active ? 'Yes' : 'No') + '</span>' +
-              '</div>'
-            );
-          }).join('') +
-        '</div>' +
-      '</div>'
-    ) : '';
+    const checksCount = isCinema
+      ? [ev.dcp_received !== undefined ? ev.dcp_received : ev.dcpReceived, ev.checks_completed !== undefined ? ev.checks_completed : ev.checksCompleted].filter(Boolean).length
+      : 0;
 
     return (
-      '<div class="panel p-5 flex flex-col">' +
+      '<div data-event-card="' + ev.id + '" class="panel p-4 sm:p-5 transition-all hover:border-accent hover:shadow-lg cursor-pointer group select-none relative flex flex-col justify-between">' +
         '<div class="flex items-start justify-between gap-3">' +
-          '<div class="min-w-0">' +
-            '<div class="flex items-center gap-2 flex-wrap">' +
-              '<h3 class="font-display text-lg font-semibold truncate">' + ui.esc(ev.name) + '</h3>' +
+          '<div class="min-w-0 flex-1">' +
+            '<div class="flex items-center gap-2 flex-wrap mb-1.5">' +
+              '<h3 class="font-display text-base sm:text-lg font-semibold text-ink group-hover:text-accent transition-colors truncate">' + ui.esc(ev.name) + '</h3>' +
               ui.pill(ev.status, statusColour[ev.status] || 'var(--muted)') +
-              (ev.guestEngineer ? ui.pill('Guest engineer', 'var(--info)') : '') +
+              ui.pill(ev.space, isCinema ? 'var(--accent)' : 'var(--info)') +
+              (ev.category ? ui.pill(ev.category, 'var(--muted)') : '') +
+              (ev.guestEngineer ? ui.pill('Guest Engineer', 'var(--info)') : '') +
             '</div>' +
-            (meta ? '<div class="flex items-center gap-1.5 mt-2">' + meta + '</div>' : '') +
+            '<div class="flex items-center gap-3 text-xs text-muted flex-wrap">' +
+              (ev.date ? '<span class="flex items-center gap-1 font-medium text-ink">' + ui.icon('clock', 'w-3.5 h-3.5 text-accent') + ui.formatDate(ev.date) + (times ? ' (' + times + ')' : '') + '</span>' : '') +
+              '<span class="w-1 h-1 rounded-full bg-line"></span>' +
+              '<span>Techs: <strong class="text-ink font-normal">' + ui.esc(leadTechStr) + '</strong></span>' +
+              '<span class="w-1 h-1 rounded-full bg-line"></span>' +
+              '<span class="text-accent font-medium">' + ui.esc(scheduleSummary) + '</span>' +
+              (isCinema && checksCount ? '<span class="w-1 h-1 rounded-full bg-line"></span><span class="text-ok font-semibold">' + checksCount + '/2 checks done</span>' : '') +
+              (reports.length ? '<span class="w-1 h-1 rounded-full bg-line"></span><span class="text-ok font-semibold">' + reports.length + ' report' + (reports.length > 1 ? 's' : '') + '</span>' : '') +
+            '</div>' +
           '</div>' +
-          (canManageEvents ?
-            '<div class="flex gap-1 shrink-0">' +
-              '<button data-edit="' + ev.id + '" class="btn btn-ghost !p-2" title="Edit">' + ui.icon('pen', 'w-4 h-4') + '</button>' +
-              '<button data-del="' + ev.id + '" class="btn btn-danger !p-2" title="Delete">' + ui.icon('trash', 'w-4 h-4') + '</button>' +
-            '</div>' : '') +
-        '</div>' +
 
-        (info ? '<dl class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 mt-4">' + info + '</dl>' : '') +
-        cinemaChecksHtml +
-        (techs.length ?
-          '<div class="mt-4">' +
-            '<dt class="eyebrow">Technicians</dt>' +
-            '<div class="flex items-center gap-1.5 flex-wrap mt-1.5">' + techs.map((t) => ui.pill(t, 'var(--info)')).join('') + '</div>' +
-          '</div>' : '') +
-        (ev.techInfo ? '<p class="text-sm text-ink/80 mt-4 whitespace-pre-wrap">' + ui.esc(ev.techInfo) + '</p>' : '') +
-        (ev.techSpec ?
-          '<button data-spec="' + ev.id + '" class="mt-4 inline-flex items-center gap-2 text-sm text-accent hover:underline self-start">' +
-            ui.icon('file', 'w-4 h-4') + 'Tech spec: ' + ui.esc(ev.techSpec.name) + ' <span class="text-muted">(' + files.humanSize(ev.techSpec.size) + ')</span></button>' : '') +
-
-        '<div class="mt-5 pt-4 border-t border-line flex flex-wrap items-center justify-between gap-3 mt-auto">' +
-          '<div class="min-w-0">' +
-            '<p class="eyebrow">End-of-shift</p>' +
-            '<p class="text-sm mt-0.5 ' + (reports.length ? '' : 'text-muted') + '">' +
-              (reports.length ? reports.length + ' report' + (reports.length > 1 ? 's' : '') + ' \u00b7 latest by ' + ui.esc(reports[0].author || 'Unknown') : 'No report filed yet') +
-            '</p>' +
-          '</div>' +
-          '<div class="flex items-center gap-2 shrink-0">' +
-            '<button data-print="' + ev.id + '" class="btn btn-ghost" title="Export / Print Advance as PDF">' + ui.icon('print', 'w-4 h-4') + '<span>Print PDF</span></button>' +
-            '<button data-reports="' + ev.id + '" class="btn btn-ghost shrink-0">' + ui.icon('clip', 'w-4 h-4') +
-              'Reports' + (reports.length ? ' (' + reports.length + ')' : '') + '</button>' +
+          '<div class="flex items-center gap-1 shrink-0">' +
+            '<button data-open-modal="' + ev.id + '" class="btn btn-ghost !py-1.5 !px-3 text-xs font-semibold text-accent flex items-center gap-1.5 hover:bg-accent/10 rounded-lg">' +
+              ui.icon('eye', 'w-4 h-4') + '<span class="hidden sm:inline">View Advance</span>' +
+            '</button>' +
+            '<button data-print="' + ev.id + '" class="btn btn-ghost !p-2" title="Export Advance PDF">' + ui.icon('print', 'w-4 h-4') + '</button>' +
+            '<button data-reports="' + ev.id + '" class="btn btn-ghost !p-2" title="Shift Reports">' + ui.icon('clip', 'w-4 h-4') + '</button>' +
+            (canManageEvents ?
+              '<button data-edit="' + ev.id + '" class="btn btn-ghost !p-2" title="Edit Event">' + ui.icon('pen', 'w-4 h-4') + '</button>' +
+              '<button data-del="' + ev.id + '" class="btn btn-danger !p-2" title="Delete Event">' + ui.icon('trash', 'w-4 h-4') + '</button>' : '') +
           '</div>' +
         '</div>' +
       '</div>'
     );
+  }
+
+  /* ---- Pop-over Detail Modal with Darkened Backdrop ---- */
+  function openEventModal(ev) {
+    const reports = reportsFor(ev.id);
+    const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
+    const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
+    const isCinema = isScreenSpace(ev.space);
+    const mediaType = ev.media_type || ev.mediaType || '';
+    const scheduleItems = Array.isArray(ev.schedule_items) ? ev.schedule_items : (Array.isArray(ev.scheduleItems) ? ev.scheduleItems : []);
+
+    const dcpTesterName = (isCinema && ev.dcp_tester_user_id) ? userName(ev.dcp_tester_user_id) : '';
+    const dcpTestTimeStr = (isCinema && ev.dcp_test_datetime) ? new Date(ev.dcp_test_datetime).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' }) : '';
+
+    // Live Timings
+    const liveTimingsHtml = !isCinema ? (
+      '<div class="p-3.5 rounded-xl bg-panel2/40 border border-line">' +
+        '<div class="eyebrow mb-2 text-accent flex items-center gap-1.5">' +
+          ui.icon('clock', 'w-3.5 h-3.5') + '<span>Core Production Timings</span>' +
+        '</div>' +
+        '<div class="grid grid-cols-2 sm:grid-cols-6 gap-2">' +
+          [
+            ['Load In', ev.load_in || ev.loadIn || '—'],
+            ['Soundcheck', ev.soundcheck || '—'],
+            ['Doors', ev.doors || '—'],
+            ['Off Stage', ev.off_stage || ev.offStage || '—'],
+            ['Curfew', ev.curfew || '—'],
+            ['Load Out', ev.load_out || ev.loadOut || '—'],
+          ].map(([lbl, val]) => (
+            '<div class="p-2 rounded-lg bg-panel border border-line/60">' +
+              '<div class="text-[10px] font-semibold text-muted uppercase tracking-wider">' + ui.esc(lbl) + '</div>' +
+              '<div class="text-sm font-semibold text-ink mt-0.5 font-mono">' + ui.esc(val) + '</div>' +
+            '</div>'
+          )).join('') +
+        '</div>' +
+      '</div>'
+    ) : '';
+
+    // Live Stage Schedule & Set Pieces
+    const liveScheduleItemsHtml = !isCinema ? (
+      '<div class="mt-3 p-3.5 rounded-xl bg-panel2/30 border border-line">' +
+        '<div class="flex items-center justify-between gap-2 mb-2.5">' +
+          '<div class="eyebrow text-ink font-semibold flex items-center gap-1.5">' +
+            ui.icon('clip', 'w-3.5 h-3.5 text-accent') + '<span>Live Set Pieces & Stage Schedule</span>' +
+          '</div>' +
+          '<span class="text-xs font-mono text-muted">' + scheduleItems.length + ' item' + (scheduleItems.length === 1 ? '' : 's') + '</span>' +
+        '</div>' +
+        (scheduleItems.length ? (
+          '<div class="grid gap-1.5">' +
+            scheduleItems.map((item) => {
+              const isAct = item.type === 'act';
+              const isChangeover = item.type === 'changeover';
+              const itemTitle = item.customName ? item.customName : (item.label || (isAct ? 'Act' : (isChangeover ? 'Changeover' : 'Item')));
+              const badgeClass = isAct ? 'bg-accent/15 border-accent/40 text-accent' : (isChangeover ? 'bg-warning/15 border-warning/40 text-warning' : 'bg-info/15 border-info/40 text-info');
+              return (
+                '<div class="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-panel border border-line text-xs">' +
+                  '<div class="flex items-center gap-2 min-w-0">' +
+                    '<span class="px-2 py-0.5 rounded font-mono font-semibold text-[11px] border ' + badgeClass + '">' +
+                      ui.esc(item.label || (isAct ? 'Act' : (isChangeover ? 'Changeover' : 'Other'))) +
+                    '</span>' +
+                    '<span class="font-medium text-ink truncate">' + ui.esc(itemTitle) + '</span>' +
+                  '</div>' +
+                  '<div class="flex items-center gap-3 shrink-0 font-mono text-muted">' +
+                    (item.time ? '<span>Stage: <strong class="text-ink">' + ui.esc(item.time) + '</strong></span>' : '') +
+                    (item.duration ? '<span>Set: <strong class="text-ink">' + ui.esc(item.duration) + '</strong></span>' : '') +
+                  '</div>' +
+                '</div>'
+              );
+            }).join('') +
+          '</div>'
+        ) : '<div class="text-xs text-muted italic">No set pieces or schedule items advanced yet.</div>') +
+      '</div>'
+    ) : '';
+
+    // Cinema Checklist & DCP testing
+    const cinemaDetailsHtml = isCinema ? (
+      '<div class="grid gap-3">' +
+        '<div class="p-3.5 rounded-xl bg-panel2/40 border border-line">' +
+          '<div class="flex flex-wrap items-center justify-between gap-2 mb-3 pb-2 border-b border-line/60">' +
+            '<div class="flex items-center gap-1.5">' +
+              ui.icon('film', 'w-4 h-4 text-accent') +
+              '<span class="text-xs font-semibold text-accent">Cinema Screening Checklist & Format</span>' +
+            '</div>' +
+            (mediaType ? '<span class="text-xs font-semibold px-2 py-0.5 rounded bg-panel border border-accent/40 text-accent font-mono">Media: ' + ui.esc(mediaType) + '</span>' : '') +
+          '</div>' +
+          '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">' +
+            [
+              { key: 'dcp_received', alt: 'dcpReceived', label: 'DCP Received?' },
+              { key: 'checks_completed', alt: 'checksCompleted', label: 'Checks Completed' },
+              { key: 'intermission', alt: 'intermission', label: 'Intermission?' },
+              { key: 'qa', alt: 'qa', label: 'Q&A?' },
+            ].map((c) => {
+              const active = ev[c.key] !== undefined ? !!ev[c.key] : !!ev[c.alt];
+              return (
+                '<div class="flex items-center justify-between p-2.5 rounded-lg border ' +
+                  (active ? 'bg-ok/10 border-ok/30' : 'bg-panel2/60 border-line') + '">' +
+                  '<span class="text-xs text-muted font-medium">' + ui.esc(c.label) + '</span>' +
+                  '<span class="text-xs font-semibold ' + (active ? 'text-ok' : 'text-danger') + '">' + (active ? 'Yes' : 'No') + '</span>' +
+                '</div>'
+              );
+            }).join('') +
+          '</div>' +
+          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-line/50 text-xs">' +
+            '<div class="p-2.5 rounded bg-panel border border-line/60 flex items-center justify-between">' +
+              '<span class="text-muted">Testing Engineer:</span>' +
+              '<span class="font-semibold text-ink">' + (dcpTesterName ? ui.esc(dcpTesterName) : '<span class="text-muted italic">Unassigned</span>') + '</span>' +
+            '</div>' +
+            '<div class="p-2.5 rounded bg-panel border border-line/60 flex items-center justify-between">' +
+              '<span class="text-muted">Scheduled DCP Test:</span>' +
+              '<span class="font-semibold text-ink font-mono">' + (dcpTestTimeStr ? ui.esc(dcpTestTimeStr) : '<span class="text-muted italic">Not scheduled</span>') + '</span>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    ) : '';
+
+    const bodyHtml =
+      '<div class="grid gap-4 text-sm">' +
+        // Header summary bar
+        '<div class="p-3 rounded-xl bg-panel2/50 border border-line flex flex-wrap items-center justify-between gap-2.5 text-xs">' +
+          '<div class="flex items-center gap-3 flex-wrap">' +
+            '<span class="flex items-center gap-1.5 font-semibold text-ink">' +
+              ui.icon('clock', 'w-4 h-4 text-accent') +
+              (ev.date ? ui.formatDate(ev.date) : 'TBC') + (times ? ' (' + times + ')' : '') +
+            '</span>' +
+            (isCinema && (ev.screening_starts_time || ev.screeningStartsTime) ?
+              '<span class="px-2 py-0.5 rounded bg-panel border border-accent/30 text-accent font-semibold">Screening: ' + ui.esc(ev.screening_starts_time || ev.screeningStartsTime) + '</span>' : '') +
+          '</div>' +
+          '<div class="flex items-center gap-1.5 flex-wrap">' +
+            ui.pill(ev.status, statusColour[ev.status] || 'var(--muted)') +
+            ui.pill(ev.space, isCinema ? 'var(--accent)' : 'var(--info)') +
+            (ev.category ? ui.pill(ev.category, 'var(--muted)') : '') +
+            (ev.guestEngineer ? ui.pill('Guest Engineer', 'var(--info)') : '') +
+          '</div>' +
+        '</div>' +
+
+        liveTimingsHtml +
+        liveScheduleItemsHtml +
+        cinemaDetailsHtml +
+
+        // Technicians
+        (techs.length ? (
+          '<div class="p-3 rounded-xl bg-panel2/30 border border-line text-xs">' +
+            '<span class="eyebrow block mb-1.5">Assigned Technicians</span>' +
+            '<div class="flex items-center gap-1.5 flex-wrap">' + techs.map((t) => ui.pill(t, 'var(--info)')).join('') + '</div>' +
+          '</div>'
+        ) : '') +
+
+        // Client Contact
+        (ev.clientContact ? (
+          '<div class="text-xs p-3 rounded-xl bg-panel2/20 border border-line flex items-center justify-between">' +
+            '<span class="text-muted">Artist / Client Contact:</span>' +
+            '<span class="font-medium text-ink">' + ui.esc(ev.clientContact) + '</span>' +
+          '</div>'
+        ) : '') +
+
+        // Technical Notes
+        (ev.techInfo ? (
+          '<div class="p-3.5 rounded-xl bg-panel2/30 border border-line text-xs">' +
+            '<span class="eyebrow block mb-1">Technical Notes</span>' +
+            '<p class="text-ink/80 whitespace-pre-wrap leading-relaxed">' + ui.esc(ev.techInfo) + '</p>' +
+          '</div>'
+        ) : '') +
+
+        // Tech Spec file
+        (ev.techSpec ? (
+          '<button id="modal-open-spec" class="inline-flex items-center gap-2 text-xs text-accent hover:underline self-start p-2.5 rounded-lg bg-panel border border-line">' +
+            ui.icon('file', 'w-4 h-4') + '<span>Tech spec: <strong>' + ui.esc(ev.techSpec.name) + '</strong> (' + files.humanSize(ev.techSpec.size) + ')</span>' +
+          '</button>'
+        ) : '') +
+
+        // Shift Reports Section
+        '<div class="p-3.5 rounded-xl bg-panel2/40 border border-line">' +
+          '<div class="flex items-center justify-between gap-2 mb-2.5">' +
+            '<div class="eyebrow text-ink font-semibold flex items-center gap-1.5">' +
+              ui.icon('clip', 'w-3.5 h-3.5 text-accent') + '<span>End-of-Shift Reports (' + reports.length + ')</span>' +
+            '</div>' +
+            '<button id="modal-manage-reports" class="btn btn-ghost !py-1 text-xs text-accent">' +
+              (reports.length ? 'View All & Add Report' : '+ File Shift Report') +
+            '</button>' +
+          '</div>' +
+          (reports.length ? (
+            '<div class="grid gap-2 text-xs">' +
+              reports.slice(0, 3).map((r) => (
+                '<div class="p-2.5 rounded-lg bg-panel border border-line">' +
+                  '<div class="flex items-center justify-between text-muted mb-1 text-[11px] font-semibold">' +
+                    '<span>' + ui.esc(r.crew ? r.crew + ' Shift' : 'Shift Report') + ' \u00b7 ' + ui.esc(r.author || 'Technician') + '</span>' +
+                    '<span class="font-mono">' + (r.submittedAt ? ui.formatDate(r.submittedAt.slice(0, 10)) : '') + '</span>' +
+                  '</div>' +
+                  (r.summary ? '<div class="text-ink font-medium">' + ui.esc(r.summary) + '</div>' : '') +
+                  (r.issues ? '<div class="text-danger mt-1 text-[11px]"><strong>Issues:</strong> ' + ui.esc(r.issues) + '</div>' : '') +
+                '</div>'
+              )).join('') +
+              (reports.length > 3 ? '<div class="text-[11px] text-muted text-center">+ ' + (reports.length - 3) + ' more reports</div>' : '') +
+            '</div>'
+          ) : '<div class="text-xs text-muted italic">No shift reports filed yet.</div>') +
+        '</div>' +
+      '</div>';
+
+    const footerHtml =
+      '<div class="flex items-center justify-between w-full gap-2 flex-wrap">' +
+        '<div class="flex items-center gap-2">' +
+          '<button id="modal-print-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
+            ui.icon('print', 'w-4 h-4') + '<span>Print PDF</span>' +
+          '</button>' +
+          '<button id="modal-reports-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
+            ui.icon('clip', 'w-4 h-4') + '<span>Reports (' + reports.length + ')</span>' +
+          '</button>' +
+        '</div>' +
+        '<div class="flex items-center gap-2">' +
+          (canManageEvents ?
+            '<button id="modal-edit-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
+              ui.icon('pen', 'w-4 h-4') + '<span>Edit</span>' +
+            '</button>' +
+            '<button id="modal-del-btn" class="btn btn-danger text-xs flex items-center gap-1.5">' +
+              ui.icon('trash', 'w-4 h-4') + '<span>Delete</span>' +
+            '</button>' : '') +
+          '<button data-close class="btn btn-primary text-xs !px-4">Close</button>' +
+        '</div>' +
+      '</div>';
+
+    const m = ui.modal({
+      title: ev.name || 'Event Advance Details',
+      body: bodyHtml,
+      footer: footerHtml,
+      size: 'md:max-w-3xl'
+    });
+
+    const specBtn = m.root.querySelector('#modal-open-spec');
+    if (specBtn) specBtn.addEventListener('click', () => files.open(ev.techSpec));
+
+    const printBtn = m.root.querySelector('#modal-print-btn');
+    if (printBtn) printBtn.addEventListener('click', () => printAdvance(ev));
+
+    const reportsBtn = m.root.querySelector('#modal-reports-btn');
+    if (reportsBtn) reportsBtn.addEventListener('click', () => { m.close(); openReports(ev); });
+
+    const manageReportsBtn = m.root.querySelector('#modal-manage-reports');
+    if (manageReportsBtn) manageReportsBtn.addEventListener('click', () => { m.close(); openReports(ev); });
+
+    const editBtn = m.root.querySelector('#modal-edit-btn');
+    if (editBtn) editBtn.addEventListener('click', () => { m.close(); openForm(ev); });
+
+    const delBtn = m.root.querySelector('#modal-del-btn');
+    if (delBtn) delBtn.addEventListener('click', () => { m.close(); del(ev); });
   }
 
   /* ---- PDF Export / Print ---- */
@@ -275,11 +492,55 @@ RMTP.views.advancing = function (el) {
     const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
     const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
     const reports = reportsFor(ev.id);
+    const scheduleItems = Array.isArray(ev.schedule_items) ? ev.schedule_items : (Array.isArray(ev.scheduleItems) ? ev.scheduleItems : []);
+
+    const dcpTesterName = (isCinema && ev.dcp_tester_user_id) ? userName(ev.dcp_tester_user_id) : '';
+    const dcpTestTimeStr = (isCinema && ev.dcp_test_datetime) ? new Date(ev.dcp_test_datetime).toLocaleString('en-GB') : '';
+
+    const liveTimingsSection = !isCinema ? (
+      '<div class="adv-print-section">' +
+        '<div class="adv-print-section-title">Production Timings</div>' +
+        '<div class="adv-print-grid">' +
+          '<div class="adv-print-field"><div class="adv-print-label">Load In</div><div class="adv-print-val">' + ui.esc(ev.load_in || ev.loadIn || 'TBC') + '</div></div>' +
+          '<div class="adv-print-field"><div class="adv-print-label">Soundcheck</div><div class="adv-print-val">' + ui.esc(ev.soundcheck || 'N/A') + '</div></div>' +
+          '<div class="adv-print-field"><div class="adv-print-label">Doors</div><div class="adv-print-val">' + ui.esc(ev.doors || 'N/A') + '</div></div>' +
+          '<div class="adv-print-field"><div class="adv-print-label">Off Stage</div><div class="adv-print-val">' + ui.esc(ev.off_stage || ev.offStage || 'TBC') + '</div></div>' +
+          '<div class="adv-print-field"><div class="adv-print-label">Curfew</div><div class="adv-print-val">' + ui.esc(ev.curfew || 'N/A') + '</div></div>' +
+          '<div class="adv-print-field"><div class="adv-print-label">Load Out</div><div class="adv-print-val">' + ui.esc(ev.load_out || ev.loadOut || 'TBC') + '</div></div>' +
+        '</div>' +
+      '</div>'
+    ) : '';
+
+    const liveScheduleSection = (!isCinema && scheduleItems.length) ? (
+      '<div class="adv-print-section">' +
+        '<div class="adv-print-section-title">Live Schedule & Set Pieces</div>' +
+        '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:4px;">' +
+          '<thead>' +
+            '<tr style="border-bottom:1.5px solid #cbd5e1;text-align:left;color:#475569;font-size:11px;">' +
+              '<th style="padding:4px 8px;">Type / Label</th>' +
+              '<th style="padding:4px 8px;">Act / Description</th>' +
+              '<th style="padding:4px 8px;">Stage Time</th>' +
+              '<th style="padding:4px 8px;">Duration</th>' +
+            '</tr>' +
+          '</thead>' +
+          '<tbody>' +
+            scheduleItems.map((it) => (
+              '<tr style="border-bottom:1px solid #e2e8f0;">' +
+                '<td style="padding:6px 8px;font-weight:600;">' + ui.esc(it.label || it.type) + '</td>' +
+                '<td style="padding:6px 8px;">' + ui.esc(it.customName || '—') + '</td>' +
+                '<td style="padding:6px 8px;font-family:monospace;">' + ui.esc(it.time || '—') + '</td>' +
+                '<td style="padding:6px 8px;font-family:monospace;">' + ui.esc(it.duration || '—') + '</td>' +
+              '</tr>'
+            )).join('') +
+          '</tbody>' +
+        '</table>' +
+      '</div>'
+    ) : '';
 
     const cinemaChecksHtml = isCinema ? (
       '<div class="adv-print-section">' +
         '<div class="adv-print-section-title" style="display:flex;justify-content:space-between;align-items:center;">' +
-          '<span>Cinema Screening Checklist & Format</span>' +
+          '<span>Cinema Screening Checklist & Testing</span>' +
           (mediaTypeVal ? '<span style="font-size:11px;font-family:monospace;font-weight:600;color:#0284c7;">Media Source: ' + ui.esc(mediaTypeVal) + '</span>' : '') +
         '</div>' +
         '<div class="adv-print-grid-4">' +
@@ -294,6 +555,10 @@ RMTP.views.advancing = function (el) {
               '<span class="adv-print-val">' + (c.val ? 'YES' : 'NO') + '</span>' +
             '</div>'
           )).join('') +
+        '</div>' +
+        '<div class="adv-print-grid" style="margin-top:8px;">' +
+          '<div class="adv-print-field"><div class="adv-print-label">Testing Engineer</div><div class="adv-print-val">' + ui.esc(dcpTesterName || 'Unassigned') + '</div></div>' +
+          '<div class="adv-print-field"><div class="adv-print-label">DCP Test Date/Time</div><div class="adv-print-val">' + ui.esc(dcpTestTimeStr || 'Not scheduled') + '</div></div>' +
         '</div>' +
       '</div>'
     ) : '';
@@ -339,12 +604,11 @@ RMTP.views.advancing = function (el) {
             '<div class="adv-print-field"><div class="adv-print-label">Running Times</div><div class="adv-print-val">' + ui.esc(times || 'TBC') + '</div></div>' +
             (isCinema ? '<div class="adv-print-field"><div class="adv-print-label">Screening Starts</div><div class="adv-print-val">' + ui.esc(ev.screening_starts_time || ev.screeningStartsTime || 'TBC') + '</div></div>' : '') +
             (isCinema && mediaTypeVal ? '<div class="adv-print-field"><div class="adv-print-label">Media Type</div><div class="adv-print-val font-semibold">' + ui.esc(mediaTypeVal) + '</div></div>' : '') +
-            '<div class="adv-print-field"><div class="adv-print-label">Soundcheck</div><div class="adv-print-val">' + ui.esc(ev.soundcheck || 'N/A') + '</div></div>' +
-            '<div class="adv-print-field"><div class="adv-print-label">Doors</div><div class="adv-print-val">' + ui.esc(ev.doors || 'N/A') + '</div></div>' +
-            '<div class="adv-print-field"><div class="adv-print-label">Curfew</div><div class="adv-print-val">' + ui.esc(ev.curfew || 'N/A') + '</div></div>' +
           '</div>' +
         '</div>' +
 
+        liveTimingsSection +
+        liveScheduleSection +
         cinemaChecksHtml +
 
         '<div class="adv-print-section">' +
@@ -413,6 +677,7 @@ RMTP.views.advancing = function (el) {
     const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
     const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
     const isCinema = isScreenSpace(ev.space);
+    const scheduleItems = Array.isArray(ev.schedule_items) ? ev.schedule_items : (Array.isArray(ev.scheduleItems) ? ev.scheduleItems : []);
 
     const subject = '[Shift Report] ' + (ev.name || 'Event') + ' \u2014 ' + (ev.space || 'Venue') + ' (' + dateStr + ')';
 
@@ -440,6 +705,7 @@ RMTP.views.advancing = function (el) {
       'EVENT ADVANCE DETAILS:',
       '- Technicians: ' + (techs.length ? techs.join(', ') : 'None assigned'),
       isCinema ? '- Cinema Checks: DCP [' + ((ev.dcp_received !== undefined ? ev.dcp_received : ev.dcpReceived) ? 'YES' : 'NO') + '] | Checks [' + ((ev.checks_completed !== undefined ? ev.checks_completed : ev.checksCompleted) ? 'YES' : 'NO') + '] | Intermission [' + (ev.intermission ? 'YES' : 'NO') + '] | Q&A [' + (ev.qa ? 'YES' : 'NO') + ']' : null,
+      !isCinema && scheduleItems.length ? '- Schedule (' + scheduleItems.length + ' items): ' + scheduleItems.map((it) => (it.label || it.type) + (it.customName ? ' (' + it.customName + ')' : '') + (it.time ? ' @ ' + it.time : '')).join(' | ') : null,
       ev.techInfo ? '- Tech Info: ' + ev.techInfo : null,
       ev.clientContact ? '- Client Contact: ' + ev.clientContact : null,
       '',
@@ -604,13 +870,28 @@ RMTP.views.advancing = function (el) {
       const repLocal = store.all('reports').length;
       const advRemote = (res.tables && res.tables.advancing && res.tables.advancing.count !== undefined) ? res.tables.advancing.count : '-';
       const repRemote = (res.tables && res.tables.reports && res.tables.reports.count !== undefined) ? res.tables.reports.count : '-';
+      const unsupp = res.unsupportedCols && res.unsupportedCols.advancing;
+
+      const migrationHtml = (unsupp && unsupp.length) ? (
+        '<div class="p-3 rounded-lg bg-accent/10 border border-accent/30 text-xs mt-2">' +
+          '<div class="font-semibold text-accent flex items-center gap-1.5 mb-1">' +
+            ui.icon('info', 'w-4 h-4') +
+            '<span>Remote Schema Compatibility Active</span>' +
+          '</div>' +
+          '<p class="text-ink/80 mb-2">The remote database schema is missing the following column(s): <code class="font-mono font-semibold text-accent bg-panel px-1 py-0.5 rounded">' + ui.esc(unsupp.join(', ')) + '</code>. ' +
+          'All fields remain safely persisted in your browser offline cache. To persist these columns in Supabase, execute this in the Supabase SQL editor:</p>' +
+          '<pre class="p-2 rounded bg-panel font-mono text-[11px] select-all border border-line overflow-x-auto text-ink">' +
+            unsupp.map((c) => 'alter table public.advancing add column if not exists "' + c + '" ' + (c.includes('items') || c.includes('technicians') ? "jsonb default '[]'::jsonb;" : (c.includes('received') || c.includes('completed') || c.includes('intermission') || c.includes('qa') || c.includes('guest') ? 'boolean default false;' : "text default '';"))).join('\n') +
+          '</pre>' +
+        '</div>'
+      ) : '';
 
       det.innerHTML =
         '<div class="grid grid-cols-2 gap-2 mt-2">' +
           '<div class="p-3 rounded-lg bg-panel2/40 border border-line">' +
             '<div class="eyebrow">Advancing Collection</div>' +
             '<div class="text-sm font-semibold mt-1">Local: ' + advLocal + ' \u00b7 Supabase: ' + advRemote + '</div>' +
-            '<div class="text-[11px] text-muted mt-0.5">Columns: dcp_received, checks_completed, screening_starts_time, media_type verified</div>' +
+            '<div class="text-[11px] text-muted mt-0.5">' + (unsupp && unsupp.length ? unsupp.length + ' legacy remote column(s) pruned' : 'Columns verified & active') + '</div>' +
           '</div>' +
           '<div class="p-3 rounded-lg bg-panel2/40 border border-line">' +
             '<div class="eyebrow">Reports Collection</div>' +
@@ -618,7 +899,8 @@ RMTP.views.advancing = function (el) {
             '<div class="text-[11px] text-muted mt-0.5">Columns: summary, issues, followUp, eventId verified</div>' +
           '</div>' +
         '</div>' +
-        '<div class="p-3 rounded-lg bg-panel2/40 border border-line">' +
+        migrationHtml +
+        '<div class="p-3 rounded-lg bg-panel2/40 border border-line mt-2">' +
           '<div class="eyebrow">Queue Health</div>' +
           '<div class="text-xs mt-1">Pending writes in queue: <span class="font-mono font-semibold">' + res.queueLength + '</span></div>' +
         '</div>';
@@ -674,26 +956,64 @@ RMTP.views.advancing = function (el) {
       const mBtn = m.root.querySelector('[data-rmail="' + r.id + '"]');
       if (mBtn) mBtn.addEventListener('click', async () => {
         const dispatch = await dispatchShiftReportEmail(ev, r);
-        const modal = ui.modal({
-          title: 'Shift Report Email Summary',
-          size: 'md:max-w-lg',
-          body:
-            '<div class="grid gap-3">' +
-              '<div><label class="eyebrow">Recipients</label><p class="text-xs font-mono mt-0.5">' + ui.esc(dispatch.recipients.join(', ')) + '</p></div>' +
-              '<div><label class="eyebrow">Subject</label><p class="text-sm font-semibold mt-0.5">' + ui.esc(dispatch.subject) + '</p></div>' +
-              '<div><label class="eyebrow">Message Body</label><pre class="p-3 bg-panel2 rounded-lg text-xs whitespace-pre-wrap font-mono max-h-60 overflow-y-auto mt-1 border border-line">' + ui.esc(dispatch.plain) + '</pre></div>' +
-            '</div>',
-          footer:
-            '<a href="' + dispatch.mailtoUrl + '" class="btn btn-primary mr-auto">' + ui.icon('mail', 'w-4 h-4') + 'Open in Email Client</a>' +
-            '<button class="btn btn-ghost" data-close-preview>Done</button>'
-        });
-        modal.root.querySelector('[data-close-preview]').addEventListener('click', modal.close);
+        showEmailSummaryModal(ev, r, dispatch);
       });
       const dBtn = m.root.querySelector('[data-rdel="' + r.id + '"]'); if (dBtn) dBtn.addEventListener('click', async () => {
         const ok = await ui.confirm('Delete this shift report?', { title: 'Delete report', confirmLabel: 'Delete', danger: true });
         if (ok) { store.remove('reports', r.id); ui.toast('Report deleted', 'ok'); refresh(); }
       });
     });
+  }
+
+  function showEmailSummaryModal(ev, r, dispatch) {
+    const gmailUrl = 'https://mail.google.com/mail/?view=cm&fs=1' +
+      '&to=' + encodeURIComponent(dispatch.recipients.join(',')) +
+      '&su=' + encodeURIComponent(dispatch.subject) +
+      '&body=' + encodeURIComponent(dispatch.plain);
+
+    const modal = ui.modal({
+      title: 'Shift Report Email Summary',
+      size: 'md:max-w-xl',
+      body:
+        '<div class="grid gap-3">' +
+          '<div class="p-3 rounded-lg bg-panel2/60 border border-line flex items-center justify-between gap-2">' +
+            '<div class="min-w-0">' +
+              '<label class="eyebrow">Recipients (' + dispatch.recipients.length + ')</label>' +
+              '<p class="text-xs font-mono text-ink mt-0.5 truncate">' + ui.esc(dispatch.recipients.join(', ')) + '</p>' +
+            '</div>' +
+            '<button id="btn-copy-recipients" class="btn btn-ghost !py-1 text-xs shrink-0">' + ui.icon('clip', 'w-3.5 h-3.5') + 'Copy list</button>' +
+          '</div>' +
+          '<div>' +
+            '<label class="eyebrow">Subject</label>' +
+            '<p class="text-xs font-medium text-ink mt-0.5 bg-panel2/40 p-2 rounded border border-line">' + ui.esc(dispatch.subject) + '</p>' +
+          '</div>' +
+          '<div>' +
+            '<div class="flex items-center justify-between mb-1">' +
+              '<label class="eyebrow">Message Body</label>' +
+              '<button id="btn-copy-body" class="text-xs text-accent hover:underline flex items-center gap-1">' + ui.icon('clip', 'w-3 h-3') + 'Copy message text</button>' +
+            '</div>' +
+            '<pre id="email-preview-body" class="p-3 bg-panel2 rounded-lg text-xs whitespace-pre-wrap font-mono max-h-56 overflow-y-auto border border-line text-ink select-all">' + ui.esc(dispatch.plain) + '</pre>' +
+          '</div>' +
+        '</div>',
+      footer:
+        '<div class="flex flex-wrap items-center gap-2 mr-auto">' +
+          '<a href="' + dispatch.mailtoUrl + '" class="btn btn-primary">' + ui.icon('mail', 'w-4 h-4') + 'Open in Email App</a>' +
+          '<a href="' + gmailUrl + '" target="_blank" rel="noopener noreferrer" class="btn btn-ghost text-xs">' + ui.icon('globe', 'w-3.5 h-3.5') + 'Gmail Web</a>' +
+        '</div>' +
+        '<button class="btn btn-ghost" data-close-preview>Done</button>'
+    });
+
+    const cpRec = modal.root.querySelector('#btn-copy-recipients');
+    if (cpRec) cpRec.addEventListener('click', () => {
+      navigator.clipboard.writeText(dispatch.recipients.join(', ')).then(() => ui.toast('Recipients copied to clipboard', 'ok'));
+    });
+
+    const cpBody = modal.root.querySelector('#btn-copy-body');
+    if (cpBody) cpBody.addEventListener('click', () => {
+      navigator.clipboard.writeText(dispatch.plain).then(() => ui.toast('Report body copied to clipboard', 'ok'));
+    });
+
+    modal.root.querySelector('[data-close-preview]').addEventListener('click', modal.close);
   }
 
   function reportCard(r) {
@@ -770,116 +1090,342 @@ RMTP.views.advancing = function (el) {
       if (!summary && !issues && !followUp) { ui.toast('Add at least a summary', 'danger'); return; }
       const meNow = auth.current();
       const now = new Date().toISOString();
-      // Shift date always corresponds to the event it's attached to.
       const base = { id: r.id || store.uid('rep'), eventId: ev.id, crew: m.root.querySelector('#r-crew').value.trim(), shiftDate: ev.date || '', summary, issues, followUp };
       const record = existing
         ? Object.assign({}, r, base, { updatedAt: now, updatedBy: auth.displayName(meNow) })
         : Object.assign(base, { authorId: meNow ? meNow.id : null, author: auth.displayName(meNow) || 'Unknown', submittedAt: now, updatedAt: now });
       store.upsert('reports', record);
 
+      m.close();
+      RMTP.router.render();
+      const f = store.find('advancing', ev.id);
+      if (f) openReports(f);
+
       if (shouldEmail) {
         const dispatch = await dispatchShiftReportEmail(ev, record);
-        ui.toast('Report saved & email summary generated for recipients', 'ok');
+        showEmailSummaryModal(ev, record, dispatch);
+        ui.toast('Report filed \u2014 ready to send', 'ok');
       } else {
         ui.toast(existing ? 'Report updated' : 'Report filed', 'ok');
       }
-
-      m.close();
-      RMTP.router.render(); const f = store.find('advancing', ev.id); if (f) openReports(f);
     });
   }
 
-  /* ---- Event form ---- */
+  /* ---- Event form (Live vs Cinema Space Routing) ---- */
   function openForm(existing) {
     const ev = existing || {};
     const opt = (arr, val) => arr.map((v) => '<option ' + (v === val ? 'selected' : '') + '>' + v + '</option>').join('');
     const blankOpt = (arr, val, blank) => '<option value="" ' + (!val ? 'selected' : '') + '>' + blank + '</option>' +
       arr.map((v) => '<option ' + (v === val ? 'selected' : '') + '>' + v + '</option>').join('');
 
-    // Tagged crew for this shift: [{ userId, role }]. Falls back to the
-    // legacy single techUserId so older events migrate cleanly on first edit.
     let techs = RMTP.eventTechnicians(ev).map((t) => ({ userId: t.userId, role: t.role || '' }));
 
-    // Tech-spec state (only written to storage on save).
-    const originalSpec = ev.techSpec || null;
-    let specMeta = originalSpec;   // currently-attached saved meta
-    let pending = null;            // newly chosen file, in memory
-    let cleared = false;           // user removed the existing spec
+    // Dynamic schedule items for Live spaces: [{ type, label, customName, time, duration }]
+    let scheduleItems = Array.isArray(ev.schedule_items) ? JSON.parse(JSON.stringify(ev.schedule_items))
+      : (Array.isArray(ev.scheduleItems) ? JSON.parse(JSON.stringify(ev.scheduleItems)) : []);
 
-    const isScreenInitial = isScreenSpace(ev.space || '');
+    const originalSpec = ev.techSpec || null;
+    let specMeta = originalSpec;
+    let pending = null;
+    let cleared = false;
+
+    const initialSpace = ev.space || RMTP.SPACES[0] || 'The Stage';
+    const isScreenInitial = isScreenSpace(initialSpace);
+
+    const allUsers = store.all('users');
+    const userOptionsHtml = (selectedId) =>
+      '<option value="">Select engineer\u2026</option>' +
+      allUsers.map((u) => '<option value="' + u.id + '" ' + (u.id === selectedId ? 'selected' : '') + '>' + ui.esc(auth.displayName(u)) + '</option>').join('');
 
     const m = ui.modal({
-      title: existing ? 'Edit event' : 'Add event',
-      size: 'md:max-w-2xl',
+      title: existing ? 'Edit Technical Advance' : 'Create Technical Advance',
+      size: 'md:max-w-3xl',
       body:
         '<div class="grid gap-4">' +
           '<div class="grid sm:grid-cols-[1fr_150px] gap-4">' +
-            fld('Event title', '<input id="e-name" class="field" value="' + ui.esc(ev.name || '') + '" placeholder="Artist / show name" />') +
+            fld('Event title', '<input id="e-name" class="field font-medium" value="' + ui.esc(ev.name || '') + '" placeholder="Artist / show name" />') +
             fld('Status', '<select id="e-status" class="field">' + opt(STATUSES, ev.status || 'Advancing') + '</select>') +
           '</div>' +
+
           '<div class="grid grid-cols-2 sm:grid-cols-3 gap-4">' +
             fld('Category', '<select id="e-category" class="field">' + blankOpt(RMTP.EVENT_CATEGORIES, ev.category, '\u2014') + '</select>') +
-            fld('Space', '<select id="e-space" class="field">' + blankOpt(RMTP.SPACES, ev.space, '\u2014') + '</select>') +
-            fld('Date', '<input id="e-date" type="date" class="field" value="' + ui.esc(ev.date || '') + '" />') +
+            fld('Space / Room', '<select id="e-space" class="field font-semibold text-accent">' + blankOpt(RMTP.SPACES, ev.space, 'Select Space\u2026') + '</select>') +
+            fld('Event Date', '<input id="e-date" type="date" class="field" value="' + ui.esc(ev.date || '') + '" />') +
           '</div>' +
-          '<div class="grid grid-cols-2 sm:grid-cols-6 gap-4">' +
-            fld('Start', '<input id="e-start" type="time" class="field" value="' + ui.esc(ev.startTime || '') + '" />') +
-            fld('Finish', '<input id="e-finish" type="time" class="field" value="' + ui.esc(ev.finishTime || '') + '" />') +
-            '<div id="e-screening-starts-wrapper" class="' + (isScreenInitial ? '' : 'hidden') + '">' +
-              fld('Screening', '<input id="e-screening-starts" type="time" class="field" value="' + ui.esc(ev.screeningStartsTime || '') + '" />') +
+
+          // Running times row (common to both)
+          '<div class="grid grid-cols-2 gap-4">' +
+            fld('Overall Start Time', '<input id="e-start" type="time" class="field font-mono" value="' + ui.esc(ev.startTime || '') + '" />') +
+            fld('Overall Finish Time', '<input id="e-finish" type="time" class="field font-mono" value="' + ui.esc(ev.finishTime || '') + '" />') +
+          '</div>' +
+
+          /* ================= LIVE EVENTS SECTION ================= */
+          '<div id="section-live-advancing" class="' + (isScreenInitial ? 'hidden' : '') + ' p-4 rounded-xl bg-panel2/40 border border-line grid gap-4">' +
+            '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
+              '<div class="flex items-center gap-1.5">' +
+                ui.icon('clock', 'w-4 h-4 text-accent') +
+                '<span class="text-xs font-semibold text-accent">Live Event Standard Core Timings</span>' +
+              '</div>' +
+              '<span class="text-[11px] text-muted font-mono">24-hour format (HH:MM)</span>' +
             '</div>' +
-            fld('Soundcheck', '<input id="e-sc" type="time" class="field" value="' + ui.esc(ev.soundcheck || '') + '" />') +
-            fld('Doors', '<input id="e-doors" type="time" class="field" value="' + ui.esc(ev.doors || '') + '" />') +
-            fld('Curfew', '<input id="e-curfew" type="time" class="field" value="' + ui.esc(ev.curfew || '') + '" />') +
+
+            '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3">' +
+              fld('Load In', '<input id="e-load-in" type="time" class="field font-mono" value="' + ui.esc(ev.load_in || ev.loadIn || '') + '" />') +
+              fld('Soundcheck', '<input id="e-sc" type="time" class="field font-mono" value="' + ui.esc(ev.soundcheck || '') + '" />') +
+              fld('Doors', '<input id="e-doors" type="time" class="field font-mono" value="' + ui.esc(ev.doors || '') + '" />') +
+              fld('Off Stage', '<input id="e-off-stage" type="time" class="field font-mono" value="' + ui.esc(ev.off_stage || ev.offStage || '') + '" />') +
+              fld('Curfew', '<input id="e-curfew" type="time" class="field font-mono" value="' + ui.esc(ev.curfew || '') + '" />') +
+              fld('Load Out', '<input id="e-load-out" type="time" class="field font-mono" value="' + ui.esc(ev.load_out || ev.loadOut || '') + '" />') +
+            '</div>' +
+
+            '<div class="pt-2 border-t border-line/60">' +
+              '<div class="flex items-center justify-between mb-3">' +
+                '<div>' +
+                  '<label class="block text-sm font-semibold text-ink">Schedule & Set Pieces Builder</label>' +
+                  '<p class="text-xs text-muted">Sequence acts, changeovers, speeches, and other scheduled set pieces.</p>' +
+                '</div>' +
+                '<div class="flex items-center gap-1.5">' +
+                  '<div class="relative inline-block text-left" id="add-schedule-menu-wrap">' +
+                    '<button type="button" id="btn-add-schedule-menu" class="btn btn-ghost !py-1.5 text-xs text-accent font-semibold flex items-center gap-1">' +
+                      ui.icon('plus', 'w-3.5 h-3.5') + '<span>+ Add Schedule Item</span>' + ui.icon('arrowD', 'w-3 h-3') +
+                    '</button>' +
+                    '<div id="schedule-dropdown" class="hidden absolute right-0 mt-1 w-44 rounded-lg bg-panel border border-line shadow-xl z-20 py-1 text-xs">' +
+                      '<button type="button" data-add-type="act" class="w-full text-left px-3 py-2 hover:bg-panel2 flex items-center gap-2">' +
+                        ui.icon('plus', 'w-3.5 h-3.5 text-accent') + '<span>Act (Auto-numbered)</span>' +
+                      '</button>' +
+                      '<button type="button" data-add-type="changeover" class="w-full text-left px-3 py-2 hover:bg-panel2 flex items-center gap-2">' +
+                        ui.icon('reset', 'w-3.5 h-3.5 text-warning') + '<span>Changeover</span>' +
+                      '</button>' +
+                      '<button type="button" data-add-type="other" class="w-full text-left px-3 py-2 hover:bg-panel2 flex items-center gap-2">' +
+                        ui.icon('clip', 'w-3.5 h-3.5 text-info') + '<span>Other Piece</span>' +
+                      '</button>' +
+                    '</div>' +
+                  '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div id="schedule-items-container" class="grid gap-2.5"></div>' +
+            '</div>' +
           '</div>' +
-          '<div id="e-cinema-options" class="' + (isScreenInitial ? '' : 'hidden') + ' panel bg-panel2/40 p-3.5 rounded-xl border border-line">' +
-            '<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 pb-2 border-b border-line/60">' +
+
+          /* ================= CINEMA SCREENINGS SECTION ================= */
+          '<div id="section-cinema-advancing" class="' + (isScreenInitial ? '' : 'hidden') + ' p-4 rounded-xl bg-panel2/40 border border-line grid gap-4">' +
+            '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
               '<div class="flex items-center gap-1.5">' +
                 ui.icon('film', 'w-4 h-4 text-accent') +
-                '<span class="text-xs font-semibold text-accent">Cinema Screening Checklist & Details</span>' +
+                '<span class="text-xs font-semibold text-accent">Cinema Screening Checklist & DCP Details</span>' +
               '</div>' +
-              '<div class="flex items-center gap-2">' +
-                '<label for="e-media-type" class="text-xs font-medium text-muted shrink-0">Media Type:</label>' +
-                '<select id="e-media-type" class="field !py-1 !px-2 !text-xs !w-auto">' +
-                  blankOpt(RMTP.MEDIA_TYPES, ev.media_type || ev.mediaType, 'Select Media\u2026') +
-                '</select>' +
+              '<span class="text-[11px] text-muted">Auditorium Screen Advance</span>' +
+            '</div>' +
+
+            '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
+              fld('Screening Starts Time', '<input id="e-screening-starts" type="time" class="field font-mono" value="' + ui.esc(ev.screening_starts_time || ev.screeningStartsTime || '') + '" />') +
+              fld('Media Type', '<select id="e-media-type" class="field">' + blankOpt(RMTP.MEDIA_TYPES, ev.media_type || ev.mediaType, 'Select Media\u2026') + '</select>') +
+            '</div>' +
+
+            '<div>' +
+              '<label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2">Screening Checklist</label>' +
+              '<div class="grid grid-cols-2 sm:grid-cols-4 gap-3">' +
+                '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2 rounded-lg bg-panel border border-line">' +
+                  '<input type="checkbox" id="e-dcp" class="w-4 h-4 accent-[var(--ok)]" ' + ((ev.dcp_received !== undefined ? ev.dcp_received : ev.dcpReceived) ? 'checked' : '') + ' />' +
+                  '<span>DCP Received</span>' +
+                '</label>' +
+                '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2 rounded-lg bg-panel border border-line">' +
+                  '<input type="checkbox" id="e-checks" class="w-4 h-4 accent-[var(--ok)]" ' + ((ev.checks_completed !== undefined ? ev.checks_completed : ev.checksCompleted) ? 'checked' : '') + ' />' +
+                  '<span>Checks Completed</span>' +
+                '</label>' +
+                '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2 rounded-lg bg-panel border border-line">' +
+                  '<input type="checkbox" id="e-intermission" class="w-4 h-4 accent-[var(--ok)]" ' + (ev.intermission ? 'checked' : '') + ' />' +
+                  '<span>Intermission?</span>' +
+                '</label>' +
+                '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2 rounded-lg bg-panel border border-line">' +
+                  '<input type="checkbox" id="e-qa" class="w-4 h-4 accent-[var(--ok)]" ' + (ev.qa ? 'checked' : '') + ' />' +
+                  '<span>Q&A?</span>' +
+                '</label>' +
               '</div>' +
             '</div>' +
-            '<div class="grid grid-cols-2 sm:grid-cols-4 gap-3">' +
-              '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer"><input type="checkbox" id="e-dcp" class="w-4 h-4 accent-[var(--ok)]" ' + ((ev.dcp_received !== undefined ? ev.dcp_received : ev.dcpReceived) ? 'checked' : '') + ' /><span>DCP Received</span></label>' +
-              '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer"><input type="checkbox" id="e-checks" class="w-4 h-4 accent-[var(--ok)]" ' + ((ev.checks_completed !== undefined ? ev.checks_completed : ev.checksCompleted) ? 'checked' : '') + ' /><span>Checks Completed</span></label>' +
-              '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer"><input type="checkbox" id="e-intermission" class="w-4 h-4 accent-[var(--ok)]" ' + (ev.intermission ? 'checked' : '') + ' /><span>Intermission?</span></label>' +
-              '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer"><input type="checkbox" id="e-qa" class="w-4 h-4 accent-[var(--ok)]" ' + (ev.qa ? 'checked' : '') + ' /><span>Q&A?</span></label>' +
+
+            '<div class="pt-2 border-t border-line/60 grid grid-cols-1 sm:grid-cols-2 gap-4">' +
+              fld('Testing Engineer', '<select id="e-dcp-tester" class="field">' + userOptionsHtml(ev.dcp_tester_user_id || ev.dcpTesterUserId || '') + '</select>') +
+              fld('Testing Date & Time', '<input id="e-dcp-test-datetime" type="datetime-local" class="field font-mono" value="' + ui.esc(ev.dcp_test_datetime || ev.dcpTestDatetime || '') + '" />') +
             '</div>' +
           '</div>' +
-          fld('Technicians', '<div id="e-tech-area"></div>') +
-          fld('Artist / client contact', '<input id="e-contact" class="field" value="' + ui.esc(ev.clientContact || '') + '" placeholder="Tour manager / client" />') +
-          fld('Tech info', '<textarea id="e-info" class="field" rows="3" placeholder="Anything the crew needs to know\u2026">' + ui.esc(ev.techInfo || '') + '</textarea>') +
+
+          /* ================= CREW & DETAILS SECTION ================= */
+          fld('Assigned Technicians', '<div id="e-tech-area"></div>') +
+          fld('Artist / Client contact', '<input id="e-contact" class="field" value="' + ui.esc(ev.clientContact || '') + '" placeholder="Tour manager / client name & contact" />') +
+          fld('Technical notes & requirements', '<textarea id="e-info" class="field" rows="3" placeholder="Power requirements, split boxes, staging notes, audio input list\u2026">' + ui.esc(ev.techInfo || '') + '</textarea>') +
           '<div>' +
             '<div class="flex items-center gap-3 mb-2">' +
-              '<label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="e-guest" class="w-4 h-4 accent-[var(--accent)]" ' + (ev.guestEngineer ? 'checked' : '') + ' /><span class="text-sm font-medium">Guest engineer</span></label>' +
+              '<label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="e-guest" class="w-4 h-4 accent-[var(--accent)]" ' + (ev.guestEngineer ? 'checked' : '') + ' /><span class="text-sm font-medium">Visiting / Guest Sound or Lighting Engineer</span></label>' +
             '</div>' +
           '</div>' +
-          '<div><label class="block text-sm font-medium mb-2">Tech spec (PDF)</label><div id="e-spec-area"></div></div>' +
+          '<div><label class="block text-sm font-medium mb-2">Tech Spec (PDF)</label><div id="e-spec-area"></div></div>' +
         '</div>',
       footer:
         '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
         '<button class="btn btn-primary" data-save data-primary>' + (existing ? 'Save changes' : 'Add event') + '</button>',
     });
 
+    // Space Selection dynamic routing
     const spaceSelect = m.root.querySelector('#e-space');
-    if (spaceSelect) {
-      spaceSelect.addEventListener('change', () => {
-        const isScreen = isScreenSpace(spaceSelect.value);
-        const scrWrapper = m.root.querySelector('#e-screening-starts-wrapper');
-        const cinOptions = m.root.querySelector('#e-cinema-options');
-        if (scrWrapper) scrWrapper.classList.toggle('hidden', !isScreen);
-        if (cinOptions) cinOptions.classList.toggle('hidden', !isScreen);
+    const liveSection = m.root.querySelector('#section-live-advancing');
+    const cinemaSection = m.root.querySelector('#section-cinema-advancing');
+
+    function updateSpaceWorkflow() {
+      const isScreen = isScreenSpace(spaceSelect.value);
+      if (liveSection) liveSection.classList.toggle('hidden', isScreen);
+      if (cinemaSection) cinemaSection.classList.toggle('hidden', !isScreen);
+    }
+    if (spaceSelect) spaceSelect.addEventListener('change', updateSpaceWorkflow);
+
+    /* ---- Live Schedule Builder UI Wiring ---- */
+    const menuBtn = m.root.querySelector('#btn-add-schedule-menu');
+    const dropdown = m.root.querySelector('#schedule-dropdown');
+
+    if (menuBtn && dropdown) {
+      menuBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        dropdown.classList.toggle('hidden');
       });
+      document.addEventListener('click', () => dropdown.classList.add('hidden'));
     }
 
+    m.root.querySelectorAll('[data-add-type]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const type = btn.getAttribute('data-add-type');
+        dropdown.classList.add('hidden');
+        if (type === 'act') {
+          const actCount = scheduleItems.filter((it) => it.type === 'act').length + 1;
+          scheduleItems.push({
+            type: 'act',
+            label: 'Act ' + actCount,
+            customName: '',
+            time: '',
+            duration: '00:30'
+          });
+        } else if (type === 'changeover') {
+          scheduleItems.push({
+            type: 'changeover',
+            label: 'Changeover',
+            customName: '',
+            time: '',
+            duration: '00:15'
+          });
+        } else {
+          scheduleItems.push({
+            type: 'other',
+            label: 'Other',
+            customName: '',
+            time: '',
+            duration: '00:30'
+          });
+        }
+        renderScheduleBuilder();
+      });
+    });
+
+    function renderScheduleBuilder() {
+      const container = m.root.querySelector('#schedule-items-container');
+      if (!container) return;
+
+      if (!scheduleItems.length) {
+        container.innerHTML = '<div class="text-xs text-muted italic p-3 rounded-lg bg-panel border border-dashed border-line text-center">No schedule set pieces added yet. Click "+ Add Schedule Item" to add acts, changeovers, or speeches.</div>';
+        return;
+      }
+
+      container.innerHTML = scheduleItems.map((item, idx) => {
+        const isAct = item.type === 'act';
+        const isChangeover = item.type === 'changeover';
+        const isOther = item.type === 'other';
+
+        return (
+          '<div class="p-3 rounded-lg bg-panel border border-line flex flex-col gap-2 relative group">' +
+            '<div class="flex items-center justify-between gap-2">' +
+              '<div class="flex items-center gap-2">' +
+                (isAct ? (
+                  '<span class="px-2 py-0.5 rounded font-mono font-semibold text-xs bg-accent/15 border border-accent/40 text-accent">' + ui.esc(item.label || 'Act') + '</span>'
+                ) : isChangeover ? (
+                  '<span class="px-2 py-0.5 rounded font-mono font-semibold text-xs bg-warning/15 border border-warning/40 text-warning">Changeover</span>'
+                ) : (
+                  '<input data-sch-label="' + idx + '" class="field !py-1 !px-2 !w-28 text-xs font-semibold" value="' + ui.esc(item.label || 'Other') + '" placeholder="e.g. DJ, Speeches" />'
+                )) +
+                '<span class="text-xs text-muted font-mono">#' + (idx + 1) + '</span>' +
+              '</div>' +
+
+              '<div class="flex items-center gap-1 shrink-0">' +
+                '<button type="button" data-sch-up="' + idx + '" class="btn btn-ghost !p-1.5" title="Move Up" ' + (idx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3.5 h-3.5') + '</button>' +
+                '<button type="button" data-sch-down="' + idx + '" class="btn btn-ghost !p-1.5" title="Move Down" ' + (idx === scheduleItems.length - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</button>' +
+                '<button type="button" data-sch-del="' + idx + '" class="btn btn-danger !p-1.5" title="Remove Item">' + ui.icon('trash', 'w-3.5 h-3.5') + '</button>' +
+              '</div>' +
+            '</div>' +
+
+            '<div class="grid grid-cols-1 sm:grid-cols-[1fr_130px_130px] gap-2 pt-1">' +
+              '<div>' +
+                '<input data-sch-name="' + idx + '" class="field !py-1 !px-2 text-xs" value="' + ui.esc(item.customName || '') + '" ' +
+                  'placeholder="' + (isAct ? 'Artist / Act Name (e.g. Main Band)' : (isChangeover ? 'Notes (optional)' : 'Item Name / Detail')) + '" />' +
+              '</div>' +
+              (!isChangeover ? (
+                '<div class="flex items-center gap-1.5">' +
+                  '<span class="text-[11px] text-muted whitespace-nowrap shrink-0">Stage:</span>' +
+                  '<input data-sch-time="' + idx + '" type="time" class="field !py-1 !px-2 font-mono text-xs flex-1" value="' + ui.esc(item.time || '') + '" />' +
+                '</div>'
+              ) : '<div class="text-xs text-muted flex items-center italic">— No stage time —</div>') +
+              '<div class="flex items-center gap-1.5">' +
+                '<span class="text-[11px] text-muted whitespace-nowrap shrink-0">Duration:</span>' +
+                '<input data-sch-dur="' + idx + '" type="text" pattern="[0-9]{2}:[0-9]{2}" class="field !py-1 !px-2 font-mono text-xs flex-1" value="' + ui.esc(item.duration || '') + '" placeholder="00:30" title="Format: HH:MM (e.g. 00:30 for 30 mins)" />' +
+              '</div>' +
+            '</div>' +
+          '</div>'
+        );
+      }).join('');
+
+      // Wire schedule events
+      container.querySelectorAll('[data-sch-label]').forEach((inp) => {
+        inp.addEventListener('input', () => { scheduleItems[+inp.getAttribute('data-sch-label')].label = inp.value; });
+      });
+      container.querySelectorAll('[data-sch-name]').forEach((inp) => {
+        inp.addEventListener('input', () => { scheduleItems[+inp.getAttribute('data-sch-name')].customName = inp.value; });
+      });
+      container.querySelectorAll('[data-sch-time]').forEach((inp) => {
+        inp.addEventListener('change', () => { scheduleItems[+inp.getAttribute('data-sch-time')].time = inp.value; });
+      });
+      container.querySelectorAll('[data-sch-dur]').forEach((inp) => {
+        inp.addEventListener('input', () => { scheduleItems[+inp.getAttribute('data-sch-dur')].duration = inp.value; });
+      });
+      container.querySelectorAll('[data-sch-up]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-sch-up');
+          if (idx > 0) {
+            const temp = scheduleItems[idx];
+            scheduleItems[idx] = scheduleItems[idx - 1];
+            scheduleItems[idx - 1] = temp;
+            renderScheduleBuilder();
+          }
+        });
+      });
+      container.querySelectorAll('[data-sch-down]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-sch-down');
+          if (idx < scheduleItems.length - 1) {
+            const temp = scheduleItems[idx];
+            scheduleItems[idx] = scheduleItems[idx + 1];
+            scheduleItems[idx + 1] = temp;
+            renderScheduleBuilder();
+          }
+        });
+      });
+      container.querySelectorAll('[data-sch-del]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-sch-del');
+          scheduleItems.splice(idx, 1);
+          renderScheduleBuilder();
+        });
+      });
+    }
+    renderScheduleBuilder();
+
+    // Tech crew builder
     function techAreaHtml() {
-      const allUsers = store.all('users');
       const rows = techs.map((t, i) => {
         const usedElsewhere = techs.filter((x, j) => j !== i).map((x) => x.userId);
         const uOpts = '<option value="">Select technician\u2026</option>' + allUsers
@@ -913,6 +1459,7 @@ RMTP.views.advancing = function (el) {
     }
     wireTechs();
 
+    // PDF upload handler
     function specAreaHtml() {
       const shown = pending || (cleared ? null : specMeta);
       if (shown) {
@@ -955,7 +1502,6 @@ RMTP.views.advancing = function (el) {
       const finalTechs = techs.filter((t) => t.userId);
       if (finalTechs.some((t) => !t.role)) { ui.toast('Pick a role for each tagged technician', 'danger'); return; }
 
-      // Resolve tech-spec: persist a pending upload; drop the old blob if replaced/removed.
       let finalSpec = cleared ? null : specMeta;
       if (pending) {
         try { finalSpec = files.persist(pending); }
@@ -977,15 +1523,26 @@ RMTP.views.advancing = function (el) {
         status: m.root.querySelector('#e-status').value,
         startTime: m.root.querySelector('#e-start').value,
         finishTime: m.root.querySelector('#e-finish').value,
+
+        // Live space timings
+        load_in: !isScreen && m.root.querySelector('#e-load-in') ? m.root.querySelector('#e-load-in').value : (ev.load_in || ev.loadIn || ''),
+        soundcheck: !isScreen && m.root.querySelector('#e-sc') ? m.root.querySelector('#e-sc').value : (ev.soundcheck || ''),
+        doors: !isScreen && m.root.querySelector('#e-doors') ? m.root.querySelector('#e-doors').value : (ev.doors || ''),
+        off_stage: !isScreen && m.root.querySelector('#e-off-stage') ? m.root.querySelector('#e-off-stage').value : (ev.off_stage || ev.offStage || ''),
+        curfew: !isScreen && m.root.querySelector('#e-curfew') ? m.root.querySelector('#e-curfew').value : (ev.curfew || ''),
+        load_out: !isScreen && m.root.querySelector('#e-load-out') ? m.root.querySelector('#e-load-out').value : (ev.load_out || ev.loadOut || ''),
+        schedule_items: !isScreen ? scheduleItems : (ev.schedule_items || ev.scheduleItems || []),
+
+        // Cinema space timings & checks
         screening_starts_time: isScreen && m.root.querySelector('#e-screening-starts') ? m.root.querySelector('#e-screening-starts').value : (ev.screening_starts_time || ev.screeningStartsTime || ''),
         media_type: isScreen && m.root.querySelector('#e-media-type') ? m.root.querySelector('#e-media-type').value : (ev.media_type || ev.mediaType || ''),
-        soundcheck: m.root.querySelector('#e-sc').value,
-        doors: m.root.querySelector('#e-doors').value,
-        curfew: m.root.querySelector('#e-curfew').value,
         dcp_received: isScreen && m.root.querySelector('#e-dcp') ? m.root.querySelector('#e-dcp').checked : (ev.dcp_received !== undefined ? !!ev.dcp_received : !!ev.dcpReceived),
         checks_completed: isScreen && m.root.querySelector('#e-checks') ? m.root.querySelector('#e-checks').checked : (ev.checks_completed !== undefined ? !!ev.checks_completed : !!ev.checksCompleted),
         intermission: isScreen && m.root.querySelector('#e-intermission') ? m.root.querySelector('#e-intermission').checked : !!ev.intermission,
         qa: isScreen && m.root.querySelector('#e-qa') ? m.root.querySelector('#e-qa').checked : !!ev.qa,
+        dcp_tester_user_id: isScreen && m.root.querySelector('#e-dcp-tester') ? m.root.querySelector('#e-dcp-tester').value : (ev.dcp_tester_user_id || ev.dcpTesterUserId || ''),
+        dcp_test_datetime: isScreen && m.root.querySelector('#e-dcp-test-datetime') ? m.root.querySelector('#e-dcp-test-datetime').value : (ev.dcp_test_datetime || ev.dcpTestDatetime || ''),
+
         technicians: finalTechs,
         clientContact: m.root.querySelector('#e-contact').value.trim(),
         guestEngineer: m.root.querySelector('#e-guest').checked,
@@ -993,8 +1550,11 @@ RMTP.views.advancing = function (el) {
         techSpec: finalSpec,
         checklist: ev.checklist || { techSpecSent: false, inputListReceived: false, stagePlot: false, schedule: false, backline: false, hospitality: false, parkingAccess: false },
       });
+
       store.upsert('advancing', record);
-      m.close(); ui.toast(existing ? 'Event updated' : 'Event added', 'ok'); RMTP.router.render();
+      m.close();
+      ui.toast(existing ? 'Event advance updated' : 'Event advance created', 'ok');
+      RMTP.router.render();
     });
   }
 
@@ -1011,4 +1571,3 @@ RMTP.views.advancing = function (el) {
 
   function fld(label, control) { return '<div><label class="block text-sm font-medium mb-2">' + ui.esc(label) + '</label>' + control + '</div>'; }
 };
-

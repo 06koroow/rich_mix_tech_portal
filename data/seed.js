@@ -270,7 +270,12 @@ RMTP.seed = {
     {
       id: 'evt-1', name: 'Kokoroko \u2014 live', category: 'Programme', space: 'The Stage',
       date: RMTP._seedDates.today, status: 'Confirmed',
-      startTime: '19:00', finishTime: '23:00', soundcheck: '17:00', doors: '19:30', curfew: '23:00',
+      startTime: '19:00', finishTime: '23:00', load_in: '15:00', soundcheck: '17:00', doors: '19:30', off_stage: '22:45', curfew: '23:00', load_out: '00:00',
+      schedule_items: [
+        { type: 'act', label: 'Act 1', customName: 'Nubiyan Twist Support', time: '20:00', duration: '00:40' },
+        { type: 'changeover', label: 'Changeover', customName: '', time: '', duration: '00:20' },
+        { type: 'act', label: 'Act 2', customName: 'Kokoroko (Headliner)', time: '21:00', duration: '01:30' }
+      ],
       technicians: [{ userId: 'user-3', role: 'Sound' }, { userId: 'user-2', role: 'Lighting' }],
       clientContact: 'Tour manager \u2014 Jess', guestEngineer: true,
       techInfo: 'Guest FOH engineer touring with the band. 32-way split needed. Backline hired in.', techSpec: null,
@@ -279,7 +284,12 @@ RMTP.seed = {
     {
       id: 'evt-2', name: 'Private hire \u2014 product launch', category: 'Private Hires', space: 'The Studio',
       date: RMTP._seedDates.today, status: 'Confirmed',
-      startTime: '18:00', finishTime: '22:00', soundcheck: '', doors: '18:30', curfew: '22:00',
+      startTime: '18:00', finishTime: '22:00', load_in: '16:00', soundcheck: '17:30', doors: '18:30', off_stage: '21:30', curfew: '22:00', load_out: '22:45',
+      schedule_items: [
+        { type: 'other', label: 'Welcome Drinks & Playback', customName: 'Background Audio', time: '18:30', duration: '00:45' },
+        { type: 'other', label: 'Keynote & Speeches', customName: 'Main Stage Presentation', time: '19:15', duration: '01:00' },
+        { type: 'other', label: 'Networking & DJ', customName: 'DJ Set', time: '20:15', duration: '01:15' }
+      ],
       technicians: [{ userId: 'user-4', role: 'AV' }],
       clientContact: 'Client \u2014 Aria Events', guestEngineer: false,
       techInfo: 'Speeches + playback from a laptop. Two handhelds, a lectern mic, HDMI to the projector.', techSpec: null,
@@ -290,14 +300,21 @@ RMTP.seed = {
       date: RMTP._seedDates.tomorrow, status: 'Advancing',
       startTime: '19:30', finishTime: '22:00', screening_starts_time: '20:00', soundcheck: '', doors: '19:00', curfew: '',
       media_type: 'DCP', dcp_received: true, checks_completed: false, intermission: false, qa: true,
-      techUserId: 'user-3', clientContact: 'Producer \u2014 Sam', guestEngineer: false,
-      techInfo: 'DCP arriving day before \u2014 ingest and test. Q&A after with two radio mics.', techSpec: null,
+      dcp_tester_user_id: 'user-3', dcp_test_datetime: `${RMTP._seedDates.today}T14:00`,
+      technicians: [{ userId: 'user-3', role: 'Projection' }],
+      clientContact: 'Producer \u2014 Sam', guestEngineer: false,
+      techInfo: 'DCP arriving day before \u2014 ingest and test in Screen 1. Q&A after with two radio mics.', techSpec: null,
       checklist: {},
     },
     {
       id: 'evt-4', name: 'Wedding reception', category: 'Private Hires', space: 'The Mix',
       date: RMTP._seedDates.plus3, status: 'Advancing',
-      startTime: '17:00', finishTime: '00:00', soundcheck: '', doors: '', curfew: '00:00',
+      startTime: '17:00', finishTime: '00:00', load_in: '15:30', soundcheck: '', doors: '17:00', off_stage: '23:30', curfew: '00:00', load_out: '00:30',
+      schedule_items: [
+        { type: 'other', label: 'Speeches', customName: 'Family Speeches & Slideshow', time: '18:00', duration: '00:45' },
+        { type: 'act', label: 'Act 1', customName: 'Live Acoustic Duo', time: '19:30', duration: '01:00' },
+        { type: 'other', label: 'Evening DJ', customName: 'DJ Playback', time: '21:00', duration: '02:30' }
+      ],
       technicians: [], clientContact: 'Client \u2014 the Osei family', guestEngineer: false,
       techInfo: 'DJ on later, playback earlier. Needs uplighters and a couple of radio mics for speeches.', techSpec: null,
       checklist: {},
@@ -305,8 +322,14 @@ RMTP.seed = {
     {
       id: 'evt-5', name: 'Jazz night', category: 'Programme', space: 'The Stage',
       date: RMTP._seedDates.lastWeek, status: 'Complete',
-      startTime: '20:00', finishTime: '23:00', soundcheck: '18:30', doors: '19:30', curfew: '23:00',
-      techUserId: 'user-3', clientContact: '', guestEngineer: false,
+      startTime: '20:00', finishTime: '23:00', load_in: '17:00', soundcheck: '18:30', doors: '19:30', off_stage: '22:45', curfew: '23:00', load_out: '23:30',
+      schedule_items: [
+        { type: 'act', label: 'Act 1', customName: 'Trio Opening', time: '20:00', duration: '00:45' },
+        { type: 'changeover', label: 'Changeover', customName: '', time: '', duration: '00:15' },
+        { type: 'act', label: 'Act 2', customName: 'Main Quartet', time: '21:00', duration: '01:30' }
+      ],
+      technicians: [{ userId: 'user-3', role: 'Sound' }],
+      clientContact: '', guestEngineer: false,
       techInfo: 'House engineer. Standard jazz input list.', techSpec: null,
       checklist: {},
     },

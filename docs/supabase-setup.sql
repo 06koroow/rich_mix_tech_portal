@@ -45,13 +45,18 @@ create table if not exists public.advancing (
   "name" text, "category" text, "space" text,
   "date" text default '', "status" text,
   "startTime" text default '', "finishTime" text default '',
+  "load_in" text default '',
+  "soundcheck" text default '', "doors" text default '',
+  "off_stage" text default '', "curfew" text default '', "load_out" text default '',
+  "schedule_items" jsonb default '[]'::jsonb,
   "screening_starts_time" text default '',
   "media_type" text default '',
-  "soundcheck" text default '', "doors" text default '', "curfew" text default '',
   "dcp_received" boolean default false,
   "checks_completed" boolean default false,
   "intermission" boolean default false,
   "qa" boolean default false,
+  "dcp_tester_user_id" text default '',
+  "dcp_test_datetime" text default '',
   "techUserId" text default '', "clientContact" text default '',
   "technicians" jsonb default '[]'::jsonb,
   "guestEngineer" boolean default false,
@@ -83,7 +88,7 @@ create table if not exists public.procedures (
 
 -- ---------- Migrations for already-live databases ----------
 -- Safe to re-run. Only needed once per environment; adds the new
--- multi-technician, cinema screening, and media type columns to an `advancing`
+-- multi-technician, cinema screening, live schedule & DCP testing columns to an `advancing`
 -- table created before these features existed.
 alter table public.advancing add column if not exists "technicians" jsonb default '[]'::jsonb;
 alter table public.advancing add column if not exists "screening_starts_time" text default '';
@@ -92,6 +97,12 @@ alter table public.advancing add column if not exists "dcp_received" boolean def
 alter table public.advancing add column if not exists "checks_completed" boolean default false;
 alter table public.advancing add column if not exists "intermission" boolean default false;
 alter table public.advancing add column if not exists "qa" boolean default false;
+alter table public.advancing add column if not exists "load_in" text default '';
+alter table public.advancing add column if not exists "off_stage" text default '';
+alter table public.advancing add column if not exists "load_out" text default '';
+alter table public.advancing add column if not exists "schedule_items" jsonb default '[]'::jsonb;
+alter table public.advancing add column if not exists "dcp_tester_user_id" text default '';
+alter table public.advancing add column if not exists "dcp_test_datetime" text default '';
 
 -- ---------- Role helpers (map the signed-in email -> profile) ----------
 create or replace function public.is_admin() returns boolean

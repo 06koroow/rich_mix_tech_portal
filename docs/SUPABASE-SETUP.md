@@ -100,3 +100,51 @@ write end-to-end.
 - **Switching back to local mode**: blank out `url` in `supabase-config.js`.
 - **SharePoint stays available**: if you ever fill in `graph-config.js` instead,
   the app uses SharePoint. Supabase takes priority when both are configured.
+
+---
+
+## 10. Automated Shift Report Emailing
+
+When a technician completes a shift report in **Event Advancing**:
+
+### A. Instant Client-Side Email (No extra setup required)
+- When a report is filed with **"Auto-format & email shift report"** checked, or when clicking the ✉️ (Mail) icon on any shift report, the portal opens the **Shift Report Email Summary** dialog.
+- From there, you can:
+  1. Click **Open in Email App** to launch your default mail program (Outlook, Apple Mail, etc.) with pre-addressed recipients, subject, and formatted shift summary.
+  2. Click **Gmail Web** to draft the email directly in Google Mail.
+  3. Click **Copy message text** or **Copy list** to paste into any webmail client.
+
+### B. Headless Server-Side Email Delivery (Supabase Edge Function)
+If you want Supabase to automatically send emails in the background without opening the user's email client, deploy a Supabase Edge Function named `send-shift-report` using an email provider like **Resend**, **SendGrid**, or **Postmark**:
+
+1. In your terminal:
+   ```bash
+   supabase functions new send-shift-report
+   ```
+2. In `supabase/functions/send-shift-report/index.ts`:
+   ```ts
+   import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+
+   serve(async (req) => {
+     const { to, subject, body } = await req.json();
+     const res = await fetch("https://api.resend.com/emails", {
+       method: "POST",
+       headers: {
+         "Content-Type": "application/json",
+         "Authorization": `Bearer ${Deno.env.get("RESEND_API_KEY")}`,
+       },
+       body: JSON.stringify({
+         from: "Rich Mix Tech <tech@richmix.org.uk>",
+         to: to,
+         subject: subject,
+         text: body,
+       }),
+     });
+     return new Response(JSON.stringify(await res.json()), {
+       headers: { "Content-Type": "application/json" },
+     });
+   });
+   ```
+3. Set your secret: `supabase secrets set RESEND_API_KEY=re_xxxx`
+4. Deploy: `supabase functions deploy send-shift-report`
+

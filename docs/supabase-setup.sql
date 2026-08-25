@@ -103,6 +103,7 @@ alter table public.advancing add column if not exists "load_out" text default ''
 alter table public.advancing add column if not exists "schedule_items" jsonb default '[]'::jsonb;
 alter table public.advancing add column if not exists "dcp_tester_user_id" text default '';
 alter table public.advancing add column if not exists "dcp_test_datetime" text default '';
+alter table public.advancing add column if not exists "email_recipients" text default '';
 
 -- ---------- Role helpers (map the signed-in email -> profile) ----------
 create or replace function public.is_admin() returns boolean

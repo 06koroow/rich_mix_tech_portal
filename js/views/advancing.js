@@ -39,6 +39,32 @@ RMTP.views.advancing = function (el) {
   const STATUSES = ['Advancing', 'Confirmed', 'Complete'];
   const statusColour = { 'Advancing': 'var(--info)', 'Confirmed': 'var(--accent)', 'Complete': 'var(--ok)' };
 
+  /* ---- Shift Reports Email Automation & Recipients Config ---- */
+  const DEFAULT_RECIPIENTS = ['tech@richmix.org.uk', 'dutymanager@richmix.org.uk', 'production@richmix.org.uk'];
+
+  function getReportRecipients(ev) {
+    if (ev) {
+      const perEv = ev.email_recipients || ev.emailRecipients;
+      if (Array.isArray(perEv) && perEv.length) return perEv;
+      if (typeof perEv === 'string' && perEv.trim()) {
+        const split = perEv.split(/[,;\s]+/).map((s) => s.trim().toLowerCase()).filter((s) => s.indexOf('@') !== -1);
+        if (split.length) return split;
+      }
+    }
+    try {
+      const raw = store.readRaw('report_recipients', '');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length) return parsed;
+      }
+    } catch (e) {}
+    return DEFAULT_RECIPIENTS.slice();
+  }
+
+  function saveReportRecipients(list) {
+    store.writeRaw('report_recipients', JSON.stringify(list));
+  }
+
   function userName(id) {
     if (!id) return '';
     const u = store.find('users', id);
@@ -82,7 +108,9 @@ RMTP.views.advancing = function (el) {
     '<div class="view-enter">' +
       ui.pageHeader('Advancing', isAdmin ? 'Events & Production Schedules' : 'Your shifts & Production Advancing',
         (isAdmin ? '<button id="verify-sync-btn" class="btn btn-ghost" title="Check Supabase database sync status">' + ui.icon('shield', 'w-4 h-4') + '<span class="hidden sm:inline">Verify Sync</span></button>' : '') +
-        (isAdmin ? '<button id="email-recipients-btn" class="btn btn-ghost" title="Configure shift report email recipients">' + ui.icon('mail', 'w-4 h-4') + '<span class="hidden sm:inline">Email Recipients</span></button>' : '') +
+        '<button id="email-recipients-btn" class="btn btn-ghost" title="Configure shift report email recipients">' + ui.icon('mail', 'w-4 h-4') + '<span class="hidden sm:inline">Email Recipients</span>' +
+          '<span class="ml-1 px-1.5 py-0.5 rounded text-[11px] bg-panel border border-line font-mono text-accent font-semibold">' + getReportRecipients().length + '</span>' +
+        '</button>' +
         (isAdmin && canManageEvents && RMTP.supabase && RMTP.supabase.isConfigured()
           ? '<button id="artifax-sync" class="btn btn-ghost" title="Pull events from Artifax">' + ui.icon('reset', 'w-4 h-4') + '<span class="hidden sm:inline">Refresh from Artifax</span></button>' : '') +
         (canManageEvents ? '<button id="add-event" class="btn btn-primary">' + ui.icon('plus', 'w-4 h-4') + 'Add event</button>' : '')) +
@@ -699,70 +727,71 @@ RMTP.views.advancing = function (el) {
     setTimeout(cleanup, 1500);
   }
 
-  /* ---- Shift Reports Email Automation & Recipients Config ---- */
-  const DEFAULT_RECIPIENTS = ['tech@richmix.org.uk', 'dutymanager@richmix.org.uk', 'production@richmix.org.uk'];
-
-  function getReportRecipients() {
-    try {
-      const raw = store.readRaw('report_recipients', '');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length) return parsed;
-      }
-    } catch (e) {}
-    return DEFAULT_RECIPIENTS.slice();
-  }
-
-  function saveReportRecipients(list) {
-    store.writeRaw('report_recipients', JSON.stringify(list));
-  }
-
   function formatShiftReportEmail(ev, r) {
-    const dateStr = ev.date ? ui.formatDate(ev.date) : (r.shiftDate ? ui.formatDate(r.shiftDate) : 'Today');
+    const dateStr = ev.date ? ui.formatDate(ev.date) : (r.shiftDate ? ui.formatDate(r.shiftDate) : ui.formatDate(new Date().toISOString().slice(0, 10)));
     const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
     const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
     const isCinema = isScreenSpace(ev.space);
     const scheduleItems = Array.isArray(ev.schedule_items) ? ev.schedule_items : (Array.isArray(ev.scheduleItems) ? ev.scheduleItems : []);
 
-    const subject = '[Shift Report] ' + (ev.name || 'Event') + ' \u2014 ' + (ev.space || 'Venue') + ' (' + dateStr + ')';
+    // Subject format: Post Shift Report: [DATE] [Event Title]
+    const subject = 'Post Shift Report: ' + dateStr + ' ' + (ev.name || 'Event');
+
+    const authorUser = r.authorId ? store.find('users', r.authorId) : null;
+    const authorName = r.author || (auth.current() ? auth.displayName(auth.current()) : 'Technician');
+    const authorEmail = (authorUser && authorUser.email) ? authorUser.email : ((auth.current() && auth.current().email) ? auth.current().email : '');
+    const authorStr = authorName + (authorEmail ? ' (' + authorEmail + ')' : '');
+
+    const submittedDateObj = r.submittedAt ? new Date(r.submittedAt) : new Date();
+    const timestampStr = submittedDateObj.toLocaleString('en-GB', {
+      weekday: 'short',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
 
     const plain = [
-      'RICH MIX TECHNICAL OPERATIONS \u2014 SHIFT REPORT',
-      '============================================',
-      'Event: ' + (ev.name || 'N/A'),
-      'Space: ' + (ev.space || 'N/A'),
-      'Date: ' + dateStr,
-      'Times: ' + (times || 'N/A'),
-      'Crew / Shift: ' + (r.crew || 'General Shift'),
-      'Filed By: ' + (r.author || 'Technician') + ' on ' + (r.submittedAt ? new Date(r.submittedAt).toLocaleString('en-GB') : new Date().toLocaleString('en-GB')),
+      'POST SHIFT REPORT \u2014 RICH MIX TECHNICAL OPERATIONS',
+      '==================================================',
+      'Subject: ' + subject,
+      'Event Title: ' + (ev.name || 'N/A'),
+      'Venue / Space: ' + (ev.space || 'N/A'),
+      'Event Date: ' + dateStr,
+      'Event Times: ' + (times || 'N/A'),
+      'Shift / Crew: ' + (r.crew || 'General Shift'),
+      'Submitting Engineer: ' + authorStr,
+      'Date & Time Stamp: ' + timestampStr,
       '',
-      '--------------------------------------------',
-      '1. SHIFT SUMMARY:',
+      '--------------------------------------------------',
+      '1. SHIFT SUMMARY (HOW DID THE SHIFT GO?):',
       r.summary || 'No summary provided.',
       '',
       '2. ISSUES & EQUIPMENT FAULTS:',
-      (r.issues || 'None reported (All equipment operational).').trim(),
+      (r.issues || 'None reported (All systems & equipment operational).').trim(),
       '',
-      '3. HANDOVER & FOLLOW-UP:',
+      '3. HANDOVER & FOLLOW-UP ACTIONS:',
       (r.followUp || 'None required.').trim(),
       '',
-      '--------------------------------------------',
-      'EVENT ADVANCE DETAILS:',
-      '- Technicians: ' + (techs.length ? techs.join(', ') : 'None assigned'),
-      isCinema ? '- Cinema Checks: DCP [' + ((ev.dcp_received !== undefined ? ev.dcp_received : ev.dcpReceived) ? 'YES' : 'NO') + '] | Checks [' + ((ev.checks_completed !== undefined ? ev.checks_completed : ev.checksCompleted) ? 'YES' : 'NO') + '] | Intermission [' + (ev.intermission ? 'YES' : 'NO') + '] | Q&A [' + (ev.qa ? 'YES' : 'NO') + ']' : null,
-      !isCinema && scheduleItems.length ? '- Schedule (' + scheduleItems.length + ' items): ' + scheduleItems.map((it) => (it.label || it.type) + (it.customName ? ' (' + it.customName + ')' : '') + (it.time ? ' @ ' + it.time : '')).join(' | ') : null,
-      ev.techInfo ? '- Tech Info: ' + ev.techInfo : null,
-      ev.clientContact ? '- Client Contact: ' + ev.clientContact : null,
+      '--------------------------------------------------',
+      'EVENT ADVANCE OVERVIEW:',
+      '- Assigned Technicians: ' + (techs.length ? techs.join(', ') : 'None assigned'),
+      isCinema ? '- Cinema Screening Checks: DCP [' + ((ev.dcp_received !== undefined ? ev.dcp_received : ev.dcpReceived) ? 'YES' : 'NO') + '] | Checks Completed [' + ((ev.checks_completed !== undefined ? ev.checks_completed : ev.checksCompleted) ? 'YES' : 'NO') + '] | Intermission [' + (ev.intermission ? 'YES' : 'NO') + '] | Q&A [' + (ev.qa ? 'YES' : 'NO') + ']' : null,
+      !isCinema && scheduleItems.length ? '- Live Schedule (' + scheduleItems.length + ' pieces): ' + scheduleItems.map((it) => (it.label || it.type) + (it.customName ? ' (' + it.customName + ')' : '') + (it.time ? ' @ ' + it.time : '')).join(' | ') : null,
+      ev.clientContact ? '- Artist / Client Contact: ' + ev.clientContact : null,
+      ev.techInfo ? '- Technical Notes: ' + ev.techInfo : null,
       '',
-      '-- Generated via Rich Mix Tech Portal --'
+      '-- Automatically dispatched via Rich Mix Tech Portal --'
     ].filter((line) => line !== null).join('\n');
 
-    return { subject, plain };
+    return { subject, plain, dateStr, timestampStr, authorStr };
   }
 
   async function dispatchShiftReportEmail(ev, r, customRecipients) {
-    const recipients = (customRecipients && customRecipients.length) ? customRecipients : getReportRecipients();
-    const { subject, plain } = formatShiftReportEmail(ev, r);
+    const recipients = (customRecipients && customRecipients.length) ? customRecipients : getReportRecipients(ev);
+    const { subject, plain, timestampStr, authorStr } = formatShiftReportEmail(ev, r);
 
     let edgeOk = false;
     if (RMTP.supabase && RMTP.supabase.isConfigured()) {
@@ -772,11 +801,14 @@ RMTP.views.advancing = function (el) {
           subject: subject,
           body: plain,
           event: ev,
-          report: r
+          report: Object.assign({}, r, {
+            author: authorStr,
+            submittedAt: r.submittedAt || new Date().toISOString()
+          })
         });
         if (res && res.ok) edgeOk = true;
       } catch (e) {
-        console.warn('[email] Supabase send-shift-report not available, mailto fallback ready', e);
+        console.warn('[email] Supabase send-shift-report function unreachable, mailto fallback ready', e);
       }
     }
 
@@ -784,21 +816,17 @@ RMTP.views.advancing = function (el) {
       '?subject=' + encodeURIComponent(subject) +
       '&body=' + encodeURIComponent(plain);
 
-    return { recipients, subject, plain, edgeOk, mailtoUrl };
+    return { recipients, subject, plain, edgeOk, mailtoUrl, timestampStr, authorStr };
   }
 
   function openRecipientConfigModal() {
-    if (!isAdmin) {
-      ui.toast('Admin permission required to configure email recipients', 'danger');
-      return;
-    }
     let list = getReportRecipients();
     const m = ui.modal({
       title: 'Shift Report Email Recipients',
       size: 'md:max-w-lg',
       body:
         '<div class="grid gap-4">' +
-          '<p class="text-xs text-muted">When a technician completes or submits a shift report, an automated email summary is formatted and addressed to this list (e.g. Duty Managers, Technical Directors, Production Team).</p>' +
+          '<p class="text-xs text-muted">When a shift report is completed, it is automatically formatted and emailed to the recipients listed below with the subject <strong class="text-ink font-mono text-[11px]">Post Shift Report: [DATE] [Event Title]</strong>.</p>' +
           '<div id="recipients-list" class="grid gap-2"></div>' +
           '<div class="flex items-center gap-2">' +
             '<input id="new-rec-email" type="email" class="field flex-1" placeholder="e.g. dutymanager@richmix.org.uk" />' +
@@ -853,8 +881,9 @@ RMTP.views.advancing = function (el) {
     m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
     m.root.querySelector('[data-save]').addEventListener('click', () => {
       saveReportRecipients(list);
-      ui.toast('Email recipients updated', 'ok');
+      ui.toast('Email recipients updated (' + list.length + ' address' + (list.length === 1 ? '' : 'es') + ')', 'ok');
       m.close();
+      RMTP.router.render();
     });
   }
 
@@ -1096,7 +1125,7 @@ RMTP.views.advancing = function (el) {
     const r = existing || {};
     const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
     const shiftLabel = (ev.date ? ui.formatDate(ev.date) : 'No date set') + (times ? ' \u00b7 ' + times : '');
-    const defaultRecs = getReportRecipients();
+    const defaultRecs = getReportRecipients(ev);
 
     const m = ui.modal({
       title: (existing ? 'Edit' : 'End-of-shift') + ' report \u2014 ' + ev.name,
@@ -1104,26 +1133,30 @@ RMTP.views.advancing = function (el) {
       body:
         '<div class="grid gap-4">' +
           '<p class="text-xs text-muted">Filed as <span class="text-ink font-medium">' + ui.esc(auth.displayName(auth.current()) || 'you') + '</span> \u00b7 for the shift on <span class="text-ink font-medium">' + ui.esc(shiftLabel) + '</span></p>' +
-          fld('Crew / shift', '<input id="r-crew" class="field" value="' + ui.esc(r.crew || '') + '" placeholder="e.g. Show, Get-out" />') +
-          fld('How did the shift go?', '<textarea id="r-summary" class="field" rows="3" placeholder="Overview of the night\u2026">' + ui.esc(r.summary || '') + '</textarea>') +
-          fld('Issues / faults', '<textarea id="r-issues" class="field" rows="2" placeholder="Anything that broke or needs fixing\u2026">' + ui.esc(r.issues || '') + '</textarea>') +
-          fld('Handover / follow-up', '<textarea id="r-follow" class="field" rows="2" placeholder="For the next shift or the TM\u2026">' + ui.esc(r.followUp || '') + '</textarea>') +
+          fld('Crew / shift', '<input id="r-crew" class="field" value="' + ui.esc(r.crew || '') + '" placeholder="e.g. Show, Get-out, Night Shift" />') +
+          fld('How did the shift go? (Summary)', '<textarea id="r-summary" class="field" rows="3" placeholder="Overview of the event / night\u2026">' + ui.esc(r.summary || '') + '</textarea>') +
+          fld('Issues / equipment faults', '<textarea id="r-issues" class="field" rows="2" placeholder="Anything that broke, glitches, or equipment needing repair\u2026">' + ui.esc(r.issues || '') + '</textarea>') +
+          fld('Handover / follow-up actions', '<textarea id="r-follow" class="field" rows="2" placeholder="Tasks or notes for the next shift or Technical Management\u2026">' + ui.esc(r.followUp || '') + '</textarea>') +
           '<div class="panel bg-panel2/50 p-3 rounded-lg border border-line">' +
             '<div class="flex items-center justify-between mb-2">' +
               '<label class="flex items-center gap-2 text-xs font-semibold cursor-pointer">' +
                 '<input type="checkbox" id="r-auto-email" class="w-4 h-4 accent-[var(--accent)]" checked />' +
-                '<span>Auto-send formatted email summary</span>' +
+                '<span>Auto-send post shift report email</span>' +
               '</label>' +
-              '<button type="button" id="r-edit-recipients" class="text-xs text-accent hover:underline">Edit recipients</button>' +
+              '<button type="button" id="r-edit-recipients" class="text-xs text-accent hover:underline flex items-center gap-1">' + ui.icon('pen', 'w-3 h-3') + 'Edit recipients</button>' +
+            '</div>' +
+            '<div class="text-[11px] text-muted mb-1">' +
+              'Subject: <span class="font-mono text-ink font-semibold">Post Shift Report: ' + ui.esc(ev.date ? ui.formatDate(ev.date) : ui.formatDate(new Date().toISOString().slice(0, 10))) + ' ' + ui.esc(ev.name || 'Event') + '</span>' +
             '</div>' +
             '<div class="text-[11px] text-muted font-mono flex items-center gap-1.5 flex-wrap">' +
-              '<span>To:</span>' + defaultRecs.map((em) => '<span class="px-1.5 py-0.5 rounded bg-panel border border-line text-ink">' + ui.esc(em) + '</span>').join('') +
+              '<span class="text-ink font-sans font-medium">To (' + defaultRecs.length + '):</span>' +
+              defaultRecs.map((em) => '<span class="px-1.5 py-0.5 rounded bg-panel border border-line text-ink">' + ui.esc(em) + '</span>').join('') +
             '</div>' +
           '</div>' +
         '</div>',
       footer:
         '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
-        '<button class="btn btn-primary" data-save data-primary>' + (existing ? 'Save changes' : 'File report') + '</button>',
+        '<button class="btn btn-primary" data-save data-primary>' + (existing ? 'Save changes' : 'File and send report') + '</button>',
     });
 
     const editRecsBtn = m.root.querySelector('#r-edit-recipients');
@@ -1138,15 +1171,23 @@ RMTP.views.advancing = function (el) {
       const summary = m.root.querySelector('#r-summary').value.trim();
       const issues = m.root.querySelector('#r-issues').value.trim();
       const followUp = m.root.querySelector('#r-follow').value.trim();
-      const shouldEmail = m.root.querySelector('#r-auto-email') ? m.root.querySelector('#r-auto-email').checked : false;
+      const shouldEmail = m.root.querySelector('#r-auto-email') ? m.root.querySelector('#r-auto-email').checked : true;
 
       if (!summary && !issues && !followUp) { ui.toast('Add at least a summary', 'danger'); return; }
       const meNow = auth.current();
       const now = new Date().toISOString();
-      const base = { id: r.id || store.uid('rep'), eventId: ev.id, crew: m.root.querySelector('#r-crew').value.trim(), shiftDate: ev.date || '', summary, issues, followUp };
+      const base = {
+        id: r.id || store.uid('rep'),
+        eventId: ev.id,
+        crew: m.root.querySelector('#r-crew').value.trim(),
+        shiftDate: ev.date || '',
+        summary,
+        issues,
+        followUp
+      };
       const record = existing
         ? Object.assign({}, r, base, { updatedAt: now, updatedBy: auth.displayName(meNow) })
-        : Object.assign(base, { authorId: meNow ? meNow.id : null, author: auth.displayName(meNow) || 'Unknown', submittedAt: now, updatedAt: now });
+        : Object.assign(base, { authorId: meNow ? meNow.id : null, author: auth.displayName(meNow) || 'Technician', submittedAt: now, updatedAt: now });
       store.upsert('reports', record);
 
       m.close();
@@ -1156,8 +1197,12 @@ RMTP.views.advancing = function (el) {
 
       if (shouldEmail) {
         const dispatch = await dispatchShiftReportEmail(ev, record);
-        showEmailSummaryModal(ev, record, dispatch);
-        ui.toast('Report filed \u2014 ready to send', 'ok');
+        if (dispatch.edgeOk) {
+          ui.toast('Shift report filed & emailed to ' + dispatch.recipients.length + ' recipient' + (dispatch.recipients.length === 1 ? '' : 's'), 'ok');
+        } else {
+          showEmailSummaryModal(ev, record, dispatch);
+          ui.toast('Shift report filed \u2014 email ready for dispatch', 'ok');
+        }
       } else {
         ui.toast(existing ? 'Report updated' : 'Report filed', 'ok');
       }
@@ -1307,6 +1352,7 @@ RMTP.views.advancing = function (el) {
           fld('Assigned Technicians', '<div id="e-tech-area"></div>') +
           fld('Artist / Client contact', '<input id="e-contact" class="field" value="' + ui.esc(ev.clientContact || '') + '" placeholder="Tour manager / client name & contact" />') +
           fld('Technical notes & requirements', '<textarea id="e-info" class="field" rows="3" placeholder="Power requirements, split boxes, staging notes, audio input list\u2026">' + ui.esc(ev.techInfo || '') + '</textarea>') +
+          fld('Event Shift Report Email Recipients (Optional Override)', '<input id="e-email-recipients" class="field font-mono text-xs" value="' + ui.esc(Array.isArray(ev.email_recipients || ev.emailRecipients) ? (ev.email_recipients || ev.emailRecipients).join(', ') : (ev.email_recipients || ev.emailRecipients || '')) + '" placeholder="Leave blank to use Advancing page recipients (' + getReportRecipients().join(', ') + ')" />') +
           '<div>' +
             '<div class="flex items-center gap-3 mb-2">' +
               '<label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="e-guest" class="w-4 h-4 accent-[var(--accent)]" ' + (ev.guestEngineer ? 'checked' : '') + ' /><span class="text-sm font-medium">Visiting / Guest Sound or Lighting Engineer</span></label>' +
@@ -1600,6 +1646,7 @@ RMTP.views.advancing = function (el) {
         clientContact: m.root.querySelector('#e-contact').value.trim(),
         guestEngineer: m.root.querySelector('#e-guest').checked,
         techInfo: m.root.querySelector('#e-info').value.trim(),
+        email_recipients: m.root.querySelector('#e-email-recipients') ? m.root.querySelector('#e-email-recipients').value.trim() : (ev.email_recipients || ev.emailRecipients || ''),
         techSpec: finalSpec,
         checklist: ev.checklist || { techSpecSent: false, inputListReceived: false, stagePlot: false, schedule: false, backline: false, hospitality: false, parkingAccess: false },
       });

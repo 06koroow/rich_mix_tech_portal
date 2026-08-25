@@ -18,6 +18,18 @@ RMTP.views.advancing = function (el) {
   let mobileFiltersOpen = (RMTP._advMobileFiltersOpen !== undefined ? RMTP._advMobileFiltersOpen : false);
   const expandedEvents = (RMTP._expandedAdvEvents = RMTP._expandedAdvEvents || new Set());
 
+  // Advancing view mode state ('list' | 'calendar')
+  let advViewMode = (RMTP._advViewMode = RMTP._advViewMode || 'list');
+  let calDate = (RMTP._advCalDate = RMTP._advCalDate || new Date());
+
+  // Technician filter state: array of user IDs/emails, or 'all'
+  // Default to currently signed-in user on initial session load
+  if (RMTP._advTechFilter === undefined) {
+    RMTP._advTechFilter = (me && (me.id || me.email)) ? [(me.id || me.email)] : [];
+  }
+  let selectedTechs = RMTP._advTechFilter; // Array of ids/emails, or empty array = all
+  let includeUnassigned = (RMTP._advIncludeUnassigned !== undefined ? RMTP._advIncludeUnassigned : true);
+
   function getTodayString() {
     const now = new Date();
     const y = now.getFullYear();
@@ -68,7 +80,9 @@ RMTP.views.advancing = function (el) {
   function userName(id) {
     if (!id) return '';
     const u = store.find('users', id);
-    return u ? auth.displayName(u) : '';
+    if (u) return auth.displayName(u);
+    if (typeof id === 'string' && id.indexOf('@') !== -1) return id.split('@')[0];
+    return id || 'Unknown';
   }
 
   function techLabel(t) {
@@ -84,8 +98,26 @@ RMTP.views.advancing = function (el) {
 
   function canDeleteReport(r) { const u = auth.current(); return !!u && (u.admin || r.authorId === u.id); }
 
-  // Admins see every event; everyone else sees only shifts assigned to them.
-  const base = store.all('advancing').filter((e) => isAdmin || (me && RMTP.eventAssignedTo(e, me.id)));
+  // Unified filter bar open/closed state (persisted across render)
+  let filtersPanelOpen = (RMTP._advFiltersPanelOpen !== undefined ? RMTP._advFiltersPanelOpen : false);
+
+  // Pool of all events in system
+  const allEvents = store.all('advancing') || [];
+
+  // Filter events based on active technician filter & space/tab
+  function matchesTechFilter(e) {
+    if (!selectedTechs || selectedTechs.length === 0) return true; // all technicians
+    const evTechs = RMTP.eventTechnicians(e);
+    if (!evTechs.length) return includeUnassigned;
+    return evTechs.some((tid) => {
+      if (selectedTechs.indexOf(tid) !== -1) return true;
+      const u = store.find('users', tid);
+      if (u && (selectedTechs.indexOf(u.id) !== -1 || selectedTechs.indexOf(u.email) !== -1)) return true;
+      return false;
+    });
+  }
+
+  const base = allEvents.filter(matchesTechFilter);
 
   const upcomingCount = base.filter((e) => !isPastEvent(e.date)).length;
   const pastCount = base.filter((e) => isPastEvent(e.date)).length;
@@ -98,27 +130,322 @@ RMTP.views.advancing = function (el) {
     .sort((a, b) => (currentTab === 'past' ? (b.date || '').localeCompare(a.date || '') : (a.date || '9999').localeCompare(b.date || '9999')));
 
   const emptyMsg = !base.length
-    ? (isAdmin ? ['clip', 'No events yet', 'Add an event to start advancing it.']
-               : ['clip', 'No shifts assigned to you', 'You\u2019ll see events here once an admin assigns you.'])
+    ? (!allEvents.length ? ['clip', 'No events yet', 'Add an event to start advancing it.']
+                         : ['user', 'No shifts found for selected technician(s)', 'Try selecting "All Team Shifts" or a different technician filter.'])
     : (currentTab === 'past'
       ? ['clip', 'No past events found', 'Past events will appear here once their date has passed.']
       : ['clip', 'Nothing matches these filters', 'Try a different space, tab, or clear the date.']);
 
+  // Active filter count summary badge
+  let activeFilterCount = 0;
+  if (filters.space) activeFilterCount++;
+  if (filters.date) activeFilterCount++;
+  if (selectedTechs && selectedTechs.length > 0) activeFilterCount++;
+  if (!includeUnassigned) activeFilterCount++;
+
   el.innerHTML =
     '<div class="view-enter">' +
       ui.pageHeader('Advancing', isAdmin ? 'Events & Production Schedules' : 'Your shifts & Production Advancing',
-        (isAdmin ? '<button id="verify-sync-btn" class="btn btn-ghost" title="Check Supabase database sync status">' + ui.icon('shield', 'w-4 h-4') + '<span class="hidden sm:inline">Verify Sync</span></button>' : '') +
-        '<button id="email-recipients-btn" class="btn btn-ghost" title="Configure shift report email recipients">' + ui.icon('mail', 'w-4 h-4') + '<span class="hidden sm:inline">Email Recipients</span>' +
+        '<div class="inline-flex rounded-lg border border-line p-0.5 bg-panel mr-1">' +
+          '<button id="adv-mode-list" class="px-2.5 py-1 text-xs rounded font-medium transition flex items-center gap-1.5 ' + (advViewMode === 'list' ? 'bg-accent text-accent-ink font-semibold shadow-xs' : 'text-muted hover:text-ink') + '">' +
+            ui.icon('list', 'w-3.5 h-3.5') + '<span class="hidden sm:inline">List</span>' +
+          '</button>' +
+          '<button id="adv-mode-cal" class="px-2.5 py-1 text-xs rounded font-medium transition flex items-center gap-1.5 ' + (advViewMode === 'calendar' ? 'bg-accent text-accent-ink font-semibold shadow-xs' : 'text-muted hover:text-ink') + '">' +
+            ui.icon('calendar', 'w-3.5 h-3.5') + '<span class="hidden sm:inline">Calendar</span>' +
+          '</button>' +
+        '</div>' +
+        (isAdmin ? '<button id="verify-sync-btn" class="btn btn-ghost text-xs" title="Check Supabase database sync status">' + ui.icon('shield', 'w-3.5 h-3.5') + '<span class="hidden sm:inline">Verify Sync</span></button>' : '') +
+        '<button id="email-recipients-btn" class="btn btn-ghost text-xs" title="Configure shift report email recipients">' + ui.icon('mail', 'w-3.5 h-3.5') + '<span class="hidden sm:inline">Recipients</span>' +
           '<span class="ml-1 px-1.5 py-0.5 rounded text-[11px] bg-panel border border-line font-mono text-accent font-semibold">' + getReportRecipients().length + '</span>' +
         '</button>' +
         (isAdmin && canManageEvents && RMTP.supabase && RMTP.supabase.isConfigured()
-          ? '<button id="artifax-sync" class="btn btn-ghost" title="Pull events from Artifax">' + ui.icon('reset', 'w-4 h-4') + '<span class="hidden sm:inline">Refresh from Artifax</span></button>' : '') +
-        (canManageEvents ? '<button id="add-event" class="btn btn-primary">' + ui.icon('plus', 'w-4 h-4') + 'Add event</button>' : '')) +
-      tabBar() +
-      filterBar() +
-      (shown.length ? '<div class="grid gap-3.5">' + shown.map(renderEventCard).join('') + '</div>'
-                    : ui.empty(emptyMsg[0], emptyMsg[1], emptyMsg[2])) +
+          ? '<button id="artifax-sync" class="btn btn-ghost text-xs" title="Pull events from Artifax">' + ui.icon('reset', 'w-3.5 h-3.5') + '<span class="hidden sm:inline">Sync Artifax</span></button>' : '')
+      ) +
+
+      // Top Control Bar: Collapsible Filter Menu Trigger (Left) + Add Event Button (Right)
+      '<div class="flex items-center justify-between gap-3 mb-4">' +
+        '<button id="adv-filter-toggle-btn" class="btn btn-ghost text-xs flex items-center gap-2 border border-line bg-panel2 hover:bg-panel font-medium py-2 px-3 rounded-lg transition">' +
+          ui.icon('filter', 'w-3.5 h-3.5 text-accent') +
+          '<span>Filters & Crew</span>' +
+          (activeFilterCount > 0 ? '<span class="px-1.5 py-0.2 rounded-full text-[10px] bg-accent text-accent-ink font-bold">' + activeFilterCount + '</span>' : '') +
+          '<span class="text-muted transition-transform ' + (filtersPanelOpen ? 'rotate-180 text-accent' : '') + '">' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</span>' +
+        '</button>' +
+        (canManageEvents ? '<button id="add-event" class="btn btn-primary text-xs py-2 px-3 flex items-center gap-1.5">' + ui.icon('plus', 'w-4 h-4') + 'Add event</button>' : '') +
+      '</div>' +
+
+      // Unified Collapsible Filter Drawer
+      renderUnifiedFilterDrawer() +
+
+      (advViewMode === 'calendar'
+        ? renderCalendarView()
+        : (tabBar() +
+           (shown.length ? '<div class="grid gap-3.5">' + shown.map(renderEventCard).join('') + '</div>'
+                         : ui.empty(emptyMsg[0], emptyMsg[1], emptyMsg[2]))
+          )
+      ) +
     '</div>';
+
+  /* ---- Unified Collapsible Filter Drawer Component ---- */
+  function renderUnifiedFilterDrawer() {
+    const isOnlyMe = me && selectedTechs.length === 1 && (selectedTechs[0] === me.id || selectedTechs[0] === me.email);
+    const isAll = !selectedTechs || selectedTechs.length === 0;
+
+    let crewPillText = '';
+    if (isAll) {
+      crewPillText = 'All Team';
+    } else if (isOnlyMe) {
+      crewPillText = 'Only Me (' + (me ? auth.displayName(me) : 'You') + ')';
+    } else {
+      crewPillText = selectedTechs.length + ' crew selected';
+    }
+
+    const tabPool = base.filter((e) => (currentTab === 'past' ? isPastEvent(e.date) : !isPastEvent(e.date)));
+    const chip = (id, label, n, active) =>
+      '<button data-space="' + ui.esc(id) + '" class="px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ' +
+        (active ? 'bg-accent text-accent-ink border-accent font-semibold shadow-2xs' : 'bg-panel border-line text-muted hover:text-ink hover:border-line/80') + '">' +
+        ui.esc(label) + ' <span class="tabular text-[10px] opacity-70">(' + n + ')</span></button>';
+
+    const spaceChips = [chip('', 'All Spaces', tabPool.length, !filters.space)]
+      .concat(RMTP.SPACES.map((s) => chip(s, s, tabPool.filter((e) => e.space === s).length, filters.space === s))).join('');
+
+    return (
+      '<div id="adv-filters-drawer" class="' + (filtersPanelOpen ? 'block' : 'hidden') + ' panel p-4 mb-4 border border-line bg-panel2/60 animate-fadeIn space-y-3.5 shadow-sm">' +
+        '<!-- Row 1: Crew & Technician Filtering -->' +
+        '<div class="flex flex-col md:flex-row md:items-center justify-between gap-2.5 pb-3 border-b border-line/60">' +
+          '<div class="flex items-center gap-2 flex-wrap">' +
+            '<span class="text-xs font-semibold text-muted uppercase tracking-wider flex items-center gap-1.5">' +
+              ui.icon('user', 'w-3.5 h-3.5 text-accent') + '<span>Crew:</span>' +
+            '</span>' +
+            '<button id="tf-only-me" class="px-2.5 py-1 text-xs rounded-lg border transition font-medium ' +
+              (isOnlyMe ? 'bg-accent text-accent-ink border-accent font-semibold shadow-xs' : 'bg-panel border-line text-ink hover:border-accent') + '">' +
+              'Only My Shifts' +
+            '</button>' +
+            '<button id="tf-all-team" class="px-2.5 py-1 text-xs rounded-lg border transition font-medium ' +
+              (isAll ? 'bg-accent text-accent-ink border-accent font-semibold shadow-xs' : 'bg-panel border-line text-ink hover:border-accent') + '">' +
+              'All Team' +
+            '</button>' +
+            '<button id="tf-custom-modal" class="px-2.5 py-1 text-xs rounded-lg border bg-panel border-line text-ink hover:border-accent transition flex items-center gap-1 font-medium">' +
+              ui.icon('filter', 'w-3 h-3') + '<span>' + ui.esc(crewPillText) + '</span>' +
+            '</button>' +
+          '</div>' +
+          '<label class="flex items-center gap-2 text-xs text-muted cursor-pointer select-none">' +
+            '<input type="checkbox" id="tf-unassigned-cb" class="w-3.5 h-3.5 rounded accent-[var(--accent)]" ' + (includeUnassigned ? 'checked' : '') + ' />' +
+            '<span>Include unassigned shifts</span>' +
+          '</label>' +
+        '</div>' +
+
+        '<!-- Row 2: Space Filters -->' +
+        '<div>' +
+          '<div class="text-[11px] font-semibold text-muted uppercase tracking-wider mb-1.5 flex items-center gap-1">' +
+            ui.icon('search', 'w-3 h-3 text-accent') + '<span>Venue Space:</span>' +
+          '</div>' +
+          '<div class="flex flex-wrap items-center gap-1.5">' +
+            spaceChips +
+          '</div>' +
+        '</div>' +
+
+        '<!-- Row 3: Date & Reset Controls -->' +
+        '<div class="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-line/60">' +
+          '<div class="flex items-center gap-2 flex-wrap">' +
+            '<span class="text-[11px] font-semibold text-muted uppercase tracking-wider">Date:</span>' +
+            '<input id="adv-date" type="date" class="field !w-auto !py-1 text-xs" value="' + ui.esc(filters.date || '') + '" />' +
+            '<button id="adv-today" class="btn btn-ghost !py-1 text-xs">Today</button>' +
+          '</div>' +
+          '<div>' +
+            (activeFilterCount > 0
+              ? '<button id="adv-clear" class="btn btn-ghost !py-1 text-xs text-danger hover:border-danger flex items-center gap-1">' + ui.icon('x', 'w-3 h-3') + 'Reset all filters</button>'
+              : '<span class="text-xs text-muted">Showing all matching records</span>'
+            ) +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  /* ---- Calendar View Generation ---- */
+  function renderCalendarView() {
+    const year = calDate.getFullYear();
+    const month = calDate.getMonth();
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const monthName = monthNames[month];
+
+    // Filter base events by space if space filter active
+    const calEvents = base.filter((e) => !filters.space || e.space === filters.space);
+
+    // Map events by YYYY-MM-DD
+    const eventsByDate = {};
+    calEvents.forEach((ev) => {
+      if (!ev.date) return;
+      const d = ev.date.slice(0, 10);
+      if (!eventsByDate[d]) eventsByDate[d] = [];
+      eventsByDate[d].push(ev);
+    });
+
+    const firstDayOfMonth = new Date(year, month, 1);
+    const lastDayOfMonth = new Date(year, month + 1, 0);
+    const numDays = lastDayOfMonth.getDate();
+
+    // 0 = Sunday, 1 = Monday ... 6 = Saturday -> convert to Monday=0, Sunday=6
+    let startOffset = firstDayOfMonth.getDay() - 1;
+    if (startOffset === -1) startOffset = 6;
+
+    const todayStr = getTodayString();
+
+    let daysHtml = '';
+    for (let i = 0; i < startOffset; i++) {
+      daysHtml += '<div class="min-h-[110px] p-2 bg-panel/30 border border-line/30 rounded-lg opacity-40"></div>';
+    }
+
+    for (let day = 1; day <= numDays; day++) {
+      const dateStr = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+      const isToday = dateStr === todayStr;
+      const evs = eventsByDate[dateStr] || [];
+      evs.sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
+
+      daysHtml +=
+        '<div class="min-h-[105px] sm:min-h-[120px] p-1.5 sm:p-2 bg-panel border ' + (isToday ? 'border-accent shadow-sm' : 'border-line') + ' rounded-lg flex flex-col justify-between transition hover:border-line/80 group overflow-hidden">' +
+          '<div class="min-w-0">' +
+            '<div class="flex items-center justify-between mb-1">' +
+              '<span class="text-xs font-semibold ' + (isToday ? 'px-1.5 py-0.5 rounded bg-accent text-accent-ink font-mono' : 'text-ink') + '">' + day + '</span>' +
+              (evs.length > 0 ? '<span class="text-[10px] font-mono text-muted">' + evs.length + ' shift' + (evs.length === 1 ? '' : 's') + '</span>' : '') +
+            '</div>' +
+            '<div class="grid gap-1 min-w-0">' +
+              evs.map((ev) => {
+                const isCinema = isScreenSpace(ev.space);
+                const techNames = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
+                const spaceBadge = isCinema ? 'bg-sky-500/15 text-sky-400 border-sky-500/30' : 'bg-amber-500/15 text-amber-400 border-amber-500/30';
+                const stColour = statusColour[ev.status] || 'var(--accent)';
+                return (
+                  '<div data-open-cal-event="' + ui.esc(ev.id) + '" class="p-1 sm:p-1.5 rounded bg-panel2 hover:bg-panel border border-line cursor-pointer text-left transition hover:border-accent shadow-2xs min-w-0 overflow-hidden">' +
+                    '<div class="flex items-center justify-between gap-1 mb-0.5 min-w-0">' +
+                      '<span class="text-[9px] sm:text-[10px] font-mono font-medium text-muted truncate">' + ui.esc(ev.startTime || 'TBD') + (ev.finishTime ? ' \u2013 ' + ui.esc(ev.finishTime) : '') + '</span>' +
+                      '<span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:' + stColour + '"></span>' +
+                    '</div>' +
+                    '<div class="text-[11px] sm:text-xs font-semibold text-ink truncate hover:text-accent leading-snug">' + ui.esc(ev.name || 'Untitled') + '</div>' +
+                    '<div class="flex items-center gap-1 mt-1 flex-wrap min-w-0">' +
+                      '<span class="px-1 py-0.2 rounded text-[8px] sm:text-[9px] border font-medium truncate ' + spaceBadge + '">' + ui.esc(ev.space || 'Venue') + '</span>' +
+                      (techNames.length ? '<span class="text-[9px] sm:text-[10px] text-muted truncate max-w-[70px] sm:max-w-[85px]">' + ui.esc(techNames[0]) + (techNames.length > 1 ? ' +' + (techNames.length - 1) : '') + '</span>' : '<span class="text-[9px] sm:text-[10px] text-danger font-medium">Unassigned</span>') +
+                    '</div>' +
+                  '</div>'
+                );
+              }).join('') +
+            '</div>' +
+          '</div>' +
+          (canManageEvents ? '<button data-cal-add-date="' + dateStr + '" class="w-full mt-1 py-0.5 text-[10px] text-muted hover:text-accent hover:bg-panel2 rounded transition text-center opacity-0 group-hover:opacity-100">+ Add</button>' : '') +
+        '</div>';
+    }
+
+    return (
+      '<div class="grid gap-4 mb-8">' +
+        '<div class="panel p-3.5 flex items-center justify-between flex-wrap gap-2">' +
+          '<div class="flex items-center gap-2.5">' +
+            '<h3 class="text-base font-semibold text-ink">' + monthName + ' ' + year + '</h3>' +
+            '<span class="text-xs text-muted font-mono">(' + calEvents.length + ' shifts in view)</span>' +
+          '</div>' +
+          '<div class="flex items-center gap-1.5">' +
+            '<button id="cal-btn-prev" class="btn btn-ghost text-xs px-3 py-1.5">' + ui.icon('chevron-left', 'w-3.5 h-3.5') + ' Prev</button>' +
+            '<button id="cal-btn-today" class="btn btn-ghost text-xs px-3 py-1.5 font-medium">Today</button>' +
+            '<button id="cal-btn-next" class="btn btn-ghost text-xs px-3 py-1.5">Next ' + ui.icon('chevron-right', 'w-3.5 h-3.5') + '</button>' +
+          '</div>' +
+        '</div>' +
+
+        '<!-- Responsive Calendar Container with Horizontal Scroll fallback on compact screens -->' +
+        '<div class="w-full overflow-x-auto pb-2">' +
+          '<div class="min-w-[680px] lg:min-w-0">' +
+            '<div class="grid grid-cols-7 gap-1.5 sm:gap-2 text-center text-xs font-semibold text-muted uppercase tracking-wider mb-2">' +
+              '<div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>' +
+            '</div>' +
+            '<div class="grid grid-cols-7 gap-1.5 sm:gap-2 auto-rows-fr">' +
+              daysHtml +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  /* ---- Filter Modal for Multiple Technicians ---- */
+  function openTechMultiFilterModal() {
+    const allUsersList = (store.get('users') || []).slice();
+    const knownTechIds = new Set();
+    allEvents.forEach((ev) => {
+      RMTP.eventTechnicians(ev).forEach((t) => knownTechIds.add(t));
+    });
+    allUsersList.forEach((u) => {
+      knownTechIds.add(u.id);
+      if (u.email) knownTechIds.add(u.email);
+    });
+
+    let tempSelected = selectedTechs.slice();
+
+    const techItems = Array.from(knownTechIds).filter(Boolean).map((tid) => {
+      const u = store.find('users', tid);
+      const name = u ? (u.name || u.email) : userName(tid);
+      const role = u ? (u.role || 'Staff') : 'Technician';
+      return { id: tid, name: name, role: role };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+
+    const m = ui.modal({
+      title: 'Filter Advancing by Technicians',
+      body:
+        '<div class="grid gap-3">' +
+          '<div class="flex items-center justify-between gap-2">' +
+            '<p class="text-xs text-muted">Select team members to view their shift schedule and advances:</p>' +
+            '<div class="flex items-center gap-2">' +
+              '<button type="button" id="m-tf-all" class="text-xs text-accent hover:underline font-medium">Select All</button>' +
+              '<span class="text-muted">|</span>' +
+              '<button type="button" id="m-tf-clear" class="text-xs text-muted hover:text-ink font-medium">Clear (All)</button>' +
+              '<span class="text-muted">|</span>' +
+              (me ? '<button type="button" id="m-tf-me" class="text-xs text-accent hover:underline font-medium">Only Me</button>' : '') +
+            '</div>' +
+          '</div>' +
+          '<div id="m-tf-list" class="max-h-64 overflow-y-auto grid gap-1.5 p-2 rounded border border-line bg-panel2/40">' +
+            techItems.map((item) => {
+              const isChecked = tempSelected.indexOf(item.id) !== -1;
+              return (
+                '<label class="flex items-center justify-between p-2 rounded hover:bg-panel cursor-pointer text-xs border border-transparent hover:border-line">' +
+                  '<div class="flex items-center gap-2.5">' +
+                    '<input type="checkbox" value="' + ui.esc(item.id) + '" class="w-4 h-4 rounded accent-[var(--accent)]" ' + (isChecked ? 'checked' : '') + ' />' +
+                    '<span class="font-medium text-ink">' + ui.esc(item.name) + '</span>' +
+                  '</div>' +
+                  '<span class="text-[11px] text-muted uppercase tracking-wider">' + ui.esc(item.role) + '</span>' +
+                '</label>'
+              );
+            }).join('') +
+          '</div>' +
+        '</div>',
+      footer:
+        '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
+        '<button class="btn btn-primary" data-save data-primary>Apply Filters</button>'
+    });
+
+    const checklist = m.root.querySelector('#m-tf-list');
+    m.root.querySelector('#m-tf-all').addEventListener('click', () => {
+      checklist.querySelectorAll('input[type="checkbox"]').forEach((cb) => cb.checked = true);
+    });
+    m.root.querySelector('#m-tf-clear').addEventListener('click', () => {
+      checklist.querySelectorAll('input[type="checkbox"]').forEach((cb) => cb.checked = false);
+    });
+    const meBtn = m.root.querySelector('#m-tf-me');
+    if (meBtn && me) {
+      meBtn.addEventListener('click', () => {
+        checklist.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+          cb.checked = (cb.value === me.id || cb.value === me.email);
+        });
+      });
+    }
+
+    m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
+    m.root.querySelector('[data-save]').addEventListener('click', () => {
+      const selected = [];
+      checklist.querySelectorAll('input[type="checkbox"]:checked').forEach((cb) => {
+        selected.push(cb.value);
+      });
+      RMTP._advTechFilter = selected;
+      m.close();
+      RMTP.router.render();
+    });
+  }
 
   // Header button wiring
   const syncBtn = el.querySelector('#verify-sync-btn');
@@ -133,27 +460,108 @@ RMTP.views.advancing = function (el) {
     openRecipientConfigModal();
   });
 
+  // View Mode Switcher (List vs Calendar)
+  const modeListBtn = el.querySelector('#adv-mode-list');
+  if (modeListBtn) modeListBtn.addEventListener('click', () => {
+    RMTP._advViewMode = 'list';
+    RMTP.router.render();
+  });
+  const modeCalBtn = el.querySelector('#adv-mode-cal');
+  if (modeCalBtn) modeCalBtn.addEventListener('click', () => {
+    RMTP._advViewMode = 'calendar';
+    RMTP.router.render();
+  });
+
+  // Quick Technician Filter Buttons
+  const onlyMeBtn = el.querySelector('#tf-only-me');
+  if (onlyMeBtn) onlyMeBtn.addEventListener('click', () => {
+    if (me) {
+      RMTP._advTechFilter = [me.id || me.email];
+      RMTP.router.render();
+    } else {
+      ui.toast('Sign in to filter by your shifts', 'info');
+    }
+  });
+
+  const allTeamBtn = el.querySelector('#tf-all-team');
+  if (allTeamBtn) allTeamBtn.addEventListener('click', () => {
+    RMTP._advTechFilter = [];
+    RMTP.router.render();
+  });
+
+  const customFilterModalBtn = el.querySelector('#tf-custom-modal');
+  if (customFilterModalBtn) customFilterModalBtn.addEventListener('click', openTechMultiFilterModal);
+
+  const unassignedCb = el.querySelector('#tf-unassigned-cb');
+  if (unassignedCb) unassignedCb.addEventListener('change', () => {
+    RMTP._advIncludeUnassigned = unassignedCb.checked;
+    RMTP.router.render();
+  });
+
+  // Calendar Controls Wiring
+  const calPrevBtn = el.querySelector('#cal-btn-prev');
+  if (calPrevBtn) calPrevBtn.addEventListener('click', () => {
+    calDate.setMonth(calDate.getMonth() - 1);
+    RMTP._advCalDate = calDate;
+    RMTP.router.render();
+  });
+
+  const calNextBtn = el.querySelector('#cal-btn-next');
+  if (calNextBtn) calNextBtn.addEventListener('click', () => {
+    calDate.setMonth(calDate.getMonth() + 1);
+    RMTP._advCalDate = calDate;
+    RMTP.router.render();
+  });
+
+  const calTodayBtn = el.querySelector('#cal-btn-today');
+  if (calTodayBtn) calTodayBtn.addEventListener('click', () => {
+    RMTP._advCalDate = new Date();
+    RMTP.router.render();
+  });
+
+  el.querySelectorAll('[data-open-cal-event]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const eid = btn.getAttribute('data-open-cal-event');
+      const ev = store.find('advancing', eid);
+      if (ev) openEventModal(ev);
+    });
+  });
+
+  el.querySelectorAll('[data-cal-add-date]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const d = btn.getAttribute('data-cal-add-date');
+      openForm({ date: d });
+    });
+  });
+
+  // Toggle Filter Drawer Button Wiring
+  const filterToggleBtn = el.querySelector('#adv-filter-toggle-btn');
+  if (filterToggleBtn) filterToggleBtn.addEventListener('click', () => {
+    RMTP._advFiltersPanelOpen = !filtersPanelOpen;
+    RMTP.router.render();
+  });
+
   // Tab bar wiring
   el.querySelectorAll('[data-adv-tab]').forEach((b) => b.addEventListener('click', () => {
     filters.tab = b.getAttribute('data-adv-tab');
     RMTP.router.render();
   }));
 
-  // Mobile filters toggle
-  const toggleFiltersBtn = el.querySelector('#adv-toggle-filters');
-  if (toggleFiltersBtn) toggleFiltersBtn.addEventListener('click', () => {
-    RMTP._advMobileFiltersOpen = !mobileFiltersOpen;
-    RMTP.router.render();
-  });
-
-  // Filter bar wiring
+  // Space Filter wiring inside drawer
   el.querySelectorAll('[data-space]').forEach((b) => b.addEventListener('click', () => {
     filters.space = b.getAttribute('data-space');
     RMTP.router.render();
   }));
   const dateIn = el.querySelector('#adv-date'); if (dateIn) dateIn.addEventListener('change', () => { filters.date = dateIn.value; RMTP.router.render(); });
   const todayBtn = el.querySelector('#adv-today'); if (todayBtn) todayBtn.addEventListener('click', () => { filters.date = getTodayString(); RMTP.router.render(); });
-  const clearBtn = el.querySelector('#adv-clear'); if (clearBtn) clearBtn.addEventListener('click', () => { filters.space = ''; filters.date = ''; RMTP.router.render(); });
+  const clearBtn = el.querySelector('#adv-clear'); if (clearBtn) clearBtn.addEventListener('click', () => {
+    filters.space = '';
+    filters.date = '';
+    RMTP._advTechFilter = (me && (me.id || me.email)) ? [(me.id || me.email)] : [];
+    RMTP._advIncludeUnassigned = true;
+    RMTP.router.render();
+  });
 
   const addEv = el.querySelector('#add-event');
   if (addEv) addEv.addEventListener('click', () => openForm());
@@ -208,50 +616,6 @@ RMTP.views.advancing = function (el) {
           ui.icon('clock', 'w-4 h-4') + '<span>Past Events</span>' +
           '<span class="px-1.5 py-0.5 rounded text-[11px] ' + (currentTab === 'past' ? 'bg-black/20 text-accent-ink' : 'bg-line text-muted') + '">' + pastCount + '</span>' +
         '</button>' +
-      '</div>'
-    );
-  }
-
-  function filterBar() {
-    const tabPool = base.filter((e) => (currentTab === 'past' ? isPastEvent(e.date) : !isPastEvent(e.date)));
-    const chip = (id, label, n, active) =>
-      '<button data-space="' + ui.esc(id) + '" class="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium border transition-colors ' +
-        (active ? 'bg-panel2 border-accent text-ink font-semibold' : 'border-line text-muted hover:text-ink') + '">' +
-        ui.esc(label) + ' <span class="tabular text-[11px] opacity-70">(' + n + ')</span></button>';
-    const chips = [chip('', 'All Spaces', tabPool.length, !filters.space)]
-      .concat(RMTP.SPACES.map((s) => chip(s, s, tabPool.filter((e) => e.space === s).length, filters.space === s))).join('');
-
-    const activeSpaceLabel = filters.space ? filters.space : 'All Spaces';
-
-    return (
-      '<div class="mb-5 w-full">' +
-        // Mobile Filter Accordion Toggle
-        '<div class="sm:hidden mb-2.5 flex items-center justify-between gap-2">' +
-          '<button id="adv-toggle-filters" class="btn btn-ghost !py-2 !px-3 text-xs w-full flex items-center justify-between border-line bg-panel2/60">' +
-            '<span class="flex items-center gap-2 font-medium text-ink">' +
-              ui.icon('search', 'w-3.5 h-3.5 text-accent') +
-              '<span>Space: <strong class="text-accent">' + ui.esc(activeSpaceLabel) + '</strong></span>' +
-            '</span>' +
-            '<span class="flex items-center gap-1 text-muted text-[11px]">' +
-              '<span>' + (mobileFiltersOpen ? 'Hide' : 'Filter') + '</span>' +
-              '<span class="transition-transform ' + (mobileFiltersOpen ? 'rotate-180 text-accent' : '') + '">' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</span>' +
-            '</span>' +
-          '</button>' +
-        '</div>' +
-
-        // Spaces list (Collapsible on mobile, always visible on desktop)
-        '<div class="' + (mobileFiltersOpen ? 'flex' : 'hidden') + ' sm:flex flex-wrap items-center gap-1.5 sm:gap-2 p-2 sm:p-0 rounded-xl bg-panel sm:bg-transparent border border-line sm:border-0 mb-3 sm:mb-0 animate-fadeIn">' +
-          chips +
-        '</div>' +
-
-        // Date and Clear tools
-        '<div class="flex flex-wrap items-center gap-2 mt-2.5 sm:mt-3 pt-2.5 sm:pt-0 border-t border-line/40 sm:border-0">' +
-          '<div class="flex items-center gap-2 flex-1 sm:flex-initial">' +
-            '<input id="adv-date" type="date" class="field !w-full sm:!w-auto !py-1.5 text-xs" value="' + ui.esc(filters.date || '') + '" />' +
-            '<button id="adv-today" class="btn btn-ghost !py-1.5 text-xs shrink-0">Today</button>' +
-          '</div>' +
-          ((filters.date || filters.space) ? '<button id="adv-clear" class="btn btn-ghost !py-1.5 text-xs text-danger hover:border-danger shrink-0">' + ui.icon('x', 'w-3.5 h-3.5') + 'Clear filters</button>' : '') +
-        '</div>' +
       '</div>'
     );
   }

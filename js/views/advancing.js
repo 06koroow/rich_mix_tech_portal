@@ -52,29 +52,84 @@ RMTP.views.advancing = function (el) {
   const statusColour = { 'Advancing': 'var(--info)', 'Confirmed': 'var(--accent)', 'Complete': 'var(--ok)' };
 
   /* ---- Shift Reports Email Automation & Recipients Config ---- */
-  const DEFAULT_RECIPIENTS = ['tech@richmix.org.uk', 'dutymanager@richmix.org.uk', 'production@richmix.org.uk'];
+  const DEFAULT_RECIPIENT_RULES = [
+    { email: 'tech@richmix.org.uk', category: 'All' },
+    { email: 'dutymanager@richmix.org.uk', category: 'All' },
+    { email: 'production@richmix.org.uk', category: 'Programme' },
+    { email: 'cinema@richmix.org.uk', category: 'Cinema' },
+    { email: 'events@richmix.org.uk', category: 'Private Hires' }
+  ];
+
+  // Helper to normalize recipient entry: { email: string, category: 'All'|'Programme'|'Cinema'|'Private Hires' }
+  function normalizeRecipientEntry(r) {
+    if (!r) return null;
+    if (typeof r === 'string') {
+      const email = r.trim().toLowerCase();
+      return email && email.indexOf('@') !== -1 ? { email, category: 'All' } : null;
+    }
+    if (typeof r === 'object' && r.email) {
+      const email = String(r.email).trim().toLowerCase();
+      const cat = (r.category && ['All', 'Programme', 'Cinema', 'Private Hires'].includes(r.category)) ? r.category : 'All';
+      return email && email.indexOf('@') !== -1 ? { email, category: cat } : null;
+    }
+    return null;
+  }
+
+  function getReportRecipientRules() {
+    try {
+      const raw = store.readRaw('report_recipients', '');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length) {
+          const list = parsed.map(normalizeRecipientEntry).filter(Boolean);
+          if (list.length) return list;
+        }
+      }
+    } catch (e) {}
+    return DEFAULT_RECIPIENT_RULES.map((r) => Object.assign({}, r));
+  }
 
   function getReportRecipients(ev) {
     if (ev) {
+      // 1. Direct per-event overrides if configured
       const perEv = ev.email_recipients || ev.emailRecipients;
-      if (Array.isArray(perEv) && perEv.length) return perEv;
+      if (Array.isArray(perEv) && perEv.length) {
+        return perEv.map((x) => (typeof x === 'string' ? x : (x.email || ''))).filter(Boolean);
+      }
       if (typeof perEv === 'string' && perEv.trim()) {
         const split = perEv.split(/[,;\s]+/).map((s) => s.trim().toLowerCase()).filter((s) => s.indexOf('@') !== -1);
         if (split.length) return split;
       }
     }
-    try {
-      const raw = store.readRaw('report_recipients', '');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length) return parsed;
-      }
-    } catch (e) {}
-    return DEFAULT_RECIPIENTS.slice();
+
+    const rules = getReportRecipientRules();
+    if (!ev) {
+      // Return all unique emails when no event context provided (e.g. badge counters)
+      return Array.from(new Set(rules.map((r) => r.email)));
+    }
+
+    // Determine event category
+    let evCat = ev.category || '';
+    if (!evCat) {
+      if (isScreenSpace(ev.space)) evCat = 'Cinema';
+      else evCat = 'Programme';
+    }
+
+    // Match rules: 'All' or specific category match
+    const matched = rules.filter((r) => {
+      if (!r.category || r.category === 'All') return true;
+      if (r.category.toLowerCase() === evCat.toLowerCase()) return true;
+      // Also match Cinema spaces automatically if category is Cinema
+      if (r.category === 'Cinema' && isScreenSpace(ev.space)) return true;
+      return false;
+    }).map((r) => r.email);
+
+    return Array.from(new Set(matched));
   }
 
   function saveReportRecipients(list) {
-    store.writeRaw('report_recipients', JSON.stringify(list));
+    const normalized = list.map(normalizeRecipientEntry).filter(Boolean);
+    store.writeRaw('report_recipients', JSON.stringify(normalized));
   }
 
   function userName(id) {
@@ -1183,38 +1238,75 @@ RMTP.views.advancing = function (el) {
     return { recipients, subject, plain, edgeOk, mailtoUrl, timestampStr, authorStr };
   }
 
+  const RECIPIENT_CATEGORIES = ['All', 'Programme', 'Cinema', 'Private Hires'];
+
   function openRecipientConfigModal() {
-    let list = getReportRecipients();
+    let list = getReportRecipientRules(); // [{ email, category }]
+    const categoryBadgeColors = {
+      'All': 'bg-accent/15 text-accent border-accent/30',
+      'Programme': 'bg-purple-500/15 text-purple-400 border-purple-500/30',
+      'Cinema': 'bg-sky-500/15 text-sky-400 border-sky-500/30',
+      'Private Hires': 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+    };
+
+    const categoryOptionsHtml = (selectedVal) =>
+      RECIPIENT_CATEGORIES.map((c) => '<option value="' + c + '" ' + (c === selectedVal ? 'selected' : '') + '>' + c + '</option>').join('');
+
     const m = ui.modal({
-      title: 'Shift Report Email Recipients',
-      size: 'md:max-w-lg',
+      title: 'Shift Report Email Recipients & Category Routing',
+      size: 'md:max-w-xl',
       body:
         '<div class="grid gap-4">' +
-          '<p class="text-xs text-muted">When a shift report is completed, it is automatically formatted and emailed to the recipients listed below with the subject <strong class="text-ink font-mono text-[11px]">Post Shift Report: [DATE] [Event Title]</strong>.</p>' +
-          '<div id="recipients-list" class="grid gap-2"></div>' +
-          '<div class="flex items-center gap-2">' +
-            '<input id="new-rec-email" type="email" class="field flex-1" placeholder="e.g. dutymanager@richmix.org.uk" />' +
-            '<button id="add-rec-btn" class="btn btn-ghost shrink-0">' + ui.icon('plus', 'w-4 h-4') + 'Add</button>' +
+          '<p class="text-xs text-muted leading-relaxed">Configure email recipients and the specific <strong>Event Category</strong> that will trigger reports to them. Select <strong class="text-accent">"All"</strong> to send all shift reports, or target specific streams like <strong class="text-ink">Programme</strong>, <strong class="text-ink">Cinema</strong>, or <strong class="text-ink">Private Hires</strong>.</p>' +
+          '<div id="recipients-list" class="grid gap-2 max-h-72 overflow-y-auto pr-1"></div>' +
+          '<div class="p-3 rounded-xl bg-panel2 border border-line grid gap-2">' +
+            '<div class="text-[11px] font-semibold text-muted uppercase tracking-wider">Add New Recipient Rule</div>' +
+            '<div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">' +
+              '<input id="new-rec-email" type="email" class="field flex-1 text-xs" placeholder="e.g. cinema@richmix.org.uk" />' +
+              '<select id="new-rec-cat" class="field !w-auto text-xs font-medium">' + categoryOptionsHtml('All') + '</select>' +
+              '<button id="add-rec-btn" class="btn btn-primary shrink-0 text-xs py-2 px-3 flex items-center justify-center gap-1">' + ui.icon('plus', 'w-3.5 h-3.5') + 'Add</button>' +
+            '</div>' +
           '</div>' +
         '</div>',
       footer:
         '<button class="btn btn-ghost" data-cancel>Close</button>' +
-        '<button class="btn btn-primary" data-save data-primary>Save Recipients</button>'
+        '<button class="btn btn-primary" data-save data-primary>Save Recipient Rules</button>'
     });
 
     function renderList() {
       const cont = m.root.querySelector('#recipients-list');
       if (!cont) return;
       if (!list.length) {
-        cont.innerHTML = '<p class="text-xs text-muted">No recipients configured. Add at least one email address.</p>';
+        cont.innerHTML = '<p class="text-xs text-muted p-3 bg-panel rounded border border-line text-center">No recipients configured. Add at least one email address.</p>';
         return;
       }
-      cont.innerHTML = list.map((email, idx) => (
-        '<div class="flex items-center justify-between p-2.5 rounded-lg bg-panel2/60 border border-line">' +
-          '<span class="text-sm font-mono text-ink">' + ui.esc(email) + '</span>' +
-          '<button type="button" data-rm-rec="' + idx + '" class="btn btn-danger !p-1.5" title="Remove">' + ui.icon('trash', 'w-3.5 h-3.5') + '</button>' +
-        '</div>'
-      )).join('');
+      cont.innerHTML = list.map((item, idx) => {
+        const badgeClass = categoryBadgeColors[item.category] || categoryBadgeColors['All'];
+        return (
+          '<div class="flex flex-col sm:flex-row sm:items-center justify-between p-2.5 rounded-lg bg-panel2/60 border border-line gap-2">' +
+            '<div class="flex items-center gap-2 min-w-0 flex-1">' +
+              '<span class="w-1.5 h-1.5 rounded-full bg-accent shrink-0"></span>' +
+              '<span class="text-xs font-mono text-ink truncate">' + ui.esc(item.email) + '</span>' +
+            '</div>' +
+            '<div class="flex items-center gap-2 self-end sm:self-auto shrink-0">' +
+              '<select data-change-cat="' + idx + '" class="field !py-1 !px-2 text-xs font-medium !w-auto bg-panel border-line text-ink">' +
+                categoryOptionsHtml(item.category) +
+              '</select>' +
+              '<span class="px-2 py-0.5 rounded text-[10px] font-semibold border ' + badgeClass + '">' + ui.esc(item.category || 'All') + '</span>' +
+              '<button type="button" data-rm-rec="' + idx + '" class="btn btn-danger !p-1.5" title="Remove recipient">' + ui.icon('trash', 'w-3.5 h-3.5') + '</button>' +
+            '</div>' +
+          '</div>'
+        );
+      }).join('');
+
+      cont.querySelectorAll('[data-change-cat]').forEach((sel) => sel.addEventListener('change', (e) => {
+        const idx = +sel.getAttribute('data-change-cat');
+        if (list[idx]) {
+          list[idx].category = sel.value;
+          renderList();
+        }
+      }));
+
       cont.querySelectorAll('[data-rm-rec]').forEach((b) => b.addEventListener('click', () => {
         const idx = +b.getAttribute('data-rm-rec');
         list.splice(idx, 1);
@@ -1225,17 +1317,22 @@ RMTP.views.advancing = function (el) {
 
     const addBtn = m.root.querySelector('#add-rec-btn');
     const input = m.root.querySelector('#new-rec-email');
+    const catSelect = m.root.querySelector('#new-rec-cat');
+
     function addEmail() {
       const val = input.value.trim().toLowerCase();
+      const cat = catSelect ? catSelect.value : 'All';
       if (!val || val.indexOf('@') === -1) {
         ui.toast('Enter a valid email address', 'danger');
         return;
       }
-      if (list.includes(val)) {
-        ui.toast('Email already in list', 'info');
-        return;
+      const existingIdx = list.findIndex((x) => x.email === val);
+      if (existingIdx !== -1) {
+        list[existingIdx].category = cat;
+        ui.toast('Updated category for existing recipient', 'info');
+      } else {
+        list.push({ email: val, category: cat });
       }
-      list.push(val);
       input.value = '';
       renderList();
     }
@@ -1245,7 +1342,7 @@ RMTP.views.advancing = function (el) {
     m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
     m.root.querySelector('[data-save]').addEventListener('click', () => {
       saveReportRecipients(list);
-      ui.toast('Email recipients updated (' + list.length + ' address' + (list.length === 1 ? '' : 'es') + ')', 'ok');
+      ui.toast('Email recipients updated (' + list.length + ' rule' + (list.length === 1 ? '' : 's') + ')', 'ok');
       m.close();
       RMTP.router.render();
     });

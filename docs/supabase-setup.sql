@@ -105,6 +105,28 @@ alter table public.advancing add column if not exists "dcp_tester_user_id" text 
 alter table public.advancing add column if not exists "dcp_test_datetime" text default '';
 alter table public.advancing add column if not exists "email_recipients" text default '';
 
+-- Global system configuration & recipient rules (optional persistence table for app-wide settings)
+create table if not exists public.app_settings (
+  "key" text primary key,
+  "value" jsonb not null,
+  "updatedAt" timestamptz default now()
+);
+
+-- Seed default category-routed report recipients
+insert into public.app_settings ("key", "value") values
+  ('report_recipients', '[
+    {"email": "tech@richmix.org.uk", "category": "All"},
+    {"email": "dutymanager@richmix.org.uk", "category": "All"},
+    {"email": "production@richmix.org.uk", "category": "Programme"},
+    {"email": "cinema@richmix.org.uk", "category": "Cinema"},
+    {"email": "events@richmix.org.uk", "category": "Private Hires"}
+  ]'::jsonb)
+on conflict ("key") do nothing;
+
+alter table public.app_settings enable row level security;
+drop policy if exists rw_all_settings on public.app_settings;
+create policy rw_all_settings on public.app_settings for all to authenticated using (true) with check (true);
+
 -- ---------- Role helpers (map the signed-in email -> profile) ----------
 create or replace function public.is_admin() returns boolean
   language sql stable security definer set search_path = public as $$

@@ -28,14 +28,47 @@ RMTP.qr = (function () {
   }
 
   /* Returns { kind:'inventory', value:<tag>, unit:<n|null> } or null for
-     foreign QRs. Tolerates a bare tag typed manually, and a "#unit" suffix
-     from a per-unit label (the unit is informational; it resolves to the
-     same line). */
+     foreign QRs. Tolerates a bare tag typed manually, a "#unit" suffix
+     from a per-unit label, JSON objects, URLs with query/hash routes, etc. */
   function parse(text) {
     const t = String(text || '').trim();
     if (!t) return null;
     let raw = t;
-    if (t.toUpperCase().indexOf(INV_PREFIX) === 0) raw = t.slice(INV_PREFIX.length).trim();
+
+    // Check if it's a JSON payload
+    if (raw.startsWith('{') && raw.endsWith('}')) {
+      try {
+        const obj = JSON.parse(raw);
+        const val = obj.tag || obj.itemTag || obj.id || obj.itemId || obj.value;
+        if (val) {
+          return {
+            kind: 'inventory',
+            value: String(val).trim(),
+            unit: obj.unit != null ? parseInt(obj.unit, 10) : null
+          };
+        }
+      } catch (e) {}
+    }
+
+    // Handle QR codes containing URLs with parameters or hash routes
+    if (raw.includes('RMTP-INV:')) {
+      const idx = raw.indexOf('RMTP-INV:');
+      raw = raw.slice(idx);
+    } else if (raw.includes('tag=')) {
+      const match = raw.match(/tag=([^&#\s]+)/i);
+      if (match) raw = decodeURIComponent(match[1]);
+    } else if (raw.includes('item=')) {
+      const match = raw.match(/item=([^&#\s]+)/i);
+      if (match) raw = decodeURIComponent(match[1]);
+    } else if (raw.includes('id=')) {
+      const match = raw.match(/id=([^&#\s]+)/i);
+      if (match) raw = decodeURIComponent(match[1]);
+    } else if (raw.includes('/inventory/')) {
+      const match = raw.match(/\/inventory\/([^?&#\s]+)/i);
+      if (match) raw = decodeURIComponent(match[1]);
+    }
+
+    if (raw.toUpperCase().indexOf(INV_PREFIX) === 0) raw = raw.slice(INV_PREFIX.length).trim();
     let unit = null, value = raw;
     const hash = raw.lastIndexOf('#');
     if (hash > 0) {
@@ -242,5 +275,82 @@ RMTP.qr = (function () {
     m.root.querySelector('[data-print]').addEventListener('click', () => { m.close(); printLabels(portable); });
   }
 
-  return { encodeItem, parse, svg, expandUnits, cameraAvailable, scan, printLabels, labelPreview };
+  /* Dedicated QR code & tracker tag inspector modal for a single item or grouped units */
+  function showItemQRs(items) {
+    const list = Array.isArray(items) ? items : [items];
+    const ui = RMTP.ui;
+    const units = expandUnits(list.filter(Boolean));
+    if (!units.length) { ui.toast('No units available for QR generation', 'danger'); return; }
+
+    const firstItem = list[0] || {};
+    const titleName = firstItem.name || 'Kit Piece';
+
+    const m = ui.modal({
+      title: 'QR Codes & Unit Trackers \u2014 ' + ui.esc(titleName),
+      size: 'md:max-w-2xl',
+      body:
+        '<div class="mb-4 flex items-center justify-between gap-3 bg-panel2 p-3.5 rounded-xl border border-line">' +
+          '<div>' +
+            '<p class="text-sm font-medium text-ink">' + ui.esc(titleName) + ' \u00b7 ' + units.length + ' physical unit' + (units.length === 1 ? '' : 's') + '</p>' +
+            '<p class="text-xs text-muted mt-0.5">Each unit generates a unique scannable payload (<span class="tabular font-mono text-accent">RMTP-INV:&lt;tag&gt;#&lt;unit&gt;</span>) and sequential reference number.</p>' +
+          '</div>' +
+          '<button class="btn btn-secondary text-xs !py-1.5 !px-3 shrink-0" data-print-all>' + ui.icon('print', 'w-3.5 h-3.5') + 'Print labels (' + units.length + ')</button>' +
+        '</div>' +
+        '<div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5 max-h-[60vh] overflow-y-auto pr-1">' +
+          units.map((u) => {
+            const unitTagRef = '#' + (u.tag || u.id) + (u.unit ? '/' + u.unit : '');
+            const payload = encodeItem(u.tag || u.id, u.unit);
+            return '<div class="panel bg-panel p-3.5 border border-line flex gap-3.5 items-center">' +
+              '<div class="w-24 h-24 shrink-0 bg-white p-1.5 rounded-lg border border-line/40 shadow-xs flex items-center justify-center">' +
+                svg(payload, { margin: 1 }) +
+              '</div>' +
+              '<div class="min-w-0 flex-1">' +
+                '<div class="flex items-center gap-1.5 flex-wrap">' +
+                  '<span class="tabular text-xs text-accent font-mono inline-flex items-center px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 font-semibold">' + ui.esc(unitTagRef) + '</span>' +
+                  (u.unit ? '<span class="text-[11px] text-muted bg-panel2 px-1.5 py-0.5 rounded font-medium">Unit ' + u.unit + ' of ' + u.total + '</span>' : '<span class="text-[11px] text-muted bg-panel2 px-1.5 py-0.5 rounded font-medium">Single Unit</span>') +
+                '</div>' +
+                '<div class="font-medium text-xs text-ink truncate mt-1.5">' + ui.esc(u.name) + '</div>' +
+                '<div class="text-[11px] text-muted truncate font-mono mt-0.5">' + ui.esc(payload) + '</div>' +
+                '<div class="mt-2.5 flex items-center gap-2">' +
+                  '<button class="btn btn-ghost text-[11px] !py-1 !px-2.5" data-print-one="' + ui.esc(u.tag || u.id) + '" data-unit="' + (u.unit || '') + '">' + ui.icon('print', 'w-3 h-3') + 'Print</button>' +
+                  '<button class="btn btn-ghost text-[11px] !py-1 !px-2.5" data-copy-payload="' + ui.esc(payload) + '">' + ui.icon('copy', 'w-3 h-3') + 'Copy Tag</button>' +
+                '</div>' +
+              '</div>' +
+            '</div>';
+          }).join('') +
+        '</div>',
+      footer: '<button class="btn btn-ghost" data-cancel>Close</button>',
+    });
+
+    m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
+    const printAllBtn = m.root.querySelector('[data-print-all]');
+    if (printAllBtn) {
+      printAllBtn.addEventListener('click', () => {
+        m.close();
+        printLabels(list);
+      });
+    }
+
+    m.root.querySelectorAll('[data-copy-payload]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const txt = btn.getAttribute('data-copy-payload');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(txt).then(() => ui.toast('Tag copied: ' + txt, 'success')).catch(() => {});
+        } else {
+          ui.toast('Tag: ' + txt, 'info');
+        }
+      });
+    });
+
+    m.root.querySelectorAll('[data-print-one]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const t = btn.getAttribute('data-print-one');
+        const un = parseInt(btn.getAttribute('data-unit'), 10) || null;
+        m.close();
+        printLabels([{ id: t, tag: t, name: titleName, qty: 1 }]);
+      });
+    });
+  }
+
+  return { encodeItem, parse, svg, expandUnits, cameraAvailable, scan, printLabels, labelPreview, showItemQRs };
 })();

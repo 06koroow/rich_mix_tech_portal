@@ -20,6 +20,11 @@ create table if not exists public.users (
 create table if not exists public.inventory (
   "id" text primary key,
   "tag" text, "name" text, "category" text, "location" text,
+  "homeLocation" text default '',
+  "previousLocation" text default '',
+  "originLocation" text default '',
+  "parentId" text default '',
+  "splitQty" integer default null,
   "qty" integer default 0,
   "condition" text, "status" text default 'in',
   "heldBy" text default '', "outAt" text default '',
@@ -34,6 +39,10 @@ create table if not exists public.maintenance (
   "status" text default 'Open', "space" text default '',
   "description" text default '',
   "itemId" text default '', "itemTag" text default '', "itemName" text default '',
+  "parentId" text default '',
+  "splitQty" integer default null,
+  "previousLocation" text default '',
+  "originLocation" text default '',
   "image" jsonb,
   "reportedBy" text default '',
   "resolution" text default '', "resolvedBy" text default '', "resolvedAt" text default '',
@@ -102,9 +111,22 @@ create table if not exists public.patch_presets (
 );
 
 -- ---------- Migrations for already-live databases ----------
--- Safe to re-run. Only needed once per environment; adds the new
--- multi-technician, cinema screening, live schedule & DCP testing columns to an `advancing`
--- table created before these features existed.
+-- Safe to re-run. Only needed once per environment; adds new columns to tables created in earlier versions.
+
+-- 1. Inventory displacements, home locations & batch splitting
+alter table public.inventory add column if not exists "homeLocation" text default '';
+alter table public.inventory add column if not exists "previousLocation" text default '';
+alter table public.inventory add column if not exists "originLocation" text default '';
+alter table public.inventory add column if not exists "parentId" text default '';
+alter table public.inventory add column if not exists "splitQty" integer default null;
+
+-- 2. Maintenance fault tracking, parent-child splits & location restoration
+alter table public.maintenance add column if not exists "parentId" text default '';
+alter table public.maintenance add column if not exists "splitQty" integer default null;
+alter table public.maintenance add column if not exists "previousLocation" text default '';
+alter table public.maintenance add column if not exists "originLocation" text default '';
+
+-- 3. Advancing: multi-technician, cinema screening, live schedule & DCP testing columns
 alter table public.advancing add column if not exists "technicians" jsonb default '[]'::jsonb;
 alter table public.advancing add column if not exists "screening_starts_time" text default '';
 alter table public.advancing add column if not exists "film_duration" text default '';

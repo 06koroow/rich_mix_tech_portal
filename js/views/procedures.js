@@ -22,14 +22,23 @@ RMTP.views.procedures = function (el, params) {
   const isAdmin = !!(me && me.admin);
 
   /* --- Left: category sub-nav (vertical on desktop, chips on mobile) --- */
-  const catNav = cats.map((c) =>
-    '<a href="#/procedures/' + c.id + '" ' +
-      'class="nav-item shrink-0 flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium text-muted hover:text-ink" ' +
-      (c.id === cat.id ? 'aria-current="page"' : '') + '>' +
-      '<span class="text-accent">' + ui.icon(c.icon, 'w-4 h-4') + '</span>' +
-      '<span class="whitespace-nowrap">' + ui.esc(c.name) + '</span>' +
-      '<span class="tabular text-xs text-muted ml-auto hidden md:inline">' + c.items.length + '</span>' +
-    '</a>'
+  const catNav = cats.map((c, cIdx) =>
+    '<div class="group/nav relative flex items-center justify-between rounded-lg ' + (c.id === cat.id ? 'bg-panel2 font-semibold text-accent' : 'text-muted hover:text-ink') + '">' +
+      '<a href="#/procedures/' + c.id + '" ' +
+        'class="nav-item flex-1 shrink-0 flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm ' +
+        (c.id === cat.id ? 'text-accent font-semibold' : 'text-muted hover:text-ink') + '" ' +
+        (c.id === cat.id ? 'aria-current="page"' : '') + '>' +
+        '<span class="text-accent">' + ui.icon(c.icon, 'w-4 h-4') + '</span>' +
+        '<span class="whitespace-nowrap truncate">' + ui.esc(c.name) + '</span>' +
+        '<span class="tabular text-xs text-muted ml-auto mr-1 hidden md:inline">' + c.items.length + '</span>' +
+      '</a>' +
+      (isAdmin ? (
+        '<div class="flex items-center pr-1.5 opacity-80 md:opacity-0 group-hover/nav:opacity-100 transition-opacity no-print">' +
+          '<button type="button" data-cat-up="' + cIdx + '" class="btn btn-ghost !p-1 text-muted hover:text-accent" title="Move Category Up" ' + (cIdx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3.5 h-3.5') + '</button>' +
+          '<button type="button" data-cat-down="' + cIdx + '" class="btn btn-ghost !p-1 text-muted hover:text-accent" title="Move Category Down" ' + (cIdx === cats.length - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</button>' +
+        '</div>'
+      ) : '') +
+    '</div>'
   ).join('');
 
   /* --- Right: either an item detail or the category's item list --- */
@@ -62,32 +71,83 @@ RMTP.views.procedures = function (el, params) {
             '</div>'
           );
         }).join('')
-      : ui.empty('book', 'No procedures in ' + cat.name + ' yet', 'Add the first one to get started.');
+      : ui.empty('book', 'No procedures in ' + cat.name + ' yet', isAdmin ? 'Add the first one to get started.' : 'No procedures have been added to this section yet.');
     content = '<div class="grid gap-3">' + list + '</div>';
   }
 
   const headerAction = item
     ? ''
-    : '<div class="flex items-center gap-2">' +
-        (isAdmin ? '<button id="edit-tab-btn" class="btn btn-ghost no-print">' + ui.icon('pen', 'w-4 h-4') + 'Edit Tab / Reorder</button>' : '') +
-        '<button id="add-proc" class="btn btn-ghost no-print">' + ui.icon('plus', 'w-4 h-4') + 'Add procedure</button>' +
-      '</div>';
+    : (isAdmin ? (
+        '<div class="flex items-center gap-2">' +
+          '<button id="reorder-menu-btn" class="btn btn-ghost no-print" title="Reorder menu categories">' + ui.icon('sliders', 'w-4 h-4') + 'Reorder Menu</button>' +
+          '<button id="edit-tab-btn" class="btn btn-ghost no-print">' + ui.icon('pen', 'w-4 h-4') + 'Edit Tab / Reorder</button>' +
+          '<button id="add-proc" class="btn btn-primary no-print">' + ui.icon('plus', 'w-4 h-4') + 'Add procedure</button>' +
+        '</div>'
+      ) : '');
+
+  const navHeader = isAdmin
+    ? '<div class="hidden md:flex items-center justify-between px-2 pt-1 pb-2 border-b border-line/60 mb-1 text-[11px] font-semibold text-muted uppercase tracking-wider">' +
+        '<span>Categories</span>' +
+        '<button id="nav-reorder-btn" class="btn btn-ghost !py-0.5 !px-1.5 text-[10px] text-accent font-bold" title="Reorder all menu tabs">Reorder ⇅</button>' +
+      '</div>'
+    : '';
 
   el.innerHTML =
     '<div class="view-enter">' +
       ui.pageHeader('Operating procedures', item ? cat.name : 'Procedures', headerAction) +
       '<div class="grid md:grid-cols-[248px_1fr] gap-5 items-start">' +
-        '<nav class="panel p-2 flex md:flex-col gap-1 overflow-x-auto">' + catNav + '</nav>' +
+        '<nav class="panel p-2 flex md:flex-col gap-1 overflow-x-auto">' + navHeader + catNav + '</nav>' +
         '<div class="min-w-0">' + content + '</div>' +
       '</div>' +
     '</div>';
 
   /* --- wiring --- */
-  const addBtn = el.querySelector('#add-proc');
-  if (addBtn) addBtn.addEventListener('click', () => addProcedure(cat));
+  if (isAdmin) {
+    const addBtn = el.querySelector('#add-proc');
+    if (addBtn) addBtn.addEventListener('click', () => addProcedure(cat));
 
-  const editTabBtn = el.querySelector('#edit-tab-btn');
-  if (editTabBtn) editTabBtn.addEventListener('click', () => editTabModal(cat));
+    const editTabBtn = el.querySelector('#edit-tab-btn');
+    if (editTabBtn) editTabBtn.addEventListener('click', () => editTabModal(cat));
+
+    const reorderMenuBtn = el.querySelector('#reorder-menu-btn');
+    if (reorderMenuBtn) reorderMenuBtn.addEventListener('click', () => reorderCatsModal());
+
+    const navReorderBtn = el.querySelector('#nav-reorder-btn');
+    if (navReorderBtn) navReorderBtn.addEventListener('click', () => reorderCatsModal());
+
+    // Category Up / Down buttons in navigation
+    el.querySelectorAll('[data-cat-up]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const idx = +btn.getAttribute('data-cat-up');
+        if (idx > 0) {
+          const temp = cats[idx];
+          cats[idx] = cats[idx - 1];
+          cats[idx - 1] = temp;
+          store.write('procedures', cats);
+          ui.toast('Menu item moved up', 'ok');
+          RMTP.views.procedures(el, [cat.id]);
+        }
+      });
+    });
+
+    el.querySelectorAll('[data-cat-down]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const idx = +btn.getAttribute('data-cat-down');
+        if (idx < cats.length - 1) {
+          const temp = cats[idx];
+          cats[idx] = cats[idx + 1];
+          cats[idx + 1] = temp;
+          store.write('procedures', cats);
+          ui.toast('Menu item moved down', 'ok');
+          RMTP.views.procedures(el, [cat.id]);
+        }
+      });
+    });
+  }
 
   if (!item && isAdmin) {
     el.querySelectorAll('[data-proc-up]').forEach((btn) => {
@@ -123,8 +183,10 @@ RMTP.views.procedures = function (el, params) {
   }
 
   if (item) {
-    el.querySelector('#edit-body').addEventListener('click', () => editBody(cat, item));
-    el.querySelector('#print-proc').addEventListener('click', () => window.print());
+    const editBtn = el.querySelector('#edit-body');
+    if (editBtn) editBtn.addEventListener('click', () => editBody(cat, item));
+    const printBtn = el.querySelector('#print-proc');
+    if (printBtn) printBtn.addEventListener('click', () => window.print());
   }
 
   /* ---------- renderers ---------- */
@@ -140,14 +202,14 @@ RMTP.views.procedures = function (el, params) {
           '</div>' +
           '<div class="ml-auto flex items-center gap-2 no-print">' +
             '<button id="print-proc" class="btn btn-ghost" title="Print">' + ui.icon('print', 'w-4 h-4') + '</button>' +
-            '<button id="edit-body" class="btn btn-primary">' + ui.icon('pen', 'w-4 h-4') + 'Edit</button>' +
+            (isAdmin ? '<button id="edit-body" class="btn btn-primary">' + ui.icon('pen', 'w-4 h-4') + 'Edit</button>' : '') +
           '</div>' +
         '</div>' +
         '<div class="px-5 py-5">' +
           (hasBody
             ? renderBody(item.body)
             : ui.empty('pen', 'This is a holding page',
-                'No content yet. Hit Edit to write the step-by-step for \u201c' + item.title + '\u201d.')) +
+                isAdmin ? 'No content yet. Hit Edit to write the step-by-step for \u201c' + item.title + '\u201d.' : 'No content has been published for this procedure yet.')) +
         '</div>' +
       '</div>'
     );
@@ -255,7 +317,10 @@ RMTP.views.procedures = function (el, params) {
   }
 
   function editBody(cat, item) {
-    const isAdmin = !!(RMTP.auth.current() && RMTP.auth.current().admin);
+    if (!isAdmin) {
+      ui.toast('Only Admins can edit procedures.', 'danger');
+      return;
+    }
     const catNames = store.all('procedures').map((c) => c.name);
     const m = ui.modal({
       title: 'Edit \u2014 ' + item.title,
@@ -293,7 +358,7 @@ RMTP.views.procedures = function (el, params) {
           '</div>' +
         '</div>',
       footer:
-        (isAdmin ? '<button class="btn btn-danger mr-auto" data-del>' + ui.icon('trash', 'w-4 h-4') + 'Delete page</button>' : '') +
+        '<button class="btn btn-danger mr-auto" data-del>' + ui.icon('trash', 'w-4 h-4') + 'Delete page</button>' +
         '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
         '<button class="btn btn-primary" data-save data-primary>Save changes</button>',
     });
@@ -360,6 +425,10 @@ RMTP.views.procedures = function (el, params) {
   }
 
   function addProcedure(cat) {
+    if (!isAdmin) {
+      ui.toast('Only Admins can add procedures.', 'danger');
+      return;
+    }
     const m = ui.modal({
       title: 'New procedure in ' + cat.name,
       body:
@@ -382,6 +451,10 @@ RMTP.views.procedures = function (el, params) {
   }
 
   function editTabModal(cat) {
+    if (!isAdmin) {
+      ui.toast('Only Admins can edit tabs.', 'danger');
+      return;
+    }
     let itemsCopy = cat.items.slice();
 
     function renderTabItems() {
@@ -462,6 +535,79 @@ RMTP.views.procedures = function (el, params) {
       m.close();
       ui.toast('Tab and procedure order saved', 'ok');
       RMTP.views.procedures(el, params);
+    });
+  }
+
+  function reorderCatsModal() {
+    if (!isAdmin) {
+      ui.toast('Only Admins can reorder categories.', 'danger');
+      return;
+    }
+    let catsCopy = cats.slice();
+
+    function renderCatsList() {
+      const container = m.root.querySelector('#reorder-cats-list');
+      if (!container) return;
+      container.innerHTML = catsCopy.map((c, idx) => (
+        '<div class="p-2.5 rounded-lg bg-panel2 border border-line flex items-center justify-between gap-2">' +
+          '<div class="flex items-center gap-2.5 min-w-0 flex-1">' +
+            '<span class="text-xs font-semibold text-muted font-mono w-6">#' + (idx + 1) + '</span>' +
+            '<span class="text-accent shrink-0">' + ui.icon(c.icon, 'w-4 h-4') + '</span>' +
+            '<span class="text-sm font-medium text-ink truncate">' + ui.esc(c.name) + '</span>' +
+            '<span class="text-xs text-muted shrink-0">(' + c.items.length + ' docs)</span>' +
+          '</div>' +
+          '<div class="flex items-center gap-1 shrink-0">' +
+            '<button type="button" data-rc-up="' + idx + '" class="btn btn-ghost !p-1 text-xs" title="Move Up" ' + (idx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3.5 h-3.5') + '</button>' +
+            '<button type="button" data-rc-down="' + idx + '" class="btn btn-ghost !p-1 text-xs" title="Move Down" ' + (idx === catsCopy.length - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</button>' +
+          '</div>' +
+        '</div>'
+      )).join('');
+
+      container.querySelectorAll('[data-rc-up]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-rc-up');
+          if (idx > 0) {
+            const temp = catsCopy[idx];
+            catsCopy[idx] = catsCopy[idx - 1];
+            catsCopy[idx - 1] = temp;
+            renderCatsList();
+          }
+        });
+      });
+      container.querySelectorAll('[data-rc-down]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-rc-down');
+          if (idx < catsCopy.length - 1) {
+            const temp = catsCopy[idx];
+            catsCopy[idx] = catsCopy[idx + 1];
+            catsCopy[idx + 1] = temp;
+            renderCatsList();
+          }
+        });
+      });
+    }
+
+    const m = ui.modal({
+      title: 'Reorder Menu Categories',
+      size: 'md:max-w-md',
+      body:
+        '<div class="grid gap-3">' +
+          '<p class="text-xs text-muted">Rearrange category tabs in the navigation menu. Order updates immediately for all users upon save.</p>' +
+          '<div id="reorder-cats-list" class="grid gap-2 max-h-80 overflow-y-auto pr-1"></div>' +
+        '</div>',
+      footer:
+        '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
+        '<button class="btn btn-primary" data-save data-primary>Save Menu Order</button>',
+    });
+
+    renderCatsList();
+
+    m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
+    m.root.querySelector('[data-save]').addEventListener('click', () => {
+      store.write('procedures', catsCopy);
+      m.close();
+      ui.toast('Menu categories order saved', 'ok');
+      RMTP.views.procedures(el, [cat.id]);
     });
   }
 };

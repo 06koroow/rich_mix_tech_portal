@@ -44,12 +44,20 @@ RMTP.views.dashboard = function (el) {
   function movementsPanel() {
     const moves = RMTP.recentMovements(6);
     const openFaultIds = new Set(store.all('maintenance').filter((f) => f.status !== 'Resolved' && f.itemId).map((f) => f.itemId));
-    const flagged = store.all('inventory').filter((it) => RMTP.isPoorCondition(it.condition) || openFaultIds.has(it.id)).length;
-    if (!moves.length && !flagged) return '';
+    const allInv = store.all('inventory');
+    const flagged = allInv.filter((it) => RMTP.isPoorCondition(it.condition) || openFaultIds.has(it.id)).length;
+    const displaced = allInv.filter((it) => !it.static && it.homeLocation && it.location && it.location !== it.homeLocation).length;
+    if (!moves.length && !flagged && !displaced) return '';
     return '<div class="panel p-5 mt-8">' +
-      '<div class="flex items-center justify-between mb-3">' +
-        '<p class="eyebrow">Recent kit movements</p>' +
-        (flagged ? '<a href="#/maintenance" class="text-xs" style="color:var(--danger)">' + ui.icon('alert', 'w-3.5 h-3.5 inline') + ' ' + flagged + ' flagged</a>' : '') +
+      '<div class="flex items-center justify-between mb-3 flex-wrap gap-2">' +
+        '<div class="flex items-center gap-2">' +
+          '<p class="eyebrow">Recent kit movements</p>' +
+          (displaced ? '<a href="#/inventory?filter=moved" class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25 transition-colors">' + displaced + ' relocated</a>' : '') +
+        '</div>' +
+        '<div class="flex items-center gap-3">' +
+          (displaced ? '<a href="#/inventory?filter=moved" class="text-xs text-accent hover:underline flex items-center gap-1">' + ui.icon('pin', 'w-3.5 h-3.5') + 'Moved Kit \u2192</a>' : '') +
+          (flagged ? '<a href="#/maintenance" class="text-xs" style="color:var(--danger)">' + ui.icon('alert', 'w-3.5 h-3.5 inline') + ' ' + flagged + ' flagged</a>' : '') +
+        '</div>' +
       '</div>' +
       (moves.length
         ? '<div class="divide-y divide-line">' + moves.map((mv) =>
@@ -296,7 +304,7 @@ RMTP.views.dashboard = function (el) {
 
   el.innerHTML =
     '<div class="view-enter">' +
-      ui.pageHeader('Rich Mix · ' + RMTP.meta.product, 'Good evening' + greetName, '') +
+      ui.pageHeader('Rich Mix · ' + RMTP.meta.product, 'Good evening' + greetName, '<button id="dash-scan-btn" class="btn btn-primary">' + ui.icon('qr', 'w-4 h-4') + 'Scan Kit</button>') +
       '<p class="text-muted -mt-2 mb-8 max-w-2xl">Quick access to the building\u2019s technical operations. ' +
         'Pick a section to get started.</p>' +
 
@@ -306,6 +314,20 @@ RMTP.views.dashboard = function (el) {
 
       movementsPanel() +
     '</div>';
+
+  const dashScanBtn = el.querySelector('#dash-scan-btn');
+  if (dashScanBtn) {
+    dashScanBtn.addEventListener('click', async () => {
+      const decoded = await RMTP.qr.scan({ title: 'Scan kit QR' });
+      if (!decoded) return;
+      const parsed = RMTP.qr.parse(decoded);
+      if (!parsed || !parsed.value) {
+        RMTP.ui.toast('Unrecognised QR code', 'danger');
+        return;
+      }
+      location.hash = '#/inventory?item=' + encodeURIComponent(parsed.value);
+    });
+  }
 
   el.querySelectorAll('[data-tab]').forEach((btn) => btn.addEventListener('click', () => {
     const id = btn.getAttribute('data-tab');

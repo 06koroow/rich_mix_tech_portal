@@ -50,11 +50,11 @@ RMTP.maintenance = (function () {
           field('Equipment / what\u2019s wrong', '<input id="f-equipment" class="field" value="' + ui.esc(initialEquip) + '" placeholder="e.g. FOH desk channel 12 crackling" />') +
           '<div><label class="block text-sm font-medium mb-2">Linked kit <span class="text-muted font-normal">(optional)</span></label><div id="f-item-area"></div></div>' +
           '<div id="f-qty-split-wrap" class="hidden"></div>' +
-          '<div class="grid grid-cols-2 gap-4">' +
+          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
             field('Category', '<select id="f-category" class="field">' + opt(CATEGORIES, initialCategory) + '</select>') +
             field('Priority', '<select id="f-priority" class="field">' + opt(PRIORITIES, initialPriority) + '</select>') +
           '</div>' +
-          '<div class="grid grid-cols-2 gap-4">' +
+          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
             field('Space', '<select id="f-space" class="field"><option value="" ' + (!initialSpace ? 'selected' : '') + '>\u2014 None / In Service</option>' +
               RMTP.SPACES.map((s) => '<option ' + (s === initialSpace ? 'selected' : '') + '>' + s + '</option>').join('') + '</select>') +
             field('Reported by', '<div class="field !bg-panel2/40 flex items-center text-muted">' + ui.esc(existing ? (r.reportedBy || '\u2014') : (auth.displayName(auth.current()) || 'You')) + '</div>') +
@@ -348,7 +348,7 @@ RMTP.views.maintenance = function (el, params, query) {
   const me = auth.current();
   const isAdmin = !!(me && me.admin);
 
-  const filter = (params && params[0]) || (query && query.status) || 'all';
+  const filter = (params && params[0]) || (query && query.status) || 'open';
   const rows = store.all('maintenance').sort((a, b) => b.createdAt - a.createdAt);
   const match = { all: null, 'open': 'Open', 'in-progress': 'In progress', 'resolved': 'Resolved' }[filter];
   const shown = match ? rows.filter((r) => r.status === match) : rows;
@@ -441,10 +441,10 @@ RMTP.views.maintenance = function (el, params, query) {
     const img = r.image ? files.dataUrl(r.image) : null;
     return (
       '<div class="panel p-4">' +
-        '<div class="flex items-start gap-3">' +
+        '<div class="flex flex-col sm:flex-row items-start gap-3">' +
           (img ? '<button data-img="' + r.id + '" class="w-14 h-14 rounded-lg overflow-hidden border border-line shrink-0" title="View photo">' +
             '<img src="' + img + '" class="w-full h-full object-cover" alt="Fault photo" /></button>' : '') +
-          '<div class="min-w-0 flex-1">' +
+          '<div class="min-w-0 flex-1 w-full">' +
             '<div class="flex items-center gap-2 flex-wrap">' +
               '<h3 class="font-semibold truncate">' + ui.esc(r.equipment) + '</h3>' +
               ui.pill(r.priority, prioColour[r.priority] || 'var(--muted)') +
@@ -463,7 +463,7 @@ RMTP.views.maintenance = function (el, params, query) {
                 '<p class="text-[11px] text-muted mt-1">' + ui.esc(r.resolvedBy || '') + (r.resolvedAt ? ' \u00b7 ' + ui.timeAgo(new Date(r.resolvedAt).getTime()) : '') + '</p>' +
               '</div>' : '') +
           '</div>' +
-          '<div class="flex flex-col items-end gap-2 shrink-0">' +
+          '<div class="flex flex-row sm:flex-col items-center sm:items-end justify-between sm:justify-start gap-2 shrink-0 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-line/50">' +
             (r.status === 'Resolved'
               ? ui.pill('Resolved', 'var(--ok)') + (isAdmin ? '<button data-reopen="' + r.id + '" class="btn btn-ghost !py-1 !px-2 text-xs">Reopen</button>' : '')
               : '<select data-status="' + r.id + '" class="field !py-1.5 !px-2 text-xs !w-auto" ' +
@@ -471,7 +471,7 @@ RMTP.views.maintenance = function (el, params, query) {
                   SELECTABLE.map((s) => '<option ' + (s === r.status ? 'selected' : '') + '>' + s + '</option>').join('') +
                 '</select>' +
                 '<button data-schedule-shift="' + r.id + '" class="btn btn-ghost !py-1 !px-2 text-xs flex items-center gap-1 text-accent hover:bg-accent/10" title="Schedule Maintenance Shift in Advancing">' +
-                  ui.icon('clock', 'w-3.5 h-3.5') + '<span>Schedule Shift</span>' +
+                  ui.icon('clock', 'w-3.5 h-3.5') + '<span class="hidden xs:inline">Schedule Shift</span>' +
                 '</button>' +
                 (isAdmin ? '<button data-resolve="' + r.id + '" class="btn btn-primary !py-1.5 !px-2.5 text-xs">' + ui.icon('check', 'w-4 h-4') + 'Resolve</button>' : '')) +
             '<div class="flex gap-1">' +

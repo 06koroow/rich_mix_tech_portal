@@ -20,6 +20,10 @@ create table if not exists public.users (
 create table if not exists public.inventory (
   "id" text primary key,
   "tag" text, "name" text, "category" text, "location" text,
+  "refNumber" text default '',
+  "qrCode" text default '',
+  "unitTrackers" jsonb default '[]'::jsonb,
+  "unitTags" jsonb default '[]'::jsonb,
   "homeLocation" text default '',
   "previousLocation" text default '',
   "originLocation" text default '',
@@ -113,12 +117,22 @@ create table if not exists public.patch_presets (
 -- ---------- Migrations for already-live databases ----------
 -- Safe to re-run. Only needed once per environment; adds new columns to tables created in earlier versions.
 
--- 1. Inventory displacements, home locations & batch splitting
+-- 1. Inventory unique QR codes, reference numbers, displacements & batch splitting
+alter table public.inventory add column if not exists "refNumber" text default '';
+alter table public.inventory add column if not exists "qrCode" text default '';
+alter table public.inventory add column if not exists "unitTrackers" jsonb default '[]'::jsonb;
+alter table public.inventory add column if not exists "unitTags" jsonb default '[]'::jsonb;
 alter table public.inventory add column if not exists "homeLocation" text default '';
 alter table public.inventory add column if not exists "previousLocation" text default '';
 alter table public.inventory add column if not exists "originLocation" text default '';
 alter table public.inventory add column if not exists "parentId" text default '';
 alter table public.inventory add column if not exists "splitQty" integer default null;
+
+-- Auto-backfill refNumber & qrCode for existing inventory rows
+update public.inventory
+set "refNumber" = coalesce(nullif("refNumber", ''), '#' || coalesce("tag", "id")),
+    "qrCode" = coalesce(nullif("qrCode", ''), 'RMTP-INV:' || coalesce("tag", "id"))
+where "refNumber" is null or "refNumber" = '' or "qrCode" is null or "qrCode" = '';
 
 -- 2. Maintenance fault tracking, parent-child splits & location restoration
 alter table public.maintenance add column if not exists "parentId" text default '';

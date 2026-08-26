@@ -31,6 +31,9 @@ RMTP.syncSb = (function () {
       if (coll === 'inventory') {
         r.movements = r.movements || prev.movements || [];
         r.outAt = r.outAt || prev.outAt || '';
+        if (window.RMTP && RMTP.qr && RMTP.qr.ensureItemTrackers) {
+          RMTP.qr.ensureItemTrackers(r);
+        }
       }
       if (coll === 'advancing') {
         r.checklist = r.checklist || prev.checklist || {};
@@ -152,6 +155,13 @@ RMTP.syncSb = (function () {
         updatedAt: r.updatedAt || '',
         updatedBy: r.updatedBy || '',
       };
+      return row;
+    }
+    if (coll === 'inventory') {
+      const row = Object.assign({}, r);
+      if (window.RMTP && RMTP.qr && RMTP.qr.ensureItemTrackers) {
+        RMTP.qr.ensureItemTrackers(row);
+      }
       return row;
     }
     return r;

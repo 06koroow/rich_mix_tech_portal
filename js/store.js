@@ -75,7 +75,13 @@ RMTP.store = (function () {
   /* ---- First-run seeding ---- */
   function init() {
     Object.keys(RMTP.seed).forEach((name) => {
-      if (adapter.get(key(name)) === null) write(name, RMTP.seed[name]);
+      if (adapter.get(key(name)) === null) {
+        let val = RMTP.seed[name];
+        if (name === 'inventory' && Array.isArray(val) && window.RMTP && RMTP.qr && RMTP.qr.ensureItemTrackers) {
+          val = val.map((it) => RMTP.qr.ensureItemTrackers(Object.assign({}, it)));
+        }
+        write(name, val);
+      }
     });
     if (adapter.get(key('maintenance')) === null) {
       write('maintenance', []);
@@ -98,11 +104,15 @@ RMTP.store = (function () {
   function all(name)            { return read(name, []).slice(); }
   function find(name, id)       { return read(name, []).find((r) => r.id === id); }
   function upsert(name, record) {
+    let rec = record;
+    if (name === 'inventory' && rec && window.RMTP && RMTP.qr && RMTP.qr.ensureItemTrackers) {
+      rec = RMTP.qr.ensureItemTrackers(Object.assign({}, rec));
+    }
     const rows = read(name, []).slice();
-    const i = rows.findIndex((r) => r.id === record.id);
-    if (i > -1) rows[i] = record; else rows.push(record);
+    const i = rows.findIndex((r) => r.id === rec.id);
+    if (i > -1) rows[i] = rec; else rows.push(rec);
     write(name, rows);
-    return record;
+    return rec;
   }
   function remove(name, id) {
     write(name, read(name, []).filter((r) => r.id !== id));

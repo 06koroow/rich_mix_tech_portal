@@ -40,35 +40,55 @@ RMTP.views.inventory = function (el, params, query) {
   let spaceFilter = '';
   let categoryFilter = '';
   let movementFilter = (query && query.filter) || ''; // '', 'moved', 'in-place', 'out', 'service'
+  let showFixed = false; // Filter out fixed/static items by default
+  let movedPanelCollapsed = true;
+  let filtersCollapsed = true;
   let selectedIds = new Set();
   let selectMode = false;
 
-  // Robust item lookup helper across tags, IDs, barcodes, prefixes, names
+  // Robust item lookup helper across tags, IDs, barcodes, refNumbers, unitTrackers, names
   function findItemsByQuery(tagOrId) {
     if (!tagOrId) return [];
-    const q = String(tagOrId).trim().toLowerCase();
+    let q = String(tagOrId).trim().toLowerCase();
+    if (q.startsWith('#')) q = q.slice(1);
     const all = store.all('inventory');
 
     // 1. Exact match on tag (case-insensitive)
     let found = all.filter((r) => String(r.tag || '').trim().toLowerCase() === q);
     if (found.length) return found;
 
-    // 2. Exact match on id (case-insensitive)
+    // 2. Exact match on refNumber or qrCode
+    found = all.filter((r) => {
+      const ref = String(r.refNumber || '').replace(/^#/, '').trim().toLowerCase();
+      const qr = String(r.qrCode || '').trim().toLowerCase();
+      return ref === q || qr === q || qr.includes(q);
+    });
+    if (found.length) return found;
+
+    // 3. Match within unitTags or unitTrackers
+    found = all.filter((r) => {
+      if (Array.isArray(r.unitTags) && r.unitTags.some((ut) => String(ut).replace(/^#/, '').toLowerCase() === q)) return true;
+      if (Array.isArray(r.unitTrackers) && r.unitTrackers.some((ut) => String(ut.ref || ut.tag || ut.qr).replace(/^#/, '').toLowerCase().includes(q))) return true;
+      return false;
+    });
+    if (found.length) return found;
+
+    // 4. Exact match on id (case-insensitive)
     found = all.filter((r) => String(r.id || '').trim().toLowerCase() === q);
     if (found.length) return found;
 
-    // 3. Match barcode if present
+    // 5. Match barcode if present
     found = all.filter((r) => String(r.barcode || '').trim().toLowerCase() === q);
     if (found.length) return found;
 
-    // 4. Match tag prefix or contained tag
+    // 6. Match tag prefix or contained tag
     found = all.filter((r) => {
       const tg = String(r.tag || '').trim().toLowerCase();
       return tg && (tg === q || q.includes(tg) || tg.includes(q));
     });
     if (found.length) return found;
 
-    // 5. Match name (case-insensitive)
+    // 7. Match name (case-insensitive)
     found = all.filter((r) => String(r.name || '').trim().toLowerCase() === q);
     if (found.length) return found;
 
@@ -99,17 +119,23 @@ RMTP.views.inventory = function (el, params, query) {
   el.innerHTML =
     '<div class="view-enter">' +
       '<div id="inv-header-wrap"></div>' +
-      '<div class="flex flex-col sm:flex-row gap-3 mb-4 items-stretch sm:items-center">' +
-        '<div class="relative flex-1 max-w-md">' +
-          '<span class="absolute left-3 top-1/2 -translate-y-1/2 text-muted">' + ui.icon('search', 'w-4 h-4') + '</span>' +
-          '<input id="inv-search" class="field !pl-10 w-full" placeholder="Search name, tag, location, holder\u2026" />' +
-        '</div>' +
-        '<div class="w-full sm:w-auto flex flex-col sm:flex-row gap-2">' +
-          '<select id="inv-category-filter" class="field text-sm !py-2 sm:min-w-[190px]" title="Filter by category"></select>' +
-          '<select id="inv-movement-filter" class="field text-sm !py-2 sm:min-w-[170px]" title="Filter by movement status"></select>' +
-        '</div>' +
+      '<div class="flex items-center justify-between gap-3 mb-4">' +
+        '<button id="btn-toggle-inv-filters" class="btn btn-ghost text-xs flex items-center gap-2 border border-line bg-panel2 hover:bg-panel font-medium py-2 px-3 rounded-lg transition" title="Toggle Search & Filters">' +
+        '</button>' +
       '</div>' +
-      '<div id="inv-filters" class="flex flex-wrap gap-2 mb-4"></div>' +
+      '<div id="inv-filter-panel" class="panel p-4 mb-4 hidden bg-panel/70 border border-line space-y-3 shadow-sm">' +
+        '<div class="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">' +
+          '<div class="relative flex-1 max-w-md">' +
+            '<span class="absolute left-3 top-1/2 -translate-y-1/2 text-muted">' + ui.icon('search', 'w-4 h-4') + '</span>' +
+            '<input id="inv-search" class="field !pl-10 w-full" placeholder="Search name, tag, location, holder\u2026" />' +
+          '</div>' +
+          '<div class="w-full sm:w-auto flex flex-col sm:flex-row gap-2">' +
+            '<select id="inv-category-filter" class="field text-sm !py-2 sm:min-w-[190px]" title="Filter by category"></select>' +
+            '<select id="inv-movement-filter" class="field text-sm !py-2 sm:min-w-[170px]" title="Filter by movement status"></select>' +
+          '</div>' +
+        '</div>' +
+        '<div id="inv-filters" class="flex flex-wrap items-center gap-2 pt-2 border-t border-line/60"></div>' +
+      '</div>' +
       '<div id="inv-bulk-bar" class="mb-4 hidden"></div>' +
       '<div id="inv-moved-panel" class="mb-6"></div>' +
       '<div id="inv-list"></div>' +
@@ -131,6 +157,47 @@ RMTP.views.inventory = function (el, params, query) {
       selectMode = !selectMode;
       if (!selectMode) selectedIds.clear();
       render();
+    });
+  }
+
+  function renderFilterToggle() {
+    const btn = el.querySelector('#btn-toggle-inv-filters');
+    const panel = el.querySelector('#inv-filter-panel');
+    if (!btn || !panel) return;
+
+    if (filtersCollapsed) {
+      panel.classList.add('hidden');
+    } else {
+      panel.classList.remove('hidden');
+    }
+
+    let activeCount = 0;
+    if (searchQuery) activeCount++;
+    if (spaceFilter) activeCount++;
+    if (categoryFilter) activeCount++;
+    if (movementFilter) activeCount++;
+    if (showFixed) activeCount++;
+
+    btn.innerHTML =
+      ui.icon('filter', 'w-3.5 h-3.5 text-accent') +
+      '<span>Search &amp; Filters</span>' +
+      (activeCount > 0
+        ? '<span class="px-1.5 py-0.5 rounded-full text-[10px] bg-accent text-accent-ink font-bold">' + activeCount + ' active</span>'
+        : '') +
+      '<span class="text-muted transition-transform duration-200 ' + (!filtersCollapsed ? 'rotate-180 text-accent' : '') + '">' +
+        ui.icon('chevD', 'w-3.5 h-3.5') +
+      '</span>';
+  }
+
+  const toggleFilterBtn = el.querySelector('#btn-toggle-inv-filters');
+  if (toggleFilterBtn) {
+    toggleFilterBtn.addEventListener('click', () => {
+      filtersCollapsed = !filtersCollapsed;
+      renderFilterToggle();
+      if (!filtersCollapsed) {
+        const sInput = el.querySelector('#inv-search');
+        if (sInput) sInput.focus();
+      }
     });
   }
 
@@ -190,14 +257,20 @@ RMTP.views.inventory = function (el, params, query) {
     if (movementFilter === 'service') return r.location === 'SERVICE' || r.status === 'service';
     return true;
   }
+  function inFixedFilter(r) {
+    if (showFixed) return true;
+    return !isStatic(r);
+  }
   function matches(r) {
-    const hay = (r.name + ' ' + (r.tag || '') + ' ' + (r.location || '') + ' ' + (getHomeLocation(r) || '') + ' ' + (r.category || '') + ' ' + (r.heldBy || '')).toLowerCase();
-    return (!searchQuery || hay.includes(searchQuery)) && inSpaceFilter(r) && inCategoryFilter(r) && inMovementFilter(r);
+    const unitTagsStr = Array.isArray(r.unitTags) ? r.unitTags.join(' ') : '';
+    const hay = (r.name + ' ' + (r.tag || '') + ' ' + (r.refNumber || '') + ' ' + (r.qrCode || '') + ' ' + unitTagsStr + ' ' + (r.location || '') + ' ' + (getHomeLocation(r) || '') + ' ' + (r.category || '') + ' ' + (r.heldBy || '')).toLowerCase();
+    return (!searchQuery || hay.includes(searchQuery)) && inSpaceFilter(r) && inCategoryFilter(r) && inMovementFilter(r) && inFixedFilter(r);
   }
 
   function render() {
     refreshFaults();
     renderHeader();
+    renderFilterToggle();
     renderCategoryFilter();
     renderMovementFilter();
     renderFilters();
@@ -301,72 +374,92 @@ RMTP.views.inventory = function (el, params, query) {
 
     wrap.innerHTML =
       '<div class="panel p-4 bg-gradient-to-br from-panel2/90 via-panel2/50 to-panel2/30 border border-accent/30 shadow-sm">' +
-        '<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">' +
-          '<div class="flex items-center gap-2.5 flex-wrap">' +
-            '<div class="w-7 h-7 rounded-lg bg-accent/15 border border-accent/30 flex items-center justify-center text-accent shrink-0">' +
+        '<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 ' + (movedPanelCollapsed ? '' : 'mb-3') + '">' +
+          '<button id="btn-toggle-moved-collapse" class="flex items-center gap-2.5 text-left group cursor-pointer bg-transparent border-0 p-0 hover:opacity-90 transition-opacity">' +
+            '<div class="w-7 h-7 rounded-lg bg-accent/15 border border-accent/30 flex items-center justify-center text-accent shrink-0 group-hover:scale-105 transition-transform">' +
               ui.icon('pin', 'w-4 h-4') +
             '</div>' +
             '<div>' +
               '<div class="flex items-center gap-2">' +
-                '<h2 class="font-semibold text-sm text-ink">Moved Kit &amp; Displacements</h2>' +
+                '<h2 class="font-semibold text-sm text-ink group-hover:text-accent transition-colors">Moved Kit &amp; Displacements</h2>' +
                 '<span class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-accent/20 text-accent border border-accent/40 tabular">' +
                   displacedAll.length + ' relocated' +
                 '</span>' +
+                '<span class="text-muted text-xs transition-transform duration-200 ' + (movedPanelCollapsed ? '' : 'rotate-180') + '">' +
+                  ui.icon('chevD', 'w-4 h-4') +
+                '</span>' +
               '</div>' +
-              '<p class="text-xs text-muted">Equipment currently in use outside its registered home space.</p>' +
+              '<p class="text-xs text-muted">' + (movedPanelCollapsed ? 'Click to view ' + displacedAll.length + ' displaced kit items.' : 'Equipment currently in use outside its registered home space.') + '</p>' +
             '</div>' +
-          '</div>' +
+          '</button>' +
           '<div class="flex items-center gap-2 shrink-0">' +
             '<button id="btn-toggle-moved-filter" class="btn ' + (movementFilter === 'moved' ? 'btn-primary' : 'btn-ghost') + ' !py-1 !px-2.5 text-xs flex items-center gap-1.5">' +
               ui.icon('filter', 'w-3.5 h-3.5') +
               '<span>' + (movementFilter === 'moved' ? 'Filter: Showing Moved' : 'Show Only Moved') + '</span>' +
             '</button>' +
+            '<button id="btn-collapse-icon" class="btn btn-ghost !py-1 !px-2 text-xs text-muted hover:text-ink flex items-center gap-1" title="' + (movedPanelCollapsed ? 'Expand panel' : 'Collapse panel') + '">' +
+              ui.icon(movedPanelCollapsed ? 'chevD' : 'chevU', 'w-3.5 h-3.5') +
+              '<span>' + (movedPanelCollapsed ? 'Expand' : 'Collapse') + '</span>' +
+            '</button>' +
           '</div>' +
         '</div>' +
-        (grouped.length ? (
-          '<div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 mt-3">' +
-            grouped.map((grp) => {
-              const homeLoc = getHomeLocation(grp.primaryItem || grp.items[0]);
-              const tagChipsHtml = grp.tags.length
-                ? grp.tags.map((t) => '<span class="tabular text-xs text-accent font-mono inline-flex items-center px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 font-medium">#' + ui.esc(t) + '</span>').join(' ')
-                : '';
-              const isOut = grp.status === 'out';
-              return (
-                '<div class="p-3 rounded-xl bg-panel/80 border border-line flex flex-col justify-between gap-2.5 hover:border-accent/40 transition-colors shadow-sm">' +
-                  '<div>' +
-                    '<div class="flex items-center justify-between gap-2 mb-1.5">' +
-                      '<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-semibold bg-accent/15 text-accent border border-accent/25">' +
-                        '<span class="opacity-75">' + ui.esc(homeLoc) + '</span>' +
-                        '<span class="text-accent font-bold">\u2794</span>' +
-                        '<span>' + ui.esc(grp.location) + '</span>' +
-                      '</span>' +
-                      '<span class="tabular text-xs font-semibold px-2 py-0.5 rounded bg-panel2 text-ink border border-line">' + grp.qty + ' \u00d7</span>' +
+        (!movedPanelCollapsed ? (
+          grouped.length ? (
+            '<div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 mt-3">' +
+              grouped.map((grp) => {
+                const homeLoc = getHomeLocation(grp.primaryItem || grp.items[0]);
+                const tagChipsHtml = grp.tags.length
+                  ? grp.tags.map((t) => '<span class="tabular text-xs text-accent font-mono inline-flex items-center px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 font-medium">#' + ui.esc(t) + '</span>').join(' ')
+                  : '';
+                const isOut = grp.status === 'out';
+                return (
+                  '<div class="p-3 rounded-xl bg-panel/80 border border-line flex flex-col justify-between gap-2.5 hover:border-accent/40 transition-colors shadow-sm">' +
+                    '<div>' +
+                      '<div class="flex items-center justify-between gap-2 mb-1.5">' +
+                        '<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-semibold bg-accent/15 text-accent border border-accent/25">' +
+                          '<span class="opacity-75">' + ui.esc(homeLoc) + '</span>' +
+                          '<span class="text-accent font-bold">\u2794</span>' +
+                          '<span>' + ui.esc(grp.location) + '</span>' +
+                        '</span>' +
+                        '<span class="tabular text-xs font-semibold px-2 py-0.5 rounded bg-panel2 text-ink border border-line">' + grp.qty + ' \u00d7</span>' +
+                      '</div>' +
+                      '<div class="font-medium text-sm text-ink truncate mb-1">' + ui.esc(grp.name) + '</div>' +
+                      (tagChipsHtml ? '<div class="flex flex-wrap gap-1 mb-1.5">' + tagChipsHtml + '</div>' : '') +
+                      '<div class="flex items-center gap-2 text-xs text-muted flex-wrap">' +
+                        ui.pill(grp.condition, condColour[grp.condition] || 'var(--muted)') +
+                        (isOut ? ui.pill('Out' + (grp.heldBy ? ' \u00b7 ' + grp.heldBy : ''), 'var(--info)') : '') +
+                        '<span class="truncate">' + ui.esc(grp.category) + '</span>' +
+                      '</div>' +
                     '</div>' +
-                    '<div class="font-medium text-sm text-ink truncate mb-1">' + ui.esc(grp.name) + '</div>' +
-                    (tagChipsHtml ? '<div class="flex flex-wrap gap-1 mb-1.5">' + tagChipsHtml + '</div>' : '') +
-                    '<div class="flex items-center gap-2 text-xs text-muted flex-wrap">' +
-                      ui.pill(grp.condition, condColour[grp.condition] || 'var(--muted)') +
-                      (isOut ? ui.pill('Out' + (grp.heldBy ? ' \u00b7 ' + grp.heldBy : ''), 'var(--info)') : '') +
-                      '<span class="truncate">' + ui.esc(grp.category) + '</span>' +
+                    '<div class="flex items-center justify-between gap-1.5 pt-2 border-t border-line/60">' +
+                      '<button data-moved-return="' + grp.id + '" class="btn btn-primary !py-1 !px-2.5 text-xs flex items-center gap-1 shrink-0" title="Return directly to home location">' +
+                        ui.icon('arrowL', 'w-3.5 h-3.5') + '<span>Return</span>' +
+                      '</button>' +
+                      '<div class="flex items-center gap-1 shrink-0">' +
+                        '<button data-moved-qr="' + grp.id + '" class="btn btn-ghost !py-1 !px-2 text-xs" title="View individual tracker QR codes">' + ui.icon('qr', 'w-3.5 h-3.5') + '</button>' +
+                        '<button data-moved-detail="' + grp.id + '" class="btn btn-ghost !py-1 !px-2 text-xs">Details</button>' +
+                      '</div>' +
                     '</div>' +
-                  '</div>' +
-                  '<div class="flex items-center justify-between gap-1.5 pt-2 border-t border-line/60">' +
-                    '<button data-moved-return="' + grp.id + '" class="btn btn-primary !py-1 !px-2.5 text-xs flex items-center gap-1 shrink-0" title="Return directly to home location">' +
-                      ui.icon('arrowL', 'w-3.5 h-3.5') + '<span>Return</span>' +
-                    '</button>' +
-                    '<div class="flex items-center gap-1 shrink-0">' +
-                      '<button data-moved-qr="' + grp.id + '" class="btn btn-ghost !py-1 !px-2 text-xs" title="View individual tracker QR codes">' + ui.icon('qr', 'w-3.5 h-3.5') + '</button>' +
-                      '<button data-moved-detail="' + grp.id + '" class="btn btn-ghost !py-1 !px-2 text-xs">Details</button>' +
-                    '</div>' +
-                  '</div>' +
-                '</div>'
-              );
-            }).join('') +
-          '</div>'
-        ) : (
-          '<p class="text-xs text-muted mt-2">No displaced items match the current search or filters.</p>'
-        )) +
+                  '</div>'
+                );
+              }).join('') +
+            '</div>'
+          ) : (
+            '<p class="text-xs text-muted mt-2">No displaced items match the current search or filters.</p>'
+          )
+        ) : '') +
       '</div>';
+
+    const toggleCollapse = () => {
+      movedPanelCollapsed = !movedPanelCollapsed;
+      renderMovedPanel();
+    };
+
+    const headerToggle = wrap.querySelector('#btn-toggle-moved-collapse');
+    if (headerToggle) headerToggle.addEventListener('click', toggleCollapse);
+
+    const btnCollapseIcon = wrap.querySelector('#btn-collapse-icon');
+    if (btnCollapseIcon) btnCollapseIcon.addEventListener('click', toggleCollapse);
 
     const toggleFilterBtn = wrap.querySelector('#btn-toggle-moved-filter');
     if (toggleFilterBtn) {
@@ -453,18 +546,64 @@ RMTP.views.inventory = function (el, params, query) {
 
   function renderFilters() {
     const all = store.all('inventory');
-    const count = (pred) => all.filter(pred).length;
-    const chips = [{ id: '', label: 'All', n: all.length }]
+    const fixedCount = all.filter(isStatic).length;
+    const baseList = showFixed ? all : all.filter((r) => !isStatic(r));
+    const count = (pred) => baseList.filter(pred).length;
+    const chips = [{ id: '', label: 'All', n: baseList.length }]
       .concat(RMTP.SPACES.map((s) => ({ id: s, label: s, n: count((r) => r.location === s) })))
       .concat([{ id: 'store', label: 'In store', n: count((r) => !RMTP.isSpace(r.location)) }]);
-    el.querySelector('#inv-filters').innerHTML = chips.map((c) =>
+
+    const chipsHtml = chips.map((c) =>
       '<button data-filter="' + ui.esc(c.id) + '" class="px-3 py-1.5 rounded-lg text-sm font-medium border ' +
         (spaceFilter === c.id ? 'bg-panel2 border-accent text-ink' : 'border-line text-muted hover:text-ink') + '">' +
         ui.esc(c.label) + ' <span class="tabular text-xs opacity-70">' + c.n + '</span></button>'
     ).join('');
+
+    const hasAnyFilter = searchQuery || spaceFilter || categoryFilter || movementFilter || showFixed;
+
+    const fixedToggleHtml =
+      '<div class="sm:ml-auto flex items-center gap-2 flex-wrap">' +
+        (hasAnyFilter
+          ? '<button id="btn-clear-inv-filters" class="px-2.5 py-1.5 rounded-lg text-xs font-medium text-muted hover:text-danger hover:border-danger/40 border border-line bg-panel2/60 transition-colors flex items-center gap-1" title="Reset all search and filter criteria">' +
+              ui.icon('close', 'w-3 h-3') + '<span>Clear Filters</span>' +
+            '</button>'
+          : '') +
+        '<button id="btn-toggle-fixed" class="px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors flex items-center gap-1.5 ' +
+          (showFixed ? 'bg-accent/15 border-accent text-accent' : 'border-line text-muted hover:text-ink bg-panel/60') + '" ' +
+          'title="' + (showFixed ? 'Hide fixed/installed fixtures' : 'Show fixed/installed fixtures') + '">' +
+          ui.icon(showFixed ? 'pin' : 'pin', 'w-3.5 h-3.5 ' + (showFixed ? 'text-accent' : 'opacity-60')) +
+          '<span>' + (showFixed ? 'Hide Fixed' : 'Show Fixed') + '</span>' +
+          '<span class="tabular text-xs ' + (showFixed ? 'text-accent opacity-90' : 'opacity-70') + '">(' + fixedCount + ')</span>' +
+        '</button>' +
+      '</div>';
+
+    el.querySelector('#inv-filters').innerHTML = chipsHtml + fixedToggleHtml;
+
     el.querySelectorAll('#inv-filters [data-filter]').forEach((b) => {
       b.addEventListener('click', () => { spaceFilter = b.getAttribute('data-filter'); render(); });
     });
+
+    const btnClear = el.querySelector('#btn-clear-inv-filters');
+    if (btnClear) {
+      btnClear.addEventListener('click', () => {
+        searchQuery = '';
+        spaceFilter = '';
+        categoryFilter = '';
+        movementFilter = '';
+        showFixed = false;
+        const sInput = el.querySelector('#inv-search');
+        if (sInput) sInput.value = '';
+        render();
+      });
+    }
+
+    const btnFixed = el.querySelector('#btn-toggle-fixed');
+    if (btnFixed) {
+      btnFixed.addEventListener('click', () => {
+        showFixed = !showFixed;
+        render();
+      });
+    }
   }
 
   // Group inventory items by: Name + Location + Condition + Status + (if out: heldBy)

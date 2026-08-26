@@ -25,10 +25,21 @@
 
 * { -webkit-tap-highlight-color: transparent; }
 
-html, body { height: 100%; }
+html, body {
+  height: 100%;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-kerning: normal;
+  font-feature-settings: "kern" 1, "liga" 1;
+}
 body { margin: 0; overscroll-behavior-y: none; }
 
-h1, h2, h3, .font-display { font-family: '"Space Grotesk"', system-ui, sans-serif; }
+h1, h2, h3, .font-display {
+  font-family: '"Space Grotesk"', system-ui, sans-serif;
+  letter-spacing: -0.015em;
+  font-kerning: normal;
+}
 
 /* Numeric / code-like data (channel numbers, asset tags, timestamps) */
 .tabular { font-family: '"IBM Plex Mono"', ui-monospace, monospace; font-feature-settings: 'tnum'; }
@@ -37,7 +48,7 @@ h1, h2, h3, .font-display { font-family: '"Space Grotesk"', system-ui, sans-seri
 .eyebrow {
   font-family: '"IBM Plex Mono"', ui-monospace, monospace;
   font-size: 11px;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted);
 }
@@ -49,7 +60,12 @@ h1, h2, h3, .font-display { font-family: '"Space Grotesk"', system-ui, sans-seri
 *::-webkit-scrollbar-track { background: transparent; }
 
 /* --- The "active channel" indicator on the current nav item --- */
-.nav-item { position: relative; transition: background-color .15s ease, color .15s ease; }
+.nav-item {
+  position: relative;
+  transition: background-color .15s ease, color .15s ease;
+  font-kerning: normal;
+  letter-spacing: -0.005em;
+}
 .nav-item[aria-current="page"] { color: var(--ink); background: var(--panel-2); }
 .nav-item[aria-current="page"]::before {
   content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
@@ -57,6 +73,15 @@ h1, h2, h3, .font-display { font-family: '"Space Grotesk"', system-ui, sans-seri
   box-shadow: 0 0 10px var(--accent);
 }
 /* Bottom-bar variant: indicator sits on top edge */
+.tab-item {
+  font-kerning: normal;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "kern" 1;
+}
+.tab-item span {
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
 .tab-item[aria-current="page"] { color: var(--accent); }
 .tab-item[aria-current="page"] .tab-dot { opacity: 1; transform: scale(1); }
 
@@ -262,3 +287,28 @@ select.field { appearance: none; background-image: url("data:image/svg+xml,%3Csv
   color: #64748b;
   font-family: "IBM Plex Mono", monospace;
 }
+
+/* --- Responsive layout improvements --- */
+@media (max-width: 640px) {
+  .page-header-actions {
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+}
+
+/* Prevent text overflow on narrow viewports / mobile landscape */
+.truncate-safe {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Touch-friendly hit target optimization */
+@media (pointer: coarse) {
+  button, .btn, .nav-item, .tab-item {
+    min-height: 38px;
+  }
+}
+

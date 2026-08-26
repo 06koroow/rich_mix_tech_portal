@@ -78,15 +78,75 @@ RMTP.qr = (function () {
     return { kind: 'inventory', value: value.trim(), unit: unit };
   }
 
+  /* Generate unique reference numbers, QR code payloads, and unit trackers */
+  function generateTrackers(item) {
+    if (!item) return { refNumber: '', qrCode: '', unitTrackers: [], unitTags: [] };
+    const tag = (item.tag || item.id || '').trim();
+    const qty = Math.max(1, Number(item.qty) || 1);
+    const refNumber = item.refNumber || ('#' + tag);
+    const qrCode = item.qrCode || encodeItem(tag, null);
+
+    const unitTrackers = [];
+    const unitTags = [];
+    for (let u = 1; u <= qty; u++) {
+      const unitRef = qty > 1 ? '#' + tag + '/' + u : '#' + tag;
+      const unitTag = qty > 1 ? tag + '/' + u : tag;
+      const unitQr = encodeItem(tag, qty > 1 ? u : null);
+      unitTrackers.push({
+        unit: u,
+        total: qty,
+        ref: unitRef,
+        tag: unitTag,
+        qr: unitQr,
+        name: item.name || '',
+        id: item.id || tag
+      });
+      unitTags.push(unitRef);
+    }
+    return { refNumber, qrCode, unitTrackers, unitTags };
+  }
+
+  function ensureItemTrackers(item) {
+    if (!item) return item;
+    const { refNumber, qrCode, unitTrackers, unitTags } = generateTrackers(item);
+    item.refNumber = item.refNumber || refNumber;
+    item.qrCode = item.qrCode || qrCode;
+    item.unitTrackers = unitTrackers;
+    item.unitTags = unitTags;
+    return item;
+  }
+
   /* Expand inventory lines into one entry per physical unit. A line with
      qty 8 yields 8 units (1..8); qty 1 yields a single unit. */
   function expandUnits(items) {
     const out = [];
     (items || []).forEach((it) => {
       if (!it || !(it.tag || it.id)) return;
+      if (Array.isArray(it.unitTrackers) && it.unitTrackers.length) {
+        it.unitTrackers.forEach((ut) => {
+          out.push({
+            id: it.id,
+            name: ut.name || it.name,
+            tag: it.tag || it.id,
+            unit: ut.total > 1 ? ut.unit : null,
+            total: ut.total || it.qty || 1,
+            ref: ut.ref,
+            qr: ut.qr
+          });
+        });
+        return;
+      }
       const total = Math.max(1, Number(it.qty) || 1);
       for (let u = 1; u <= total; u++) {
-        out.push({ id: it.id, name: it.name, tag: it.tag || it.id, unit: total > 1 ? u : null, total: total });
+        out.push({
+          id: it.id,
+          name: it.name,
+          tag: it.tag || it.id,
+          unit: total > 1 ? u : null,
+          total: total,
+          ref: '#' + (it.tag || it.id) + (total > 1 ? '/' + u : ''),
+          qr: encodeItem(it.tag || it.id, total > 1 ? u : null)
+        });
       }
     });
     return out;
@@ -352,5 +412,5 @@ RMTP.qr = (function () {
     });
   }
 
-  return { encodeItem, parse, svg, expandUnits, cameraAvailable, scan, printLabels, labelPreview, showItemQRs };
+  return { encodeItem, parse, svg, expandUnits, cameraAvailable, scan, printLabels, labelPreview, showItemQRs, generateTrackers, ensureItemTrackers };
 })();

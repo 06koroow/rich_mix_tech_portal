@@ -47,24 +47,70 @@
         '<div id="sidebar-identity" class="p-3 border-t border-line"></div>' +
       '</aside>' +
 
+      // ---- Mobile navigation drawer ----
+      '<div id="mobile-nav-drawer" class="md:hidden fixed inset-0 z-50 hidden" role="dialog" aria-modal="true">' +
+        '<div id="mobile-nav-backdrop" class="absolute inset-0 bg-black/70 backdrop-blur-xs"></div>' +
+        '<div class="relative w-4/5 max-w-xs h-full bg-panel border-r border-line shadow-2xl flex flex-col justify-between overflow-y-auto">' +
+          '<div>' +
+            '<div class="px-4 h-14 flex items-center justify-between border-b border-line">' +
+              brand(false) +
+              '<button id="mobile-nav-close" class="text-muted hover:text-ink p-1.5 rounded-lg hover:bg-panel2 transition-colors" aria-label="Close menu">' +
+                ui.icon('x', 'w-5 h-5') +
+              '</button>' +
+            '</div>' +
+            '<nav id="mobile-drawer-nav" class="p-3 space-y-1">' + sideNav + '</nav>' +
+          '</div>' +
+          '<div id="mobile-drawer-identity" class="p-3 border-t border-line"></div>' +
+        '</div>' +
+      '</div>' +
+
       // ---- Main column ----
       '<div class="flex-1 min-w-0 flex flex-col min-h-screen">' +
         '<header class="app-topbar md:hidden sticky top-0 z-30 h-14 px-4 flex items-center justify-between border-b border-line bg-bg/90 backdrop-blur">' +
-          brand(true) +
+          '<div class="flex items-center gap-2">' +
+            '<button id="mobile-menu-toggle" class="p-2 -ml-1.5 text-muted hover:text-ink rounded-lg hover:bg-panel2 transition-colors flex items-center justify-center" aria-label="Open navigation menu">' +
+              ui.icon('menu', 'w-5 h-5') +
+            '</button>' +
+            brand(true) +
+          '</div>' +
           '<div class="flex items-center gap-3">' +
             '<span id="section-title" class="font-display font-semibold text-sm"></span>' +
             '<div id="mobile-identity"></div>' +
           '</div>' +
         '</header>' +
 
-        '<main id="content" class="flex-1 w-full max-w-6xl mx-auto px-4 md:px-8 py-6 md:py-8 pb-28 md:pb-10"></main>' +
+        '<main id="content" class="flex-1 w-full max-w-6xl mx-auto px-4 md:px-8 py-6 md:py-8 pb-10"></main>' +
       '</div>' +
-
-      // ---- Mobile bottom tab bar ----
-      '<nav class="app-tabbar md:hidden fixed bottom-0 inset-x-0 z-30 flex border-t border-line bg-panel/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">' +
-        tabNav +
-      '</nav>' +
     '</div>';
+
+  /* ---- Mobile Drawer Controls ---- */
+  function initMobileDrawer() {
+    const toggleBtn = document.getElementById('mobile-menu-toggle');
+    const closeBtn = document.getElementById('mobile-nav-close');
+    const drawer = document.getElementById('mobile-nav-drawer');
+    const backdrop = document.getElementById('mobile-nav-backdrop');
+
+    function openDrawer() {
+      if (drawer) drawer.classList.remove('hidden');
+    }
+    function closeDrawer() {
+      if (drawer) drawer.classList.add('hidden');
+    }
+
+    if (toggleBtn) toggleBtn.addEventListener('click', openDrawer);
+    if (closeBtn) closeBtn.addEventListener('click', closeDrawer);
+    if (backdrop) backdrop.addEventListener('click', closeDrawer);
+
+    const drawerNav = document.getElementById('mobile-drawer-nav');
+    if (drawerNav) {
+      drawerNav.querySelectorAll('a').forEach((link) => {
+        link.addEventListener('click', closeDrawer);
+      });
+    }
+
+    window.addEventListener('hashchange', closeDrawer);
+  }
+  initMobileDrawer();
 
   /* ---- Identity chips (live outside #content, refreshed on change) ---- */
   function sidebarChip() {
@@ -88,6 +134,7 @@
   function refreshIdentity() {
     const s = document.getElementById('sidebar-identity');
     const mm = document.getElementById('mobile-identity');
+    const md = document.getElementById('mobile-drawer-identity');
     if (s) {
       s.innerHTML = sidebarChip();
       const sw = s.querySelector('#switch-user');
@@ -97,6 +144,11 @@
       mm.innerHTML = mobileChip();
       const swm = mm.querySelector('#switch-user-m');
       if (swm) swm.addEventListener('click', () => auth.signOut());
+    }
+    if (md) {
+      md.innerHTML = sidebarChip();
+      const swd = md.querySelector('#switch-user');
+      if (swd) swd.addEventListener('click', () => auth.signOut());
     }
   }
   RMTP.shell = { refreshIdentity };

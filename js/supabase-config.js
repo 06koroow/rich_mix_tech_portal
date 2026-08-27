@@ -23,12 +23,14 @@ RMTP.supabaseConfig = {
   // table names created by docs/supabase-setup.sql, so you shouldn't
   // need to change them.
   tables: {
-    inventory:   'inventory',
-    maintenance: 'maintenance',
-    advancing:   'advancing',
-    reports:     'reports',
-    users:       'users',
-    signoffs:    'signoffs',
-    procedures:  'procedures',
+    inventory:     'inventory',
+    maintenance:   'maintenance',
+    advancing:     'advancing',
+    reports:       'reports',
+    users:         'users',
+    signoffs:      'signoffs',
+    procedures:    'procedures',
+    patch_presets: 'patch_presets',
+    patch_sheets:  'patch_sheets',
   },
 };

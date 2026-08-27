@@ -20,7 +20,7 @@ RMTP.meta = {
 RMTP.nav = [
   { id: 'dashboard',   label: 'Dashboard',   icon: 'grid'  },
   { id: 'advancing',   label: 'Advancing',   icon: 'clip'  },
-  { id: 'presets',     label: 'Presets',     icon: 'sliders' },
+  { id: 'presets',     label: 'Patch & Preset Manager', icon: 'sliders' },
   { id: 'maintenance', label: 'Maintenance', icon: 'wrench'},
   { id: 'inventory',   label: 'Inventory',   icon: 'box'   },
   { id: 'procedures',  label: 'Procedures',  icon: 'book'  },

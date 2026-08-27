@@ -74,6 +74,12 @@ create table if not exists public.advancing (
   "dcp_test_event_id" text default null,
   "parent_event_id" text default null,
   "linked_maintenance_ids" jsonb default '[]'::jsonb,
+  "lighting_notes" text default '',
+  "floor_package" text default '',
+  "floor_tags" jsonb default '[]'::jsonb,
+  "specials" jsonb default '{}'::jsonb,
+  "special_notes" text default '',
+  "production_package" jsonb default '{}'::jsonb,
   "techUserId" text default '', "clientContact" text default '',
   "technicians" jsonb default '[]'::jsonb,
   "guestEngineer" boolean default false,
@@ -158,21 +164,59 @@ alter table public.advancing add column if not exists "dcp_test_datetime" text d
 alter table public.advancing add column if not exists "dcp_test_event_id" text default null;
 alter table public.advancing add column if not exists "parent_event_id" text default null;
 alter table public.advancing add column if not exists "linked_maintenance_ids" jsonb default '[]'::jsonb;
+alter table public.advancing add column if not exists "lighting_notes" text default '';
+alter table public.advancing add column if not exists "floor_package" text default '';
+alter table public.advancing add column if not exists "floor_tags" jsonb default '[]'::jsonb;
+alter table public.advancing add column if not exists "specials" jsonb default '{}'::jsonb;
+alter table public.advancing add column if not exists "special_notes" text default '';
+alter table public.advancing add column if not exists "production_package" jsonb default '{}'::jsonb;
 alter table public.advancing add column if not exists "email_recipients" text default '';
 alter table public.advancing add column if not exists "tech_requirements" jsonb default '{}'::jsonb;
+
+create table if not exists public.patch_sheets (
+  "id" text primary key,
+  "name" text not null,
+  "eventId" text default null,
+  "eventName" text default '',
+  "space" text default '',
+  "date" text default '',
+  "notes" text default '',
+  "acts" jsonb not null default '[]'::jsonb,
+  "patchPoints" jsonb not null default '[]'::jsonb,
+  "stageboxes" jsonb not null default '[]'::jsonb,
+  "repatches" jsonb not null default '[]'::jsonb,
+  "homeRun" jsonb not null default '{}'::jsonb,
+  "createdAt" bigint,
+  "updatedAt" bigint
+);
+
+alter table public.patch_sheets add column if not exists "homeRun" jsonb not null default '{}'::jsonb;
 
 create table if not exists public.patch_presets (
   "id" text primary key,
   "name" text not null,
   "type" text not null default 'input',
+  "category" text default 'General',
+  "description" text default '',
   "channels" jsonb not null default '[]'::jsonb,
+  "capacityIn" integer default 0,
+  "capacityOut" integer default 0,
   "createdAt" bigint,
   "updatedAt" bigint
 );
 
+alter table public.patch_presets add column if not exists "category" text default 'General';
+alter table public.patch_presets add column if not exists "description" text default '';
+alter table public.patch_presets add column if not exists "capacityIn" integer default 0;
+alter table public.patch_presets add column if not exists "capacityOut" integer default 0;
+
 alter table public.patch_presets enable row level security;
 drop policy if exists rw_all_patch_presets on public.patch_presets;
 create policy rw_all_patch_presets on public.patch_presets for all to authenticated using (true) with check (true);
+
+alter table public.patch_sheets enable row level security;
+drop policy if exists rw_all_patch_sheets on public.patch_sheets;
+create policy rw_all_patch_sheets on public.patch_sheets for all to authenticated using (true) with check (true);
 
 -- Global system configuration & recipient rules (optional persistence table for app-wide settings)
 create table if not exists public.app_settings (

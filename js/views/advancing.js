@@ -7,7 +7,7 @@
    and guest-engineer flag. End-of-shift reports live in `reports`
    collection keyed by eventId.
    ============================================================ */
-RMTP.views.advancing = function (el) {
+RMTP.views.advancing = function (el, params, query) {
   const ui = RMTP.ui, store = RMTP.store, auth = RMTP.auth, files = RMTP.files;
 
   const me = auth.current();
@@ -44,8 +44,89 @@ RMTP.views.advancing = function (el) {
     return Boolean(d && String(d).slice(0, 10) < today);
   }
 
+  // Handle direct event target from routing params or query
+  const targetEventId = (params && params[0]) || (query && (query.id || query.event || query.eventId));
+  if (targetEventId) {
+    const targetEv = store.find('advancing', targetEventId);
+    if (targetEv) {
+      if (isPastEvent(targetEv.date)) {
+        filters.tab = 'past';
+      }
+      if (filters.space && filters.space !== targetEv.space) {
+        filters.space = '';
+      }
+      if (filters.date && filters.date !== targetEv.date) {
+        filters.date = '';
+      }
+    }
+  }
+
   function isScreenSpace(spaceName) {
     return spaceName === 'Screen One' || spaceName === 'Screen Two' || spaceName === 'Screen Three';
+  }
+
+  /* ---- Production Package Helpers ---- */
+  function getProductionPackage(ev) {
+    if (!ev) return { lighting_notes: '', floor_package: '', floor_tags: [], specials: {}, special_notes: '' };
+    const pkg = ev.production_package || {};
+    return {
+      lighting_notes: pkg.lighting_notes || ev.lighting_notes || '',
+      floor_package: pkg.floor_package || ev.floor_package || '',
+      floor_tags: Array.isArray(pkg.floor_tags) ? pkg.floor_tags : (Array.isArray(ev.floor_tags) ? ev.floor_tags : []),
+      specials: pkg.specials || ev.specials || {},
+      special_notes: pkg.special_notes || ev.special_notes || '',
+    };
+  }
+
+  function renderProductionBadges(ev, compact) {
+    const prod = getProductionPackage(ev);
+    const badges = [];
+    const s = prod.specials || {};
+
+    if (s.hazer) {
+      badges.push(
+        '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30' + (compact ? ' !px-1.5 !text-[10px]' : '') + '" title="Hazer / Smoke machine active (Smoke detector isolation required)">' +
+          ui.icon('wind', 'w-3 h-3') + '<span>Hazer / Smoke</span></span>'
+      );
+    }
+    if (s.lasers) {
+      badges.push(
+        '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30' + (compact ? ' !px-1.5 !text-[10px]' : '') + '" title="Class 3B/4 Lasers in production">' +
+          ui.icon('zap', 'w-3 h-3') + '<span>Lasers</span></span>'
+      );
+    }
+    if (s.heavy_power || (prod.floor_tags && prod.floor_tags.some((t) => t.indexOf('3-Phase') > -1 || t.indexOf('32A') > -1 || t.indexOf('63A') > -1))) {
+      badges.push(
+        '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-orange-500/15 text-orange-400 border border-orange-500/30' + (compact ? ' !px-1.5 !text-[10px]' : '') + '" title="Heavy power drops required (16A/32A/63A / 3-Phase)">' +
+          ui.icon('zap', 'w-3 h-3') + '<span>Heavy Power</span></span>'
+      );
+    }
+    if (s.video) {
+      badges.push(
+        '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-sky-500/15 text-sky-400 border border-sky-500/30' + (compact ? ' !px-1.5 !text-[10px]' : '') + '" title="Video / Projection in production">' +
+          ui.icon('screen', 'w-3 h-3') + '<span>Video / Projection</span></span>'
+      );
+    }
+    if (s.pyro) {
+      badges.push(
+        '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-purple-500/15 text-purple-400 border border-purple-500/30' + (compact ? ' !px-1.5 !text-[10px]' : '') + '" title="Pyrotechnics / Confetti in production">' +
+          ui.icon('sparkles', 'w-3 h-3') + '<span>Pyro / Confetti</span></span>'
+      );
+    }
+    if ((prod.floor_package && prod.floor_package.trim()) || (prod.floor_tags && prod.floor_tags.length)) {
+      badges.push(
+        '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-indigo-500/15 text-indigo-400 border border-indigo-500/30' + (compact ? ' !px-1.5 !text-[10px]' : '') + '" title="Incoming Touring Floor Package">' +
+          ui.icon('box', 'w-3 h-3') + '<span>Floor Package</span></span>'
+      );
+    }
+    if (prod.lighting_notes && prod.lighting_notes.trim()) {
+      badges.push(
+        '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-yellow-500/15 text-yellow-400 border border-yellow-500/30' + (compact ? ' !px-1.5 !text-[10px]' : '') + '" title="Lighting Rig Plan on file">' +
+          ui.icon('bulb', 'w-3 h-3') + '<span>LX Rig Plan</span></span>'
+      );
+    }
+
+    return badges.join(' ');
   }
 
   const STATUSES = ['Advancing', 'Confirmed', 'Complete'];
@@ -658,6 +739,33 @@ RMTP.views.advancing = function (el) {
     const pr = q('[data-print="' + ev.id + '"]'); if (pr) pr.addEventListener('click', (evt) => { evt.stopPropagation(); printAdvance(ev); });
   });
 
+  // Automatically open target event modal or maintenance form if directed
+  if (targetEventId) {
+    const targetEv = store.find('advancing', targetEventId);
+    if (targetEv) {
+      setTimeout(() => {
+        openEventModal(targetEv);
+        const card = el.querySelector('[data-event-card="' + targetEv.id + '"]');
+        if (card) {
+          card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 50);
+    }
+  }
+  if (query && query.action === 'schedule-maintenance') {
+    setTimeout(() => {
+      const faultId = query.faultId;
+      const fault = faultId ? store.find('maintenance', faultId) : null;
+      openForm({
+        name: fault ? 'Maintenance: ' + (fault.equipment || fault.space || 'Repair') : 'Maintenance Shift',
+        category: 'Maintenance',
+        space: fault ? fault.space : 'Screen One',
+        date: getTodayString(),
+        linked_maintenance_ids: faultId ? [faultId] : []
+      });
+    }, 50);
+  }
+
   function tabBar() {
     return (
       '<div class="flex items-center gap-2 mb-4 p-1 bg-panel2 rounded-lg border border-line w-full sm:w-fit overflow-x-auto">' +
@@ -693,6 +801,8 @@ RMTP.views.advancing = function (el) {
       ? [ev.dcp_received !== undefined ? ev.dcp_received : ev.dcpReceived, ev.checks_completed !== undefined ? ev.checks_completed : ev.checksCompleted].filter(Boolean).length
       : 0;
 
+    const prodBadges = renderProductionBadges(ev, false);
+
     return (
       '<div data-event-card="' + ev.id + '" class="panel w-full p-4 sm:p-5 transition-all hover:border-accent hover:shadow-lg cursor-pointer group select-none relative flex flex-col justify-between gap-3">' +
         '<div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3 w-full">' +
@@ -713,6 +823,7 @@ RMTP.views.advancing = function (el) {
               (isCinema && checksCount ? '<span class="w-1 h-1 rounded-full bg-line"></span><span class="text-ok font-semibold">' + checksCount + '/2 checks done</span>' : '') +
               (reports.length ? '<span class="w-1 h-1 rounded-full bg-line"></span><span class="text-ok font-semibold">' + reports.length + ' report' + (reports.length > 1 ? 's' : '') + '</span>' : '') +
             '</div>' +
+            (prodBadges ? '<div class="flex items-center gap-1.5 flex-wrap mt-2.5 pt-2 border-t border-line/50">' + prodBadges + '</div>' : '') +
           '</div>' +
 
           '<div class="flex items-center gap-1.5 shrink-0 self-end sm:self-start w-full sm:w-auto justify-end pt-2 sm:pt-0 border-t sm:border-t-0 border-line/40">' +
@@ -1037,6 +1148,80 @@ RMTP.views.advancing = function (el) {
       '</div>'
     ) : '';
 
+    // Lighting & Production Package
+    const prod = getProductionPackage(ev);
+    const hasLighting = !!(prod.lighting_notes && prod.lighting_notes.trim());
+    const hasFloor = !!((prod.floor_package && prod.floor_package.trim()) || (prod.floor_tags && prod.floor_tags.length));
+    const s = prod.specials || {};
+    const hasSpecials = !!(s.hazer || s.lasers || s.heavy_power || s.video || s.pyro || (prod.special_notes && prod.special_notes.trim()));
+    const hasAnyProduction = hasLighting || hasFloor || hasSpecials;
+
+    const lightingProductionHtml = hasAnyProduction ? (
+      '<div class="p-3.5 rounded-xl bg-panel2/40 border border-line text-xs grid gap-3">' +
+        '<div class="flex items-center justify-between pb-2 border-b border-line/60 flex-wrap gap-2">' +
+          '<div class="eyebrow text-ink font-semibold flex items-center gap-1.5">' +
+            ui.icon('bulb', 'w-4 h-4 text-warning') + '<span>Lighting & Production Package</span>' +
+          '</div>' +
+          '<div class="flex items-center gap-1.5 flex-wrap">' +
+            renderProductionBadges(ev, true) +
+          '</div>' +
+        '</div>' +
+
+        (hasLighting ? (
+          '<div class="p-3 rounded-lg bg-panel border border-line/70">' +
+            '<div class="text-[11px] font-semibold text-warning uppercase tracking-wider mb-1 flex items-center gap-1.5">' +
+              ui.icon('bulb', 'w-3.5 h-3.5') + '<span>Lighting Notes & Rig Plan</span>' +
+            '</div>' +
+            '<p class="text-ink/90 whitespace-pre-wrap leading-relaxed font-sans text-xs">' + ui.esc(prod.lighting_notes) + '</p>' +
+          '</div>'
+        ) : '') +
+
+        (hasFloor ? (
+          '<div class="p-3 rounded-lg bg-panel border border-line/70">' +
+            '<div class="text-[11px] font-semibold text-indigo-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">' +
+              ui.icon('box', 'w-3.5 h-3.5') + '<span>Incoming Touring Floor Package</span>' +
+            '</div>' +
+            (prod.floor_package ? '<p class="text-ink/90 whitespace-pre-wrap leading-relaxed font-sans text-xs mb-2">' + ui.esc(prod.floor_package) + '</p>' : '') +
+            (prod.floor_tags && prod.floor_tags.length ? (
+              '<div class="flex items-center gap-1.5 flex-wrap">' +
+                prod.floor_tags.map((t) => '<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">' + ui.esc(t) + '</span>').join('') +
+              '</div>'
+            ) : '') +
+          '</div>'
+        ) : '') +
+
+        (hasSpecials ? (
+          '<div class="p-3 rounded-lg bg-panel border border-line/70">' +
+            '<div class="text-[11px] font-semibold text-accent uppercase tracking-wider mb-2 flex items-center gap-1.5">' +
+              ui.icon('zap', 'w-3.5 h-3.5') + '<span>Production Specials & Isolation Requirements</span>' +
+            '</div>' +
+            '<div class="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-2">' +
+              [
+                { key: 'hazer', label: 'Hazer / Fogger', icon: 'wind', active: !!s.hazer, color: 'text-amber-400 bg-amber-500/10 border-amber-500/30' },
+                { key: 'lasers', label: 'Lasers', icon: 'zap', active: !!s.lasers, color: 'text-rose-400 bg-rose-500/10 border-rose-500/30' },
+                { key: 'heavy_power', label: 'Heavy Power', icon: 'zap', active: !!s.heavy_power, color: 'text-orange-400 bg-orange-500/10 border-orange-500/30' },
+                { key: 'video', label: 'Video / Projection', icon: 'screen', active: !!s.video, color: 'text-sky-400 bg-sky-500/10 border-sky-500/30' },
+                { key: 'pyro', label: 'Pyro / Confetti', icon: 'sparkles', active: !!s.pyro, color: 'text-purple-400 bg-purple-500/10 border-purple-500/30' },
+              ].map((sp) => (
+                '<div class="p-2 rounded-lg border flex flex-col items-center justify-center text-center gap-1 ' +
+                  (sp.active ? sp.color : 'bg-panel2/40 border-line/40 text-muted opacity-50') + '">' +
+                  ui.icon(sp.icon, 'w-3.5 h-3.5') +
+                  '<span class="text-[10px] font-medium leading-tight">' + ui.esc(sp.label) + '</span>' +
+                  '<span class="text-[9px] font-bold uppercase ' + (sp.active ? 'text-ink' : 'text-muted') + '">' + (sp.active ? 'Active' : 'No') + '</span>' +
+                '</div>'
+              )).join('') +
+            '</div>' +
+            (prod.special_notes ? (
+              '<div class="p-2 rounded bg-panel2 border border-line text-[11px] text-ink/90 flex items-start gap-1.5">' +
+                '<span class="text-warning shrink-0 mt-0.5">' + ui.icon('alert', 'w-3.5 h-3.5') + '</span>' +
+                '<span><strong>Safety / Permit Notes:</strong> ' + ui.esc(prod.special_notes) + '</span>' +
+              '</div>'
+            ) : '') +
+          '</div>'
+        ) : '') +
+      '</div>'
+    ) : '';
+
     const bodyHtml =
       '<div class="grid gap-4 text-sm">' +
         // Header summary bar
@@ -1061,6 +1246,7 @@ RMTP.views.advancing = function (el) {
         liveTimingsHtml +
         liveScheduleItemsHtml +
         cinemaDetailsHtml +
+        lightingProductionHtml +
         channelListHtml +
         linkedMaintenanceHtml +
 
@@ -1354,6 +1540,59 @@ RMTP.views.advancing = function (el) {
       '</div>'
     ) : '';
 
+    // Lighting & Production Package in Print Sheet
+    const prod = getProductionPackage(ev);
+    const hasLighting = !!(prod.lighting_notes && prod.lighting_notes.trim());
+    const hasFloor = !!((prod.floor_package && prod.floor_package.trim()) || (prod.floor_tags && prod.floor_tags.length));
+    const s = prod.specials || {};
+    const hasSpecials = !!(s.hazer || s.lasers || s.heavy_power || s.video || s.pyro || (prod.special_notes && prod.special_notes.trim()));
+    const hasAnyProduction = hasLighting || hasFloor || hasSpecials;
+
+    const lightingProductionPrintSection = hasAnyProduction ? (
+      '<div class="adv-print-section">' +
+        '<div class="adv-print-section-title">Lighting & Production Package</div>' +
+        '<div class="adv-print-grid" style="margin-bottom:8px;">' +
+          (hasLighting ? (
+            '<div class="adv-print-field" style="grid-column: span 3;">' +
+              '<div class="adv-print-label">Lighting Notes & Rig Plan</div>' +
+              '<div class="adv-print-val" style="white-space:pre-wrap;font-weight:400;margin-top:2px;">' + ui.esc(prod.lighting_notes) + '</div>' +
+            '</div>'
+          ) : '') +
+          (hasFloor ? (
+            '<div class="adv-print-field" style="grid-column: span 3;">' +
+              '<div class="adv-print-label">Incoming Touring Floor Package & Power</div>' +
+              (prod.floor_package ? '<div class="adv-print-val" style="white-space:pre-wrap;font-weight:400;margin-top:2px;">' + ui.esc(prod.floor_package) + '</div>' : '') +
+              (prod.floor_tags && prod.floor_tags.length ? (
+                '<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px;">' +
+                  prod.floor_tags.map((t) => '<span style="font-size:10px;font-weight:600;background:#e0e7ff;color:#3730a3;padding:2px 6px;border-radius:4px;">' + ui.esc(t) + '</span>').join('') +
+                '</div>'
+              ) : '') +
+            '</div>'
+          ) : '') +
+        '</div>' +
+        (hasSpecials ? (
+          '<div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;padding:8px 10px;margin-top:6px;">' +
+            '<div style="font-size:11px;font-weight:700;color:#334155;margin-bottom:6px;">Production Specials & Safety Provisions</div>' +
+            '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">' +
+              [
+                { label: 'Hazer / Fogger', active: s.hazer },
+                { label: 'Lasers', active: s.lasers },
+                { label: 'Heavy Power Drops', active: s.heavy_power },
+                { label: 'Video / Projection', active: s.video },
+                { label: 'Pyrotechnics / Confetti', active: s.pyro },
+              ].map((item) => (
+                '<span style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;' +
+                  (item.active ? 'background:#fee2e2;color:#991b1b;border:1px solid #f87171;' : 'background:#f1f5f9;color:#94a3b8;border:1px solid #e2e8f0;') + '">' +
+                  ui.esc(item.label) + ': ' + (item.active ? 'YES' : 'NO') +
+                '</span>'
+              )).join('') +
+            '</div>' +
+            (prod.special_notes ? '<div style="font-size:11px;color:#0f172a;"><strong>Special Notes / Isolation:</strong> ' + ui.esc(prod.special_notes) + '</div>' : '') +
+          '</div>'
+        ) : '') +
+      '</div>'
+    ) : '';
+
     const reportsHtml = reports.length ? (
       '<div class="adv-print-section">' +
         '<div class="adv-print-section-title">End-of-Shift Reports (' + reports.length + ')</div>' +
@@ -1402,6 +1641,7 @@ RMTP.views.advancing = function (el) {
         liveTimingsSection +
         liveScheduleSection +
         cinemaChecksHtml +
+        lightingProductionPrintSection +
         channelListPrintSection +
         linkedMaintSection +
 
@@ -2002,8 +2242,10 @@ RMTP.views.advancing = function (el) {
     let pending = null;
     let cleared = false;
 
-    const initialSpace = ev.space || RMTP.SPACES[0] || 'The Stage';
-    const isScreenInitial = isScreenSpace(initialSpace);
+    const initialSpace = ev.space || '';
+    const hasSpaceInitial = Boolean(initialSpace);
+    const isScreenInitial = hasSpaceInitial && isScreenSpace(initialSpace);
+    const isLiveInitial = hasSpaceInitial && !isScreenInitial;
 
     // Channel list & tech requirements presets
     const INPUT_INSTRUMENT_PRESETS = [
@@ -2038,204 +2280,442 @@ RMTP.views.advancing = function (el) {
     const allMaintenance = store.all('maintenance');
     const openFaults = allMaintenance.filter((f) => f.status !== 'Resolved' || linkedMaintIds.indexOf(f.id) !== -1);
 
+    const prodInitial = getProductionPackage(ev);
+    let floorTags = prodInitial.floor_tags ? prodInitial.floor_tags.slice() : [];
+
     const m = ui.modal({
       title: existing ? 'Edit Technical Advance' : 'Create Technical Advance',
       size: 'md:max-w-3xl',
       body:
         '<div class="grid gap-4">' +
-          '<div class="grid sm:grid-cols-[1fr_150px] gap-4">' +
-            fld('Event title', '<input id="e-name" class="field font-medium" value="' + ui.esc(ev.name || '') + '" placeholder="Artist / show name" />') +
-            fld('Status', '<select id="e-status" class="field">' + opt(STATUSES, ev.status || 'Advancing') + '</select>') +
-          '</div>' +
-
-          '<div class="grid grid-cols-2 sm:grid-cols-3 gap-4">' +
-            fld('Category', '<select id="e-category" class="field">' + blankOpt(RMTP.EVENT_CATEGORIES, ev.category, '\u2014') + '</select>') +
-            fld('Space / Room', '<select id="e-space" class="field font-semibold text-accent">' + blankOpt(RMTP.SPACES, ev.space, 'Select Space\u2026') + '</select>') +
-            fld('Event Date', '<input id="e-date" type="date" class="field" value="' + ui.esc(ev.date || '') + '" />') +
-          '</div>' +
-
-          // Running times row (common to both)
-          '<div class="grid grid-cols-2 gap-4">' +
-            fld('Overall Start Time', '<input id="e-start" type="time" class="field font-mono" value="' + ui.esc(ev.startTime || '') + '" />') +
-            fld('Overall Finish Time', '<input id="e-finish" type="time" class="field font-mono" value="' + ui.esc(ev.finishTime || '') + '" />') +
-          '</div>' +
-
-          /* ================= LIVE EVENTS SECTION ================= */
-          '<div id="section-live-advancing" class="' + (isScreenInitial ? 'hidden' : '') + ' p-4 rounded-xl bg-panel2/40 border border-line grid gap-4">' +
+          /* ================= CORE EVENT INFO (ALWAYS VISIBLE AT TOP) ================= */
+          '<div class="panel p-4 bg-panel border border-line rounded-xl grid gap-4 shadow-xs">' +
             '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
-              '<div class="flex items-center gap-1.5">' +
-                ui.icon('clock', 'w-4 h-4 text-accent') +
-                '<span class="text-xs font-semibold text-accent">Live Event Standard Core Timings</span>' +
-              '</div>' +
-              '<span class="text-[11px] text-muted font-mono">24-hour format (HH:MM)</span>' +
-            '</div>' +
-
-            '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3">' +
-              fld('Load In', '<input id="e-load-in" type="time" class="field font-mono" value="' + ui.esc(ev.load_in || ev.loadIn || '') + '" />') +
-              fld('Soundcheck', '<input id="e-sc" type="time" class="field font-mono" value="' + ui.esc(ev.soundcheck || '') + '" />') +
-              fld('Doors', '<input id="e-doors" type="time" class="field font-mono" value="' + ui.esc(ev.doors || '') + '" />') +
-              fld('Off Stage', '<input id="e-off-stage" type="time" class="field font-mono" value="' + ui.esc(ev.off_stage || ev.offStage || '') + '" />') +
-              fld('Curfew', '<input id="e-curfew" type="time" class="field font-mono" value="' + ui.esc(ev.curfew || '') + '" />') +
-              fld('Load Out', '<input id="e-load-out" type="time" class="field font-mono" value="' + ui.esc(ev.load_out || ev.loadOut || '') + '" />') +
-            '</div>' +
-
-            '<div class="pt-2 border-t border-line/60">' +
-              '<div class="flex items-center justify-between mb-3">' +
+              '<div class="flex items-center gap-2">' +
+                '<span class="p-1 rounded-md bg-accent/15 text-accent">' + ui.icon('calendar', 'w-3.5 h-3.5') + '</span>' +
                 '<div>' +
-                  '<label class="block text-sm font-semibold text-ink">Schedule & Set Pieces Builder</label>' +
-                  '<p class="text-xs text-muted">Sequence acts, changeovers, speeches, and other scheduled set pieces.</p>' +
+                  '<div class="text-xs font-bold text-ink uppercase tracking-wider">Core Event Info</div>' +
+                  '<div class="text-[11px] text-muted">Title, status, space & overall event timing</div>' +
                 '</div>' +
+              '</div>' +
+              '<span class="text-[10px] font-bold text-accent uppercase tracking-wider px-2 py-0.5 rounded bg-accent/10 border border-accent/25">Required</span>' +
+            '</div>' +
+
+            '<div class="grid sm:grid-cols-[1fr_150px] gap-4">' +
+              fld('Event title', '<input id="e-name" class="field font-medium" value="' + ui.esc(ev.name || '') + '" placeholder="Artist / show name" />') +
+              fld('Status', '<select id="e-status" class="field">' + opt(STATUSES, ev.status || 'Advancing') + '</select>') +
+            '</div>' +
+
+            '<div class="grid grid-cols-2 sm:grid-cols-3 gap-4">' +
+              fld('Category', '<select id="e-category" class="field">' + blankOpt(RMTP.EVENT_CATEGORIES, ev.category, '\u2014') + '</select>') +
+              '<div id="event-form-space-selection" class="grid gap-1.5">' +
+                '<label class="text-xs font-semibold text-ink flex items-center justify-between">' +
+                  '<span>Space / Room</span>' +
+                  '<span id="space-select-badge" class="' + (hasSpaceInitial ? 'hidden' : '') + ' text-[10px] font-bold text-accent px-1.5 py-0.2 rounded bg-accent/10 border border-accent/20 flex items-center gap-1 animate-pulse">' +
+                    ui.icon('pin', 'w-2.5 h-2.5') + 'Required' +
+                  '</span>' +
+                '</label>' +
+                '<div class="relative flex items-center">' +
+                  '<span id="space-input-icon" class="absolute left-2.5 pointer-events-none transition-colors ' + (hasSpaceInitial ? 'text-accent' : 'text-accent/60') + '">' +
+                    ui.icon('pin', 'w-4 h-4') +
+                  '</span>' +
+                  '<select id="e-space" class="field font-semibold text-accent pl-8.5 cursor-pointer ' + (!hasSpaceInitial ? 'border-accent/40 bg-accent/5 ring-2 ring-accent/10' : '') + '">' +
+                    blankOpt(RMTP.SPACES, ev.space, '\u25cb Choose a Space / Room\u2026') +
+                  '</select>' +
+                '</div>' +
+                '<div id="space-select-hint" class="' + (hasSpaceInitial ? 'hidden' : '') + ' text-[11px] text-accent/80 font-medium flex items-center gap-1">' +
+                  ui.icon('arrowR', 'w-3 h-3') + 'Select room to begin advancing' +
+                '</div>' +
+              '</div>' +
+              fld('Event Date', '<input id="e-date" type="date" class="field" value="' + ui.esc(ev.date || '') + '" />') +
+            '</div>' +
+
+            '<div class="grid grid-cols-2 gap-4">' +
+              fld('Overall Start Time', '<input id="e-start" type="time" class="field font-mono" value="' + ui.esc(ev.startTime || '') + '" />') +
+              fld('Overall Finish Time', '<input id="e-finish" type="time" class="field font-mono" value="' + ui.esc(ev.finishTime || '') + '" />') +
+            '</div>' +
+          '</div>' +
+
+          /* ================= UNSELECTED SPACE HELPER PROMPT ================= */
+          '<div id="space-unselected-prompt" class="' + (hasSpaceInitial ? 'hidden' : '') + ' p-6 rounded-xl bg-panel border border-dashed border-line text-center grid gap-2 shadow-xs">' +
+            '<div class="w-9 h-9 rounded-full bg-accent/10 text-accent mx-auto flex items-center justify-center">' + ui.icon('mapPin', 'w-4 h-4') + '</div>' +
+            '<div class="text-xs font-semibold text-ink">Select a Space / Room above to configure technical advance details</div>' +
+            '<div class="text-[11px] text-muted max-w-sm mx-auto">Choosing a space unlocks either the Live Event or Cinema technical workflow.</div>' +
+          '</div>' +
+
+          /* ================= CINEMA / SCREENING WORKFLOW (ORIGINAL UN-NESTED LAYOUT) ================= */
+          '<div id="workflow-cinema-container" class="' + (isScreenInitial ? '' : 'hidden') + ' grid gap-4">' +
+            /* Cinema Screening Checklist */
+            '<div class="p-4 rounded-xl bg-panel border border-line grid gap-4 shadow-xs">' +
+              '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
                 '<div class="flex items-center gap-1.5">' +
-                  '<div class="relative inline-block text-left" id="add-schedule-menu-wrap">' +
-                    '<button type="button" id="btn-add-schedule-menu" class="btn btn-ghost !py-1.5 text-xs text-accent font-semibold flex items-center gap-1">' +
-                      ui.icon('plus', 'w-3.5 h-3.5') + '<span>+ Add Schedule Item</span>' + ui.icon('arrowD', 'w-3 h-3') +
-                    '</button>' +
-                    '<div id="schedule-dropdown" class="hidden absolute right-0 mt-1 w-44 rounded-lg bg-panel border border-line shadow-xl z-20 py-1 text-xs">' +
-                      '<button type="button" data-add-type="act" class="w-full text-left px-3 py-2 hover:bg-panel2 flex items-center gap-2">' +
-                        ui.icon('plus', 'w-3.5 h-3.5 text-accent') + '<span>Act (Auto-numbered)</span>' +
-                      '</button>' +
-                      '<button type="button" data-add-type="changeover" class="w-full text-left px-3 py-2 hover:bg-panel2 flex items-center gap-2">' +
-                        ui.icon('reset', 'w-3.5 h-3.5 text-warning') + '<span>Changeover</span>' +
-                      '</button>' +
-                      '<button type="button" data-add-type="other" class="w-full text-left px-3 py-2 hover:bg-panel2 flex items-center gap-2">' +
-                        ui.icon('clip', 'w-3.5 h-3.5 text-info') + '<span>Other Piece</span>' +
-                      '</button>' +
+                  ui.icon('film', 'w-4 h-4 text-accent') +
+                  '<span class="text-xs font-semibold text-accent">Cinema Screening Checklist, Film Duration & DCP Details</span>' +
+                '</div>' +
+                '<span class="text-[11px] text-muted">Auditorium Screen Advance</span>' +
+              '</div>' +
+
+              '<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">' +
+                fld('Screening Starts Time', '<input id="e-screening-starts" type="time" class="field font-mono" value="' + ui.esc(ev.screening_starts_time || ev.screeningStartsTime || '') + '" />') +
+                fld('Film Duration', '<input id="e-film-duration" class="field font-mono" value="' + ui.esc(ev.film_duration || ev.filmDuration || '') + '" placeholder="e.g. 118 mins, 1h 45m" />') +
+                fld('Media Type', '<select id="e-media-type" class="field">' + blankOpt(RMTP.MEDIA_TYPES, ev.media_type || ev.mediaType, 'Select Media\u2026') + '</select>') +
+              '</div>' +
+
+              '<div>' +
+                '<label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2">Screening Checklist</label>' +
+                '<div class="grid grid-cols-2 sm:grid-cols-4 gap-3">' +
+                  '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2 rounded-lg bg-panel2/40 border border-line">' +
+                    '<input type="checkbox" id="e-dcp" class="w-4 h-4 accent-[var(--ok)]" ' + ((ev.dcp_received !== undefined ? ev.dcp_received : ev.dcpReceived) ? 'checked' : '') + ' />' +
+                    '<span>DCP Received</span>' +
+                  '</label>' +
+                  '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2 rounded-lg bg-panel2/40 border border-line">' +
+                    '<input type="checkbox" id="e-checks" class="w-4 h-4 accent-[var(--ok)]" ' + ((ev.checks_completed !== undefined ? ev.checks_completed : ev.checksCompleted) ? 'checked' : '') + ' />' +
+                    '<span>Checks Completed</span>' +
+                  '</label>' +
+                  '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2 rounded-lg bg-panel2/40 border border-line">' +
+                    '<input type="checkbox" id="e-intermission" class="w-4 h-4 accent-[var(--ok)]" ' + (ev.intermission ? 'checked' : '') + ' />' +
+                    '<span>Intermission?</span>' +
+                  '</label>' +
+                  '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2 rounded-lg bg-panel2/40 border border-line">' +
+                    '<input type="checkbox" id="e-qa" class="w-4 h-4 accent-[var(--ok)]" ' + (ev.qa ? 'checked' : '') + ' />' +
+                    '<span>Q&A?</span>' +
+                  '</label>' +
+                '</div>' +
+              '</div>' +
+
+              '<div class="pt-2 border-t border-line/60 grid grid-cols-1 sm:grid-cols-2 gap-4">' +
+                fld('Testing Engineer', '<select id="e-dcp-tester" class="field">' + userOptionsHtml(ev.dcp_tester_user_id || ev.dcpTesterUserId || '') + '</select>') +
+                fld('Testing Date & Time', '<input id="e-dcp-test-datetime" type="datetime-local" class="field font-mono" value="' + ui.esc(ev.dcp_test_datetime || ev.dcpTestDatetime || '') + '" />') +
+              '</div>' +
+              '<label class="flex items-center gap-2 text-xs font-semibold cursor-pointer text-accent pt-1">' +
+                '<input type="checkbox" id="e-gen-dcp-shift" class="w-4 h-4 accent-[var(--accent)]" ' + (ev.dcp_test_event_id || (!existing && (ev.category === 'Cinema' || isScreenInitial)) ? 'checked' : 'checked') + ' />' +
+                '<span>Generate / Update Linked DCP Test Shift in Calendar</span>' +
+              '</label>' +
+            '</div>' +
+
+            /* Cinema Linked Maintenance Tasks */
+            '<div id="section-cinema-maintenance" class="' + (ev.category === 'Maintenance' || linkedMaintIds.length ? '' : 'hidden') + ' p-4 rounded-xl bg-panel border border-warning/30 grid gap-3 shadow-xs">' +
+              '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
+                '<div class="flex items-center gap-1.5">' +
+                  ui.icon('tool', 'w-4 h-4 text-warning') +
+                  '<span class="text-xs font-semibold text-warning">Link Maintenance Tasks & Faults</span>' +
+                '</div>' +
+                '<span class="text-[11px] text-muted">Assigned tasks will be tracked against this shift</span>' +
+              '</div>' +
+              '<div id="cinema-maintenance-picker" class="grid gap-2 max-h-52 overflow-y-auto pr-1"></div>' +
+            '</div>' +
+
+            /* Cinema Crew, Details, Tech Spec */
+            '<div class="p-4 rounded-xl bg-panel border border-line grid gap-4 shadow-xs">' +
+              '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
+                '<div class="flex items-center gap-1.5">' +
+                  ui.icon('users', 'w-4 h-4 text-accent') +
+                  '<span class="text-xs font-semibold text-accent">Crew & Screening Requirements</span>' +
+                '</div>' +
+              '</div>' +
+              fld('Assigned Technicians', '<div id="e-cinema-tech-area"></div>') +
+              fld('Artist / Client contact', '<input id="e-cinema-contact" class="field" value="' + ui.esc(ev.clientContact || '') + '" placeholder="Tour manager / client name & contact" />') +
+              fld('Technical notes & requirements', '<textarea id="e-cinema-info" class="field" rows="3" placeholder="Audio formatting, subtitles, projection notes, presentation mics\u2026">' + ui.esc(ev.techInfo || '') + '</textarea>') +
+              fld('Event Shift Report Email Recipients (Optional Override)', '<input id="e-cinema-email-recipients" class="field font-mono text-xs" value="' + ui.esc(Array.isArray(ev.email_recipients || ev.emailRecipients) ? (ev.email_recipients || ev.emailRecipients).join(', ') : (ev.email_recipients || ev.emailRecipients || '')) + '" placeholder="Leave blank to use Advancing page recipients (' + getReportRecipients().join(', ') + ')" />') +
+              '<div>' +
+                '<label class="flex items-center gap-2 cursor-pointer p-2.5 rounded-lg bg-panel2/40 border border-line hover:border-accent/40 transition-colors">' +
+                  '<input type="checkbox" id="e-cinema-guest" class="w-4 h-4 accent-[var(--accent)]" ' + (ev.guestEngineer ? 'checked' : '') + ' />' +
+                  '<span class="text-xs font-medium text-ink">Visiting / Guest Sound or Lighting Engineer on site</span>' +
+                '</label>' +
+              '</div>' +
+              '<div>' +
+                '<label class="block text-xs font-semibold text-ink uppercase tracking-wider mb-2">Tech Spec (PDF)</label>' +
+                '<div id="e-cinema-spec-area"></div>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+
+          /* ================= LIVE EVENT WORKFLOW (FOUR COLLAPSIBLE SECTIONS) ================= */
+          '<div id="workflow-live-container" class="' + (isLiveInitial ? '' : 'hidden') + ' grid gap-4">' +
+            /* ================= SECTION CONTROLS BAR ================= */
+            '<div class="flex items-center justify-between pt-1 px-1">' +
+              '<span class="text-[11px] font-bold text-muted uppercase tracking-wider flex items-center gap-1.5">' +
+                ui.icon('layers', 'w-3.5 h-3.5 text-accent') + '<span>Advance Configuration Sections</span>' +
+              '</span>' +
+              '<button type="button" id="btn-toggle-all-sections" class="text-xs text-accent hover:underline font-semibold flex items-center gap-1 cursor-pointer">' +
+                '<span>Expand All</span>' +
+              '</button>' +
+            '</div>' +
+
+            /* ================= SECTION ONE: GENERAL EVENT INFO, CREW & TECH SPEC ================= */
+            '<div class="rounded-xl border border-line bg-panel overflow-hidden shadow-xs">' +
+              '<button type="button" data-section-toggle="sec-1-content" class="w-full p-3.5 bg-panel hover:bg-panel2/60 transition-colors flex items-center justify-between text-left gap-3 select-none cursor-pointer">' +
+                '<div class="flex items-center gap-3 min-w-0">' +
+                  '<span class="px-2 py-1 rounded-md bg-accent/15 text-accent text-xs font-bold font-mono">01</span>' +
+                  '<div class="min-w-0">' +
+                    '<div class="text-xs font-bold text-ink uppercase tracking-wider">Section 1: General Info, Crew & Tech Spec</div>' +
+                    '<div class="text-[11px] text-muted truncate">Assigned Technicians, Client Contact, Tech Notes, Guest Engineer & PDF Spec</div>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="flex items-center gap-2 shrink-0">' +
+                  '<span id="sec-1-pill" class="text-[11px] font-semibold px-2 py-0.5 rounded bg-panel2 border border-line text-muted hidden sm:inline-block"></span>' +
+                  '<span data-section-chevron="sec-1-content" class="transition-transform duration-200 text-muted">' + ui.icon('arrowD', 'w-4 h-4') + '</span>' +
+                '</div>' +
+              '</button>' +
+
+              '<div id="sec-1-content" class="hidden p-4 pt-3 border-t border-line/60 bg-panel2/30 grid gap-4">' +
+                fld('Assigned Technicians', '<div id="e-tech-area"></div>') +
+                fld('Artist / Client contact', '<input id="e-contact" class="field" value="' + ui.esc(ev.clientContact || '') + '" placeholder="Tour manager / client name & contact" />') +
+                fld('Technical notes & requirements', '<textarea id="e-info" class="field" rows="3" placeholder="Power requirements, split boxes, staging notes, audio input list\u2026">' + ui.esc(ev.techInfo || '') + '</textarea>') +
+                '<div>' +
+                  '<label class="flex items-center gap-2 cursor-pointer p-2.5 rounded-lg bg-panel border border-line hover:border-accent/40 transition-colors">' +
+                    '<input type="checkbox" id="e-guest" class="w-4 h-4 accent-[var(--accent)]" ' + (ev.guestEngineer ? 'checked' : '') + ' />' +
+                    '<span class="text-xs font-medium text-ink">Visiting / Guest Sound or Lighting Engineer on site</span>' +
+                  '</label>' +
+                '</div>' +
+                '<div>' +
+                  '<label class="block text-xs font-semibold text-ink uppercase tracking-wider mb-2">Tech Spec (PDF)</label>' +
+                  '<div id="e-spec-area"></div>' +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+
+            /* ================= SECTION TWO: SCHEDULE BUILDER ================= */
+            '<div class="rounded-xl border border-line bg-panel overflow-hidden shadow-xs">' +
+              '<button type="button" data-section-toggle="sec-2-content" class="w-full p-3.5 bg-panel hover:bg-panel2/60 transition-colors flex items-center justify-between text-left gap-3 select-none cursor-pointer">' +
+                '<div class="flex items-center gap-3 min-w-0">' +
+                  '<span class="px-2 py-1 rounded-md bg-accent/15 text-accent text-xs font-bold font-mono">02</span>' +
+                  '<div class="min-w-0">' +
+                    '<div class="text-xs font-bold text-ink uppercase tracking-wider">Section 2: Schedule Builder</div>' +
+                    '<div class="text-[11px] text-muted truncate">Standard Core Timings (Load In, Soundcheck, Doors, Curfew) & Running Set Pieces</div>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="flex items-center gap-2 shrink-0">' +
+                  '<span id="sec-2-pill" class="text-[11px] font-semibold px-2 py-0.5 rounded bg-panel2 border border-line text-muted hidden sm:inline-block"></span>' +
+                  '<span data-section-chevron="sec-2-content" class="transition-transform duration-200 text-muted">' + ui.icon('arrowD', 'w-4 h-4') + '</span>' +
+                '</div>' +
+              '</button>' +
+
+              '<div id="sec-2-content" class="hidden p-4 pt-3 border-t border-line/60 bg-panel2/30 grid gap-4">' +
+                '<div class="p-3.5 rounded-xl bg-panel border border-line grid gap-3">' +
+                  '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
+                    '<div class="flex items-center gap-1.5">' +
+                      ui.icon('clock', 'w-4 h-4 text-accent') +
+                      '<span class="text-xs font-semibold text-accent">Live Event Standard Core Timings</span>' +
                     '</div>' +
+                    '<span class="text-[11px] text-muted font-mono">24-hour format (HH:MM)</span>' +
+                  '</div>' +
+
+                  '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3">' +
+                    fld('Load In', '<input id="e-load-in" type="time" class="field font-mono" value="' + ui.esc(ev.load_in || ev.loadIn || '') + '" />') +
+                    fld('Soundcheck', '<input id="e-sc" type="time" class="field font-mono" value="' + ui.esc(ev.soundcheck || '') + '" />') +
+                    fld('Doors', '<input id="e-doors" type="time" class="field font-mono" value="' + ui.esc(ev.doors || '') + '" />') +
+                    fld('Off Stage', '<input id="e-off-stage" type="time" class="field font-mono" value="' + ui.esc(ev.off_stage || ev.offStage || '') + '" />') +
+                    fld('Curfew', '<input id="e-curfew" type="time" class="field font-mono" value="' + ui.esc(ev.curfew || '') + '" />') +
+                    fld('Load Out', '<input id="e-load-out" type="time" class="field font-mono" value="' + ui.esc(ev.load_out || ev.loadOut || '') + '" />') +
+                  '</div>' +
+                '</div>' +
+
+                '<div class="p-3.5 rounded-xl bg-panel border border-line">' +
+                  '<div class="flex items-center justify-between mb-3">' +
+                    '<div>' +
+                      '<label class="block text-xs font-bold text-ink uppercase tracking-wider">Schedule & Set Pieces Builder</label>' +
+                      '<p class="text-xs text-muted">Sequence acts, changeovers, speeches, and other scheduled set pieces.</p>' +
+                    '</div>' +
+                    '<div class="flex items-center gap-1.5">' +
+                      '<div class="relative inline-block text-left" id="add-schedule-menu-wrap">' +
+                        '<button type="button" id="btn-add-schedule-menu" class="btn btn-ghost !py-1.5 text-xs text-accent font-semibold flex items-center gap-1">' +
+                          ui.icon('plus', 'w-3.5 h-3.5') + '<span>Add Schedule Item</span>' + ui.icon('arrowD', 'w-3 h-3') +
+                        '</button>' +
+                        '<div id="schedule-dropdown" class="hidden absolute right-0 mt-1 w-44 rounded-lg bg-panel border border-line shadow-xl z-20 py-1 text-xs">' +
+                          '<button type="button" data-add-type="act" class="w-full text-left px-3 py-2 hover:bg-panel2 flex items-center gap-2">' +
+                            ui.icon('plus', 'w-3.5 h-3.5 text-accent') + '<span>Act (Auto-numbered)</span>' +
+                          '</button>' +
+                          '<button type="button" data-add-type="changeover" class="w-full text-left px-3 py-2 hover:bg-panel2 flex items-center gap-2">' +
+                            ui.icon('reset', 'w-3.5 h-3.5 text-warning') + '<span>Changeover</span>' +
+                          '</button>' +
+                          '<button type="button" data-add-type="other" class="w-full text-left px-3 py-2 hover:bg-panel2 flex items-center gap-2">' +
+                            ui.icon('clip', 'w-3.5 h-3.5 text-info') + '<span>Other Piece</span>' +
+                          '</button>' +
+                        '</div>' +
+                      '</div>' +
+                    '</div>' +
+                  '</div>' +
+                  '<div id="schedule-items-container" class="grid gap-2.5"></div>' +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+
+            /* ================= SECTION THREE: GLOBAL PATCH LIST & LIGHTING PRODUCTION PACKAGE ================= */
+            '<div class="rounded-xl border border-line bg-panel overflow-hidden shadow-xs">' +
+              '<button type="button" data-section-toggle="sec-3-content" class="w-full p-3.5 bg-panel hover:bg-panel2/60 transition-colors flex items-center justify-between text-left gap-3 select-none cursor-pointer">' +
+                '<div class="flex items-center gap-3 min-w-0">' +
+                  '<span class="px-2 py-1 rounded-md bg-accent/15 text-accent text-xs font-bold font-mono">03</span>' +
+                  '<div class="min-w-0">' +
+                    '<div class="text-xs font-bold text-ink uppercase tracking-wider">Section 3: Patch List & Production Package</div>' +
+                    '<div class="text-[11px] text-muted truncate">Master I/O Patch List, Lighting Rig Notes, Floor Package & Specials</div>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="flex items-center gap-2 shrink-0">' +
+                  '<span id="sec-3-pill" class="text-[11px] font-semibold px-2 py-0.5 rounded bg-panel2 border border-line text-muted hidden sm:inline-block"></span>' +
+                  '<span data-section-chevron="sec-3-content" class="transition-transform duration-200 text-muted">' + ui.icon('arrowD', 'w-4 h-4') + '</span>' +
+                '</div>' +
+              '</button>' +
+
+              '<div id="sec-3-content" class="hidden p-4 pt-3 border-t border-line/60 bg-panel2/30 grid gap-4">' +
+                /* Global Patch List */
+                '<div class="p-4 rounded-xl bg-panel border border-line grid gap-4 shadow-2xs">' +
+                  '<div class="flex flex-wrap items-center justify-between pb-2 border-b border-line/60 gap-2">' +
+                    '<div class="flex items-center gap-2">' +
+                      '<span class="p-1 rounded-md bg-panel border border-line text-accent">' + ui.icon('sliders', 'w-3.5 h-3.5') + '</span>' +
+                      '<div>' +
+                        '<div class="text-xs font-bold text-ink uppercase tracking-wider">Global / Festival Patch List</div>' +
+                        '<div class="text-[11px] text-muted">Master audio input & output patch routing</div>' +
+                      '</div>' +
+                    '</div>' +
+                    '<div class="flex items-center gap-2">' +
+                      '<button type="button" id="btn-open-patch-sheet-builder" class="btn btn-primary !py-1 !px-2 text-xs font-semibold flex items-center gap-1" title="Open Stagebox & Repatch Sheet Builder">' +
+                        ui.icon('box', 'w-3.5 h-3.5') + '<span>Stagebox Patch Sheet</span>' +
+                      '</button>' +
+                      '<button type="button" id="btn-global-manage-presets" class="btn btn-ghost !py-1 !px-2 text-xs text-accent flex items-center gap-1 font-semibold" title="Manage Presets Library">' +
+                        ui.icon('sliders', 'w-3.5 h-3.5') + '<span>Presets ⚙</span>' +
+                      '</button>' +
+                      '<span class="text-[11px] font-mono text-accent font-semibold px-2 py-0.5 rounded bg-panel border border-line">' +
+                        channelInputs.length + ' In \u00b7 ' + channelOutputs.length + ' Out' +
+                      '</span>' +
+                    '</div>' +
+                  '</div>' +
+
+                  // Input Channel List Builder
+                  '<div>' +
+                    '<div class="flex flex-wrap items-center justify-between gap-2 mb-2">' +
+                      '<label class="text-xs font-semibold text-ink uppercase tracking-wider">Master Input Channels (' + channelInputs.length + ')</label>' +
+                      '<div class="flex items-center gap-1.5 flex-wrap">' +
+                        '<select id="sel-global-inp-preset" class="field !py-0.5 !px-1.5 text-xs font-medium !w-auto bg-panel text-accent cursor-pointer">' +
+                          '<option value="">⚡ Load Input Preset\u2026</option>' +
+                          RMTP.presets.getInputs().map((p) => '<option value="' + p.id + '">' + ui.esc(p.name) + ' (' + (p.channels ? p.channels.length : 0) + ' Ch)</option>').join('') +
+                        '</select>' +
+                        '<button type="button" id="btn-global-save-inp-preset" class="btn btn-ghost !py-0.5 !px-2 text-[10px] text-accent" title="Save current inputs as reusable preset">💾 Save Preset</button>' +
+                        '<button type="button" id="btn-add-input-chan" class="btn btn-primary !py-0.5 !px-2 text-[10px] flex items-center gap-1 font-semibold">' +
+                          ui.icon('plus', 'w-3 h-3') + '<span>Add Channel</span>' +
+                        '</button>' +
+                        (channelInputs.length ? '<button type="button" id="btn-clear-input-chan" class="btn btn-danger !py-0.5 !px-1.5 text-[10px]" title="Clear Inputs">Clear</button>' : '') +
+                      '</div>' +
+                    '</div>' +
+                    '<div id="channel-inputs-container" class="grid gap-2 max-h-64 overflow-y-auto pr-1"></div>' +
+                  '</div>' +
+
+                  // Output Channel List Builder
+                  '<div class="pt-3 border-t border-line/60">' +
+                    '<div class="flex flex-wrap items-center justify-between gap-2 mb-2">' +
+                      '<label class="text-xs font-semibold text-ink uppercase tracking-wider">Master Outputs & Monitors (' + channelOutputs.length + ')</label>' +
+                      '<div class="flex items-center gap-1.5 flex-wrap">' +
+                        '<select id="sel-global-out-preset" class="field !py-0.5 !px-1.5 text-xs font-medium !w-auto bg-panel text-info cursor-pointer">' +
+                          '<option value="">⚡ Load Output Preset\u2026</option>' +
+                          RMTP.presets.getOutputs().map((p) => '<option value="' + p.id + '">' + ui.esc(p.name) + ' (' + (p.channels ? p.channels.length : 0) + ' Out)</option>').join('') +
+                        '</select>' +
+                        '<button type="button" id="btn-global-save-out-preset" class="btn btn-ghost !py-0.5 !px-2 text-[10px] text-info" title="Save current outputs as reusable preset">💾 Save Preset</button>' +
+                        '<button type="button" id="btn-add-output-chan" class="btn btn-primary !py-0.5 !px-2 text-[10px] flex items-center gap-1 font-semibold">' +
+                          ui.icon('plus', 'w-3 h-3') + '<span>Add Output</span>' +
+                        '</button>' +
+                        (channelOutputs.length ? '<button type="button" id="btn-clear-output-chan" class="btn btn-danger !py-0.5 !px-1.5 text-[10px]" title="Clear Outputs">Clear</button>' : '') +
+                      '</div>' +
+                    '</div>' +
+                    '<div id="channel-outputs-container" class="grid gap-2 max-h-52 overflow-y-auto pr-1"></div>' +
+                  '</div>' +
+                '</div>' +
+
+                /* Lighting & Production Package */
+                '<div id="section-lighting-production" class="p-4 rounded-xl bg-panel border border-line grid gap-4 shadow-2xs">' +
+                  '<div class="flex flex-wrap items-center justify-between pb-2 border-b border-line/60 gap-2">' +
+                    '<div class="flex items-center gap-2">' +
+                      '<span class="p-1 rounded-md bg-panel border border-warning/40 text-warning">' + ui.icon('bulb', 'w-3.5 h-3.5') + '</span>' +
+                      '<div>' +
+                        '<div class="text-xs font-bold text-ink uppercase tracking-wider">Lighting & Production Package</div>' +
+                        '<div class="text-[11px] text-muted">Lighting rig notes, touring floor package, and production specials</div>' +
+                      '</div>' +
+                    '</div>' +
+                    '<div id="production-specials-indicator" class="flex items-center gap-1.5 flex-wrap"></div>' +
+                  '</div>' +
+
+                  // Lighting Notes / Rig Plan
+                  '<div>' +
+                    '<label class="block text-xs font-semibold text-ink uppercase tracking-wider mb-1">Lighting Notes & House Rig Plan</label>' +
+                    '<p class="text-xs text-muted mb-2">Desk preferences (e.g. Avolites / GrandMA / ChamSys), cues, house rig modifications, dimmer patching requirements.</p>' +
+                    '<textarea id="e-lighting-notes" class="field" rows="3" placeholder="Desk preferences, lighting cues, house rig modifications, dimmer patching requirements\u2026">' + ui.esc(prodInitial.lighting_notes || '') + '</textarea>' +
+                  '</div>' +
+
+                  // Incoming Touring Floor Package & Power
+                  '<div>' +
+                    '<label class="block text-xs font-semibold text-ink uppercase tracking-wider mb-1">Incoming Touring Floor Package & Power Drops</label>' +
+                    '<p class="text-xs text-muted mb-2">Touring fixtures (moving heads, strobes, LED bars), floor bases, risers, and stage power drops (16A/32A/63A single/3-phase).</p>' +
+                    '<textarea id="e-floor-package" class="field mb-2" rows="2" placeholder="Touring package details, fixture counts, DMX universe runs to stage, risers, stage floor placement\u2026">' + ui.esc(prodInitial.floor_package || '') + '</textarea>' +
+                    '<div class="text-[11px] font-semibold text-muted mb-1.5">Floor Kit & Power Presets (Click to toggle tag):</div>' +
+                    '<div id="floor-tags-container" class="flex items-center gap-1.5 flex-wrap"></div>' +
+                  '</div>' +
+
+                  // Additional Production Elements & Specials
+                  '<div class="pt-3 border-t border-line/60">' +
+                    '<label class="block text-xs font-semibold text-ink uppercase tracking-wider mb-1">Additional Production Elements & Specials</label>' +
+                    '<p class="text-xs text-muted mb-2.5">Tick active specials to trigger isolation workflows, heavy power allocation, and safety notices.</p>' +
+                    '<div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 mb-3">' +
+                      '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2.5 rounded-lg bg-panel2/40 border border-line hover:border-amber-500/50 transition-colors">' +
+                        '<input type="checkbox" id="e-spec-hazer" class="w-4 h-4 accent-amber-500" ' + (prodInitial.specials.hazer ? 'checked' : '') + ' />' +
+                        '<span class="flex items-center gap-1.5">' + ui.icon('wind', 'w-3.5 h-3.5 text-amber-400') + '<span>Hazer / Fogger</span></span>' +
+                      '</label>' +
+                      '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2.5 rounded-lg bg-panel2/40 border border-line hover:border-rose-500/50 transition-colors">' +
+                        '<input type="checkbox" id="e-spec-lasers" class="w-4 h-4 accent-rose-500" ' + (prodInitial.specials.lasers ? 'checked' : '') + ' />' +
+                        '<span class="flex items-center gap-1.5">' + ui.icon('zap', 'w-3.5 h-3.5 text-rose-400') + '<span>Lasers (Class 3B/4)</span></span>' +
+                      '</label>' +
+                      '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2.5 rounded-lg bg-panel2/40 border border-line hover:border-orange-500/50 transition-colors">' +
+                        '<input type="checkbox" id="e-spec-power" class="w-4 h-4 accent-orange-500" ' + (prodInitial.specials.heavy_power ? 'checked' : '') + ' />' +
+                        '<span class="flex items-center gap-1.5">' + ui.icon('zap', 'w-3.5 h-3.5 text-orange-400') + '<span>Heavy Power (3-Ph)</span></span>' +
+                      '</label>' +
+                      '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2.5 rounded-lg bg-panel2/40 border border-line hover:border-sky-500/50 transition-colors">' +
+                        '<input type="checkbox" id="e-spec-video" class="w-4 h-4 accent-sky-500" ' + (prodInitial.specials.video ? 'checked' : '') + ' />' +
+                        '<span class="flex items-center gap-1.5">' + ui.icon('screen', 'w-3.5 h-3.5 text-sky-400') + '<span>Video / Projection</span></span>' +
+                      '</label>' +
+                      '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2.5 rounded-lg bg-panel2/40 border border-line hover:border-purple-500/50 transition-colors">' +
+                        '<input type="checkbox" id="e-spec-pyro" class="w-4 h-4 accent-purple-500" ' + (prodInitial.specials.pyro ? 'checked' : '') + ' />' +
+                        '<span class="flex items-center gap-1.5">' + ui.icon('sparkles', 'w-3.5 h-3.5 text-purple-400') + '<span>Pyro / Confetti</span></span>' +
+                      '</label>' +
+                    '</div>' +
+                    fld('Special Notes & Safety / Isolation Details', '<input id="e-special-notes" class="field" value="' + ui.esc(prodInitial.special_notes || '') + '" placeholder="e.g. Smoke detector isolation timing, Laser Safety Officer, clearance radius, power distribution box location\u2026" />') +
                   '</div>' +
                 '</div>' +
               '</div>' +
-              '<div id="schedule-items-container" class="grid gap-2.5"></div>' +
-            '</div>' +
-          '</div>' +
-
-          /* ================= CINEMA SCREENINGS SECTION ================= */
-          '<div id="section-cinema-advancing" class="' + (isScreenInitial ? '' : 'hidden') + ' p-4 rounded-xl bg-panel2/40 border border-line grid gap-4">' +
-            '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
-              '<div class="flex items-center gap-1.5">' +
-                ui.icon('film', 'w-4 h-4 text-accent') +
-                '<span class="text-xs font-semibold text-accent">Cinema Screening Checklist, Film Duration & DCP Details</span>' +
-              '</div>' +
-              '<span class="text-[11px] text-muted">Auditorium Screen Advance</span>' +
             '</div>' +
 
-            '<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">' +
-              fld('Screening Starts Time', '<input id="e-screening-starts" type="time" class="field font-mono" value="' + ui.esc(ev.screening_starts_time || ev.screeningStartsTime || '') + '" />') +
-              fld('Film Duration', '<input id="e-film-duration" class="field font-mono" value="' + ui.esc(ev.film_duration || ev.filmDuration || '') + '" placeholder="e.g. 118 mins, 1h 45m" />') +
-              fld('Media Type', '<select id="e-media-type" class="field">' + blankOpt(RMTP.MEDIA_TYPES, ev.media_type || ev.mediaType, 'Select Media\u2026') + '</select>') +
-            '</div>' +
+            /* ================= SECTION FOUR: EVERYTHING ELSE ================= */
+            '<div class="rounded-xl border border-line bg-panel overflow-hidden shadow-xs">' +
+              '<button type="button" data-section-toggle="sec-4-content" class="w-full p-3.5 bg-panel hover:bg-panel2/60 transition-colors flex items-center justify-between text-left gap-3 select-none cursor-pointer">' +
+                '<div class="flex items-center gap-3 min-w-0">' +
+                  '<span class="px-2 py-1 rounded-md bg-accent/15 text-accent text-xs font-bold font-mono">04</span>' +
+                  '<div class="min-w-0">' +
+                    '<div class="text-xs font-bold text-ink uppercase tracking-wider">Section 4: Everything Else</div>' +
+                    '<div class="text-[11px] text-muted truncate">Linked Maintenance Tasks & Event Shift Report Email Overrides</div>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="flex items-center gap-2 shrink-0">' +
+                  '<span id="sec-4-pill" class="text-[11px] font-semibold px-2 py-0.5 rounded bg-panel2 border border-line text-muted hidden sm:inline-block"></span>' +
+                  '<span data-section-chevron="sec-4-content" class="transition-transform duration-200 text-muted">' + ui.icon('arrowD', 'w-4 h-4') + '</span>' +
+                '</div>' +
+              '</button>' +
 
-            '<div>' +
-              '<label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2">Screening Checklist</label>' +
-              '<div class="grid grid-cols-2 sm:grid-cols-4 gap-3">' +
-                '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2 rounded-lg bg-panel border border-line">' +
-                  '<input type="checkbox" id="e-dcp" class="w-4 h-4 accent-[var(--ok)]" ' + ((ev.dcp_received !== undefined ? ev.dcp_received : ev.dcpReceived) ? 'checked' : '') + ' />' +
-                  '<span>DCP Received</span>' +
-                '</label>' +
-                '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2 rounded-lg bg-panel border border-line">' +
-                  '<input type="checkbox" id="e-checks" class="w-4 h-4 accent-[var(--ok)]" ' + ((ev.checks_completed !== undefined ? ev.checks_completed : ev.checksCompleted) ? 'checked' : '') + ' />' +
-                  '<span>Checks Completed</span>' +
-                '</label>' +
-                '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2 rounded-lg bg-panel border border-line">' +
-                  '<input type="checkbox" id="e-intermission" class="w-4 h-4 accent-[var(--ok)]" ' + (ev.intermission ? 'checked' : '') + ' />' +
-                  '<span>Intermission?</span>' +
-                '</label>' +
-                '<label class="flex items-center gap-2 text-xs font-medium cursor-pointer p-2 rounded-lg bg-panel border border-line">' +
-                  '<input type="checkbox" id="e-qa" class="w-4 h-4 accent-[var(--ok)]" ' + (ev.qa ? 'checked' : '') + ' />' +
-                  '<span>Q&A?</span>' +
-                '</label>' +
-              '</div>' +
-            '</div>' +
+              '<div id="sec-4-content" class="hidden p-4 pt-3 border-t border-line/60 bg-panel2/30 grid gap-4">' +
+                /* Linked Maintenance Tasks */
+                '<div id="section-maintenance-advancing" class="' + (ev.category === 'Maintenance' || linkedMaintIds.length ? '' : 'hidden') + ' p-4 rounded-xl bg-panel border border-warning/30 grid gap-3 shadow-xs">' +
+                  '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
+                    '<div class="flex items-center gap-1.5">' +
+                      ui.icon('tool', 'w-4 h-4 text-warning') +
+                      '<span class="text-xs font-semibold text-warning">Link Maintenance Tasks & Faults</span>' +
+                    '</div>' +
+                    '<span class="text-[11px] text-muted">Assigned tasks will be tracked against this shift</span>' +
+                  '</div>' +
+                  '<div id="maintenance-tasks-picker" class="grid gap-2 max-h-52 overflow-y-auto pr-1"></div>' +
+                '</div>' +
 
-            '<div class="pt-2 border-t border-line/60 grid grid-cols-1 sm:grid-cols-2 gap-4">' +
-              fld('Testing Engineer', '<select id="e-dcp-tester" class="field">' + userOptionsHtml(ev.dcp_tester_user_id || ev.dcpTesterUserId || '') + '</select>') +
-              fld('Testing Date & Time', '<input id="e-dcp-test-datetime" type="datetime-local" class="field font-mono" value="' + ui.esc(ev.dcp_test_datetime || ev.dcpTestDatetime || '') + '" />') +
-            '</div>' +
-            '<label class="flex items-center gap-2 text-xs font-semibold cursor-pointer text-accent pt-1">' +
-              '<input type="checkbox" id="e-gen-dcp-shift" class="w-4 h-4 accent-[var(--accent)]" ' + (ev.dcp_test_event_id || (!existing && (ev.category === 'Cinema' || isScreenInitial)) ? 'checked' : 'checked') + ' />' +
-              '<span>Generate / Update Linked DCP Test Shift in Calendar</span>' +
-            '</label>' +
-          '</div>' +
-
-          /* ================= MAINTENANCE TASKS SECTION ================= */
-          '<div id="section-maintenance-advancing" class="' + (ev.category === 'Maintenance' || linkedMaintIds.length ? '' : 'hidden') + ' p-4 rounded-xl bg-panel2/40 border border-warning/30 grid gap-3">' +
-            '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
-              '<div class="flex items-center gap-1.5">' +
-                ui.icon('tool', 'w-4 h-4 text-warning') +
-                '<span class="text-xs font-semibold text-warning">Link Maintenance Tasks & Faults</span>' +
-              '</div>' +
-              '<span class="text-[11px] text-muted">Assigned tasks will be tracked against this shift</span>' +
-            '</div>' +
-            '<div id="maintenance-tasks-picker" class="grid gap-2 max-h-52 overflow-y-auto pr-1"></div>' +
-          '</div>' +
-
-          /* ================= CREW & DETAILS SECTION ================= */
-          fld('Assigned Technicians', '<div id="e-tech-area"></div>') +
-          fld('Artist / Client contact', '<input id="e-contact" class="field" value="' + ui.esc(ev.clientContact || '') + '" placeholder="Tour manager / client name & contact" />') +
-          fld('Technical notes & requirements', '<textarea id="e-info" class="field" rows="3" placeholder="Power requirements, split boxes, staging notes, audio input list\u2026">' + ui.esc(ev.techInfo || '') + '</textarea>') +
-          fld('Event Shift Report Email Recipients (Optional Override)', '<input id="e-email-recipients" class="field font-mono text-xs" value="' + ui.esc(Array.isArray(ev.email_recipients || ev.emailRecipients) ? (ev.email_recipients || ev.emailRecipients).join(', ') : (ev.email_recipients || ev.emailRecipients || '')) + '" placeholder="Leave blank to use Advancing page recipients (' + getReportRecipients().join(', ') + ')" />') +
-          '<div>' +
-            '<div class="flex items-center gap-3 mb-2">' +
-              '<label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="e-guest" class="w-4 h-4 accent-[var(--accent)]" ' + (ev.guestEngineer ? 'checked' : '') + ' /><span class="text-sm font-medium">Visiting / Guest Sound or Lighting Engineer</span></label>' +
-            '</div>' +
-          '</div>' +
-          '<div><label class="block text-sm font-medium mb-2">Tech Spec (PDF)</label><div id="e-spec-area"></div></div>' +
-
-          /* ================= GLOBAL / FESTIVAL PATCH LIST (CUSTOM LIST) ================= */
-          '<div class="p-4 rounded-xl bg-panel2/40 border border-line grid gap-4 mt-2 shadow-sm">' +
-            '<div class="flex flex-wrap items-center justify-between pb-2 border-b border-line/60 gap-2">' +
-              '<div class="flex items-center gap-2">' +
-                '<span class="p-1.5 rounded-lg bg-panel border border-line text-accent">' + ui.icon('sliders', 'w-4 h-4') + '</span>' +
-                '<div>' +
-                  '<div class="text-xs font-bold text-ink uppercase tracking-wider">Global / Festival Patch List (Custom List)</div>' +
-                  '<div class="text-[11px] text-muted">Master audio input & output patch for shared festival routing or whole-venue stage configuration</div>' +
+                /* Shift Report Email Recipients Override */
+                '<div class="p-4 rounded-xl bg-panel border border-line grid gap-2">' +
+                  fld('Event Shift Report Email Recipients (Optional Override)', '<input id="e-email-recipients" class="field font-mono text-xs" value="' + ui.esc(Array.isArray(ev.email_recipients || ev.emailRecipients) ? (ev.email_recipients || ev.emailRecipients).join(', ') : (ev.email_recipients || ev.emailRecipients || '')) + '" placeholder="Leave blank to use Advancing page recipients (' + getReportRecipients().join(', ') + ')" />') +
+                  '<p class="text-[11px] text-muted">Comma-separated email addresses to receive the final technical shift report for this specific show.</p>' +
                 '</div>' +
               '</div>' +
-              '<div class="flex items-center gap-2">' +
-                '<button type="button" id="btn-global-manage-presets" class="btn btn-ghost !py-1 !px-2 text-xs text-accent flex items-center gap-1 font-semibold" title="Manage Presets Library">' +
-                  ui.icon('sliders', 'w-3.5 h-3.5') + '<span>Manage Presets ⚙</span>' +
-                '</button>' +
-                '<span class="text-[11px] font-mono text-accent font-semibold px-2 py-0.5 rounded bg-panel border border-line">' +
-                  channelInputs.length + ' In \u00b7 ' + channelOutputs.length + ' Out' +
-                '</span>' +
-              '</div>' +
-            '</div>' +
-
-            // Input Channel List Builder
-            '<div>' +
-              '<div class="flex flex-wrap items-center justify-between gap-2 mb-2">' +
-                '<label class="text-xs font-semibold text-ink uppercase tracking-wider">Master Input Channels (' + channelInputs.length + ')</label>' +
-                '<div class="flex items-center gap-1.5 flex-wrap">' +
-                  '<select id="sel-global-inp-preset" class="field !py-0.5 !px-1.5 text-xs font-medium !w-auto bg-panel text-accent cursor-pointer">' +
-                    '<option value="">⚡ Load Input Preset\u2026</option>' +
-                    RMTP.presets.getInputs().map((p) => '<option value="' + p.id + '">' + ui.esc(p.name) + ' (' + (p.channels ? p.channels.length : 0) + ' Ch)</option>').join('') +
-                  '</select>' +
-                  '<button type="button" id="btn-global-save-inp-preset" class="btn btn-ghost !py-0.5 !px-2 text-[10px] text-accent" title="Save current inputs as reusable preset">💾 Save Preset</button>' +
-                  '<button type="button" id="btn-add-input-chan" class="btn btn-primary !py-0.5 !px-2 text-[10px] flex items-center gap-1 font-semibold">' +
-                    ui.icon('plus', 'w-3 h-3') + '<span>Add Channel</span>' +
-                  '</button>' +
-                  (channelInputs.length ? '<button type="button" id="btn-clear-input-chan" class="btn btn-danger !py-0.5 !px-1.5 text-[10px]" title="Clear Inputs">Clear</button>' : '') +
-                '</div>' +
-              '</div>' +
-              '<div id="channel-inputs-container" class="grid gap-2 max-h-64 overflow-y-auto pr-1"></div>' +
-            '</div>' +
-
-            // Output Channel List Builder
-            '<div class="pt-3 border-t border-line/60">' +
-              '<div class="flex flex-wrap items-center justify-between gap-2 mb-2">' +
-                '<label class="text-xs font-semibold text-ink uppercase tracking-wider">Master Outputs & Monitors (' + channelOutputs.length + ')</label>' +
-                '<div class="flex items-center gap-1.5 flex-wrap">' +
-                  '<select id="sel-global-out-preset" class="field !py-0.5 !px-1.5 text-xs font-medium !w-auto bg-panel text-info cursor-pointer">' +
-                    '<option value="">⚡ Load Output Preset\u2026</option>' +
-                    RMTP.presets.getOutputs().map((p) => '<option value="' + p.id + '">' + ui.esc(p.name) + ' (' + (p.channels ? p.channels.length : 0) + ' Out)</option>').join('') +
-                  '</select>' +
-                  '<button type="button" id="btn-global-save-out-preset" class="btn btn-ghost !py-0.5 !px-2 text-[10px] text-info" title="Save current outputs as reusable preset">💾 Save Preset</button>' +
-                  '<button type="button" id="btn-add-output-chan" class="btn btn-primary !py-0.5 !px-2 text-[10px] flex items-center gap-1 font-semibold">' +
-                    ui.icon('plus', 'w-3 h-3') + '<span>Add Output</span>' +
-                  '</button>' +
-                  (channelOutputs.length ? '<button type="button" id="btn-clear-output-chan" class="btn btn-danger !py-0.5 !px-1.5 text-[10px]" title="Clear Outputs">Clear</button>' : '') +
-                '</div>' +
-              '</div>' +
-              '<div id="channel-outputs-container" class="grid gap-2 max-h-52 overflow-y-auto pr-1"></div>' +
             '</div>' +
           '</div>' +
         '</div>',
@@ -2244,17 +2724,183 @@ RMTP.views.advancing = function (el) {
         '<button class="btn btn-primary" data-save data-primary>' + (existing ? 'Save changes' : 'Add event') + '</button>',
     });
 
+    // Section Banners & Accordion Controls
+    function updateSectionBannerPills() {
+      // Sec 1 Pill
+      const sec1Pill = m.root.querySelector('#sec-1-pill');
+      if (sec1Pill) {
+        const assignedTechCount = techs.filter((t) => t.userId).length;
+        const hasSpec = pending || (cleared ? false : !!specMeta);
+        const parts = [];
+        if (assignedTechCount) parts.push(assignedTechCount + ' Tech' + (assignedTechCount === 1 ? '' : 's'));
+        if (hasSpec) parts.push('PDF Spec');
+        sec1Pill.textContent = parts.length ? parts.join(' \u00b7 ') : 'Not Configured';
+        sec1Pill.className = 'text-[11px] font-semibold px-2 py-0.5 rounded border hidden sm:inline-block ' +
+          (parts.length ? 'bg-accent/10 border-accent/30 text-accent font-medium' : 'bg-panel2 border-line text-muted');
+      }
+
+      // Sec 2 Pill
+      const sec2Pill = m.root.querySelector('#sec-2-pill');
+      if (sec2Pill) {
+        const timings = [
+          m.root.querySelector('#e-load-in')?.value,
+          m.root.querySelector('#e-sc')?.value,
+          m.root.querySelector('#e-doors')?.value,
+          m.root.querySelector('#e-curfew')?.value
+        ].filter(Boolean).length;
+        const parts = [];
+        if (timings) parts.push(timings + ' Timings');
+        if (scheduleItems.length) parts.push(scheduleItems.length + ' Set Piece' + (scheduleItems.length === 1 ? '' : 's'));
+        sec2Pill.textContent = parts.length ? parts.join(' \u00b7 ') : 'Standard Timings';
+        sec2Pill.className = 'text-[11px] font-semibold px-2 py-0.5 rounded border hidden sm:inline-block ' +
+          (parts.length ? 'bg-accent/10 border-accent/30 text-accent font-medium' : 'bg-panel2 border-line text-muted');
+      }
+
+      // Sec 3 Pill
+      const sec3Pill = m.root.querySelector('#sec-3-pill');
+      if (sec3Pill) {
+        const parts = [];
+        if (channelInputs.length || channelOutputs.length) {
+          parts.push(channelInputs.length + ' In / ' + channelOutputs.length + ' Out');
+        }
+        if (floorTags.length) parts.push(floorTags.length + ' Floor Tags');
+        sec3Pill.textContent = parts.length ? parts.join(' \u00b7 ') : 'Default Rig';
+        sec3Pill.className = 'text-[11px] font-semibold px-2 py-0.5 rounded border hidden sm:inline-block ' +
+          (parts.length ? 'bg-accent/10 border-accent/30 text-accent font-medium' : 'bg-panel2 border-line text-muted');
+      }
+
+      // Sec 4 Pill
+      const sec4Pill = m.root.querySelector('#sec-4-pill');
+      if (sec4Pill) {
+        const parts = [];
+        if (linkedMaintIds.length) parts.push(linkedMaintIds.length + ' Fault' + (linkedMaintIds.length === 1 ? '' : 's'));
+        const emailVal = m.root.querySelector('#e-email-recipients')?.value.trim();
+        if (emailVal) parts.push('Email Override');
+        sec4Pill.textContent = parts.length ? parts.join(' \u00b7 ') : 'Default Settings';
+        sec4Pill.className = 'text-[11px] font-semibold px-2 py-0.5 rounded border hidden sm:inline-block ' +
+          (parts.length ? 'bg-accent/10 border-accent/30 text-accent font-medium' : 'bg-panel2 border-line text-muted');
+      }
+    }
+
+    function initSectionBanners() {
+      const sectionToggles = m.root.querySelectorAll('[data-section-toggle]');
+      sectionToggles.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const targetId = btn.getAttribute('data-section-toggle');
+          const body = m.root.querySelector('#' + targetId);
+          const chevron = btn.querySelector('[data-section-chevron]');
+          if (!body) return;
+          const isCurrentlyHidden = body.classList.contains('hidden');
+          body.classList.toggle('hidden', !isCurrentlyHidden);
+          if (chevron) {
+            chevron.style.transform = isCurrentlyHidden ? 'rotate(180deg)' : 'rotate(0deg)';
+          }
+          btn.setAttribute('aria-expanded', isCurrentlyHidden ? 'true' : 'false');
+          updateToggleAllButtonText();
+        });
+      });
+
+      const toggleAllBtn = m.root.querySelector('#btn-toggle-all-sections');
+      if (toggleAllBtn) {
+        toggleAllBtn.addEventListener('click', () => {
+          const bodies = [
+            m.root.querySelector('#sec-1-content'),
+            m.root.querySelector('#sec-2-content'),
+            m.root.querySelector('#sec-3-content'),
+            m.root.querySelector('#sec-4-content'),
+          ].filter(Boolean);
+
+          const anyHidden = bodies.some((b) => b.classList.contains('hidden'));
+          bodies.forEach((b) => {
+            b.classList.toggle('hidden', !anyHidden);
+            const btn = m.root.querySelector('[data-section-toggle="' + b.id + '"]');
+            const chevron = btn ? btn.querySelector('[data-section-chevron]') : null;
+            if (chevron) {
+              chevron.style.transform = anyHidden ? 'rotate(180deg)' : 'rotate(0deg)';
+            }
+            if (btn) btn.setAttribute('aria-expanded', anyHidden ? 'true' : 'false');
+          });
+          updateToggleAllButtonText();
+        });
+      }
+    }
+
+    function updateToggleAllButtonText() {
+      const toggleAllBtn = m.root.querySelector('#btn-toggle-all-sections');
+      if (!toggleAllBtn) return;
+      const bodies = [
+        m.root.querySelector('#sec-1-content'),
+        m.root.querySelector('#sec-2-content'),
+        m.root.querySelector('#sec-3-content'),
+        m.root.querySelector('#sec-4-content'),
+      ].filter(Boolean);
+      const anyHidden = bodies.some((b) => b.classList.contains('hidden'));
+      toggleAllBtn.innerHTML = anyHidden ? '<span>Expand All</span>' : '<span>Collapse All</span>';
+    }
+
+    initSectionBanners();
+    updateSectionBannerPills();
+
     // Space Selection dynamic routing
     const spaceSelect = m.root.querySelector('#e-space');
     const categorySelect = m.root.querySelector('#e-category');
-    const liveSection = m.root.querySelector('#section-live-advancing');
-    const cinemaSection = m.root.querySelector('#section-cinema-advancing');
+    const liveWorkflow = m.root.querySelector('#workflow-live-container');
+    const cinemaWorkflow = m.root.querySelector('#workflow-cinema-container');
     const maintSection = m.root.querySelector('#section-maintenance-advancing');
+    const cinemaMaintSection = m.root.querySelector('#section-cinema-maintenance');
 
     function updateSpaceWorkflow() {
-      const isScreen = isScreenSpace(spaceSelect.value);
-      if (liveSection) liveSection.classList.toggle('hidden', isScreen);
-      if (cinemaSection) cinemaSection.classList.toggle('hidden', !isScreen);
+      const currentSpace = (spaceSelect && spaceSelect.value) ? spaceSelect.value.trim() : '';
+      const hasSpace = Boolean(currentSpace);
+      const isScreen = hasSpace && isScreenSpace(currentSpace);
+      const isLive = hasSpace && !isScreen;
+
+      const spaceBadge = m.root.querySelector('#space-select-badge');
+      if (spaceBadge) spaceBadge.classList.toggle('hidden', hasSpace);
+
+      const spaceHint = m.root.querySelector('#space-select-hint');
+      if (spaceHint) spaceHint.classList.toggle('hidden', hasSpace);
+
+      const spaceIcon = m.root.querySelector('#space-input-icon');
+      if (spaceIcon) {
+        spaceIcon.className = 'absolute left-2.5 pointer-events-none transition-colors ' + (hasSpace ? 'text-accent' : 'text-accent/60');
+      }
+
+      if (spaceSelect) {
+        spaceSelect.classList.toggle('border-accent/40', !hasSpace);
+        spaceSelect.classList.toggle('bg-accent/5', !hasSpace);
+        spaceSelect.classList.toggle('ring-2', !hasSpace);
+        spaceSelect.classList.toggle('ring-accent/10', !hasSpace);
+      }
+
+      const unselectedPrompt = m.root.querySelector('#space-unselected-prompt');
+      if (unselectedPrompt) unselectedPrompt.classList.toggle('hidden', hasSpace);
+
+      if (liveWorkflow) liveWorkflow.classList.toggle('hidden', !isLive);
+      if (cinemaWorkflow) cinemaWorkflow.classList.toggle('hidden', !isScreen);
+
+      // Sync inputs if user toggles between workflows
+      const cContact = m.root.querySelector('#e-cinema-contact');
+      const lContact = m.root.querySelector('#e-contact');
+      if (isScreen && cContact && lContact && !cContact.value) cContact.value = lContact.value;
+      if (!isScreen && cContact && lContact && !lContact.value) lContact.value = cContact.value;
+
+      const cInfo = m.root.querySelector('#e-cinema-info');
+      const lInfo = m.root.querySelector('#e-info');
+      if (isScreen && cInfo && lInfo && !cInfo.value) cInfo.value = lInfo.value;
+      if (!isScreen && cInfo && lInfo && !lInfo.value) lInfo.value = cInfo.value;
+
+      const cGuest = m.root.querySelector('#e-cinema-guest');
+      const lGuest = m.root.querySelector('#e-guest');
+      if (isScreen && cGuest && lGuest) cGuest.checked = lGuest.checked;
+      if (!isScreen && cGuest && lGuest) lGuest.checked = cGuest.checked;
+
+      const cEmail = m.root.querySelector('#e-cinema-email-recipients');
+      const lEmail = m.root.querySelector('#e-email-recipients');
+      if (isScreen && cEmail && lEmail && !cEmail.value) cEmail.value = lEmail.value;
+      if (!isScreen && cEmail && lEmail && !lEmail.value) lEmail.value = cEmail.value;
+
+      updateSectionBannerPills();
     }
     if (spaceSelect) spaceSelect.addEventListener('change', updateSpaceWorkflow);
 
@@ -2262,6 +2908,7 @@ RMTP.views.advancing = function (el) {
       categorySelect.addEventListener('change', () => {
         const isMaint = categorySelect.value === 'Maintenance';
         if (maintSection) maintSection.classList.toggle('hidden', !isMaint && !linkedMaintIds.length);
+        if (cinemaMaintSection) cinemaMaintSection.classList.toggle('hidden', !isMaint && !linkedMaintIds.length);
         if (categorySelect.value === 'Cinema' && !spaceSelect.value) {
           spaceSelect.value = 'Cinema 1';
           updateSpaceWorkflow();
@@ -2271,36 +2918,42 @@ RMTP.views.advancing = function (el) {
 
     // Maintenance tasks picker
     function renderMaintenancePicker() {
-      const picker = m.root.querySelector('#maintenance-tasks-picker');
-      if (!picker) return;
-      if (!openFaults.length) {
-        picker.innerHTML = '<div class="text-xs text-muted italic p-2 rounded bg-panel border border-line">No open maintenance tasks or faults found.</div>';
-        return;
-      }
-      picker.innerHTML = openFaults.map((f) => {
-        const isChecked = linkedMaintIds.indexOf(f.id) !== -1;
-        return (
-          '<label class="flex items-start gap-2.5 p-2.5 rounded-lg bg-panel border border-line cursor-pointer hover:border-accent/50 text-xs">' +
-            '<input type="checkbox" data-maint-id="' + f.id + '" class="w-4 h-4 mt-0.5 rounded border-line accent-[var(--accent)] shrink-0 cursor-pointer" ' + (isChecked ? 'checked' : '') + ' />' +
-            '<div class="min-w-0 flex-1">' +
-              '<div class="flex items-center justify-between gap-2">' +
-                '<span class="font-medium text-ink">' + ui.esc(f.title || f.equipment || 'Fault') + '</span>' +
-                ui.pill(f.status || 'Reported', f.status === 'Resolved' ? 'var(--ok)' : (f.status === 'In Progress' ? 'var(--info)' : 'var(--warning)')) +
+      ['#maintenance-tasks-picker', '#cinema-maintenance-picker'].forEach((sel) => {
+        const picker = m.root.querySelector(sel);
+        if (!picker) return;
+        if (!openFaults.length) {
+          picker.innerHTML = '<div class="text-xs text-muted italic p-2 rounded bg-panel border border-line">No open maintenance tasks or faults found.</div>';
+          return;
+        }
+        picker.innerHTML = openFaults.map((f) => {
+          const isChecked = linkedMaintIds.indexOf(f.id) !== -1;
+          return (
+            '<label class="flex items-start gap-2.5 p-2.5 rounded-lg bg-panel border border-line cursor-pointer hover:border-accent/50 text-xs">' +
+              '<input type="checkbox" data-maint-id="' + f.id + '" class="w-4 h-4 mt-0.5 rounded border-line accent-[var(--accent)] shrink-0 cursor-pointer" ' + (isChecked ? 'checked' : '') + ' />' +
+              '<div class="min-w-0 flex-1">' +
+                '<div class="flex items-center justify-between gap-2">' +
+                  '<span class="font-medium text-ink">' + ui.esc(f.title || f.equipment || 'Fault') + '</span>' +
+                  ui.pill(f.status || 'Reported', f.status === 'Resolved' ? 'var(--ok)' : (f.status === 'In Progress' ? 'var(--info)' : 'var(--warning)')) +
+                '</div>' +
+                '<div class="text-muted text-[11px] mt-0.5">' + ui.esc(f.space || f.location || 'Venue') + (f.description ? ' \u00b7 ' + ui.esc(f.description) : '') + '</div>' +
               '</div>' +
-              '<div class="text-muted text-[11px] mt-0.5">' + ui.esc(f.space || f.location || 'Venue') + (f.description ? ' \u00b7 ' + ui.esc(f.description) : '') + '</div>' +
-            '</div>' +
-          '</label>'
-        );
-      }).join('');
+            '</label>'
+          );
+        }).join('');
 
-      picker.querySelectorAll('[data-maint-id]').forEach((cb) => {
-        cb.addEventListener('change', (e) => {
-          const fid = cb.getAttribute('data-maint-id');
-          if (e.target.checked) {
-            if (linkedMaintIds.indexOf(fid) === -1) linkedMaintIds.push(fid);
-          } else {
-            linkedMaintIds = linkedMaintIds.filter((x) => x !== fid);
-          }
+        picker.querySelectorAll('[data-maint-id]').forEach((cb) => {
+          cb.addEventListener('change', (e) => {
+            const fid = cb.getAttribute('data-maint-id');
+            if (e.target.checked) {
+              if (linkedMaintIds.indexOf(fid) === -1) linkedMaintIds.push(fid);
+            } else {
+              linkedMaintIds = linkedMaintIds.filter((x) => x !== fid);
+            }
+            m.root.querySelectorAll('[data-maint-id="' + fid + '"]').forEach((otherCb) => {
+              otherCb.checked = e.target.checked;
+            });
+            updateSectionBannerPills();
+          });
         });
       });
     }
@@ -2310,6 +2963,7 @@ RMTP.views.advancing = function (el) {
     function renderChannelInputs() {
       const container = m.root.querySelector('#channel-inputs-container');
       if (!container) return;
+      updateSectionBannerPills();
       if (!channelInputs.length) {
         container.innerHTML = '<div class="text-xs text-muted italic p-2.5 rounded bg-panel border border-line text-center">No input channels added. Click "+ Add Input Channel" to build patch list.</div>';
         return;
@@ -2536,12 +3190,35 @@ RMTP.views.advancing = function (el) {
       });
     }
 
+    // Stagebox Patch Sheet button
+    const btnOpenPatchSheet = m.root.querySelector('#btn-open-patch-sheet-builder');
+    if (btnOpenPatchSheet) {
+      btnOpenPatchSheet.addEventListener('click', () => {
+        const allSheets = RMTP.presets.getAllPatchSheets();
+        const existingForEvent = (ev && ev.id) ? allSheets.find((s) => s.eventId === ev.id) : null;
+        if (existingForEvent) {
+          RMTP.presets.openPatchSheetModal(existingForEvent);
+        } else {
+          RMTP.presets.openPatchSheetModal({
+            id: null,
+            name: (ev && ev.name ? ev.name + ' — Stagebox Patch Plan' : 'Event Patch Sheet'),
+            eventId: (ev && ev.id) || null,
+            eventName: (ev && ev.name) || '',
+            space: (ev && (ev.space || (spaceSelect && spaceSelect.value))) || 'The Stage',
+            date: (ev && ev.date) || new Date().toISOString().slice(0, 10),
+            notes: (ev && ev.techInfo) || ''
+          });
+        }
+      });
+    }
+
     renderChannelInputs();
 
     // Channel List Builder: Outputs
     function renderChannelOutputs() {
       const container = m.root.querySelector('#channel-outputs-container');
       if (!container) return;
+      updateSectionBannerPills();
       if (!channelOutputs.length) {
         container.innerHTML = '<div class="text-xs text-muted italic p-2.5 rounded bg-panel border border-line text-center">No master outputs added. Click "+ Add Output" or use preset buttons.</div>';
         return;
@@ -3383,22 +4060,26 @@ RMTP.views.advancing = function (el) {
         '</div>';
       }).join('');
       return (rows ? '<div class="grid gap-2 mb-2">' + rows + '</div>' : '<p class="text-xs text-muted mb-2">No technicians tagged yet.</p>') +
-        '<button type="button" id="e-tech-add" class="btn btn-ghost">' + ui.icon('plus', 'w-4 h-4') + 'Add technician</button>';
+        '<button type="button" data-t-add class="btn btn-ghost">' + ui.icon('plus', 'w-4 h-4') + 'Add technician</button>';
     }
     function wireTechs() {
-      const area = m.root.querySelector('#e-tech-area');
-      area.innerHTML = techAreaHtml();
-      area.querySelectorAll('[data-t-user]').forEach((sel) => sel.addEventListener('change', () => {
-        techs[+sel.getAttribute('data-t-user')].userId = sel.value; wireTechs();
-      }));
-      area.querySelectorAll('[data-t-role]').forEach((sel) => sel.addEventListener('change', () => {
-        techs[+sel.getAttribute('data-t-role')].role = sel.value;
-      }));
-      area.querySelectorAll('[data-t-remove]').forEach((btn) => btn.addEventListener('click', () => {
-        techs.splice(+btn.getAttribute('data-t-remove'), 1); wireTechs();
-      }));
-      const addBtn = m.root.querySelector('#e-tech-add');
-      if (addBtn) addBtn.addEventListener('click', () => { techs.push({ userId: '', role: '' }); wireTechs(); });
+      ['#e-tech-area', '#e-cinema-tech-area'].forEach((sel) => {
+        const area = m.root.querySelector(sel);
+        if (!area) return;
+        area.innerHTML = techAreaHtml();
+        area.querySelectorAll('[data-t-user]').forEach((s) => s.addEventListener('change', () => {
+          techs[+s.getAttribute('data-t-user')].userId = s.value; wireTechs();
+        }));
+        area.querySelectorAll('[data-t-role]').forEach((s) => s.addEventListener('change', () => {
+          techs[+s.getAttribute('data-t-role')].role = s.value;
+        }));
+        area.querySelectorAll('[data-t-remove]').forEach((btn) => btn.addEventListener('click', () => {
+          techs.splice(+btn.getAttribute('data-t-remove'), 1); wireTechs();
+        }));
+        const addBtn = area.querySelector('[data-t-add]');
+        if (addBtn) addBtn.addEventListener('click', () => { techs.push({ userId: '', role: '' }); wireTechs(); });
+      });
+      updateSectionBannerPills();
     }
     wireTechs();
 
@@ -3415,27 +4096,107 @@ RMTP.views.advancing = function (el) {
             '<button type="button" data-spec-remove class="btn btn-danger !p-2" title="Remove">' + ui.icon('trash', 'w-4 h-4') + '</button>' +
           '</span></div>';
       }
-      return '<label class="btn btn-ghost cursor-pointer inline-flex"><input type="file" accept="application/pdf" id="e-spec-input" class="sr-only" />' +
+      return '<label class="btn btn-ghost cursor-pointer inline-flex"><input type="file" accept="application/pdf" class="spec-file-input sr-only" />' +
         ui.icon('upload', 'w-4 h-4') + 'Upload PDF</label>' +
         '<p class="text-[11px] text-muted mt-2">PDF up to ' + files.humanSize(files.MAX) + '. Stored locally in this prototype.</p>';
     }
     function wireSpec() {
-      const area = m.root.querySelector('#e-spec-area');
-      area.innerHTML = specAreaHtml();
-      const input = area.querySelector('#e-spec-input');
-      if (input) input.addEventListener('change', (e) => {
-        const file = e.target.files && e.target.files[0];
-        if (!file) return;
-        if (file.type && file.type.indexOf('pdf') === -1) { ui.toast('PDF files only', 'danger'); return; }
-        files.readAsDataUrl(file).then((p) => { pending = p; cleared = false; wireSpec(); ui.toast('Attached (save to keep)', 'ok'); })
-          .catch((err) => ui.toast(err && err.message === 'too-large' ? 'File too large (max ' + files.humanSize(files.MAX) + ')' : 'Could not read file', 'danger'));
+      ['#e-spec-area', '#e-cinema-spec-area'].forEach((sel) => {
+        const area = m.root.querySelector(sel);
+        if (!area) return;
+        area.innerHTML = specAreaHtml();
+        const input = area.querySelector('.spec-file-input');
+        if (input) input.addEventListener('change', (e) => {
+          const file = e.target.files && e.target.files[0];
+          if (!file) return;
+          if (file.type && file.type.indexOf('pdf') === -1) { ui.toast('PDF files only', 'danger'); return; }
+          files.readAsDataUrl(file).then((p) => { pending = p; cleared = false; wireSpec(); ui.toast('Attached (save to keep)', 'ok'); })
+            .catch((err) => ui.toast(err && err.message === 'too-large' ? 'File too large (max ' + files.humanSize(files.MAX) + ')' : 'Could not read file', 'danger'));
+        });
+        const view = area.querySelector('[data-spec-view]');
+        if (view) view.addEventListener('click', () => { if (pending) files.openDataUrl(pending.dataUrl); else files.open(specMeta); });
+        const rem = area.querySelector('[data-spec-remove]');
+        if (rem) rem.addEventListener('click', () => { if (pending) { pending = null; } else { cleared = true; } wireSpec(); });
       });
-      const view = area.querySelector('[data-spec-view]');
-      if (view) view.addEventListener('click', () => { if (pending) files.openDataUrl(pending.dataUrl); else files.open(specMeta); });
-      const rem = area.querySelector('[data-spec-remove]');
-      if (rem) rem.addEventListener('click', () => { if (pending) { pending = null; } else { cleared = true; } wireSpec(); });
+      updateSectionBannerPills();
     }
     wireSpec();
+
+    // Floor tags & production specials wiring
+    const AVAILABLE_FLOOR_TAGS = [
+      'Moving Heads',
+      'Strobes / Blinders',
+      'LED Battens / Bars',
+      'Touring Dimmer Rack',
+      'DMX Run to Stage',
+      '16A Single Phase',
+      '32A Single Phase',
+      '32A 3-Phase',
+      '63A 3-Phase',
+      'Floor Risers',
+      'Custom Truss'
+    ];
+
+    function updateProductionSpecialsIndicator() {
+      const ind = m.root.querySelector('#production-specials-indicator');
+      if (!ind) return;
+      const hazer = m.root.querySelector('#e-spec-hazer') ? m.root.querySelector('#e-spec-hazer').checked : false;
+      const lasers = m.root.querySelector('#e-spec-lasers') ? m.root.querySelector('#e-spec-lasers').checked : false;
+      const power = m.root.querySelector('#e-spec-power') ? m.root.querySelector('#e-spec-power').checked : false;
+      const video = m.root.querySelector('#e-spec-video') ? m.root.querySelector('#e-spec-video').checked : false;
+      const pyro = m.root.querySelector('#e-spec-pyro') ? m.root.querySelector('#e-spec-pyro').checked : false;
+
+      const pills = [];
+      if (hazer) pills.push('<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-400 border border-amber-500/40">Hazer</span>');
+      if (lasers) pills.push('<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-500/20 text-rose-400 border border-rose-500/40">Lasers</span>');
+      if (power || floorTags.some((t) => t.indexOf('3-Phase') > -1 || t.indexOf('32A') > -1 || t.indexOf('63A') > -1)) pills.push('<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-500/20 text-orange-400 border border-orange-500/40">Power</span>');
+      if (video) pills.push('<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/20 text-sky-400 border border-sky-500/40">Video</span>');
+      if (pyro) pills.push('<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-400 border border-purple-500/40">Pyro</span>');
+      if (floorTags.length) pills.push('<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">' + floorTags.length + ' Tags</span>');
+
+      ind.innerHTML = pills.join(' ');
+      updateSectionBannerPills();
+    }
+
+    function wireFloorTags() {
+      const container = m.root.querySelector('#floor-tags-container');
+      if (!container) return;
+      container.innerHTML = AVAILABLE_FLOOR_TAGS.map((tag) => {
+        const active = floorTags.indexOf(tag) > -1;
+        return (
+          '<button type="button" data-floor-tag="' + ui.esc(tag) + '" class="px-2.5 py-1 rounded-lg text-xs font-medium border transition-all ' +
+            (active ? 'bg-indigo-500/25 text-indigo-300 border-indigo-500/60 font-semibold shadow-2xs' : 'bg-panel border-line text-muted hover:text-ink hover:border-line/80') + '">' +
+            (active ? '✓ ' : '+ ') + ui.esc(tag) +
+          '</button>'
+        );
+      }).join('');
+
+      container.querySelectorAll('[data-floor-tag]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const t = btn.getAttribute('data-floor-tag');
+          const idx = floorTags.indexOf(t);
+          if (idx > -1) {
+            floorTags.splice(idx, 1);
+          } else {
+            floorTags.push(t);
+            if (t.indexOf('3-Phase') > -1 || t.indexOf('32A') > -1 || t.indexOf('63A') > -1) {
+              const pCb = m.root.querySelector('#e-spec-power');
+              if (pCb) pCb.checked = true;
+            }
+          }
+          wireFloorTags();
+          updateProductionSpecialsIndicator();
+        });
+      });
+    }
+
+    wireFloorTags();
+    updateProductionSpecialsIndicator();
+
+    ['#e-spec-hazer', '#e-spec-lasers', '#e-spec-power', '#e-spec-video', '#e-spec-pyro'].forEach((sel) => {
+      const cb = m.root.querySelector(sel);
+      if (cb) cb.addEventListener('change', updateProductionSpecialsIndicator);
+    });
 
     m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
     m.root.querySelector('[data-save]').addEventListener('click', () => {
@@ -3478,6 +4239,17 @@ RMTP.views.advancing = function (el) {
       const dcpTesterId = isScreen && m.root.querySelector('#e-dcp-tester') ? m.root.querySelector('#e-dcp-tester').value : (ev.dcp_tester_user_id || ev.dcpTesterUserId || '');
       const dcpTestDatetime = isScreen && m.root.querySelector('#e-dcp-test-datetime') ? m.root.querySelector('#e-dcp-test-datetime').value : (ev.dcp_test_datetime || ev.dcpTestDatetime || '');
 
+      const lightingNotes = m.root.querySelector('#e-lighting-notes') ? m.root.querySelector('#e-lighting-notes').value.trim() : (prodInitial.lighting_notes || '');
+      const floorPackage = m.root.querySelector('#e-floor-package') ? m.root.querySelector('#e-floor-package').value.trim() : (prodInitial.floor_package || '');
+      const specialNotes = m.root.querySelector('#e-special-notes') ? m.root.querySelector('#e-special-notes').value.trim() : (prodInitial.special_notes || '');
+      const specialsObj = {
+        hazer: m.root.querySelector('#e-spec-hazer') ? m.root.querySelector('#e-spec-hazer').checked : (prodInitial.specials.hazer || false),
+        lasers: m.root.querySelector('#e-spec-lasers') ? m.root.querySelector('#e-spec-lasers').checked : (prodInitial.specials.lasers || false),
+        heavy_power: m.root.querySelector('#e-spec-power') ? m.root.querySelector('#e-spec-power').checked : (prodInitial.specials.heavy_power || false),
+        video: m.root.querySelector('#e-spec-video') ? m.root.querySelector('#e-spec-video').checked : (prodInitial.specials.video || false),
+        pyro: m.root.querySelector('#e-spec-pyro') ? m.root.querySelector('#e-spec-pyro').checked : (prodInitial.specials.pyro || false),
+      };
+
       const record = Object.assign({}, ev, {
         id: ev.id || store.uid('evt'),
         name: name,
@@ -3508,6 +4280,20 @@ RMTP.views.advancing = function (el) {
         dcp_tester_user_id: dcpTesterId,
         dcp_test_datetime: dcpTestDatetime,
 
+        // Lighting & Production Package
+        lighting_notes: lightingNotes,
+        floor_package: floorPackage,
+        floor_tags: floorTags,
+        specials: specialsObj,
+        special_notes: specialNotes,
+        production_package: {
+          lighting_notes: lightingNotes,
+          floor_package: floorPackage,
+          floor_tags: floorTags,
+          specials: specialsObj,
+          special_notes: specialNotes,
+        },
+
         tech_requirements: {
           channel_list: {
             inputs: channelInputs,
@@ -3517,10 +4303,21 @@ RMTP.views.advancing = function (el) {
         linked_maintenance_ids: linkedMaintIds,
 
         technicians: finalTechs,
-        clientContact: m.root.querySelector('#e-contact').value.trim(),
-        guestEngineer: m.root.querySelector('#e-guest').checked,
-        techInfo: m.root.querySelector('#e-info').value.trim(),
-        email_recipients: m.root.querySelector('#e-email-recipients') ? m.root.querySelector('#e-email-recipients').value.trim() : (ev.email_recipients || ev.emailRecipients || ''),
+        clientContact: (isScreen && m.root.querySelector('#e-cinema-contact')
+          ? m.root.querySelector('#e-cinema-contact').value
+          : (m.root.querySelector('#e-contact') ? m.root.querySelector('#e-contact').value : (ev.clientContact || ''))
+        ).trim(),
+        guestEngineer: isScreen && m.root.querySelector('#e-cinema-guest')
+          ? m.root.querySelector('#e-cinema-guest').checked
+          : (m.root.querySelector('#e-guest') ? m.root.querySelector('#e-guest').checked : (ev.guestEngineer || false)),
+        techInfo: (isScreen && m.root.querySelector('#e-cinema-info')
+          ? m.root.querySelector('#e-cinema-info').value
+          : (m.root.querySelector('#e-info') ? m.root.querySelector('#e-info').value : (ev.techInfo || ''))
+        ).trim(),
+        email_recipients: (isScreen && m.root.querySelector('#e-cinema-email-recipients')
+          ? m.root.querySelector('#e-cinema-email-recipients').value
+          : (m.root.querySelector('#e-email-recipients') ? m.root.querySelector('#e-email-recipients').value : (ev.email_recipients || ev.emailRecipients || ''))
+        ).trim(),
         techSpec: finalSpec,
         checklist: ev.checklist || { techSpecSent: false, inputListReceived: false, stagePlot: false, schedule: false, backline: false, hospitality: false, parkingAccess: false },
       });

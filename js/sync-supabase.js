@@ -16,18 +16,84 @@
 RMTP.syncSb = (function () {
   const store = RMTP.store, sb = RMTP.supabase, files = RMTP.files;
   const tables = () => (RMTP.supabaseConfig || {}).tables || {};
-  const COLLS = ['users', 'inventory', 'maintenance', 'advancing', 'reports', 'signoffs', 'procedures'];
+  const COLLS = ['users', 'inventory', 'maintenance', 'advancing', 'reports', 'signoffs', 'procedures', 'patch_presets', 'patch_sheets'];
+
+  /* ---- dynamic table & column compatibility cache & sanitizer ---- */
+  let unsupportedTables = {};
+  let unsupportedCols = {};
+
+  function loadCompatibilityCaches() {
+    try {
+      unsupportedTables = JSON.parse(store.readRaw('sb_unsupported_tables', '{}')) || {};
+    } catch (e) { unsupportedTables = {}; }
+    try {
+      unsupportedCols = JSON.parse(store.readRaw('sb_unsupported_cols', '{}')) || {};
+    } catch (e) { unsupportedCols = {}; }
+  }
+  loadCompatibilityCaches();
+
+  function markTableUnsupported(table) {
+    if (!table) return;
+    unsupportedTables[table] = true;
+    store.writeRaw('sb_unsupported_tables', JSON.stringify(unsupportedTables));
+  }
+
+  function clearTableUnsupported(table) {
+    if (!table || !unsupportedTables[table]) return;
+    delete unsupportedTables[table];
+    store.writeRaw('sb_unsupported_tables', JSON.stringify(unsupportedTables));
+  }
+
+  function isTableUnsupported(table) {
+    return !!unsupportedTables[table];
+  }
+
+  function isTableMissingError(err) {
+    if (!err) return false;
+    if (err.code === 'PGRST205' || err.code === '42P01') return true;
+    const msg = (err.message || '') + ' ' + (err.details || '') + ' ' + (err.hint || '') + ' ' + (typeof err === 'string' ? err : '');
+    return /Could not find the table/i.test(msg) || /relation .+ does not exist/i.test(msg) || /schema cache/i.test(msg);
+  }
 
   /* ---- pull ---- */
   async function pullCollection(coll) {
     const table = tables()[coll]; if (!table) return;
-    const rows = await sb.selectAll(table);
+    let rows = [];
+    try {
+      rows = await sb.selectAll(table);
+      clearTableUnsupported(table);
+    } catch (err) {
+      if (isTableMissingError(err)) {
+        markTableUnsupported(table);
+        console.warn('[syncSb] Table "' + table + '" is not present in remote Supabase schema cache (' + (err.message || err.code || 'PGRST205') + '). Running with local data for ' + coll + '. Run docs/supabase-setup.sql or docs/patch-sheets-setup.sql to enable cloud sync.');
+        return;
+      }
+      throw err;
+    }
     if (coll === 'procedures') return regroupProcedures(rows);
     const existing = store.all(coll);
     const existingMap = new Map(existing.map((x) => [x.id, x]));
 
     rows.forEach((r) => {
       const prev = existingMap.get(r.id) || {};
+      if (coll === 'patch_presets') {
+        r.channels = Array.isArray(r.channels) ? r.channels : (prev.channels || []);
+        r.type = r.type || prev.type || 'input';
+        r.category = r.category || prev.category || 'General';
+        r.description = r.description || prev.description || '';
+        r.capacityIn = r.capacityIn !== undefined ? r.capacityIn : (prev.capacityIn || 0);
+        r.capacityOut = r.capacityOut !== undefined ? r.capacityOut : (prev.capacityOut || 0);
+      }
+      if (coll === 'patch_sheets') {
+        r.acts = Array.isArray(r.acts) ? r.acts : (prev.acts || []);
+        r.patchPoints = Array.isArray(r.patchPoints) ? r.patchPoints : (prev.patchPoints || []);
+        r.stageboxes = Array.isArray(r.stageboxes) ? r.stageboxes : (prev.stageboxes || []);
+        r.repatches = Array.isArray(r.repatches) ? r.repatches : (prev.repatches || []);
+        r.eventName = r.eventName || prev.eventName || '';
+        r.space = r.space || prev.space || '';
+        r.date = r.date || prev.date || '';
+        r.notes = r.notes || prev.notes || '';
+      }
       if (coll === 'inventory') {
         r.movements = r.movements || prev.movements || [];
         r.outAt = r.outAt || prev.outAt || '';
@@ -59,6 +125,18 @@ RMTP.syncSb = (function () {
         r.parent_event_id = r.parent_event_id || r.parentEventId || prev.parent_event_id || prev.parentEventId || null;
         r.dcp_test_event_id = r.dcp_test_event_id || r.dcpTestEventId || prev.dcp_test_event_id || prev.dcpTestEventId || null;
         r.linked_maintenance_ids = Array.isArray(r.linked_maintenance_ids) ? r.linked_maintenance_ids : (Array.isArray(r.linkedMaintenanceIds) ? r.linkedMaintenanceIds : (Array.isArray(prev.linked_maintenance_ids) ? prev.linked_maintenance_ids : []));
+        r.lighting_notes = r.lighting_notes || r.lightingNotes || prev.lighting_notes || prev.lightingNotes || '';
+        r.floor_package = r.floor_package || r.floorPackage || prev.floor_package || prev.floorPackage || '';
+        r.floor_tags = Array.isArray(r.floor_tags) ? r.floor_tags : (Array.isArray(r.floorTags) ? r.floorTags : (Array.isArray(prev.floor_tags) ? prev.floor_tags : []));
+        r.specials = r.specials || prev.specials || {};
+        r.special_notes = r.special_notes || r.specialNotes || prev.special_notes || prev.specialNotes || '';
+        r.production_package = r.production_package || prev.production_package || {
+          lighting_notes: r.lighting_notes,
+          floor_package: r.floor_package,
+          floor_tags: r.floor_tags,
+          specials: r.specials,
+          special_notes: r.special_notes,
+        };
         r.clientContact = r.clientContact || r.clientcontact || prev.clientContact || '';
         r.guestEngineer = r.guestEngineer !== undefined ? r.guestEngineer : (prev.guestEngineer !== undefined ? prev.guestEngineer : false);
         r.techInfo = r.techInfo || r.techinfo || prev.techInfo || '';
@@ -128,6 +206,18 @@ RMTP.syncSb = (function () {
         parent_event_id: r.parent_event_id || r.parentEventId || null,
         dcp_test_event_id: r.dcp_test_event_id || r.dcpTestEventId || null,
         linked_maintenance_ids: Array.isArray(r.linked_maintenance_ids) ? r.linked_maintenance_ids : (Array.isArray(r.linkedMaintenanceIds) ? r.linkedMaintenanceIds : []),
+        lighting_notes: r.lighting_notes || r.lightingNotes || '',
+        floor_package: r.floor_package || r.floorPackage || '',
+        floor_tags: Array.isArray(r.floor_tags) ? r.floor_tags : (Array.isArray(r.floorTags) ? r.floorTags : []),
+        specials: r.specials || {},
+        special_notes: r.special_notes || r.specialNotes || '',
+        production_package: r.production_package || {
+          lighting_notes: r.lighting_notes || r.lightingNotes || '',
+          floor_package: r.floor_package || r.floorPackage || '',
+          floor_tags: Array.isArray(r.floor_tags) ? r.floor_tags : (Array.isArray(r.floorTags) ? r.floorTags : []),
+          specials: r.specials || {},
+          special_notes: r.special_notes || r.specialNotes || '',
+        },
         technicians: Array.isArray(r.technicians) ? r.technicians : [],
         clientContact: r.clientContact || '',
         guestEngineer: !!r.guestEngineer,
@@ -164,17 +254,39 @@ RMTP.syncSb = (function () {
       }
       return row;
     }
+    if (coll === 'patch_presets') {
+      return {
+        id: r.id,
+        name: r.name || '',
+        type: r.type || 'input',
+        category: r.category || 'General',
+        description: r.description || '',
+        channels: Array.isArray(r.channels) ? r.channels : [],
+        capacityIn: r.capacityIn || 0,
+        capacityOut: r.capacityOut || 0,
+        createdAt: r.createdAt || Date.now(),
+        updatedAt: r.updatedAt || Date.now(),
+      };
+    }
+    if (coll === 'patch_sheets') {
+      return {
+        id: r.id,
+        name: r.name || '',
+        eventId: r.eventId || null,
+        eventName: r.eventName || '',
+        space: r.space || '',
+        date: r.date || '',
+        notes: r.notes || '',
+        acts: Array.isArray(r.acts) ? r.acts : [],
+        patchPoints: Array.isArray(r.patchPoints) ? r.patchPoints : [],
+        stageboxes: Array.isArray(r.stageboxes) ? r.stageboxes : [],
+        repatches: Array.isArray(r.repatches) ? r.repatches : [],
+        createdAt: r.createdAt || Date.now(),
+        updatedAt: r.updatedAt || Date.now(),
+      };
+    }
     return r;
   }
-
-  /* ---- dynamic column compatibility cache & sanitizer ---- */
-  let unsupportedCols = {};
-  function loadUnsupportedCols() {
-    try {
-      unsupportedCols = JSON.parse(store.readRaw('sb_unsupported_cols', '{}')) || {};
-    } catch (e) { unsupportedCols = {}; }
-  }
-  loadUnsupportedCols();
 
   function markColumnUnsupported(table, col) {
     if (!table || !col) return;
@@ -269,7 +381,20 @@ RMTP.syncSb = (function () {
 
   async function run(op) {
     const table = tables()[op.coll]; if (!table) return;
-    if (op.type === 'delete') { await sb.deleteRow(table, op.id); return; }
+    if (isTableUnsupported(table)) return;
+    if (op.type === 'delete') {
+      try {
+        await sb.deleteRow(table, op.id);
+        return;
+      } catch (err) {
+        if (isTableMissingError(err)) {
+          markTableUnsupported(table);
+          console.warn('[syncSb] Table "' + table + '" does not exist in remote Supabase schema cache. Skipping delete.');
+          return;
+        }
+        throw err;
+      }
+    }
     
     let baseRow = op.coll === 'procedures' ? Object.assign({}, op.row) : await toRow(op.coll, op.record);
     
@@ -281,6 +406,11 @@ RMTP.syncSb = (function () {
         await sb.upsertRow(table, rowToSend);
         return;
       } catch (err) {
+        if (isTableMissingError(err)) {
+          markTableUnsupported(table);
+          console.warn('[syncSb] Table "' + table + '" does not exist in remote Supabase schema cache. Skipping upsert.');
+          return;
+        }
         const missingCol = extractMissingColumn(err);
         if (missingCol && (baseRow[missingCol] !== undefined || rowToSend[missingCol] !== undefined)) {
           markColumnUnsupported(table, missingCol);
@@ -340,6 +470,7 @@ RMTP.syncSb = (function () {
         message: 'Running in offline/local storage mode.',
         queueLength: 0,
         unsupportedCols: getUnsupportedCols(),
+        unsupportedTables: Object.assign({}, unsupportedTables),
         tables: {}
       };
     }
@@ -349,6 +480,7 @@ RMTP.syncSb = (function () {
       tables: {},
       queueLength: queue.length,
       unsupportedCols: getUnsupportedCols(),
+      unsupportedTables: Object.assign({}, unsupportedTables),
       lastError: null,
       message: ''
     };
@@ -358,14 +490,15 @@ RMTP.syncSb = (function () {
       }
       result.queueLength = queue.length;
       result.unsupportedCols = getUnsupportedCols();
+      result.unsupportedTables = Object.assign({}, unsupportedTables);
       const advTable = tables().advancing || 'advancing';
       const repTable = tables().reports || 'reports';
       const [advRows, repRows] = await Promise.all([
-        sb.selectAll(advTable),
-        sb.selectAll(repTable)
+        sb.selectAll(advTable).catch((e) => { if (isTableMissingError(e)) { markTableUnsupported(advTable); return []; } throw e; }),
+        sb.selectAll(repTable).catch((e) => { if (isTableMissingError(e)) { markTableUnsupported(repTable); return []; } throw e; })
       ]);
-      result.tables.advancing = { count: advRows.length, ok: true };
-      result.tables.reports = { count: repRows.length, ok: true };
+      result.tables.advancing = { count: advRows.length, ok: !isTableUnsupported(advTable) };
+      result.tables.reports = { count: repRows.length, ok: !isTableUnsupported(repTable) };
       result.status = result.queueLength === 0 ? 'synced' : 'pending';
       result.message = 'Supabase live & synced. Events in DB: ' + advRows.length + ', Shift reports in DB: ' + repRows.length + (result.queueLength ? ' (' + result.queueLength + ' queued)' : ' (0 pending in queue).');
     } catch (e) {

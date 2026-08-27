@@ -48,7 +48,7 @@ RMTP.views.dashboard = function (el) {
     const flagged = allInv.filter((it) => RMTP.isPoorCondition(it.condition) || openFaultIds.has(it.id)).length;
     const displaced = allInv.filter((it) => !it.static && it.homeLocation && it.location && it.location !== it.homeLocation).length;
     if (!moves.length && !flagged && !displaced) return '';
-    return '<div class="panel p-5 mt-8">' +
+    return '<div class="panel p-5 mt-4 md:mt-8">' +
       '<div class="flex items-center justify-between mb-3 flex-wrap gap-2">' +
         '<div class="flex items-center gap-2">' +
           '<p class="eyebrow">Recent kit movements</p>' +
@@ -72,8 +72,10 @@ RMTP.views.dashboard = function (el) {
 
   function inTray() {
     if (!me) return '';
+    const today = new Date().toISOString().slice(0, 10);
     const myAdvances = store.all('advancing')
       .filter((e) => RMTP.eventAssignedTo(e, me.id) && e.status !== 'Complete' && e.category !== 'DCP Test' && e.category !== 'Maintenance')
+      .filter((e) => !e.date || String(e.date).slice(0, 10) >= today)
       .sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
 
     // DCP Tests: both dedicated 'DCP Test' shifts and screenings with scheduled DCP test
@@ -85,7 +87,8 @@ RMTP.views.dashboard = function (el) {
         const hasTime = !!(e.dcp_test_datetime || e.dcpTestDatetime || (isDcpCategory && e.date));
         const isChecked = (e.checks_completed !== undefined ? !!e.checks_completed : !!e.checksCompleted);
         const matchesUser = me.admin ? true : isTester;
-        return (isDcpCategory || (hasTime && isTester)) && !isChecked && e.status !== 'Complete' && matchesUser;
+        const notPast = !e.date || String(e.date).slice(0, 10) >= today;
+        return (isDcpCategory || (hasTime && isTester)) && !isChecked && e.status !== 'Complete' && matchesUser && notPast;
       })
       .sort((a, b) => {
         const timeA = a.dcp_test_datetime || a.dcpTestDatetime || a.date || '';
@@ -98,7 +101,8 @@ RMTP.views.dashboard = function (el) {
       .filter((e) => {
         const isMaint = e.category === 'Maintenance' || (Array.isArray(e.linked_maintenance_ids) && e.linked_maintenance_ids.length > 0);
         const matchesUser = me.admin ? true : RMTP.eventAssignedTo(e, me.id);
-        return isMaint && matchesUser && e.status !== 'Complete';
+        const notPast = !e.date || String(e.date).slice(0, 10) >= today;
+        return isMaint && matchesUser && e.status !== 'Complete' && notPast;
       })
       .sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
 
@@ -163,7 +167,7 @@ RMTP.views.dashboard = function (el) {
                 '</div>' +
               '</div>' +
               '<div class="flex items-center gap-2 shrink-0 self-end sm:self-center">' +
-                '<a href="#/advancing" class="btn btn-ghost !py-1.5 !px-2.5 text-xs">View Advance</a>' +
+                '<a href="#/advancing/' + encodeURIComponent(e.id) + '" class="btn btn-ghost !py-1.5 !px-2.5 text-xs">View Advance</a>' +
                 '<button data-complete-dcp="' + e.id + '" class="btn btn-primary !py-1.5 !px-3 text-xs flex items-center gap-1.5">' +
                   ui.icon('check', 'w-3.5 h-3.5') + '<span>Complete Test</span>' +
                 '</button>' +
@@ -203,7 +207,7 @@ RMTP.views.dashboard = function (el) {
                 '</div>' +
               '</div>' +
               '<div class="flex items-center gap-2 shrink-0 self-end sm:self-center">' +
-                '<a href="#/advancing" class="btn btn-ghost !py-1.5 !px-2.5 text-xs">View Shift</a>' +
+                '<a href="#/advancing/' + encodeURIComponent(e.id) + '" class="btn btn-ghost !py-1.5 !px-2.5 text-xs">View Shift</a>' +
                 '<a href="#/maintenance" class="btn btn-primary !py-1.5 !px-3 text-xs flex items-center gap-1.5">' +
                   ui.icon('wrench', 'w-3.5 h-3.5') + '<span>Open Tasks</span>' +
                 '</a>' +
@@ -241,10 +245,15 @@ RMTP.views.dashboard = function (el) {
         '<div class="flex items-center gap-2 mb-2">' + ui.icon('clip', 'w-4 h-4 text-accent') +
           '<p class="eyebrow">Your advances \u00b7 ' + myAdvances.length + '</p></div>' +
         '<div class="grid gap-1.5">' + myAdvances.slice(0, 5).map((e) =>
-          '<a href="#/advancing" class="flex items-center justify-between gap-3 text-sm hover:text-accent transition-colors">' +
-            '<span class="min-w-0 truncate"><span class="font-medium">' + ui.esc(e.name) + '</span>' +
-              (e.space ? ' <span class="text-muted">\u00b7 ' + ui.esc(e.space) + '</span>' : '') + '</span>' +
-            '<span class="text-xs text-muted shrink-0">' + (e.date ? ui.formatDate(e.date) : ui.esc(e.status)) + '</span>' +
+          '<a href="#/advancing/' + encodeURIComponent(e.id) + '" class="flex items-center justify-between gap-3 text-sm p-2 rounded-lg bg-panel2/40 border border-line hover:border-accent hover:bg-panel2 transition-all group">' +
+            '<div class="min-w-0 truncate flex items-center gap-2">' +
+              '<span class="font-medium text-ink group-hover:text-accent transition-colors">' + ui.esc(e.name) + '</span>' +
+              (e.space ? '<span class="text-muted text-xs"> \u00b7 ' + ui.esc(e.space) + '</span>' : '') +
+            '</div>' +
+            '<div class="flex items-center gap-2 shrink-0">' +
+              '<span class="text-xs text-muted font-medium">' + (e.date ? ui.formatDate(e.date) : ui.esc(e.status)) + '</span>' +
+              '<span class="text-muted group-hover:text-accent group-hover:translate-x-0.5 transition-all">' + ui.icon('arrowR', 'w-3.5 h-3.5') + '</span>' +
+            '</div>' +
           '</a>').join('') + '</div></div>');
     }
     if (outstanding > 0) {
@@ -277,11 +286,16 @@ RMTP.views.dashboard = function (el) {
           who = techs.map((t) => { const u = store.find('users', t.userId); return u ? RMTP.auth.displayName(u) : 'Unknown'; }).join(', ');
         }
       }
-      return '<a href="#/advancing" class="flex items-center justify-between gap-3 text-sm hover:text-accent transition-colors">' +
-        '<span class="min-w-0 truncate"><span class="font-medium">' + ui.esc(e.name) + '</span>' +
-          (e.space ? ' <span class="text-muted">\u00b7 ' + ui.esc(e.space) + '</span>' : '') +
-          (who ? ' <span class="text-muted">\u00b7 ' + ui.esc(who) + '</span>' : '') + '</span>' +
-        '<span class="text-xs text-muted shrink-0">' + ui.esc(times || e.status || '') + '</span>' +
+      return '<a href="#/advancing/' + encodeURIComponent(e.id) + '" class="flex items-center justify-between gap-3 text-sm p-2 rounded-lg bg-panel2/40 border border-line hover:border-accent hover:bg-panel2 transition-all group">' +
+        '<div class="min-w-0 truncate flex items-center gap-2">' +
+          '<span class="font-medium text-ink group-hover:text-accent transition-colors">' + ui.esc(e.name) + '</span>' +
+          (e.space ? '<span class="text-muted text-xs"> \u00b7 ' + ui.esc(e.space) + '</span>' : '') +
+          (who ? '<span class="text-muted text-xs"> \u00b7 ' + ui.esc(who) + '</span>' : '') +
+        '</div>' +
+        '<div class="flex items-center gap-2 shrink-0">' +
+          '<span class="text-xs text-muted font-medium">' + ui.esc(times || e.status || '') + '</span>' +
+          '<span class="text-muted group-hover:text-accent group-hover:translate-x-0.5 transition-all">' + ui.icon('arrowR', 'w-3.5 h-3.5') + '</span>' +
+        '</div>' +
       '</a>';
     }).join('') + '</div>';
   }
@@ -292,7 +306,7 @@ RMTP.views.dashboard = function (el) {
       '<button data-tab="' + id + '" class="px-3 py-1.5 rounded-lg text-sm font-medium border ' +
         (active ? 'bg-panel2 text-ink border-accent' : 'text-muted hover:text-ink border-transparent') + '">' +
         label + (badge ? ' <span class="tabular text-xs opacity-70">' + badge + '</span>' : '') + '</button>';
-    return '<div class="panel p-5 mb-8" style="border-color:color-mix(in srgb,var(--accent) 30%,var(--line))">' +
+    return '<div class="panel p-5 mb-4 md:mb-8" style="border-color:color-mix(in srgb,var(--accent) 30%,var(--line))">' +
       '<div class="flex items-center gap-2 mb-4">' +
         tabBtn('tray', 'In tray', '', true) +
         tabBtn('today', 'Today\u2019s shifts', today.length || '', false) +
@@ -305,12 +319,12 @@ RMTP.views.dashboard = function (el) {
   el.innerHTML =
     '<div class="view-enter">' +
       ui.pageHeader('Rich Mix · ' + RMTP.meta.product, 'Good evening' + greetName) +
-      '<p class="text-muted -mt-2 mb-8 max-w-2xl">Quick access to the building\u2019s technical operations. ' +
+      '<p class="text-muted -mt-2 mb-6 md:mb-8 max-w-2xl text-sm md:text-base">Quick access to the building\u2019s technical operations. ' +
         'Pick a section to get started.</p>' +
 
       topPanel() +
 
-      '<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">' + cardHtml + '</div>' +
+      '<div class="hidden md:grid gap-4 sm:grid-cols-2 lg:grid-cols-3">' + cardHtml + '</div>' +
 
       movementsPanel() +
     '</div>';

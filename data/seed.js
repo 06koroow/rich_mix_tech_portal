@@ -279,6 +279,18 @@ RMTP.seed = {
       technicians: [{ userId: 'user-3', role: 'Sound' }, { userId: 'user-2', role: 'Lighting' }],
       clientContact: 'Tour manager \u2014 Jess', guestEngineer: true,
       techInfo: 'Guest FOH engineer touring with the band. 32-way split needed. Backline hired in.', techSpec: null,
+      lighting_notes: 'Guest LD touring with GrandMA3 show file. House rig: maintain warm tungsten front wash on dimmers 1-6 for 8-piece brass and rhythm section. Cues: blackout on encore, slow warm fade intro.',
+      floor_package: 'Touring 4x Robe Robin Pointe moving heads on floor bases USL/USR, 2x Atomic 3000 strobes, 4x Chauvet COLORado batten bars behind backline. 32A 3-Phase stage drop required USL.',
+      floor_tags: ['Moving Heads', 'Strobes / Blinders', 'LED Battens / Bars', '32A 3-Phase', 'DMX Run to Stage'],
+      specials: { hazer: true, heavy_power: true, lasers: false, video: false, pyro: false },
+      special_notes: 'Hazer permit in place with Duty Manager. Smoke detector isolation in The Stage active from 16:30.',
+      production_package: {
+        lighting_notes: 'Guest LD touring with GrandMA3 show file. House rig: maintain warm tungsten front wash on dimmers 1-6 for 8-piece brass and rhythm section. Cues: blackout on encore, slow warm fade intro.',
+        floor_package: 'Touring 4x Robe Robin Pointe moving heads on floor bases USL/USR, 2x Atomic 3000 strobes, 4x Chauvet COLORado batten bars behind backline. 32A 3-Phase stage drop required USL.',
+        floor_tags: ['Moving Heads', 'Strobes / Blinders', 'LED Battens / Bars', '32A 3-Phase', 'DMX Run to Stage'],
+        specials: { hazer: true, heavy_power: true, lasers: false, video: false, pyro: false },
+        special_notes: 'Hazer permit in place with Duty Manager. Smoke detector isolation in The Stage active from 16:30.'
+      },
       checklist: {},
     },
     {
@@ -293,6 +305,18 @@ RMTP.seed = {
       technicians: [{ userId: 'user-4', role: 'AV' }],
       clientContact: 'Client \u2014 Aria Events', guestEngineer: false,
       techInfo: 'Speeches + playback from a laptop. Two handhelds, a lectern mic, HDMI to the projector.', techSpec: null,
+      lighting_notes: 'Corporate cool blue wash for drinks reception. High-key warm white lectern focus for keynote speeches. Video cue trigger at 19:15.',
+      floor_package: '2x 75" confidence monitors downstage, 1x wireless cue clicker system, 1x 16A single phase drop for DJ setup.',
+      floor_tags: ['16A Single Phase'],
+      specials: { hazer: false, heavy_power: false, lasers: false, video: true, pyro: false },
+      special_notes: '4K HDMI primary feed from presenter laptop at lectern + backup playback Mac at FOH.',
+      production_package: {
+        lighting_notes: 'Corporate cool blue wash for drinks reception. High-key warm white lectern focus for keynote speeches. Video cue trigger at 19:15.',
+        floor_package: '2x 75" confidence monitors downstage, 1x wireless cue clicker system, 1x 16A single phase drop for DJ setup.',
+        floor_tags: ['16A Single Phase'],
+        specials: { hazer: false, heavy_power: false, lasers: false, video: true, pyro: false },
+        special_notes: '4K HDMI primary feed from presenter laptop at lectern + backup playback Mac at FOH.'
+      },
       checklist: {},
     },
     {

@@ -122,6 +122,8 @@ RMTP.syncSb = (function () {
         r.qa = r.qa !== undefined ? !!r.qa : (prev.qa !== undefined ? !!prev.qa : false);
         r.dcp_tester_user_id = r.dcp_tester_user_id || r.dcpTesterUserId || r.dcptesteruserid || prev.dcp_tester_user_id || prev.dcpTesterUserId || '';
         r.dcp_test_datetime = r.dcp_test_datetime || r.dcpTestDatetime || r.dcptestdatetime || prev.dcp_test_datetime || prev.dcpTestDatetime || '';
+        r.responsible_for_advancing = r.responsible_for_advancing || r.responsible_for_advancing_user_id || r.responsibleForAdvancingUserId || prev.responsible_for_advancing || prev.responsible_for_advancing_user_id || prev.responsibleForAdvancingUserId || '';
+        r.responsible_for_advancing_user_id = r.responsible_for_advancing_user_id || r.responsible_for_advancing || r.responsibleForAdvancingUserId || prev.responsible_for_advancing_user_id || prev.responsible_for_advancing || prev.responsibleForAdvancingUserId || '';
         r.parent_event_id = r.parent_event_id || r.parentEventId || prev.parent_event_id || prev.parentEventId || null;
         r.dcp_test_event_id = r.dcp_test_event_id || r.dcpTestEventId || prev.dcp_test_event_id || prev.dcpTestEventId || null;
         r.linked_maintenance_ids = Array.isArray(r.linked_maintenance_ids) ? r.linked_maintenance_ids : (Array.isArray(r.linkedMaintenanceIds) ? r.linkedMaintenanceIds : (Array.isArray(prev.linked_maintenance_ids) ? prev.linked_maintenance_ids : []));
@@ -203,6 +205,8 @@ RMTP.syncSb = (function () {
         qa: !!r.qa,
         dcp_tester_user_id: r.dcp_tester_user_id || r.dcpTesterUserId || '',
         dcp_test_datetime: r.dcp_test_datetime || r.dcpTestDatetime || '',
+        responsible_for_advancing: r.responsible_for_advancing || r.responsible_for_advancing_user_id || r.responsibleForAdvancingUserId || '',
+        responsible_for_advancing_user_id: r.responsible_for_advancing_user_id || r.responsible_for_advancing || r.responsibleForAdvancingUserId || '',
         parent_event_id: r.parent_event_id || r.parentEventId || null,
         dcp_test_event_id: r.dcp_test_event_id || r.dcpTestEventId || null,
         linked_maintenance_ids: Array.isArray(r.linked_maintenance_ids) ? r.linked_maintenance_ids : (Array.isArray(r.linkedMaintenanceIds) ? r.linkedMaintenanceIds : []),
@@ -359,6 +363,9 @@ RMTP.syncSb = (function () {
             if (op.record.dcp_test_datetime === undefined && op.record.dcpTestDatetime !== undefined) {
               op.record.dcp_test_datetime = op.record.dcpTestDatetime;
             }
+            if (op.record.responsible_for_advancing === undefined && op.record.responsibleForAdvancingUserId !== undefined) {
+              op.record.responsible_for_advancing = op.record.responsibleForAdvancingUserId;
+            }
             delete op.record.dcpReceived;
             delete op.record.checksCompleted;
             delete op.record.screeningStartsTime;
@@ -369,6 +376,7 @@ RMTP.syncSb = (function () {
             delete op.record.scheduleItems;
             delete op.record.dcpTesterUserId;
             delete op.record.dcpTestDatetime;
+            delete op.record.responsibleForAdvancingUserId;
           }
         });
         saveQueue();

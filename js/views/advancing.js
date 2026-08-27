@@ -243,7 +243,9 @@ RMTP.views.advancing = function (el, params, query) {
   // Filter events based on active technician filter & space/tab
   function matchesTechFilter(e) {
     if (!selectedTechs || selectedTechs.length === 0) return true; // all technicians
-    const evTechs = RMTP.eventTechnicians(e);
+    const evTechs = RMTP.eventTechnicians(e).map((t) => t.userId);
+    const leadId = RMTP.getAdvancingLeadId(e);
+    if (leadId) evTechs.push(leadId);
     if (!evTechs.length) return includeUnassigned;
     return evTechs.some((tid) => {
       if (selectedTechs.indexOf(tid) !== -1) return true;
@@ -725,6 +727,7 @@ RMTP.views.advancing = function (el, params, query) {
     const card = q('[data-event-card="' + ev.id + '"]');
     const openPop = (e) => {
       if (e.target.closest('button') && !e.target.closest('[data-open-modal]')) return;
+      if (e.target.closest('select') || e.target.closest('input') || e.target.closest('label')) return;
       openEventModal(ev);
     };
     if (card) card.addEventListener('click', openPop);
@@ -737,6 +740,23 @@ RMTP.views.advancing = function (el, params, query) {
     const rp = q('[data-reports="' + ev.id + '"]'); if (rp) rp.addEventListener('click', (evt) => { evt.stopPropagation(); openReports(ev); });
     const sp = q('[data-spec="' + ev.id + '"]'); if (sp) sp.addEventListener('click', (evt) => { evt.stopPropagation(); files.open(ev.techSpec); });
     const pr = q('[data-print="' + ev.id + '"]'); if (pr) pr.addEventListener('click', (evt) => { evt.stopPropagation(); printAdvance(ev); });
+  });
+
+  // Quick status change selector for admins
+  el.querySelectorAll('[data-quick-status]').forEach((sel) => {
+    sel.addEventListener('click', (e) => e.stopPropagation());
+    sel.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const id = sel.getAttribute('data-quick-status');
+      const targetEv = store.find('advancing', id);
+      if (targetEv) {
+        const newStatus = sel.value;
+        const updated = Object.assign({}, targetEv, { status: newStatus });
+        store.upsert('advancing', updated);
+        ui.toast('Advance status updated to ' + newStatus, 'ok');
+        RMTP.router.render();
+      }
+    });
   });
 
   // Automatically open target event modal or maintenance form if directed
@@ -792,6 +812,10 @@ RMTP.views.advancing = function (el, params, query) {
     const mediaType = ev.media_type || ev.mediaType || '';
     const scheduleItems = Array.isArray(ev.schedule_items) ? ev.schedule_items : (Array.isArray(ev.scheduleItems) ? ev.scheduleItems : []);
 
+    const leadUserId = RMTP.getAdvancingLeadId(ev);
+    const leadUser = leadUserId ? store.find('users', leadUserId) : null;
+    const leadName = leadUser ? auth.displayName(leadUser) : '';
+
     const leadTechStr = techs.length ? techs.join(', ') : 'Unassigned';
     const scheduleSummary = isCinema
       ? (mediaType ? 'Media: ' + mediaType : 'Cinema Screening')
@@ -803,19 +827,29 @@ RMTP.views.advancing = function (el, params, query) {
 
     const prodBadges = renderProductionBadges(ev, false);
 
+    const statusControl = canManageEvents
+      ? '<div class="inline-flex items-center gap-1" onclick="event.stopPropagation()">' +
+          '<select data-quick-status="' + ev.id + '" class="field !py-0.5 !px-2 text-xs font-semibold rounded-md border cursor-pointer hover:border-accent shadow-2xs" style="color:' + (statusColour[ev.status] || 'var(--ink)') + '" title="Change Advancing Status">' +
+            STATUSES.map((st) => '<option value="' + st + '" ' + (st === ev.status ? 'selected' : '') + '>' + st + '</option>').join('') +
+          '</select>' +
+        '</div>'
+      : ui.pill(ev.status, statusColour[ev.status] || 'var(--muted)');
+
     return (
       '<div data-event-card="' + ev.id + '" class="panel w-full p-4 sm:p-5 transition-all hover:border-accent hover:shadow-lg cursor-pointer group select-none relative flex flex-col justify-between gap-3">' +
         '<div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3 w-full">' +
           '<div class="min-w-0 flex-1 w-full">' +
             '<div class="flex items-center gap-2 flex-wrap mb-1.5">' +
               '<h3 class="font-display text-base sm:text-lg font-semibold text-ink group-hover:text-accent transition-colors break-words">' + ui.esc(ev.name) + '</h3>' +
-              ui.pill(ev.status, statusColour[ev.status] || 'var(--muted)') +
+              statusControl +
               ui.pill(ev.space, isCinema ? 'var(--accent)' : 'var(--info)') +
+              (leadName ? ui.pill('Lead: ' + leadName, 'var(--accent)') : '') +
               (ev.category ? ui.pill(ev.category, 'var(--muted)') : '') +
               (ev.guestEngineer ? ui.pill('Guest Engineer', 'var(--info)') : '') +
             '</div>' +
             '<div class="flex items-center gap-2 sm:gap-3 text-xs text-muted flex-wrap">' +
               (ev.date ? '<span class="flex items-center gap-1 font-medium text-ink">' + ui.icon('clock', 'w-3.5 h-3.5 text-accent') + ui.formatDate(ev.date) + (times ? ' (' + times + ')' : '') + '</span>' : '') +
+              (leadName ? '<span class="w-1 h-1 rounded-full bg-line hidden sm:inline-block"></span><span class="hidden sm:inline-block">Advancing Lead: <strong class="text-accent font-medium">' + ui.esc(leadName) + '</strong></span>' : '') +
               '<span class="w-1 h-1 rounded-full bg-line hidden sm:inline-block"></span>' +
               '<span>Techs: <strong class="text-ink font-normal">' + ui.esc(leadTechStr) + '</strong></span>' +
               '<span class="w-1 h-1 rounded-full bg-line"></span>' +
@@ -846,6 +880,8 @@ RMTP.views.advancing = function (el, params, query) {
     const reports = reportsFor(ev.id);
     const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
     const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
+    const leadUserId = RMTP.getAdvancingLeadId(ev);
+    const leadUser = leadUserId ? store.find('users', leadUserId) : null;
     const isCinema = isScreenSpace(ev.space);
     const mediaType = ev.media_type || ev.mediaType || '';
     const filmDuration = ev.film_duration || ev.filmDuration || '';
@@ -1236,11 +1272,32 @@ RMTP.views.advancing = function (el, params, query) {
             (filmDuration ? '<span class="px-2 py-0.5 rounded bg-panel border border-line text-ink font-semibold">Film: ' + ui.esc(filmDuration) + '</span>' : '') +
           '</div>' +
           '<div class="flex items-center gap-1.5 flex-wrap">' +
-            ui.pill(ev.status, statusColour[ev.status] || 'var(--muted)') +
+            (canManageEvents ?
+              '<div class="flex items-center gap-1.5 font-medium">' +
+                '<span class="text-muted">Status:</span>' +
+                '<select id="modal-status-selector" class="field !py-0.5 !px-2 text-xs font-semibold rounded-md border cursor-pointer hover:border-accent shadow-2xs" style="color:' + (statusColour[ev.status] || 'var(--ink)') + '">' +
+                  STATUSES.map((st) => '<option value="' + st + '" ' + (st === ev.status ? 'selected' : '') + '>' + st + '</option>').join('') +
+                '</select>' +
+              '</div>' :
+              ui.pill(ev.status, statusColour[ev.status] || 'var(--muted)')) +
             ui.pill(ev.space, isCinema ? 'var(--accent)' : 'var(--info)') +
             (ev.category ? ui.pill(ev.category, 'var(--muted)') : '') +
             (ev.guestEngineer ? ui.pill('Guest Engineer', 'var(--info)') : '') +
           '</div>' +
+        '</div>' +
+
+        // Responsible for Advancing Lead Card
+        '<div class="p-3.5 rounded-xl bg-accent/5 border border-accent/25 flex items-center justify-between gap-3 shadow-xs">' +
+          '<div class="flex items-center gap-2.5">' +
+            '<div class="w-8 h-8 rounded-lg bg-accent/15 text-accent flex items-center justify-center font-bold text-xs shrink-0">' +
+              ui.icon('users', 'w-4 h-4') +
+            '</div>' +
+            '<div>' +
+              '<div class="text-[10px] font-bold uppercase tracking-wider text-accent">Responsible for Advancing</div>' +
+              '<div class="text-xs font-semibold text-ink">' + (leadUser ? auth.displayName(leadUser) + (leadUser.position ? ' <span class="text-muted font-normal">(' + ui.esc(leadUser.position) + ')</span>' : '') : '<span class="text-muted italic">Unassigned</span>') + '</div>' +
+            '</div>' +
+          '</div>' +
+          (leadUser ? '<span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-accent/10 text-accent border border-accent/20">Lead Tagged</span>' : '') +
         '</div>' +
 
         liveTimingsHtml +
@@ -1352,6 +1409,19 @@ RMTP.views.advancing = function (el, params, query) {
     const printBtn = m.root.querySelector('#modal-print-btn');
     if (printBtn) printBtn.addEventListener('click', () => printAdvance(ev));
 
+    const modalStatusSel = m.root.querySelector('#modal-status-selector');
+    if (modalStatusSel) {
+      modalStatusSel.addEventListener('change', () => {
+        const newStatus = modalStatusSel.value;
+        const updated = Object.assign({}, ev, { status: newStatus });
+        store.upsert('advancing', updated);
+        ui.toast('Advance status updated to ' + newStatus, 'ok');
+        m.close();
+        openEventModal(updated);
+        RMTP.router.render();
+      });
+    }
+
     const reportsBtn = m.root.querySelector('#modal-reports-btn');
     if (reportsBtn) reportsBtn.addEventListener('click', () => { m.close(); openReports(ev); });
 
@@ -1383,6 +1453,9 @@ RMTP.views.advancing = function (el, params, query) {
     const filmDurationVal = ev.film_duration || ev.filmDuration || '';
     const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
     const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
+    const leadUserId = RMTP.getAdvancingLeadId(ev);
+    const leadUser = leadUserId ? store.find('users', leadUserId) : null;
+    const leadLabel = leadUser ? auth.displayName(leadUser) + (leadUser.position ? ' (' + leadUser.position + ')' : '') : 'Unassigned';
     const reports = reportsFor(ev.id);
     const scheduleItems = Array.isArray(ev.schedule_items) ? ev.schedule_items : (Array.isArray(ev.scheduleItems) ? ev.scheduleItems : []);
 
@@ -1648,6 +1721,10 @@ RMTP.views.advancing = function (el, params, query) {
         '<div class="adv-print-section">' +
           '<div class="adv-print-section-title">Crew & Contacts</div>' +
           '<div class="adv-print-grid">' +
+            '<div class="adv-print-field" style="grid-column: span 2;">' +
+              '<div class="adv-print-label">Responsible for Advancing</div>' +
+              '<div class="adv-print-val" style="color:#0284c7;font-weight:700;">' + ui.esc(leadLabel) + '</div>' +
+            '</div>' +
             '<div class="adv-print-field" style="grid-column: span 2;">' +
               '<div class="adv-print-label">Assigned Technicians</div>' +
               '<div class="adv-print-val">' + (techs.length ? ui.esc(techs.join(', ')) : 'None assigned') + '</div>' +
@@ -2273,6 +2350,17 @@ RMTP.views.advancing = function (el, params, query) {
       : (ev._preselectedFaultId ? [ev._preselectedFaultId] : []);
 
     const allUsers = store.all('users');
+    const leadCandidates = allUsers.filter((u) => {
+      const pos = (u.position || '').trim();
+      return pos === 'Technical Manager' || pos === 'Senior Tech' || (auth.AUTO_ADMIN_POSITIONS && auth.AUTO_ADMIN_POSITIONS.includes(pos)) || u.admin;
+    });
+    const eligibleLeads = leadCandidates.length ? leadCandidates : allUsers;
+    const currentLeadId = RMTP.getAdvancingLeadId(ev) || '';
+
+    const leadOptionsHtml = (selectedId) =>
+      '<option value="">Select responsible lead\u2026</option>' +
+      eligibleLeads.map((u) => '<option value="' + u.id + '" ' + (u.id === (selectedId || currentLeadId) ? 'selected' : '') + '>' + ui.esc(auth.displayName(u)) + (u.position ? ' (' + ui.esc(u.position) + ')' : '') + '</option>').join('');
+
     const userOptionsHtml = (selectedId) =>
       '<option value="">Select engineer\u2026</option>' +
       allUsers.map((u) => '<option value="' + u.id + '" ' + (u.id === selectedId ? 'selected' : '') + '>' + ui.esc(auth.displayName(u)) + '</option>').join('');
@@ -2303,11 +2391,20 @@ RMTP.views.advancing = function (el, params, query) {
 
             '<div class="grid sm:grid-cols-[1fr_150px] gap-4">' +
               fld('Event title', '<input id="e-name" class="field font-medium" value="' + ui.esc(ev.name || '') + '" placeholder="Artist / show name" />') +
-              fld('Status', '<select id="e-status" class="field">' + opt(STATUSES, ev.status || 'Advancing') + '</select>') +
+              fld('Status', '<select id="e-status" class="field font-medium">' + opt(STATUSES, ev.status || 'Advancing') + '</select>') +
             '</div>' +
 
-            '<div class="grid grid-cols-2 sm:grid-cols-3 gap-4">' +
+            '<div class="grid sm:grid-cols-2 gap-4">' +
+              fld('Responsible for Advancing',
+                '<select id="e-responsible-lead" class="field font-semibold text-accent cursor-pointer">' +
+                  leadOptionsHtml(currentLeadId) +
+                '</select>' +
+                '<span class="text-[11px] text-muted block mt-1">Technical Manager or Senior Tech tagged as lead.</span>'
+              ) +
               fld('Category', '<select id="e-category" class="field">' + blankOpt(RMTP.EVENT_CATEGORIES, ev.category, '\u2014') + '</select>') +
+            '</div>' +
+
+            '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
               '<div id="event-form-space-selection" class="grid gap-1.5">' +
                 '<label class="text-xs font-semibold text-ink flex items-center justify-between">' +
                   '<span>Space / Room</span>' +
@@ -4236,6 +4333,7 @@ RMTP.views.advancing = function (el, params, query) {
 
       const chosenSpace = m.root.querySelector('#e-space').value;
       const isScreen = isScreenSpace(chosenSpace);
+      const responsibleLead = m.root.querySelector('#e-responsible-lead') ? m.root.querySelector('#e-responsible-lead').value.trim() : (ev.responsible_for_advancing || ev.responsible_for_advancing_user_id || '');
       const dcpTesterId = isScreen && m.root.querySelector('#e-dcp-tester') ? m.root.querySelector('#e-dcp-tester').value : (ev.dcp_tester_user_id || ev.dcpTesterUserId || '');
       const dcpTestDatetime = isScreen && m.root.querySelector('#e-dcp-test-datetime') ? m.root.querySelector('#e-dcp-test-datetime').value : (ev.dcp_test_datetime || ev.dcpTestDatetime || '');
 
@@ -4257,6 +4355,8 @@ RMTP.views.advancing = function (el, params, query) {
         space: chosenSpace,
         date: m.root.querySelector('#e-date').value,
         status: m.root.querySelector('#e-status').value,
+        responsible_for_advancing: responsibleLead,
+        responsible_for_advancing_user_id: responsibleLead,
         startTime: m.root.querySelector('#e-start').value,
         finishTime: m.root.querySelector('#e-finish').value,
 

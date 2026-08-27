@@ -74,7 +74,7 @@ RMTP.views.dashboard = function (el) {
     if (!me) return '';
     const today = new Date().toISOString().slice(0, 10);
     const myAdvances = store.all('advancing')
-      .filter((e) => RMTP.eventAssignedTo(e, me.id) && e.status !== 'Complete' && e.category !== 'DCP Test' && e.category !== 'Maintenance')
+      .filter((e) => (RMTP.eventAssignedTo(e, me.id) || RMTP.isAdvancingLead(e, me.id)) && e.status !== 'Complete' && e.category !== 'DCP Test' && e.category !== 'Maintenance')
       .filter((e) => !e.date || String(e.date).slice(0, 10) >= today)
       .sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
 
@@ -244,17 +244,22 @@ RMTP.views.dashboard = function (el) {
       sections.push('<div>' +
         '<div class="flex items-center gap-2 mb-2">' + ui.icon('clip', 'w-4 h-4 text-accent') +
           '<p class="eyebrow">Your advances \u00b7 ' + myAdvances.length + '</p></div>' +
-        '<div class="grid gap-1.5">' + myAdvances.slice(0, 5).map((e) =>
-          '<a href="#/advancing/' + encodeURIComponent(e.id) + '" class="flex items-center justify-between gap-3 text-sm p-2 rounded-lg bg-panel2/40 border border-line hover:border-accent hover:bg-panel2 transition-all group">' +
-            '<div class="min-w-0 truncate flex items-center gap-2">' +
-              '<span class="font-medium text-ink group-hover:text-accent transition-colors">' + ui.esc(e.name) + '</span>' +
-              (e.space ? '<span class="text-muted text-xs"> \u00b7 ' + ui.esc(e.space) + '</span>' : '') +
-            '</div>' +
-            '<div class="flex items-center gap-2 shrink-0">' +
-              '<span class="text-xs text-muted font-medium">' + (e.date ? ui.formatDate(e.date) : ui.esc(e.status)) + '</span>' +
-              '<span class="text-muted group-hover:text-accent group-hover:translate-x-0.5 transition-all">' + ui.icon('arrowR', 'w-3.5 h-3.5') + '</span>' +
-            '</div>' +
-          '</a>').join('') + '</div></div>');
+        '<div class="grid gap-1.5">' + myAdvances.slice(0, 5).map((e) => {
+          const isLead = RMTP.isAdvancingLead(e, me.id);
+          return (
+            '<a href="#/advancing/' + encodeURIComponent(e.id) + '" class="flex items-center justify-between gap-3 text-sm p-2 rounded-lg bg-panel2/40 border border-line hover:border-accent hover:bg-panel2 transition-all group">' +
+              '<div class="min-w-0 truncate flex items-center gap-2">' +
+                '<span class="font-medium text-ink group-hover:text-accent transition-colors">' + ui.esc(e.name) + '</span>' +
+                (e.space ? '<span class="text-muted text-xs"> \u00b7 ' + ui.esc(e.space) + '</span>' : '') +
+                (isLead ? '<span class="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-accent/15 text-accent border border-accent/30 shrink-0">Advancing Lead</span>' : '') +
+              '</div>' +
+              '<div class="flex items-center gap-2 shrink-0">' +
+                '<span class="text-xs text-muted font-medium">' + (e.date ? ui.formatDate(e.date) : ui.esc(e.status)) + '</span>' +
+                '<span class="text-muted group-hover:text-accent group-hover:translate-x-0.5 transition-all">' + ui.icon('arrowR', 'w-3.5 h-3.5') + '</span>' +
+              '</div>' +
+            '</a>'
+          );
+        }).join('') + '</div></div>');
     }
     if (outstanding > 0) {
       sections.push('<a href="#/users" class="flex items-center justify-between gap-3 group">' +

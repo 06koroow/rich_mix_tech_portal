@@ -56,8 +56,18 @@ RMTP.eventTechnicians = function (ev) {
   if (ev && Array.isArray(ev.technicians) && ev.technicians.length) return ev.technicians;
   return ev && ev.techUserId ? [{ userId: ev.techUserId, role: '' }] : [];
 };
+RMTP.getAdvancingLeadId = function (ev) {
+  if (!ev) return '';
+  return ev.responsible_for_advancing || ev.responsible_for_advancing_user_id || ev.responsibleForAdvancingUserId || '';
+};
+RMTP.isAdvancingLead = function (ev, userId) {
+  if (!ev || !userId) return false;
+  return RMTP.getAdvancingLeadId(ev) === userId;
+};
 RMTP.eventAssignedTo = function (ev, userId) {
-  return !!userId && RMTP.eventTechnicians(ev).some((t) => t.userId === userId);
+  if (!userId || !ev) return false;
+  if (RMTP.isAdvancingLead(ev, userId)) return true;
+  return RMTP.eventTechnicians(ev).some((t) => t.userId === userId);
 };
 
 /* Conditions at or below this are "poor" — such kit is struck through

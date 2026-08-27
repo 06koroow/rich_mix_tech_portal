@@ -829,7 +829,7 @@ RMTP.views.advancing = function (el, params, query) {
 
     const statusControl = canManageEvents
       ? '<div class="inline-flex items-center gap-1" onclick="event.stopPropagation()">' +
-          '<select data-quick-status="' + ev.id + '" class="field !py-0.5 !px-2 text-xs font-semibold rounded-md border cursor-pointer hover:border-accent shadow-2xs" style="color:' + (statusColour[ev.status] || 'var(--ink)') + '" title="Change Advancing Status">' +
+          '<select data-quick-status="' + ev.id + '" class="field !py-1 !pl-2.5 !pr-7 text-xs font-semibold rounded-md border cursor-pointer hover:border-accent shadow-2xs" style="color:' + (statusColour[ev.status] || 'var(--ink)') + ';background-position:right 8px center;" title="Change Advancing Status">' +
             STATUSES.map((st) => '<option value="' + st + '" ' + (st === ev.status ? 'selected' : '') + '>' + st + '</option>').join('') +
           '</select>' +
         '</div>'
@@ -1275,7 +1275,7 @@ RMTP.views.advancing = function (el, params, query) {
             (canManageEvents ?
               '<div class="flex items-center gap-1.5 font-medium">' +
                 '<span class="text-muted">Status:</span>' +
-                '<select id="modal-status-selector" class="field !py-0.5 !px-2 text-xs font-semibold rounded-md border cursor-pointer hover:border-accent shadow-2xs" style="color:' + (statusColour[ev.status] || 'var(--ink)') + '">' +
+                '<select id="modal-status-selector" class="field !py-1 !pl-2.5 !pr-7 text-xs font-semibold rounded-md border cursor-pointer hover:border-accent shadow-2xs" style="color:' + (statusColour[ev.status] || 'var(--ink)') + ';background-position:right 8px center;">' +
                   STATUSES.map((st) => '<option value="' + st + '" ' + (st === ev.status ? 'selected' : '') + '>' + st + '</option>').join('') +
                 '</select>' +
               '</div>' :

@@ -489,18 +489,22 @@ RMTP.presets = (function () {
       createdAt: preset.createdAt || Date.now()
     }, preset);
 
-    if (idx > -1) {
-      list[idx] = updated;
+    if (store && store.upsert) {
+      store.upsert('patch_presets', updated);
     } else {
-      list.push(updated);
+      if (idx > -1) { list[idx] = updated; } else { list.push(updated); }
+      store.write('patch_presets', list);
     }
-    store.write('patch_presets', list);
     return updated;
   }
 
   function removePreset(id) {
-    const list = getAllPresets().filter((p) => p.id !== id);
-    store.write('patch_presets', list);
+    if (store && store.remove) {
+      store.remove('patch_presets', id);
+    } else {
+      const list = getAllPresets().filter((p) => p.id !== id);
+      store.write('patch_presets', list);
+    }
   }
 
   function resetPresetDefaults() {
@@ -618,18 +622,22 @@ RMTP.presets = (function () {
       createdAt: patchSheet.createdAt || Date.now()
     }, patchSheet);
 
-    if (idx > -1) {
-      list[idx] = updated;
+    if (store && store.upsert) {
+      store.upsert('patch_sheets', updated);
     } else {
-      list.push(updated);
+      if (idx > -1) { list[idx] = updated; } else { list.push(updated); }
+      store.write('patch_sheets', list);
     }
-    store.write('patch_sheets', list);
     return updated;
   }
 
   function removePatchSheet(id) {
-    const list = getAllPatchSheets().filter((ps) => ps.id !== id);
-    store.write('patch_sheets', list);
+    if (store && store.remove) {
+      store.remove('patch_sheets', id);
+    } else {
+      const list = getAllPatchSheets().filter((ps) => ps.id !== id);
+      store.write('patch_sheets', list);
+    }
   }
 
   /* Compute all repatches across all stageboxes */

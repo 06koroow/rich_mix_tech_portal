@@ -2053,6 +2053,9 @@ RMTP.views.advancing = function (el, params, query) {
           '<pre class="p-2 rounded bg-panel font-mono text-[11px] select-all border border-line overflow-x-auto text-ink">' +
             unsupp.map((c) => 'alter table public.advancing add column if not exists "' + c + '" ' + (c.includes('items') || c.includes('technicians') ? "jsonb default '[]'::jsonb;" : (c.includes('received') || c.includes('completed') || c.includes('intermission') || c.includes('qa') || c.includes('guest') ? 'boolean default false;' : "text default '';"))).join('\n') +
           '</pre>' +
+          '<div class="mt-2 text-right">' +
+            '<button type="button" id="sync-retry-schema-btn" class="btn border border-line !py-1 text-xs bg-panel hover:bg-panel2 font-semibold">I have run this, reload schema cache</button>' +
+          '</div>' +
         '</div>'
       ) : '';
 
@@ -2077,6 +2080,20 @@ RMTP.views.advancing = function (el, params, query) {
     }
 
     await check();
+
+    const retrySchemaBtn = m.root.querySelector('#sync-retry-schema-btn');
+    if (retrySchemaBtn) {
+      retrySchemaBtn.addEventListener('click', () => {
+        try {
+          if (window.localStorage) {
+            localStorage.removeItem('sb_unsupported_cols');
+            localStorage.removeItem('sb_unsupported_tables');
+          }
+        } catch(e) {}
+        ui.toast('Schema cache cleared, reloading...', 'info');
+        setTimeout(() => window.location.reload(), 500);
+      });
+    }
 
     const drainBtn = m.root.querySelector('#sync-drain-btn');
     if (drainBtn) {
@@ -3335,21 +3352,29 @@ RMTP.views.advancing = function (el, params, query) {
     const btnOpenPatchSheet = m.root.querySelector('#btn-open-patch-sheet-builder');
     if (btnOpenPatchSheet) {
       btnOpenPatchSheet.addEventListener('click', () => {
-        const allSheets = RMTP.presets.getAllPatchSheets();
-        const existingForEvent = (ev && ev.id) ? allSheets.find((s) => s.eventId === ev.id) : null;
-        if (existingForEvent) {
-          RMTP.presets.openPatchSheetModal(existingForEvent);
-        } else {
-          RMTP.presets.openPatchSheetModal({
-            id: null,
-            name: (ev && ev.name ? ev.name + ' — Stagebox Patch Plan' : 'Event Patch Sheet'),
-            eventId: (ev && ev.id) || null,
-            eventName: (ev && ev.name) || '',
-            space: (ev && (ev.space || (spaceSelect && spaceSelect.value))) || 'The Stage',
-            date: (ev && ev.date) || new Date().toISOString().slice(0, 10),
-            notes: (ev && ev.techInfo) || ''
-          });
+        // Auto-save the event to ensure patch sheet builder pulls the latest channel list
+        const saveBtn = m.root.querySelector('[data-save]');
+        if (saveBtn) {
+          saveBtn.click(); // Triggers the save function which updates the DB
         }
+
+        setTimeout(() => {
+          const allSheets = RMTP.presets.getAllPatchSheets();
+          const existingForEvent = (ev && ev.id) ? allSheets.find((s) => s.eventId === ev.id) : null;
+          if (existingForEvent) {
+            RMTP.presets.openPatchSheetModal(existingForEvent);
+          } else {
+            RMTP.presets.openPatchSheetModal({
+              id: null,
+              name: (ev && ev.name ? ev.name + ' — Stagebox Patch Plan' : 'Event Patch Sheet'),
+              eventId: (ev && ev.id) || null,
+              eventName: (ev && ev.name) || '',
+              space: (ev && (ev.space || (spaceSelect && spaceSelect.value))) || 'The Stage',
+              date: (ev && ev.date) || new Date().toISOString().slice(0, 10),
+              notes: (ev && ev.techInfo) || ''
+            });
+          }
+        }, 200);
       });
     }
 

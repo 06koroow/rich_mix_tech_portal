@@ -1135,9 +1135,21 @@ RMTP.presets = (function () {
       : (Array.isArray(eventRecord.scheduleItems) ? eventRecord.scheduleItems : []);
     const scheduleActs = schedule.filter((it) => it && (it.type === 'act' || (it.customName && it.customName.trim())));
 
-    if (!scheduleActs.length) return false;
-
     const houseAct = (targetSheet.acts || []).find((a) => a.id === 'act-house') || { id: 'act-house', name: 'House / Venue Core', color: 'slate' };
+    
+    // Sync master global channels into House Act
+    const techReqs = eventRecord.tech_requirements || eventRecord.techRequirements || {};
+    if (techReqs.channel_list) {
+      if (Array.isArray(techReqs.channel_list.inputs)) {
+        houseAct.channelInputs = JSON.parse(JSON.stringify(techReqs.channel_list.inputs));
+      }
+      if (Array.isArray(techReqs.channel_list.outputs)) {
+        houseAct.channelOutputs = JSON.parse(JSON.stringify(techReqs.channel_list.outputs));
+      }
+    }
+
+    if (!scheduleActs.length && (!houseAct.channelInputs || !houseAct.channelInputs.length)) return false;
+
     const newActs = [houseAct];
 
     scheduleActs.forEach((it, idx) => {
@@ -1687,7 +1699,7 @@ RMTP.presets = (function () {
           renderActs();
           renderStageboxes();
           renderEventSyncBanner();
-          ui.toast('Synchronized ' + scheduleActs.length + ' artist(s) from ' + ev.name, 'ok');
+          ui.toast('Synchronized artists and master channels from ' + ev.name, 'ok');
         });
       }
     }
@@ -3063,11 +3075,16 @@ RMTP.presets = (function () {
 
             const schedule = Array.isArray(linkedEv.schedule_items) ? linkedEv.schedule_items : (Array.isArray(linkedEv.scheduleItems) ? linkedEv.scheduleItems : []);
             const scheduleActs = schedule.filter((it) => it && (it.type === 'act' || (it.customName && it.customName.trim())));
-            if (scheduleActs.length > 0) {
+            const hasMasterChannels = linkedEv.tech_requirements && linkedEv.tech_requirements.channel_list && (linkedEv.tech_requirements.channel_list.inputs || linkedEv.tech_requirements.channel_list.outputs);
+            if (scheduleActs.length > 0 || hasMasterChannels) {
               syncArtistsFromEvent(sheet, linkedEv, true);
               renderActs();
               renderStageboxes();
-              ui.toast('Pulled ' + scheduleActs.length + ' artist(s) from ' + linkedEv.name + ' schedule', 'ok');
+              if (scheduleActs.length > 0) {
+                ui.toast('Pulled ' + scheduleActs.length + ' artist(s) and channels from ' + linkedEv.name + ' schedule', 'ok');
+              } else {
+                ui.toast('Pulled master channel lists from ' + linkedEv.name, 'ok');
+              }
             }
           }
         } else {

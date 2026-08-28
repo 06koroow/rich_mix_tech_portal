@@ -1118,12 +1118,13 @@ RMTP.views.advancing = function (el, params, query) {
             '<div class="overflow-x-auto rounded-lg border border-line">' +
               '<table class="w-full text-left text-xs border-collapse">' +
                 '<thead><tr class="bg-panel2 border-b border-line text-muted text-[11px] font-medium">' +
-                  '<th class="p-2">Ch</th><th class="p-2">Instrument</th><th class="p-2">Mic / DI</th><th class="p-2">Stand</th><th class="p-2">Position</th><th class="p-2">+48V</th>' +
+                  '<th class="p-2">Ch</th><th class="p-2">Patch</th><th class="p-2">Instrument</th><th class="p-2">Mic / DI</th><th class="p-2">Stand</th><th class="p-2">Position</th><th class="p-2">+48V</th>' +
                 '</tr></thead>' +
                 '<tbody class="divide-y divide-line">' +
                   channelInputs.map((ch, i) => (
                     '<tr class="hover:bg-panel2/40">' +
                       '<td class="p-2 font-mono font-semibold text-accent">Ch ' + (ch.channel || (i + 1)) + '</td>' +
+                      '<td class="p-2 font-mono text-muted text-[10px]">' + ui.esc(ch.patch || '—') + '</td>' +
                       '<td class="p-2 font-medium text-ink">' + ui.esc(ch.instrument || '—') + '</td>' +
                       '<td class="p-2 text-muted">' + ui.esc(ch.mic || '—') + '</td>' +
                       '<td class="p-2 text-muted">' + ui.esc(ch.stand || '—') + '</td>' +
@@ -1586,11 +1587,12 @@ RMTP.views.advancing = function (el, params, query) {
           '<div style="margin-bottom:8px;">' +
             '<div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:4px;">Inputs (' + channelInputs.length + ')</div>' +
             '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
-              '<thead><tr style="border-bottom:1px solid #cbd5e1;text-align:left;color:#475569;"><th style="padding:3px 6px;">Ch</th><th style="padding:3px 6px;">Instrument</th><th style="padding:3px 6px;">Mic / DI</th><th style="padding:3px 6px;">Stand</th><th style="padding:3px 6px;">Pos</th><th style="padding:3px 6px;">+48V</th></tr></thead>' +
+              '<thead><tr style="border-bottom:1px solid #cbd5e1;text-align:left;color:#475569;"><th style="padding:3px 6px;">Ch</th><th style="padding:3px 6px;">Patch</th><th style="padding:3px 6px;">Instrument</th><th style="padding:3px 6px;">Mic / DI</th><th style="padding:3px 6px;">Stand</th><th style="padding:3px 6px;">Pos</th><th style="padding:3px 6px;">+48V</th></tr></thead>' +
               '<tbody>' +
                 channelInputs.map((ch, i) => (
                   '<tr style="border-bottom:1px solid #f1f5f9;">' +
                     '<td style="padding:3px 6px;font-weight:600;font-family:monospace;">Ch ' + (ch.channel || (i + 1)) + '</td>' +
+                    '<td style="padding:3px 6px;font-family:monospace;color:#64748b;font-size:10px;">' + ui.esc(ch.patch || '—') + '</td>' +
                     '<td style="padding:3px 6px;font-weight:500;">' + ui.esc(ch.instrument || '—') + '</td>' +
                     '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(ch.mic || '—') + '</td>' +
                     '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(ch.stand || '—') + '</td>' +
@@ -1690,6 +1692,33 @@ RMTP.views.advancing = function (el, params, query) {
       '</div>'
     ) : '';
 
+    const reportsHtml = reports.length ? (
+      '<div class="adv-print-section">' +
+        '<div class="adv-print-section-title">Shift Reports & Handover Notes</div>' +
+        '<div style="display:flex;flex-direction:column;gap:6px;">' +
+          reports.map((r) => (
+            '<div style="background:#f8fafc;padding:8px;border:1px solid #cbd5e1;border-radius:4px;font-size:11px;">' +
+              '<div style="font-weight:700;margin-bottom:4px;color:#0f172a;">' + ui.esc(r.user_name || r.userName || 'Tech') + ' (' + ui.esc(r.shift_role || r.shiftRole || 'Report') + ')</div>' +
+              '<div style="white-space:pre-wrap;color:#334155;">' + ui.esc(r.notes || '') + '</div>' +
+            '</div>'
+          )).join('') +
+        '</div>' +
+      '</div>'
+    ) : '';
+
+    root.innerHTML =
+      '<div class="adv-print-sheet">' +
+        '<div class="adv-print-header">' +
+          '<div>' +
+            '<div class="adv-print-brand">Rich Mix</div>' +
+            '<div class="adv-print-sub">Tech Portal / ' + ui.esc(ev.category || 'Event Advance') + '</div>' +
+          '</div>' +
+          '<div><span class="adv-print-badge">' + ui.esc(ev.status || 'Draft') + '</span></div>' +
+        '</div>' +
+        '<div class="adv-print-title">' + ui.esc(ev.name) + '</div>' +
+        '<div style="font-size:13px;font-weight:600;color:#334155;margin-bottom:16px;">' +
+          ui.esc(ev.date ? ui.formatDate(ev.date) : 'TBC') + (times ? ' • ' + ui.esc(times) : '') + ' — ' + ui.esc(ev.space || 'No Space') +
+        '</div>' +
         liveTimingsSection +
         liveScheduleSection +
         cinemaChecksHtml +
@@ -2328,6 +2357,20 @@ RMTP.views.advancing = function (el, params, query) {
       ? (ev.linked_maintenance_ids || ev.linkedMaintenanceIds).slice()
       : (ev._preselectedFaultId ? [ev._preselectedFaultId] : []);
 
+    let patchOptions = [];
+    const venue = store.all('venues').find(vv => vv.name === ev.space);
+    if (venue && venue.audio) {
+      if (venue.audio.localInputChannels) {
+        for(let i=1; i<=venue.audio.localInputChannels; i++) patchOptions.push('Local ' + i);
+      }
+      if (venue.audio.stageboxes) {
+        venue.audio.stageboxes.forEach(sb => {
+          let limit = sb.analogIn || 0;
+          for(let i=1; i<=limit; i++) patchOptions.push((sb.letter || sb.name || 'SB') + i);
+        });
+      }
+    }
+
     const allUsers = store.all('users');
     const leadCandidates = allUsers.filter((u) => {
       const pos = (u.position || '').trim();
@@ -2670,7 +2713,7 @@ RMTP.views.advancing = function (el, params, query) {
                         '<button type="button" id="btn-add-input-chan" class="btn btn-primary !py-0.5 !px-2 text-[10px] flex items-center gap-1 font-semibold">' +
                           ui.icon('plus', 'w-3 h-3') + '<span>Add Channel</span>' +
                         '</button>' +
-                        (channelInputs.length ? '<button type="button" id="btn-clear-input-chan" class="btn btn-danger !py-0.5 !px-1.5 text-[10px]" title="Clear Inputs">Clear</button>' : '') +
+                        (channelInputs.length ? '<button type="button" id="btn-auto-patch-inputs" class="btn btn-secondary !py-0.5 !px-1.5 text-[10px]" title="Overlay and allocate to House Patch">Auto-Patch</button><button type="button" id="btn-clear-input-chan" class="btn btn-danger !py-0.5 !px-1.5 text-[10px]" title="Clear Inputs">Clear</button>' : '') +
                       '</div>' +
                     '</div>' +
                     '<div id="channel-inputs-container" class="grid gap-2 max-h-64 overflow-y-auto pr-1"></div>' +
@@ -3060,7 +3103,10 @@ RMTP.views.advancing = function (el, params, query) {
               '<button type="button" data-inp-del="' + idx + '" class="btn btn-danger !p-1" title="Remove">' + ui.icon('trash', 'w-3 h-3') + '</button>' +
             '</div>' +
           '</div>' +
-          '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2">' +
+          '<div class="grid grid-cols-2 sm:grid-cols-5 gap-2">' +
+            '<div>' +
+              '<input list="inp-patch-presets" data-inp-patch="' + idx + '" class="field !py-1 !px-2 text-xs" value="' + ui.esc(ch.patch || '') + '" placeholder="Patch (e.g. A1)" />' +
+            '</div>' +
             '<div>' +
               '<input list="inp-inst-presets" data-inp-inst="' + idx + '" class="field !py-1 !px-2 text-xs" value="' + ui.esc(ch.instrument || '') + '" placeholder="Instrument (e.g. Kick)" />' +
             '</div>' +
@@ -3083,8 +3129,12 @@ RMTP.views.advancing = function (el, params, query) {
         '</div>'
       )).join('') +
       '<datalist id="inp-inst-presets">' + INPUT_INSTRUMENT_PRESETS.map((p) => '<option value="' + p + '"></option>').join('') + '</datalist>' +
-      '<datalist id="inp-mic-presets">' + INPUT_MIC_PRESETS.map((p) => '<option value="' + p + '"></option>').join('') + '</datalist>';
+      '<datalist id="inp-mic-presets">' + INPUT_MIC_PRESETS.map((p) => '<option value="' + p + '"></option>').join('') + '</datalist>' +
+      '<datalist id="inp-patch-presets">' + patchOptions.map((p) => '<option value="' + p + '"></option>').join('') + '</datalist>';
 
+      container.querySelectorAll('[data-inp-patch]').forEach((inp) => {
+        inp.addEventListener('input', () => { channelInputs[+inp.getAttribute('data-inp-patch')].patch = inp.value; });
+      });
       container.querySelectorAll('[data-inp-inst]').forEach((inp) => {
         inp.addEventListener('input', () => { channelInputs[+inp.getAttribute('data-inp-inst')].instrument = inp.value; });
       });
@@ -3142,6 +3192,21 @@ RMTP.views.advancing = function (el, params, query) {
           phantom: false
         });
         renderChannelInputs();
+      });
+    }
+
+    const autoPatchBtn = m.root.querySelector('#btn-auto-patch-inputs');
+    if (autoPatchBtn) {
+      autoPatchBtn.addEventListener('click', () => {
+        let patchIndex = 0;
+        channelInputs.forEach((ch, idx) => {
+          if (!ch.patch && patchIndex < patchOptions.length) {
+            ch.patch = patchOptions[patchIndex];
+            patchIndex++;
+          }
+        });
+        renderChannelInputs();
+        ui.toast('Auto-allocated channels to house patch', 'ok');
       });
     }
 
@@ -3621,7 +3686,7 @@ RMTP.views.advancing = function (el, params, query) {
                           '<button type="button" data-act-add-input="' + idx + '" class="btn btn-primary !py-0.5 !px-2 text-[10px] flex items-center gap-1 font-semibold">' +
                             ui.icon('plus', 'w-3 h-3') + '<span>Add Channel</span>' +
                           '</button>' +
-                          (inCount ? '<button type="button" data-act-clear-input="' + idx + '" class="btn btn-danger !py-0.5 !px-1.5 text-[10px]" title="Clear Inputs">Clear</button>' : '')
+                          (inCount ? '<button type="button" data-act-autopatch="' + idx + '" class="btn btn-secondary !py-0.5 !px-1.5 text-[10px]" title="Auto-Patch to House">Auto-Patch</button><button type="button" data-act-clear-input="' + idx + '" class="btn btn-danger !py-0.5 !px-1.5 text-[10px]" title="Clear Inputs">Clear</button>' : '')
                         ) : (
                           '<select data-act-out-preset-sel="' + idx + '" class="field !py-0.5 !px-1.5 text-[11px] font-medium !w-auto bg-panel text-info cursor-pointer">' +
                             '<option value="">⚡ Load Output Preset\u2026</option>' +
@@ -3656,7 +3721,8 @@ RMTP.views.advancing = function (el, params, query) {
                                   '<button type="button" data-act-ch-del="' + idx + '-' + chIdx + '" class="btn btn-danger !p-1" title="Delete Channel">' + ui.icon('trash', 'w-3 h-3') + '</button>' +
                                 '</div>' +
                               '</div>' +
-                              '<div class="grid grid-cols-2 sm:grid-cols-4 gap-1.5">' +
+                              '<div class="grid grid-cols-2 sm:grid-cols-5 gap-1.5">' +
+                                '<input list="inp-patch-presets" data-act-ch-patch="' + idx + '-' + chIdx + '" class="field !py-0.5 !px-1.5 text-xs" value="' + ui.esc(ch.patch || '') + '" placeholder="Patch (e.g. A1)" />' +
                                 '<input list="inp-inst-presets" data-act-ch-inst="' + idx + '-' + chIdx + '" class="field !py-0.5 !px-1.5 text-xs" value="' + ui.esc(ch.instrument || '') + '" placeholder="Instrument (e.g. Kick)" />' +
                                 '<input list="inp-mic-presets" data-act-ch-mic="' + idx + '-' + chIdx + '" class="field !py-0.5 !px-1.5 text-xs" value="' + ui.esc(ch.mic || '') + '" placeholder="Mic/DI (e.g. SM58)" />' +
                                 '<select data-act-ch-stand="' + idx + '-' + chIdx + '" class="field !py-0.5 !px-1 text-xs">' +
@@ -3967,7 +4033,33 @@ RMTP.views.advancing = function (el, params, query) {
         });
       });
 
+      // Act channel auto patch
+      container.querySelectorAll('[data-act-autopatch]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const sIdx = +btn.getAttribute('data-act-autopatch');
+          const it = scheduleItems[sIdx];
+          if (it && it.channelInputs) {
+            let pIdx = 0;
+            it.channelInputs.forEach(ch => {
+              if (!ch.patch && pIdx < patchOptions.length) {
+                ch.patch = patchOptions[pIdx++];
+              }
+            });
+            renderScheduleBuilder();
+            ui.toast('Auto-allocated to house patch', 'ok');
+          }
+        });
+      });
+
       // Input row fields wiring
+      container.querySelectorAll('[data-act-ch-patch]').forEach((inp) => {
+        inp.addEventListener('input', () => {
+          const [sIdx, cIdx] = inp.getAttribute('data-act-ch-patch').split('-').map(Number);
+          if (scheduleItems[sIdx] && scheduleItems[sIdx].channelInputs[cIdx]) {
+            scheduleItems[sIdx].channelInputs[cIdx].patch = inp.value;
+          }
+        });
+      });
       container.querySelectorAll('[data-act-ch-inst]').forEach((inp) => {
         inp.addEventListener('input', () => {
           const [sIdx, cIdx] = inp.getAttribute('data-act-ch-inst').split('-').map(Number);

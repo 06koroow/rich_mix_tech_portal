@@ -1,0 +1,42 @@
+--- js/views/presets.js
++++ js/views/presets.js
+@@ -390,6 +390,39 @@
+   const STAGE_LOCATIONS = ['Stage Left', 'Stage Right', 'Upstage Center', 'Downstage', 'Drum Riser', 'FOH', 'Monitor World', 'Other'];
+   const CONNECTOR_TYPES = ['XLR', 'NL4', 'NL8', 'BNC', 'Cat5e', 'Cat6', 'Optical', 'Socapex', 'PowerCON'];
+ 
++  // Mock Database for Room I/O Presets
++  const roomIOPresets = {
++    'The Stage': {
++      homeRun: { inputChannels: 48, outputChannels: 24, prefix: 'STG' },
++      stageboxes: [
++        { letter: 'A', name: 'SL Rack', location: 'Stage Left', channels: Array.from({length: 16}, (_, i) => ({ socket: i+1, actId: 'act-house', instrument: '', mic: '', phantom: false, repatch: false, homeRunCh: i+1, connectorType: 'XLR' })) },
++        { letter: 'B', name: 'SR Rack', location: 'Stage Right', channels: Array.from({length: 16}, (_, i) => ({ socket: i+1, actId: 'act-house', instrument: '', mic: '', phantom: false, repatch: false, homeRunCh: i+17, connectorType: 'XLR' })) }
++      ]
++    },
++    'The Studio': {
++      homeRun: { inputChannels: 32, outputChannels: 16, prefix: 'STD' },
++      stageboxes: [
++        { letter: 'A', name: 'Live Room', location: 'Upstage Center', channels: Array.from({length: 24}, (_, i) => ({ socket: i+1, actId: 'act-house', instrument: '', mic: '', phantom: false, repatch: false, homeRunCh: i+1, connectorType: 'XLR' })) }
++      ]
++    },
++    'The Cinema': {
++      homeRun: { inputChannels: 16, outputChannels: 8, prefix: 'CIN' },
++      stageboxes: [
++        { letter: 'A', name: 'Screen LCR', location: 'Downstage', channels: Array.from({length: 8}, (_, i) => ({ socket: i+1, actId: 'act-house', instrument: '', mic: '', phantom: false, repatch: false, homeRunCh: i+1, connectorType: 'XLR' })) }
++      ]
++    }
++  };
++
++  function getRoomIOPresetForSpace(space) {
++    return roomIOPresets[space] || null;
++  }
++
++  function applyRoomIOPresetToSheet(sheet, preset) {
++    if (!preset) return;
++    sheet.homeRun = JSON.parse(JSON.stringify(preset.homeRun));
++    sheet.stageboxes = JSON.parse(JSON.stringify(preset.stageboxes));
++  }
++
+   function getHomeRunConfig(sheet) {
+     if (sheet.homeRun) return sheet.homeRun;
+     if (sheet.venue && sheet.venue.homeRun) return sheet.venue.homeRun;

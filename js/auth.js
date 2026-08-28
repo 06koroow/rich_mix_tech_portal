@@ -98,14 +98,13 @@ RMTP.auth = (function () {
   // True when the Supabase backend is configured + loaded.
   function sbActive() { return !!(RMTP.supabase && RMTP.supabase.isConfigured()); }
 
-  /* Backend mode: map the signed-in Entra account to a Users record
-     by email and make them the current user. Returns false if there's
-     no active account for that email (they'd need adding/approving). */
+  /* (Disabled Graph/Entra SSO helper)
   function signInGraphAccount(acct) {
     const email = acct && (acct.username || (acct.idTokenClaims && acct.idTokenClaims.preferred_username));
     return signInEmail(email || '');
   }
-  // Same, by plain email (used by the Supabase path).
+  */
+  // Map signed-in user by email (used by the Supabase path).
   function signInEmail(email) {
     const u = byEmail(email || '');
     if (u && u.status !== 'pending') { setCurrent(u.id); return true; }
@@ -272,7 +271,7 @@ RMTP.auth = (function () {
     displayName, initials, badges, hashPassword,
     rolesForPosition, isAutoAdminPosition,
     current, currentId, setCurrent, can,
-    login, signUp, signOut, signInGraphAccount, signInEmail, showLogin, ensureSession,
+    login, signUp, signOut, signInEmail, showLogin, ensureSession,
     pendingUsers, approveUser, rejectUser, refreshShell,
   };
 })();

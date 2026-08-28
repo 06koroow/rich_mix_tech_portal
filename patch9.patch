@@ -1,0 +1,22 @@
+--- js/views/presets.js
++++ js/views/presets.js
+@@ -694,8 +694,14 @@
+ 
+     return channels.map((c) => {
+       const count = c.assignedSockets.length;
++      // Determine if collision (more than 1 UNIQUE physical socket assigned)
++      const uniquePhysicalSockets = new Set(
++        c.assignedSockets.map(s => s.boxLetter + '-' + s.socket)
++      );
++      const isRealCollision = uniquePhysicalSockets.size > 1;
++
+       return Object.assign(c, {
+         isPatched: count > 0,
+-        isCollision: count > 1,
+-        primarySocket: count > 0 ? c.assignedSockets[0] : null
++        isCollision: isRealCollision,
++        primarySocket: count > 0 ? c.assignedSockets[0] : null,
++        layers: c.assignedSockets // include all layers for changeover schedule
+       });
+     });
+   }

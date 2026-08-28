@@ -1258,52 +1258,67 @@ RMTP.views.advancing = function (el, params, query) {
       '</div>'
     ) : '';
 
+    const dmxList = (techReqs && (techReqs.dmx_fixtures || techReqs.dmxFixtures)) || (ev.dmx_fixtures || ev.dmxFixtures) || [];
+
+    const dmxFixturesHtml = (Array.isArray(dmxList) && dmxList.length) ? (
+      '<div class="p-3.5 rounded-xl bg-panel2/40 border border-line text-xs grid gap-2">' +
+        '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
+          '<div class="eyebrow text-ink font-semibold flex items-center gap-1.5">' +
+            ui.icon('bulb', 'w-3.5 h-3.5 text-warning') + '<span>Patched DMX Lighting Fixtures (' + dmxList.length + ')</span>' +
+          '</div>' +
+          '<button id="modal-dmx-csv-btn" class="btn btn-ghost !py-0.5 !px-2 text-[11px] text-accent flex items-center gap-1 border border-line">' +
+            ui.icon('download', 'w-3 h-3') + '<span>Export DMX CSV</span>' +
+          '</button>' +
+        '</div>' +
+        '<div class="overflow-x-auto rounded-lg border border-line">' +
+          '<table class="w-full text-left text-xs border-collapse">' +
+            '<thead><tr class="bg-panel2 border-b border-line text-muted text-[11px]">' +
+              '<th class="p-1.5 w-12 text-center">Unit</th><th class="p-1.5">Fixture / Personality</th><th class="p-1.5">Location</th><th class="p-1.5 text-center">Univ</th><th class="p-1.5 text-center">Start</th><th class="p-1.5 text-center">End</th><th class="p-1.5 text-center">Ch</th>' +
+            '</tr></thead>' +
+            '<tbody class="divide-y divide-line font-mono text-[11px]">' +
+              dmxList.map((f, i) => {
+                const addr = parseInt(f.address, 10) || 1;
+                const ch = Math.max(1, parseInt(f.channels, 10) || 1);
+                const end = addr + ch - 1;
+                return (
+                  '<tr class="hover:bg-panel2/40">' +
+                    '<td class="p-1.5 text-center font-bold text-ink">#' + (f.unit !== undefined ? f.unit : (i + 1)) + '</td>' +
+                    '<td class="p-1.5 font-sans font-medium text-ink">' + ui.esc(f.name || f.model || 'Fixture') + '<div class="text-[10px] text-muted font-mono">' + ui.esc(f.mode || '') + '</div></td>' +
+                    '<td class="p-1.5 font-sans text-muted">' + ui.esc(f.location || 'LX1') + '</td>' +
+                    '<td class="p-1.5 text-center">' + (f.universe || 1) + '</td>' +
+                    '<td class="p-1.5 text-center font-bold text-accent">' + addr + '</td>' +
+                    '<td class="p-1.5 text-center">' + end + '</td>' +
+                    '<td class="p-1.5 text-center text-muted">' + ch + '</td>' +
+                  '</tr>'
+                );
+              }).join('') +
+            '</tbody>' +
+          '</table>' +
+        '</div>' +
+      '</div>'
+    ) : '';
+
     const bodyHtml =
-      '<div class="grid gap-4 text-sm">' +
-        // Header summary bar
-        '<div class="p-3 rounded-xl bg-panel2/50 border border-line flex flex-wrap items-center justify-between gap-2.5 text-xs">' +
-          '<div class="flex items-center gap-3 flex-wrap">' +
-            '<span class="flex items-center gap-1.5 font-semibold text-ink">' +
-              ui.icon('clock', 'w-4 h-4 text-accent') +
-              (ev.date ? ui.formatDate(ev.date) : 'TBC') + (times ? ' (' + times + ')' : '') +
-            '</span>' +
-            (isCinema && (ev.screening_starts_time || ev.screeningStartsTime) ?
-              '<span class="px-2 py-0.5 rounded bg-panel border border-accent/30 text-accent font-semibold">Screening: ' + ui.esc(ev.screening_starts_time || ev.screeningStartsTime) + '</span>' : '') +
-            (filmDuration ? '<span class="px-2 py-0.5 rounded bg-panel border border-line text-ink font-semibold">Film: ' + ui.esc(filmDuration) + '</span>' : '') +
-          '</div>' +
-          '<div class="flex items-center gap-1.5 flex-wrap">' +
-            (canManageEvents ?
-              '<div class="flex items-center gap-1.5 font-medium">' +
-                '<span class="text-muted">Status:</span>' +
-                '<select id="modal-status-selector" class="field !py-1 !pl-2.5 !pr-7 text-xs font-semibold rounded-md border cursor-pointer hover:border-accent shadow-2xs" style="color:' + (statusColour[ev.status] || 'var(--ink)') + ';background-position:right 8px center;">' +
-                  STATUSES.map((st) => '<option value="' + st + '" ' + (st === ev.status ? 'selected' : '') + '>' + st + '</option>').join('') +
-                '</select>' +
-              '</div>' :
-              ui.pill(ev.status, statusColour[ev.status] || 'var(--muted)')) +
-            ui.pill(ev.space, isCinema ? 'var(--accent)' : 'var(--info)') +
-            (ev.category ? ui.pill(ev.category, 'var(--muted)') : '') +
-            (ev.guestEngineer ? ui.pill('Guest Engineer', 'var(--info)') : '') +
+      '<div class="grid gap-4">' +
+        // Top summary metadata
+        '<div class="p-3.5 rounded-xl bg-panel2/50 border border-line text-xs grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">' +
+          '<div><div class="text-[10px] font-semibold text-muted uppercase">Venue / Space</div><div class="font-bold text-ink mt-0.5 text-sm">' + ui.esc(ev.space || '—') + '</div></div>' +
+          '<div><div class="text-[10px] font-semibold text-muted uppercase">Date & Timings</div><div class="font-medium text-ink mt-0.5">' + ui.esc(ui.formatDate(ev.date) + (times ? ' \u00b7 ' + times : '')) + '</div></div>' +
+          '<div><div class="text-[10px] font-semibold text-muted uppercase">Lead Technician</div><div class="font-medium text-ink mt-0.5">' + (leadUser ? ui.esc(leadUser.name) : '<span class="text-muted italic">Unassigned</span>') + '</div></div>' +
+          '<div>' +
+            '<div class="text-[10px] font-semibold text-muted uppercase mb-0.5">Advance Status</div>' +
+            (canManageEvents ? (
+              '<select id="modal-status-selector" class="field !py-1 !px-2 text-xs font-semibold w-full bg-panel">' +
+                ['Confirmed', 'Tentative', 'Hold', 'Cancelled'].map((st) => '<option value="' + st + '" ' + (ev.status === st ? 'selected' : '') + '>' + st + '</option>').join('') +
+              '</select>'
+            ) : ui.pill(ev.status || 'Confirmed', ev.status === 'Confirmed' ? 'var(--ok)' : (ev.status === 'Cancelled' ? 'var(--danger)' : 'var(--warning)'))) +
           '</div>' +
         '</div>' +
-
-        // Responsible for Advancing Lead Card
-        '<div class="p-3.5 rounded-xl bg-accent/5 border border-accent/25 flex items-center justify-between gap-3 shadow-xs">' +
-          '<div class="flex items-center gap-2.5">' +
-            '<div class="w-8 h-8 rounded-lg bg-accent/15 text-accent flex items-center justify-center font-bold text-xs shrink-0">' +
-              ui.icon('users', 'w-4 h-4') +
-            '</div>' +
-            '<div>' +
-              '<div class="text-[10px] font-bold uppercase tracking-wider text-accent">Responsible for Advancing</div>' +
-              '<div class="text-xs font-semibold text-ink">' + (leadUser ? auth.displayName(leadUser) + (leadUser.position ? ' <span class="text-muted font-normal">(' + ui.esc(leadUser.position) + ')</span>' : '') : '<span class="text-muted italic">Unassigned</span>') + '</div>' +
-            '</div>' +
-          '</div>' +
-          (leadUser ? '<span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-accent/10 text-accent border border-accent/20">Lead Tagged</span>' : '') +
-        '</div>' +
-
         liveTimingsHtml +
         liveScheduleItemsHtml +
         cinemaDetailsHtml +
         lightingProductionHtml +
+        dmxFixturesHtml +
         channelListHtml +
         linkedMaintenanceHtml +
 
@@ -1408,6 +1423,15 @@ RMTP.views.advancing = function (el, params, query) {
 
     const printBtn = m.root.querySelector('#modal-print-btn');
     if (printBtn) printBtn.addEventListener('click', () => printAdvance(ev));
+
+    const dmxCsvBtn = m.root.querySelector('#modal-dmx-csv-btn');
+    if (dmxCsvBtn) {
+      dmxCsvBtn.addEventListener('click', () => {
+        if (RMTP.dmx) {
+          RMTP.dmx.exportCsv(dmxList, ev.name || 'Event', ev.space || 'Venue');
+        }
+      });
+    }
 
     const modalStatusSel = m.root.querySelector('#modal-status-selector');
     if (modalStatusSel) {
@@ -1665,51 +1689,6 @@ RMTP.views.advancing = function (el, params, query) {
         ) : '') +
       '</div>'
     ) : '';
-
-    const reportsHtml = reports.length ? (
-      '<div class="adv-print-section">' +
-        '<div class="adv-print-section-title">End-of-Shift Reports (' + reports.length + ')</div>' +
-        '<div style="display:flex;flex-direction:column;gap:8px;">' +
-          reports.map((r) => (
-            '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:8px 10px;">' +
-              '<div style="display:flex;justify-content:space-between;font-size:11px;font-weight:700;margin-bottom:3px;">' +
-                '<span>' + ui.esc(r.crew ? r.crew + ' Shift' : 'Shift Report') + ' \u00b7 Filed by ' + ui.esc(r.author || 'Unknown') + '</span>' +
-                '<span style="font-family:monospace;">' + (r.submittedAt ? ui.formatDate(r.submittedAt.slice(0, 10)) : '') + '</span>' +
-              '</div>' +
-              (r.summary ? '<div style="font-size:12px;margin-top:2px;"><strong>Summary:</strong> ' + ui.esc(r.summary) + '</div>' : '') +
-              (r.issues ? '<div style="font-size:12px;margin-top:2px;color:#b91c1c;"><strong>Issues / Faults:</strong> ' + ui.esc(r.issues) + '</div>' : '') +
-              (r.followUp ? '<div style="font-size:12px;margin-top:2px;color:#1d4ed8;"><strong>Handover:</strong> ' + ui.esc(r.followUp) + '</div>' : '') +
-            '</div>'
-          )).join('') +
-        '</div>' +
-      '</div>'
-    ) : '';
-
-    root.innerHTML =
-      '<div class="adv-print-sheet">' +
-        '<div class="adv-print-header">' +
-          '<div>' +
-            '<div class="adv-print-brand">RICH MIX TECHNICAL OPERATIONS</div>' +
-            '<div class="adv-print-sub">Event Technical Advance Sheet</div>' +
-          '</div>' +
-          '<div style="text-align:right;">' +
-            '<div class="adv-print-badge">' + ui.esc(ev.status || 'Advancing') + '</div>' +
-            '<div style="font-size:11px;font-family:monospace;margin-top:4px;">' + ui.esc(ev.space || 'Venue') + '</div>' +
-          '</div>' +
-        '</div>' +
-
-        '<h1 class="adv-print-title">' + ui.esc(ev.name) + '</h1>' +
-
-        '<div class="adv-print-section">' +
-          '<div class="adv-print-section-title">Schedule & Timings</div>' +
-          '<div class="adv-print-grid">' +
-            '<div class="adv-print-field"><div class="adv-print-label">Date</div><div class="adv-print-val">' + ui.esc(ev.date ? ui.formatDate(ev.date) : 'TBC') + '</div></div>' +
-            '<div class="adv-print-field"><div class="adv-print-label">Running Times</div><div class="adv-print-val">' + ui.esc(times || 'TBC') + '</div></div>' +
-            (isCinema ? '<div class="adv-print-field"><div class="adv-print-label">Screening Start</div><div class="adv-print-val">' + ui.esc(ev.screening_starts_time || ev.screeningStartsTime || 'TBC') + '</div></div>' : '') +
-            (isCinema && filmDurationVal ? '<div class="adv-print-field"><div class="adv-print-label">Film Duration</div><div class="adv-print-val font-semibold">' + ui.esc(filmDurationVal) + '</div></div>' : '') +
-            (isCinema && mediaTypeVal ? '<div class="adv-print-field"><div class="adv-print-label">Media Type</div><div class="adv-print-val font-semibold">' + ui.esc(mediaTypeVal) + '</div></div>' : '') +
-          '</div>' +
-        '</div>' +
 
         liveTimingsSection +
         liveScheduleSection +
@@ -4386,6 +4365,7 @@ RMTP.views.advancing = function (el, params, query) {
         floor_tags: floorTags,
         specials: specialsObj,
         special_notes: specialNotes,
+        dmx_patch: ev.dmx_patch || ev.dmxPatch || [],
         production_package: {
           lighting_notes: lightingNotes,
           floor_package: floorPackage,
@@ -4459,6 +4439,45 @@ RMTP.views.advancing = function (el, params, query) {
       record.dcp_test_event_id = linkedDcpId;
 
       store.upsert('advancing', record);
+
+      // Bi-directional Sync: Keep linked Patch Sheet updated with Advancing schedule artists
+      if (RMTP.presets && typeof RMTP.presets.getAllPatchSheets === 'function' && typeof RMTP.presets.savePatchSheet === 'function') {
+        try {
+          const allSheets = RMTP.presets.getAllPatchSheets();
+          const linkedSheet = allSheets.find((s) => s.eventId === record.id || s.id === record.patch_sheet_id);
+          if (linkedSheet && Array.isArray(processedScheduleItems)) {
+            const actItems = processedScheduleItems.filter((it) => it && (it.type === 'act' || (it.customName && it.customName.trim())));
+            if (actItems.length > 0) {
+              if (!Array.isArray(linkedSheet.acts)) linkedSheet.acts = [];
+              const houseAct = linkedSheet.acts.find((a) => a.id === 'act-house') || { id: 'act-house', name: 'House / Venue Core', color: 'slate' };
+              const updatedActs = [houseAct];
+              const actColors = ['blue', 'purple', 'emerald', 'amber', 'rose', 'cyan', 'indigo', 'orange'];
+
+              actItems.forEach((it, idx) => {
+                const actName = (it.customName && it.customName.trim()) ? it.customName.trim() : (it.label || ('Act ' + (idx + 1)));
+                const existingAct = linkedSheet.acts.find((a) => a.name && a.name.toLowerCase().trim() === actName.toLowerCase().trim()) || linkedSheet.acts[idx + 1];
+                const col = existingAct ? existingAct.color : (actColors[idx % actColors.length]);
+                updatedActs.push({
+                  id: (existingAct && existingAct.id) || ('act-' + (idx + 1) + '-' + Date.now().toString(36)),
+                  name: actName,
+                  color: col,
+                  stageTime: it.time || '',
+                  duration: it.duration || ''
+                });
+              });
+
+              linkedSheet.acts = updatedActs;
+              linkedSheet.eventName = record.name || linkedSheet.eventName;
+              linkedSheet.space = record.space || linkedSheet.space;
+              linkedSheet.date = record.date || linkedSheet.date;
+              RMTP.presets.savePatchSheet(linkedSheet);
+            }
+          }
+        } catch (e) {
+          console.warn('Error syncing schedule acts to patch sheet:', e);
+        }
+      }
+
       m.close();
       ui.toast(existing ? 'Event advance updated' : 'Event advance created', 'ok');
       RMTP.router.render();

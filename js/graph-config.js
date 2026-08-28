@@ -1,15 +1,10 @@
 /* ============================================================
-   graph-config.js — SharePoint / Microsoft Graph connection
+   graph-config.js — SharePoint / Microsoft Graph connection (DEPRECATED)
    ------------------------------------------------------------
-   Fill these in AFTER you've (1) hosted the app, (2) registered
-   the SPA in Entra, and (3) looked up your site + list IDs.
-   See docs/SHAREPOINT-SETUP.md for exactly how to get each value.
-
-   Leave clientId BLANK to keep the app in local (localStorage)
-   mode — nothing here runs until it's set. The moment clientId
-   is filled and the MSAL script has loaded, the app switches to
-   the SharePoint backend on next load.
+   NOTE: Azure / Microsoft Graph is no longer in use.
+   The portal uses Supabase (see js/supabase-config.js).
    ============================================================ */
+/*
 RMTP.graphConfig = {
   clientId: '',   // Entra app registration → Application (client) ID
   tenantId: '',   // Entra → Directory (tenant) ID  (or 'common')
@@ -32,3 +27,4 @@ RMTP.graphConfig = {
     procedures:  '',   // "Procedures" list
   },
 };
+*/

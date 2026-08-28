@@ -1,0 +1,37 @@
+--- js/views/presets.js
++++ js/views/presets.js
+@@ -1582,6 +1582,21 @@
+       const totalHrInputs = Math.max(1, parseInt(hr.inputChannels, 10) || 32);
+       const hrPrefix = (hr.prefix || 'HR').trim();
+ 
++      // Helper to group channels by physical socket number
++      const groupBySocket = (channels) => {
++        const grouped = {};
++        (channels || []).forEach((ch, idx) => {
++          const s = ch.socket || (idx + 1);
++          if (!grouped[s]) grouped[s] = [];
++          ch._originalIndex = idx; // Keep track for data binding
++          grouped[s].push(ch);
++        });
++        // Ensure sorted by socket number
++        const keys = Object.keys(grouped).map(Number).sort((a, b) => a - b);
++        return keys.map(k => ({ socket: k, layers: grouped[k] }));
++      };
++
+       container.innerHTML = sheet.stageboxes.map((box, sbIdx) => {
++        const socketGroups = groupBySocket(box.channels);
+         return (
+           '<div class="panel p-4 rounded-xl border border-line bg-panel shadow-sm flex flex-col gap-3">' +
+             // Stagebox Header
+@@ -1607,7 +1622,11 @@
+               '</div>' +
+               '<div class="flex items-center gap-1.5">' +
+                 '<button type="button" data-sb-add-ch="' + sbIdx + '" class="btn btn-ghost !py-1 !px-2 text-xs text-accent font-semibold flex items-center gap-1">' +
+-                  ui.icon('plus', 'w-3 h-3') + '<span>Add Socket</span>' +
++                  ui.icon('plus', 'w-3 h-3') + '<span>Add Input Socket</span>' +
++                '</button>' +
++                '<button type="button" data-sb-add-out="' + sbIdx + '" class="btn btn-ghost !py-1 !px-2 text-xs text-accent font-semibold flex items-center gap-1">' +
++                  ui.icon('plus', 'w-3 h-3') + '<span>Add Output</span>' +
+                 '</button>' +
+                 '<button type="button" data-sb-del="' + sbIdx + '" class="btn btn-danger !p-1.5" title="Delete Stagebox">' +
+                   ui.icon('trash', 'w-3.5 h-3.5') +

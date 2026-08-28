@@ -1,0 +1,72 @@
+--- js/views/presets.js
++++ js/views/presets.js
+@@ -1883,21 +1883,18 @@
+           sheet.stageboxes[sbIdx].channels[chIdx].phantom = chk.checked;
+         });
+       });
+-      container.querySelectorAll('[data-ch-repatch]').forEach((chk) => {
+-        chk.addEventListener('change', () => {
+-          const [sbIdx, chIdx] = chk.getAttribute('data-ch-repatch').split('-').map(Number);
+-          sheet.stageboxes[sbIdx].channels[chIdx].repatch = chk.checked;
+-          renderStageboxes();
+-        });
+-      });
+-      container.querySelectorAll('[data-ch-repatch-to]').forEach((inp) => {
+-        inp.addEventListener('input', () => {
+-          const [sbIdx, chIdx] = inp.getAttribute('data-ch-repatch-to').split('-').map(Number);
+-          sheet.stageboxes[sbIdx].channels[chIdx].repatchTo = inp.value;
+-        });
+-      });
++      container.querySelectorAll('[data-ch-conn]').forEach((sel) => {
++        sel.addEventListener('change', () => {
++          const [sbIdx, chIdx] = sel.getAttribute('data-ch-conn').split('-').map(Number);
++          sheet.stageboxes[sbIdx].channels[chIdx].connectorType = sel.value;
++        });
++      });
+       container.querySelectorAll('[data-ch-hr]').forEach((sel) => {
+         sel.addEventListener('change', () => {
+           const [sbIdx, chIdx] = sel.getAttribute('data-ch-hr').split('-').map(Number);
+           sheet.stageboxes[sbIdx].channels[chIdx].homeRunCh = sel.value ? parseInt(sel.value, 10) : null;
+           renderStageboxes();
+@@ -1905,12 +1902,32 @@
+       });
+       container.querySelectorAll('[data-ch-del]').forEach((btn) => {
+         btn.addEventListener('click', () => {
+           const [sbIdx, chIdx] = btn.getAttribute('data-ch-del').split('-').map(Number);
+           sheet.stageboxes[sbIdx].channels.splice(chIdx, 1);
+-          // renumber
+-          sheet.stageboxes[sbIdx].channels.forEach((c, i) => { c.socket = i + 1; });
++          // renumber unique sockets
++          const channels = sheet.stageboxes[sbIdx].channels;
++          let currentSocket = 1;
++          let lastSocketSeen = -1;
++          channels.forEach((c) => {
++            if (c.socket !== lastSocketSeen) {
++              lastSocketSeen = c.socket;
++              c.socket = currentSocket++;
++            } else {
++              c.socket = currentSocket - 1;
++            }
++          });
+           renderStageboxes();
+         });
+       });
++      container.querySelectorAll('[data-ch-duplicate]').forEach((btn) => {
++        btn.addEventListener('click', () => {
++          const [sbIdx, chIdx] = btn.getAttribute('data-ch-duplicate').split('-').map(Number);
++          const box = sheet.stageboxes[sbIdx];
++          const sourceCh = box.channels[chIdx];
++          const newCh = JSON.parse(JSON.stringify(sourceCh));
++          // Find next act index
++          const acts = sheet.acts || [];
++          const currentActIdx = acts.findIndex(a => a.id === sourceCh.actId);
++          if (currentActIdx >= 0 && currentActIdx < acts.length - 1) {
++            newCh.actId = acts[currentActIdx + 1].id;
++          }
++          newCh.repatch = true;
++          // Insert immediately after the source channel
++          box.channels.splice(chIdx + 1, 0, newCh);
++          renderStageboxes();
++        });
++      });
+     }

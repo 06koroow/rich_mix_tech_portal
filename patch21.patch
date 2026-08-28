@@ -1,0 +1,114 @@
+--- js/views/inventory.js
++++ js/views/inventory.js
+@@ -1277,59 +1277,41 @@
+ 
+   function renderSetupCategories() {
+     const renderList = (container) => {
+-      const all = store.all('inventory_categories').sort((a,b) => (a.name||'').localeCompare(b.name||''));
+-      const html = all.map(c => 
++      const all = getCategories();
++      const html = all.map(c =>
+         '<div class="flex items-center justify-between p-2 border border-line rounded bg-panel">' +
+-          '<input type="text" class="field !py-1 !px-2 flex-1 mr-2 bg-transparent hover:border-line focus:bg-panel2" value="' + ui.esc(c.name) + '" data-cat-id="' + c.id + '" />' +
+-          '<button class="btn btn-ghost text-danger !p-1" data-del-cat="' + c.id + '" title="Delete">' + ui.icon('x', 'w-4 h-4') + '</button>' +
++          '<input type="text" class="field !py-1 !px-2 flex-1 mr-2 bg-transparent hover:border-line focus:bg-panel2" value="' + ui.esc(c) + '" data-old-cat="' + ui.esc(c) + '" />' +
++          '<button class="btn btn-ghost text-danger !p-1" data-del-cat="' + ui.esc(c) + '" title="Remove from all items">' + ui.icon('x', 'w-4 h-4') + '</button>' +
+         '</div>'
+       ).join('');
+-      container.innerHTML = html || '<div class="text-muted text-sm italic">No custom categories.</div>';
++      container.innerHTML = html || '<div class="text-muted text-sm italic">No categories found.</div>';
+       
+-      container.querySelectorAll('input[data-cat-id]').forEach(inp => {
++      container.querySelectorAll('input[data-old-cat]').forEach(inp => {
+         inp.addEventListener('change', () => {
+-          const id = inp.getAttribute('data-cat-id');
+-          const cat = store.find('inventory_categories', id);
+-          if (cat && inp.value.trim()) {
+-            cat.name = inp.value.trim();
+-            store.upsert('inventory_categories', cat);
++          const old = inp.getAttribute('data-old-cat');
++          const nu = inp.value.trim();
++          if (nu && nu !== old) {
++            let updated = 0;
++            store.all('inventory').forEach(it => {
++              if (it.category === old) {
++                it.category = nu;
++                store.upsert('inventory', it);
++                updated++;
++              }
++            });
++            if (updated > 0) ui.toast('Updated ' + updated + ' items to ' + nu, 'ok');
++            renderList(container);
+             render();
+           }
+         });
+       });
+       container.querySelectorAll('button[data-del-cat]').forEach(btn => {
+         btn.addEventListener('click', () => {
+-          if (confirm('Delete this category?')) {
+-            store.remove('inventory_categories', btn.getAttribute('data-del-cat'));
+-            renderList(container);
+-            render();
+-          }
+-        });
+-      });
+-    };
+-
+-    const modal = ui.modal({
+-      title: 'Setup Categories',
+-      size: 'md:max-w-md',
+-      body:
+-        '<div class="flex items-center gap-2 mb-4">' +
+-          '<input type="text" id="new-cat-name" class="field flex-1" placeholder="New Category Name..." />' +
+-          '<button id="btn-add-cat" class="btn btn-primary">Add</button>' +
+-        '</div>' +
+-        '<div class="space-y-2 max-h-96 overflow-y-auto" id="cat-list"></div>',
+-      actions: [ { label: 'Done', type: 'ghost', click: () => { modal.close(); render(); } } ]
+-    });
+-    
+-    const container = modal.root.querySelector('#cat-list');
+-    renderList(container);
+-
+-    modal.root.querySelector('#btn-add-cat').addEventListener('click', () => {
+-      const inp = modal.root.querySelector('#new-cat-name');
+-      const val = inp.value.trim();
+-      if (val) {
+-        store.upsert('inventory_categories', { id: store.uid('cat'), name: val });
+-        inp.value = '';
+-        renderList(container);
+-        render();
+-      }
+-    });
+-  }
+-
+-  function openForm(existing) {
++          const cat = btn.getAttribute('data-del-cat');
++          if (confirm('Reassign all items in "' + cat + '" to "Other"?')) {
++            let updated = 0;
++            store.all('inventory').forEach(it => {
++              if (it.category === cat) {
++                it.category = 'Other';
++                store.upsert('inventory', it);
++                updated++;
++              }
++            });
++            if (updated > 0) ui.toast('Reassigned ' + updated + ' items to Other', 'ok');
++            renderList(container);
++            render();
++          }
++        });
++      });
++    };
++
++    const modal = ui.modal({
++      title: 'Setup Categories',
++      size: 'md:max-w-md',
++      body:
++        '<p class="text-xs text-muted mb-4">Categories are automatically generated from your inventory list. Renaming or deleting here will apply to all existing items.</p>' +
++        '<div class="space-y-2 max-h-96 overflow-y-auto" id="cat-list"></div>',
++      actions: [ { label: 'Done', type: 'ghost', click: () => { modal.close(); render(); } } ]
++    });
++    
++    const container = modal.root.querySelector('#cat-list');
++    renderList(container);
++  }

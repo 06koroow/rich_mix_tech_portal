@@ -1,20 +1,10 @@
 /* ============================================================
-   sync.js — keeps the local cache and SharePoint in step
+   sync.js — keeps the local cache and SharePoint in step (DEPRECATED)
    ------------------------------------------------------------
-   Strategy (the "shape B" from docs/BACKEND.md): localStorage
-   stays the thing the views read (so they stay synchronous and
-   the app works offline), and this module (a) pulls every list
-   into the cache on startup, and (b) pushes local writes back to
-   SharePoint via a retrying queue. It wires itself by wrapping
-   store.upsert / store.remove, so NO view changes are needed.
-
-   Each record carries your AppId; SharePoint's numeric item id is
-   held in a side-map so updates/deletes know which row to hit.
-
-   Column names below MUST match the SharePoint lists exactly
-   (they line up with the import workbook). Skeleton — test
-   against your tenant before relying on it.
+   NOTE: Azure / Microsoft Graph / SharePoint sync is no longer in use.
+   The portal uses Supabase sync (see js/sync-supabase.js).
    ============================================================ */
+/*
 RMTP.sync = (function () {
   const store = RMTP.store, graph = RMTP.graph;
   const lists = () => (RMTP.graphConfig || {}).lists || {};
@@ -137,3 +127,4 @@ RMTP.sync = (function () {
 
   return { pullAll, wire, pullCollection };
 })();
+*/

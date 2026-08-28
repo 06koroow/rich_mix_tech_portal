@@ -1,0 +1,20 @@
+--- js/views/venues.js
++++ js/views/venues.js
+@@ -223,12 +223,8 @@
+     }
+   }
+ 
+-  function mount(container) {
+-    m.root = container;
++  RMTP.views.venues = function (el) {
++    m.root = el;
+     render();
+-  }
+-
+-  function unmount() {
+-    m.root = null;
+-  }
+-
+-  RMTP.views.venues = { mount, unmount };
++  };
+ })();

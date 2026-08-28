@@ -1,0 +1,68 @@
+--- js/views/presets.js
++++ js/views/presets.js
+@@ -1550,6 +1550,65 @@
+         renderActs();
+       });
+     }
++    
++    // Space change - Auto load room I/O preset
++    const spaceSelect = m.root.querySelector('#ps-space');
++    if (spaceSelect) {
++      spaceSelect.addEventListener('change', () => {
++        sheet.space = spaceSelect.value;
++        const roomPreset = getRoomIOPresetForSpace(sheet.space);
++        if (roomPreset && confirm('A standard Room I/O Preset was found for "' + sheet.space + '".\n\nWould you like to auto-populate the Home Run and default Stageboxes for this space?\n(This will overwrite current Stageboxes)')) {
++          applyRoomIOPresetToSheet(sheet, roomPreset);
++          syncHRInputsToUI();
++          renderActs();
++          if (currentStep === 2) renderStageboxes();
++          if (currentStep === 3) renderSignalFlow();
++        }
++      });
++    }
++
++    // Sync UI fields for Home Run back to JS model
++    function syncHRUIToModel() {
++      const hrName = m.root.querySelector('#ps-hr-name');
++      const hrType = m.root.querySelector('#ps-hr-type');
++      const hrLoc = m.root.querySelector('#ps-hr-location');
++      const hrIn = m.root.querySelector('#ps-hr-inputs');
++      const hrOut = m.root.querySelector('#ps-hr-outputs');
++      const hrPref = m.root.querySelector('#ps-hr-prefix');
++
++      if (hrName) sheet.homeRun.name = hrName.value;
++      if (hrType) sheet.homeRun.type = hrType.value;
++      if (hrLoc) sheet.homeRun.location = hrLoc.value;
++      if (hrIn) sheet.homeRun.inputChannels = Math.max(1, parseInt(hrIn.value, 10) || 32);
++      if (hrOut) sheet.homeRun.outputChannels = Math.max(0, parseInt(hrOut.value, 10) || 16);
++      if (hrPref) sheet.homeRun.prefix = hrPref.value;
++    }
++
++    function syncHRInputsToUI() {
++      const hrName = m.root.querySelector('#ps-hr-name');
++      const hrType = m.root.querySelector('#ps-hr-type');
++      const hrLoc = m.root.querySelector('#ps-hr-location');
++      const hrIn = m.root.querySelector('#ps-hr-inputs');
++      const hrOut = m.root.querySelector('#ps-hr-outputs');
++      const hrPref = m.root.querySelector('#ps-hr-prefix');
++
++      if (hrName) hrName.value = sheet.homeRun.name || '';
++      if (hrType) hrType.value = sheet.homeRun.type || '';
++      if (hrLoc) hrLoc.value = sheet.homeRun.location || '';
++      if (hrIn) hrIn.value = sheet.homeRun.inputChannels || 32;
++      if (hrOut) hrOut.value = sheet.homeRun.outputChannels || 16;
++      if (hrPref) hrPref.value = sheet.homeRun.prefix || 'HR';
++    }
++
++    const saveRoomIoBtn = m.root.querySelector('#btn-save-room-io');
++    if (saveRoomIoBtn) {
++      saveRoomIoBtn.addEventListener('click', () => {
++        syncHRUIToModel();
++        sheet.space = m.root.querySelector('#ps-space').value || 'Unassigned Space';
++        renderSaveRoomIOModal();
++      });
++    }
++
+ 
+     // Acts Rendering
+     function renderActs() {

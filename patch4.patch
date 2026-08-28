@@ -1,0 +1,26 @@
+--- js/views/presets.js
++++ js/views/presets.js
+@@ -1620,11 +1620,16 @@
+             '<div class="md:hidden grid gap-2.5">' +
+               (!(box.channels && box.channels.length) ? (
+                 '<div class="text-center py-4 text-muted italic bg-panel2/30 rounded-lg border border-line p-3">No sockets in this stagebox. Click "Add Socket" above.</div>'
+               ) : (
+-                (box.channels || []).map((ch, chIdx) => {
+-                  const act = (sheet.acts || []).find((a) => a.id === ch.actId);
+-                  const col = act ? getActColorObj(act.color) : ACT_COLORS[0];
+-                  const hrCh = parseInt(ch.homeRunCh, 10);
+-                  return (
+-                    '<div class="p-3 rounded-lg bg-panel border ' + (ch.repatch ? 'border-warning/40' : 'border-line') + ' shadow-2xs grid gap-2">' +
++                socketGroups.map((grp) => {
++                  const snum = grp.socket;
++                  return '<div class="grid gap-2 border-l-2 border-line/40 pl-2 ml-1 relative">' +
++                  grp.layers.map((ch, layerIdx) => {
++                    const chIdx = ch._originalIndex;
++                    const act = (sheet.acts || []).find((a) => a.id === ch.actId);
++                    const col = act ? getActColorObj(act.color) : ACT_COLORS[0];
++                    const hrCh = parseInt(ch.homeRunCh, 10);
++                    const isRepatch = layerIdx > 0;
++                    return (
++                    '<div class="p-3 rounded-lg bg-panel border ' + (isRepatch ? 'border-warning/40' : 'border-line') + ' shadow-2xs grid gap-2 relative">' +
++                      (isRepatch ? '<div class="absolute -left-[14px] top-4 w-3 h-[2px] bg-warning/50"></div>' : '') +
+                       // Mobile Header: Socket Badge, Act Selector, Phantom & Delete

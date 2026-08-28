@@ -1,15 +1,10 @@
 /* ============================================================
-   graph.js — Entra sign-in (MSAL) + Microsoft Graph REST client
+   graph.js — Entra sign-in (MSAL) + Microsoft Graph REST client (DEPRECATED)
    ------------------------------------------------------------
-   Thin wrapper over @azure/msal-browser (loaded from Microsoft's
-   CDN in index.html) and the Graph v1.0 endpoints for SharePoint
-   lists + drives. Nothing here touches the network at load time;
-   it only acts when the app boots in backend mode (config set).
-
-   NOTE: this is a working-shaped skeleton. It needs your tenant
-   values in graph-config.js and testing against your real site —
-   it can't be exercised offline. See docs/SHAREPOINT-SETUP.md.
+   NOTE: Azure / Microsoft Graph is no longer in use.
+   The portal uses Supabase (see js/supabase.js and js/sync-supabase.js).
    ============================================================ */
+/*
 RMTP.graph = (function () {
   const BASE = 'https://graph.microsoft.com/v1.0';
   let app = null, account = null;
@@ -99,3 +94,4 @@ RMTP.graph = (function () {
 
   return { isConfigured, init, ensureSignedIn, currentAccount, accountEmail, accountName, token, api, listItems, createItem, updateItem, deleteItem, uploadFile };
 })();
+*/

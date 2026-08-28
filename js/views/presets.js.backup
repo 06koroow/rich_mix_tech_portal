@@ -396,22 +396,12 @@ RMTP.presets = (function () {
 
   /* ---- Room I/O Presets Store ---- */
   function getAllRoomIOPresets() {
-    const venues = store.all('venues');
-    return venues.filter(v => v.audio).map(v => ({
-      id: 'room-io-' + v.id,
-      space: v.name,
-      name: v.name + ' \u2014 I/O Architecture',
-      description: 'Permanent audio infrastructure for ' + v.name,
-      homeRun: v.audio,
-      stageboxes: (v.audio.stageboxes || []).map(sb => ({
-        letter: sb.letter,
-        name: sb.name,
-        location: sb.location,
-        channels: Array.from({length: sb.sockets || 16}, (_, i) => ({
-          socket: i+1, actId: 'act-house', instrument: '', mic: '', phantom: false, repatch: false, homeRunCh: null, connectorType: 'XLR'
-        }))
-      }))
-    }));
+    let list = store.read('room_io_presets', null);
+    if (!Array.isArray(list) || !list.length) {
+      list = JSON.parse(JSON.stringify(DEFAULT_ROOM_IO_PRESETS));
+      store.write('room_io_presets', list);
+    }
+    return list.slice();
   }
 
   function getRoomIOPresetForSpace(spaceName) {
@@ -420,23 +410,21 @@ RMTP.presets = (function () {
   }
 
   function saveRoomIOPreset(preset) {
-    let venue = store.find('venues', preset.space);
-    if (!venue) {
-      venue = { id: preset.space, name: preset.space, dmx: [] };
+    const list = getAllRoomIOPresets();
+    const idx = list.findIndex((p) => p.id === preset.id || p.space === preset.space);
+    const updated = Object.assign({
+      id: preset.id || store.uid('room_io'),
+      updatedAt: Date.now(),
+      createdAt: preset.createdAt || Date.now()
+    }, preset);
+
+    if (idx > -1) {
+      list[idx] = updated;
+    } else {
+      list.push(updated);
     }
-    
-    venue.audio = JSON.parse(JSON.stringify(preset.homeRun || {}));
-    if (preset.stageboxes) {
-      venue.audio.stageboxes = preset.stageboxes.map(sb => ({
-        letter: sb.letter,
-        name: sb.name,
-        location: sb.location,
-        sockets: sb.channels ? sb.channels.length : 16
-      }));
-    }
-    
-    store.upsert('venues', venue);
-    return venue;
+    store.write('room_io_presets', list);
+    return updated;
   }
 
   function applyRoomIOPresetToSheet(sheet, roomPreset) {
@@ -638,32 +626,21 @@ RMTP.presets = (function () {
     if (!sheet || !Array.isArray(sheet.stageboxes)) return out;
 
     sheet.stageboxes.forEach((box) => {
-      const socketGroups = {};
-      (box.channels || []).forEach(ch => {
-        if (!socketGroups[ch.socket]) socketGroups[ch.socket] = [];
-        socketGroups[ch.socket].push(ch);
-      });
-
-      Object.keys(socketGroups).forEach(socketNum => {
-        const layers = socketGroups[socketNum];
-        for (let i = 1; i < layers.length; i++) {
-          const prev = layers[i-1];
-          const curr = layers[i];
-          const actPrev = (sheet.acts || []).find((a) => a.id === prev.actId) || {name: 'Unknown'};
-          const actCurr = (sheet.acts || []).find((a) => a.id === curr.actId) || {name: 'Unknown'};
+      (box.channels || []).forEach((ch) => {
+        if (ch.repatch) {
+          const act = (sheet.acts || []).find((a) => a.id === ch.actId);
           out.push({
             stageboxLetter: box.letter || '?',
             stageboxName: box.name || '',
             stageboxLocation: box.location || '',
-            socket: curr.socket,
-            homeRunCh: curr.homeRunCh || null,
-            fromAct: actPrev.name,
-            toAct: actCurr.name,
-            fromInst: prev.instrument || 'Line',
-            toInst: curr.instrument || 'Line',
-            actColor: actCurr.color || 'slate',
-            mic: curr.mic || '',
-            phantom: !!curr.phantom
+            socket: ch.socket,
+            homeRunCh: ch.homeRunCh || null,
+            currentAct: act ? act.name : 'Unknown Act',
+            actColor: act ? act.color : 'slate',
+            currentInstrument: ch.instrument || 'Line',
+            mic: ch.mic || '',
+            phantom: !!ch.phantom,
+            instructions: ch.repatchTo || 'Repatch between sets'
           });
         }
       });
@@ -717,17 +694,10 @@ RMTP.presets = (function () {
 
     return channels.map((c) => {
       const count = c.assignedSockets.length;
-      // Determine if collision (more than 1 UNIQUE physical socket assigned)
-      const uniquePhysicalSockets = new Set(
-        c.assignedSockets.map(s => s.boxLetter + '-' + s.socket)
-      );
-      const isRealCollision = uniquePhysicalSockets.size > 1;
-
       return Object.assign(c, {
         isPatched: count > 0,
-        isCollision: isRealCollision,
-        primarySocket: count > 0 ? c.assignedSockets[0] : null,
-        layers: c.assignedSockets // include all layers for changeover schedule
+        isCollision: count > 1,
+        primarySocket: count > 0 ? c.assignedSockets[0] : null
       });
     });
   }
@@ -1142,9 +1112,7 @@ RMTP.presets = (function () {
         name: actName,
         color: colObj.id,
         stageTime: it.time || '',
-        duration: it.duration || '',
-        channelInputs: Array.isArray(it.channelInputs) ? JSON.parse(JSON.stringify(it.channelInputs)) : [],
-        channelOutputs: Array.isArray(it.channelOutputs) ? JSON.parse(JSON.stringify(it.channelOutputs)) : []
+        duration: it.duration || ''
       });
     });
 
@@ -1176,7 +1144,6 @@ RMTP.presets = (function () {
           name: 'Stage Left Sub-Snake',
           location: 'Stage Left',
           capacity: 8,
-          outCapacity: 4,
           channels: Array.from({ length: 8 }, (_, i) => ({
             socket: i + 1,
             actId: 'act-house',
@@ -1186,10 +1153,6 @@ RMTP.presets = (function () {
             repatch: false,
             repatchTo: '',
             homeRunCh: i + 1
-          })),
-          outputs: Array.from({ length: 4 }, (_, i) => ({
-            socket: i + 1,
-            destination: ''
           }))
         }
       ]
@@ -1199,7 +1162,6 @@ RMTP.presets = (function () {
     if (!Array.isArray(sheet.acts)) sheet.acts = [];
     if (!Array.isArray(sheet.stageboxes)) sheet.stageboxes = [];
     if (!Array.isArray(sheet.patchPoints)) sheet.patchPoints = JSON.parse(JSON.stringify(DEFAULT_PATCH_POINTS));
-    if (!sheet.actMutes) sheet.actMutes = {};
 
     const events = store.all('advancing') || [];
 
@@ -1214,88 +1176,7 @@ RMTP.presets = (function () {
       }
     }
 
-    function applyVenueRoomIO(spaceName, updateDOM = false) {
-      let v = store.find('venues', spaceName);
-      if (!v) {
-        v = {
-          name: spaceName,
-          audio: {
-            inputChannels: 48,
-            outputChannels: 24,
-            prefix: 'HR',
-            mixingDeskProtocol: 'Dante',
-            stageboxes: [
-              { letter: 'A', name: 'SL Rack', location: 'Stage Left', sockets: 16 }
-            ]
-          }
-        };
-      }
-      if (v && v.audio) {
-        sheet.homeRun = {
-          name: v.name + ' Main I/O',
-          type: 'Digital Stage Rack (' + (v.audio.mixingDeskProtocol || 'Dante') + ')',
-          location: 'Venue I/O',
-          inputChannels: parseInt(v.audio.inputChannels, 10) || 32,
-          localInputChannels: parseInt(v.audio.localInputChannels, 10) || 0,
-          outputChannels: parseInt(v.audio.outputChannels, 10) || 16,
-          localOutputChannels: parseInt(v.audio.localOutputChannels, 10) || 0,
-          prefix: v.audio.prefix || 'HR',
-          notes: 'Inherited from ' + v.name + ' setup'
-        };
-        if (Array.isArray(v.audio.stageboxes) && v.audio.stageboxes.length > 0) {
-          sheet.stageboxes = v.audio.stageboxes.map((sb, sbIdx) => {
-            const cap = parseInt(sb.analogIn || sb.sockets || 16, 10);
-            return {
-              id: store.uid ? store.uid('sb') : 'sb-' + Math.random().toString(36).substr(2, 6),
-              letter: sb.letter || String.fromCharCode(65 + sbIdx),
-              name: sb.name || 'Stagebox',
-              location: sb.location || 'Stage',
-              capacity: cap,
-              outCapacity: parseInt(sb.analogOut || 0, 10),
-              channels: Array.from({ length: cap }, (_, i) => ({
-                socket: i + 1,
-                actId: 'act-house',
-                instrument: '',
-                mic: '',
-                phantom: false,
-                repatch: false,
-                repatchTo: '',
-                homeRunCh: i + 1
-              })),
-              outputs: Array.from({ length: parseInt(sb.analogOut || 0, 10) }, (_, i) => ({
-                socket: i + 1,
-                destination: ''
-              }))
-            };
-          });
-        }
-        if (updateDOM && m && m.root) {
-          const els = {
-            '#ps-hr-name': sheet.homeRun.name,
-            '#ps-hr-type': sheet.homeRun.type,
-            '#ps-hr-inputs': sheet.homeRun.inputChannels,
-            '#ps-hr-outputs': sheet.homeRun.outputChannels,
-            '#ps-hr-prefix': sheet.homeRun.prefix,
-            '#ps-hr-location': sheet.homeRun.location
-          };
-          for (const k in els) {
-            const el = m.root.querySelector(k);
-            if (el) el.value = els[k];
-          }
-          if (typeof renderStageboxes === 'function') renderStageboxes();
-          if (typeof renderSignalFlow === 'function') renderSignalFlow();
-          if (typeof renderRepatches === 'function') renderRepatches();
-          if (typeof renderMasterSchedule === 'function') renderMasterSchedule();
-          if (typeof renderMixingIOSummary === 'function') renderMixingIOSummary();
-        }
-      }
-    }
-
-    if (!isEdit) {
-      applyVenueRoomIO(sheet.space);
-    }
-
-    let currentStep = initialStep ? Math.max(1, Math.min(5, parseInt(initialStep, 10))) : 1;
+    let currentStep = initialStep ? Math.max(1, Math.min(4, parseInt(initialStep, 10))) : 1;
     let signalFlowFilter = 'all'; // 'all', 'patched', 'spare', 'collisions'
 
     const m = ui.modal({
@@ -1319,11 +1200,7 @@ RMTP.presets = (function () {
             '</button>' +
             '<button type="button" data-ps-tab="4" class="flex-1 min-w-[150px] py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ' + (currentStep === 4 ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel') + '">' +
               '<span class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-mono ' + (currentStep === 4 ? 'bg-accent-ink text-accent' : 'bg-panel2 border border-line text-muted') + '">4</span>' +
-              '<span>Repatches & Run Order</span>' +
-            '</button>' +
-            '<button type="button" data-ps-tab="5" class="flex-1 min-w-[150px] py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ' + (currentStep === 5 ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel') + '">' +
-              '<span class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-mono ' + (currentStep === 5 ? 'bg-accent-ink text-accent' : 'bg-panel2 border border-line text-muted') + '">5</span>' +
-              '<span>Mixing IO Summary</span>' +
+              '<span>Repatches & Summary</span>' +
             '</button>' +
           '</div>' +
 
@@ -1344,42 +1221,9 @@ RMTP.presets = (function () {
               '</div>' +
               '<div>' +
                 '<label class="block text-xs font-semibold mb-1">Space / Venue</label>' +
-                '<select id="ps-space" class="field text-accent font-semibold">' +
+                '<select id="ps-space" class="field">' +
                   RMTP.SPACES.map((s) => '<option ' + (s === sheet.space ? 'selected' : '') + '>' + s + '</option>').join('') +
                 '</select>' +
-              '</div>' +
-              '<div class="sm:col-span-3 mt-2">' +
-                '<div class="flex items-center justify-between pb-2 border-b border-line/60 flex-wrap gap-2">' +
-                  '<div class="flex items-center gap-2">' +
-                    '<span class="text-accent">' + ui.icon('sliders', 'w-4 h-4') + '</span>' +
-                    '<span class="font-bold text-ink uppercase tracking-wider text-xs">Room I/O & Home Run Trunk</span>' +
-                  '</div>' +
-                  '<div class="flex items-center gap-2">' +
-                    '<button type="button" id="btn-save-room-io" class="btn btn-ghost !py-1 !px-2.5 text-xs text-accent font-semibold flex items-center gap-1.5 border border-accent/30 hover:bg-accent/10" title="Pull Home Run & Stageboxes from Venue Settings">' +
-                      ui.icon('download', 'w-3.5 h-3.5') + '<span>Pull Venue I/O</span>' +
-                    '</button>' +
-                  '</div>' +
-                '</div>' +
-                '<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 mt-3">' +
-                  '<div>' +
-                    '<label class="block text-[11px] font-semibold text-muted mb-1">Home Run Name</label>' +
-                    '<input id="ps-hr-name" class="field !py-1.5 !px-2 text-xs font-semibold" value="' + ui.esc(sheet.homeRun.name || 'Main Stage Rack') + '" placeholder="e.g. Main Stage Rack (DL32)" />' +
-                  '</div>' +
-                  '<div>' +
-                    '<label class="block text-[11px] font-semibold text-muted mb-1">Rack / Trunk Type</label>' +
-                    '<select id="ps-hr-type" class="field !py-1.5 !px-2 text-xs">' +
-                      HOME_RUN_TYPES.map((t) => '<option ' + (t === sheet.homeRun.type ? 'selected' : '') + '>' + t + '</option>').join('') +
-                    '</select>' +
-                  '</div>' +
-                  '<div class="grid grid-cols-2 gap-2">' +
-                    '<div><label class="block text-[11px] font-semibold text-muted mb-1">Inputs</label><input id="ps-hr-inputs" type="number" min="1" max="128" class="field !py-1.5 !px-1.5 text-xs font-mono font-bold text-center" value="' + (sheet.homeRun.inputChannels || 32) + '" /></div>' +
-                    '<div><label class="block text-[11px] font-semibold text-muted mb-1">Outputs</label><input id="ps-hr-outputs" type="number" min="0" max="64" class="field !py-1.5 !px-1.5 text-xs font-mono font-bold text-center" value="' + (sheet.homeRun.outputChannels || 16) + '" /></div>' +
-                  '</div>' +
-                  '<div class="grid grid-cols-2 gap-2">' +
-                    '<div><label class="block text-[11px] font-semibold text-muted mb-1">Prefix</label><input id="ps-hr-prefix" class="field !py-1.5 !px-1.5 text-xs font-mono uppercase font-bold text-center" value="' + ui.esc(sheet.homeRun.prefix || 'HR') + '" /></div>' +
-                    '<div><label class="block text-[11px] font-semibold text-muted mb-1">Location</label><select id="ps-hr-location" class="field !py-1.5 !px-1.5 text-xs">' + STAGE_LOCATIONS.map((loc) => '<option ' + (loc === sheet.homeRun.location ? 'selected' : '') + '>' + loc + '</option>').join('') + '</select></div>' +
-                  '</div>' +
-                '</div>' +
               '</div>' +
               '<div>' +
                 '<label class="block text-xs font-semibold mb-1">Date</label>' +
@@ -1423,33 +1267,71 @@ RMTP.presets = (function () {
                 '<button type="button" data-add-sb-preset="4" class="btn btn-ghost !py-1 !px-2 text-xs border border-line">+ 4 Ch</button>' +
                 '<button type="button" data-add-sb-preset="8" class="btn btn-ghost !py-1 !px-2 text-xs border border-line">+ 8 Ch</button>' +
                 '<button type="button" data-add-sb-preset="16" class="btn btn-ghost !py-1 !px-2 text-xs border border-line">+ 16 Ch</button>' +
-                '<button type="button" id="btn-add-local-sb" class="btn btn-ghost !py-1 !px-2.5 text-xs text-accent border border-line flex items-center gap-1 font-semibold" title="Add stagebox representing Local I/O from the Mixing Console">' +
-                  ui.icon('plus', 'w-3 h-3') + '<span>Local Desk I/O</span>' +
-                '</button>' +
                 '<button type="button" id="btn-add-custom-sb" class="btn btn-primary !py-1 !px-2.5 text-xs flex items-center gap-1 font-semibold">' +
                   ui.icon('plus', 'w-3.5 h-3.5') + '<span>Custom Box</span>' +
                 '</button>' +
               '</div>' +
             '</div>' +
-            '<div class="flex items-start gap-3 p-3.5 bg-accent/5 border border-accent/20 rounded-lg text-xs">' +
-              '<div class="mt-0.5 text-accent">' + ui.icon('info', 'w-4 h-4') + '</div>' +
-              '<div>' +
-                '<p class="font-bold text-accent mb-0.5">Festival Patching Strategy</p>' +
-                '<p class="text-muted leading-relaxed mb-1.5">For channels shared across all artists (like standard Drum Kits), set the Act to <strong class="text-ink">House / Venue Core</strong>.</p>' +
-                '<p class="text-muted leading-relaxed">If acts have different requirements (e.g. 2 vocal mics vs 3), assign the base sockets to the first act, then use the <strong><span class="text-accent">' + ui.icon('copy', 'w-3 h-3 inline-block relative -top-[1px]') + ' Add Changeover</span></strong> button to share that socket with the next act. For additional mics unique to later acts, just add a new socket and assign it directly to them.</p>' +
-              '</div>' +
-            '</div>' +
-            '<div id="ps-custom-channels-allocator"></div>' +
             '<div id="ps-stageboxes-container" class="grid gap-4"></div>' +
           '</div>' +
 
           // STEP 3: SIGNAL FLOW & HOME RUN (MAIN I/O)
           '<div id="ps-step-3" class="' + (currentStep === 3 ? 'grid gap-5' : 'hidden') + '">' +
+            // Home Run Configuration Panel
+            '<div class="panel p-4 rounded-xl border border-line bg-panel shadow-sm flex flex-col gap-3.5">' +
+              '<div class="flex items-center justify-between pb-2.5 border-b border-line/60 flex-wrap gap-2">' +
+                '<div class="flex items-center gap-2">' +
+                  '<span class="text-accent">' + ui.icon('sliders', 'w-4 h-4') + '</span>' +
+                  '<span class="font-bold text-ink uppercase tracking-wider text-xs">Home Run (Main I/O Trunk) Configuration</span>' +
+                '</div>' +
+                '<div class="flex items-center gap-2">' +
+                  '<span class="text-[11px] text-muted">Load Rack Preset:</span>' +
+                  '<select id="ps-hr-preset-select" class="field !py-1 !px-2 text-xs bg-panel2 font-semibold">' +
+                    '<option value="">Select standard rack\u2026</option>' +
+                    HOME_RUN_PRESETS.map((p, idx) => '<option value="' + idx + '">' + p.label + '</option>').join('') +
+                  '</select>' +
+                '</div>' +
+              '</div>' +
+
+              '<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">' +
+                '<div>' +
+                  '<label class="block text-[11px] font-semibold text-muted mb-1">Home Run Name</label>' +
+                  '<input id="ps-hr-name" class="field !py-1.5 !px-2 text-xs font-semibold" value="' + ui.esc(sheet.homeRun.name || 'Main Stage Rack') + '" placeholder="e.g. Main Stage Rack (DL32)" />' +
+                '</div>' +
+                '<div>' +
+                  '<label class="block text-[11px] font-semibold text-muted mb-1">Rack / Trunk Type</label>' +
+                  '<select id="ps-hr-type" class="field !py-1.5 !px-2 text-xs">' +
+                    HOME_RUN_TYPES.map((t) => '<option ' + (t === sheet.homeRun.type ? 'selected' : '') + '>' + t + '</option>').join('') +
+                  '</select>' +
+                '</div>' +
+                '<div>' +
+                  '<label class="block text-[11px] font-semibold text-muted mb-1">Physical Location</label>' +
+                  '<select id="ps-hr-location" class="field !py-1.5 !px-2 text-xs">' +
+                    STAGE_LOCATIONS.map((loc) => '<option ' + (loc === sheet.homeRun.location ? 'selected' : '') + '>' + loc + '</option>').join('') +
+                  '</select>' +
+                '</div>' +
+                '<div class="grid grid-cols-3 gap-2">' +
+                  '<div>' +
+                    '<label class="block text-[11px] font-semibold text-muted mb-1">Inputs</label>' +
+                    '<input id="ps-hr-inputs" type="number" min="1" max="128" class="field !py-1.5 !px-1.5 text-xs font-mono font-bold text-center" value="' + (sheet.homeRun.inputChannels || 32) + '" />' +
+                  '</div>' +
+                  '<div>' +
+                    '<label class="block text-[11px] font-semibold text-muted mb-1">Outputs</label>' +
+                    '<input id="ps-hr-outputs" type="number" min="0" max="64" class="field !py-1.5 !px-1.5 text-xs font-mono font-bold text-center" value="' + (sheet.homeRun.outputChannels || 16) + '" />' +
+                  '</div>' +
+                  '<div>' +
+                    '<label class="block text-[11px] font-semibold text-muted mb-1">Prefix</label>' +
+                    '<input id="ps-hr-prefix" class="field !py-1.5 !px-1.5 text-xs font-mono uppercase font-bold text-center" value="' + ui.esc(sheet.homeRun.prefix || 'HR') + '" />' +
+                  '</div>' +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+
             // Health & Stats Bar
             '<div id="ps-hr-health-bar" class="grid grid-cols-2 sm:grid-cols-4 gap-3"></div>' +
 
             // Action Bar & View Filter
-            '<div class="flex items-center justify-between flex-wrap gap-2 p-2 rounded-xl bg-panel border border-line">' +
+            '<div class="flex items-center justify-between flex-wrap gap-2 p-2 rounded-xl bg-panel2/60 border border-line">' +
               '<div class="flex items-center gap-1.5 flex-wrap">' +
                 '<button type="button" data-sf-filter="all" class="px-2.5 py-1 rounded-lg text-xs font-semibold border ' + (signalFlowFilter === 'all' ? 'bg-accent text-accent-ink border-accent' : 'bg-panel border-line text-muted hover:text-ink') + '">All Channels</button>' +
                 '<button type="button" data-sf-filter="patched" class="px-2.5 py-1 rounded-lg text-xs font-semibold border ' + (signalFlowFilter === 'patched' ? 'bg-accent text-accent-ink border-accent' : 'bg-panel border-line text-muted hover:text-ink') + '">Patched</button>' +
@@ -1506,16 +1388,7 @@ RMTP.presets = (function () {
                   ui.icon('print', 'w-3.5 h-3.5') + '<span>Print Full PDF</span>' +
                 '</button>' +
               '</div>' +
-              '<div id="ps-step-5" class="' + (currentStep === 5 ? 'grid gap-5' : 'hidden') + '">' +
-            '<div class="p-3.5 rounded-xl bg-panel border border-line flex flex-col gap-3 shadow-xs">' +
-              '<div class="flex items-center justify-between pb-2 border-b border-line/60 flex-wrap gap-2">' +
-                '<div class="flex items-center gap-2">' +
-                  '<span class="text-accent">' + ui.icon('grid', 'w-4 h-4') + '</span>' +
-                  '<span class="font-bold text-ink uppercase tracking-wider text-xs">Mixing Console IO Summary</span>' +
-                '</div>' +
-                '<div class="text-[10px] text-muted max-w-sm text-right">Click a cell to toggle whether an act is using that input. This updates the running order for the engineers.</div>' +
-              '</div>' +
-              '<div id="ps-mixing-io-preview" class="overflow-x-auto"></div>' +
+              '<div id="ps-master-schedule-preview" class="overflow-x-auto"></div>' +
             '</div>' +
           '</div>' +
         '</div>',
@@ -1523,13 +1396,13 @@ RMTP.presets = (function () {
         '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
         '<div class="flex items-center gap-2">' +
           '<button type="button" id="btn-ps-prev" class="btn btn-ghost text-xs font-semibold" style="' + (currentStep === 1 ? 'display:none;' : '') + '">&larr; Previous Step</button>' +
-          '<button type="button" id="btn-ps-next" class="btn btn-ghost text-xs font-semibold border border-line" style="' + (currentStep === 5 ? 'display:none;' : '') + '">Next Step &rarr;</button>' +
+          '<button type="button" id="btn-ps-next" class="btn btn-ghost text-xs font-semibold border border-line" style="' + (currentStep === 4 ? 'display:none;' : '') + '">Next Step &rarr;</button>' +
           '<button class="btn btn-primary font-semibold" id="btn-save-sheet">Save Patch Sheet</button>' +
         '</div>'
     });
 
     function setStep(step) {
-      currentStep = Math.max(1, Math.min(5, step));
+      currentStep = Math.max(1, Math.min(4, step));
 
       // Update Tab Navigation Active Styles
       m.root.querySelectorAll('[data-ps-tab]').forEach((btn) => {
@@ -1545,7 +1418,7 @@ RMTP.presets = (function () {
       });
 
       // Show/Hide step panels
-      for (let i = 1; i <= 5; i++) {
+      for (let i = 1; i <= 4; i++) {
         const p = m.root.querySelector('#ps-step-' + i);
         if (p) {
           if (i === currentStep) {
@@ -1563,12 +1436,12 @@ RMTP.presets = (function () {
       const nextBtn = m.root.querySelector('#btn-ps-next');
       if (prevBtn) {
         prevBtn.style.display = (currentStep === 1 ? 'none' : 'inline-flex');
-        const prevLabels = ['', '', 'Event & Acts', 'Stageboxes & Drops', '⚡ Signal Flow', 'Repatches & Summary'];
+        const prevLabels = ['', '', 'Event & Acts', 'Stageboxes & Drops', '⚡ Signal Flow'];
         prevBtn.innerHTML = '&larr; Back to ' + (prevLabels[currentStep] || 'Previous');
       }
       if (nextBtn) {
-        nextBtn.style.display = (currentStep === 5 ? 'none' : 'inline-flex');
-        const nextLabels = ['', 'Stageboxes & Drops &rarr;', '⚡ Signal Flow &rarr;', 'Repatches & Summary &rarr;', 'IO Summary &rarr;', ''];
+        nextBtn.style.display = (currentStep === 4 ? 'none' : 'inline-flex');
+        const nextLabels = ['', 'Stageboxes & Drops &rarr;', '⚡ Signal Flow &rarr;', 'Repatches & Summary &rarr;', ''];
         nextBtn.innerHTML = 'Next: ' + (nextLabels[currentStep] || 'Next &rarr;');
       }
 
@@ -1582,9 +1455,6 @@ RMTP.presets = (function () {
       if (currentStep === 4) {
         renderRepatches();
         renderMasterSchedule();
-      }
-      if (currentStep === 5) {
-        if (typeof renderMixingIOSummary === 'function') renderMixingIOSummary();
       }
     }
 
@@ -1724,92 +1594,6 @@ RMTP.presets = (function () {
     }
 
     function renderStageboxes() {
-      // Render Custom Channel Allocator
-      const allocatorEl = m.root.querySelector('#ps-custom-channels-allocator');
-      if (allocatorEl) {
-        let actsWithChannels = (sheet.acts || []).filter(a => a.channelInputs && a.channelInputs.length > 0 && a.id !== 'act-house');
-        if (actsWithChannels.length > 0) {
-          allocatorEl.innerHTML = '<div class="p-3 mb-4 rounded-xl border border-accent/40 bg-accent/5 shadow-2xs">' +
-            '<div class="flex items-center gap-2 mb-2">' +
-              '<span class="text-accent">' + ui.icon('download', 'w-4 h-4') + '</span>' +
-              '<span class="font-bold text-accent uppercase tracking-wider text-[11px]">Event Channel Lists Available to Allocate</span>' +
-            '</div>' +
-            '<div class="grid sm:grid-cols-2 md:grid-cols-3 gap-3">' +
-              actsWithChannels.map(act => {
-                const count = act.channelInputs.length;
-                return '<div class="p-2.5 rounded-lg border border-accent/20 bg-panel flex items-center justify-between">' +
-                  '<div>' +
-                    '<div class="font-bold text-xs text-ink">' + ui.esc(act.name) + '</div>' +
-                    '<div class="text-[10px] text-muted">' + count + ' Custom Channel' + (count !== 1 ? 's' : '') + '</div>' +
-                  '</div>' +
-                  '<button type="button" data-allocate-act="' + act.id + '" class="btn btn-ghost border border-line !py-1 !px-2 text-[10px] font-bold text-accent hover:bg-accent/10">Allocate as Stagebox &rarr;</button>' +
-                '</div>';
-              }).join('') +
-            '</div>' +
-          '</div>';
-
-          allocatorEl.querySelectorAll('[data-allocate-act]').forEach(btn => {
-            btn.addEventListener('click', () => {
-              const actId = btn.getAttribute('data-allocate-act');
-              const act = sheet.acts.find(a => a.id === actId);
-              if (!act || !act.channelInputs) return;
-
-              const letter = nextLetter();
-              const inCap = Math.max(4, Math.ceil(act.channelInputs.length / 4) * 4); // round up to nearest 4
-              const outCap = 4; // default out capacity
-
-              const newBox = {
-                id: store.uid('sb'),
-                letter: letter,
-                name: act.name + ' Channels',
-                location: 'Stage Drop',
-                capacity: inCap,
-                outCapacity: outCap,
-                channels: act.channelInputs.map((c, i) => ({
-                  socket: i + 1,
-                  actId: act.id,
-                  instrument: c.instrument || '',
-                  mic: c.mic || '',
-                  phantom: !!c.phantom,
-                  repatch: false,
-                  repatchTo: '',
-                  homeRunCh: null
-                })),
-                outputs: Array.from({ length: outCap }, (_, i) => ({
-                  socket: i + 1,
-                  destination: ''
-                }))
-              };
-
-              // pad with empty sockets if needed
-              for (let i = act.channelInputs.length; i < inCap; i++) {
-                newBox.channels.push({
-                  socket: i + 1,
-                  actId: act.id,
-                  instrument: '',
-                  mic: '',
-                  phantom: false,
-                  repatch: false,
-                  repatchTo: '',
-                  homeRunCh: null
-                });
-              }
-
-              sheet.stageboxes.push(newBox);
-              
-              // Clear the channels from the act so they don't show up in the allocator anymore
-              // Or keep them but mark them as allocated? Let's just remove them from the act to show they've been consumed
-              act.channelInputs = [];
-              
-              ui.toast('Allocated ' + act.name + ' channels to Stagebox ' + letter, 'ok');
-              renderStageboxes();
-            });
-          });
-        } else {
-          allocatorEl.innerHTML = '';
-        }
-      }
-
       const container = m.root.querySelector('#ps-stageboxes-container');
       const countBadge = m.root.querySelector('#ps-stagebox-count-badge');
       if (countBadge) countBadge.textContent = sheet.stageboxes.length + ' Boxes (' + sheet.stageboxes.reduce((acc, b) => acc + (b.channels ? b.channels.length : 0), 0) + ' Sockets)';
@@ -1825,14 +1609,6 @@ RMTP.presets = (function () {
       const hrPrefix = (hr.prefix || 'HR').trim();
 
       container.innerHTML = sheet.stageboxes.map((box, sbIdx) => {
-        const sGroups = {};
-        (box.channels || []).forEach((ch, idx) => {
-          ch._originalIndex = idx;
-          if (!sGroups[ch.socket]) sGroups[ch.socket] = [];
-          sGroups[ch.socket].push(ch);
-        });
-        const socketGroups = Object.keys(sGroups).sort((a, b) => a - b).map(k => ({ socket: k, layers: sGroups[k] }));
-
         return (
           '<div class="panel p-4 rounded-xl border border-line bg-panel shadow-sm flex flex-col gap-3">' +
             // Stagebox Header
@@ -1866,24 +1642,19 @@ RMTP.presets = (function () {
             // Sockets Mobile Cards View (Mobile vertical layout)
             '<div class="md:hidden grid gap-2.5">' +
               (!(box.channels && box.channels.length) ? (
-                '<div class="text-center py-4 text-muted italic bg-panel2/30 rounded-lg border border-line p-3">No sockets in this stagebox. Click "Add Input Socket" above.</div>'
+                '<div class="text-center py-4 text-muted italic bg-panel2/30 rounded-lg border border-line p-3">No sockets in this stagebox. Click "Add Socket" above.</div>'
               ) : (
-                socketGroups.map((grp) => {
-                  return '<div class="grid gap-2 border-l-2 border-line/40 pl-2 ml-1 relative">' +
-                  grp.layers.map((ch, layerIdx) => {
-                    const chIdx = ch._originalIndex;
-                    const act = (sheet.acts || []).find((a) => a.id === ch.actId);
-                    const col = act ? getActColorObj(act.color) : ACT_COLORS[0];
-                    const hrCh = parseInt(ch.homeRunCh, 10);
-                    const isRepatch = layerIdx > 0;
-                    return (
-                    '<div class="p-3 rounded-lg bg-panel border ' + (isRepatch ? 'border-warning/40' : 'border-line') + ' shadow-2xs grid gap-2 relative">' +
-                      (isRepatch ? '<div class="absolute -left-[18px] top-[18px] text-accent/60">' + ui.icon('corner-down-right', 'w-4 h-4') + '</div>' : '') +
+                (box.channels || []).map((ch, chIdx) => {
+                  const act = (sheet.acts || []).find((a) => a.id === ch.actId);
+                  const col = act ? getActColorObj(act.color) : ACT_COLORS[0];
+                  const hrCh = parseInt(ch.homeRunCh, 10);
+                  return (
+                    '<div class="p-3 rounded-lg bg-panel border ' + (ch.repatch ? 'border-warning/40' : 'border-line') + ' shadow-2xs grid gap-2">' +
                       // Mobile Header: Socket Badge, Act Selector, Phantom & Delete
                       '<div class="flex items-center justify-between gap-2">' +
                         '<div class="flex items-center gap-2">' +
                           '<span class="font-mono font-bold text-xs px-2 py-0.5 rounded border ' + col.border + ' ' + col.bg + ' ' + col.text + '">' +
-                            (box.letter || '') + (grp.socket) +
+                            (box.letter || '') + (ch.socket || (chIdx + 1)) +
                           '</span>' +
                           '<select data-ch-act="' + sbIdx + '-' + chIdx + '" class="bg-panel2 font-semibold text-xs rounded border border-line py-1 px-1.5 max-w-[130px]">' +
                             sheet.acts.map((a) => '<option value="' + a.id + '" ' + (a.id === ch.actId ? 'selected' : '') + '>' + ui.esc(a.name) + '</option>').join('') +
@@ -1915,12 +1686,6 @@ RMTP.presets = (function () {
                       // Row 3: Home Run Target & Repatch / Swap
                       '<div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-line/60">' +
                         '<div>' +
-                          '<label class="block text-[10px] uppercase font-bold text-muted mb-0.5">Connector</label>' +
-                          '<select data-ch-conn="' + sbIdx + '-' + chIdx + '" class="field !py-1 !px-1.5 text-xs w-full">' +
-                            CONNECTOR_TYPES.map((c) => '<option ' + (c === ch.connectorType ? 'selected' : '') + '>' + c + '</option>').join('') +
-                          '</select>' +
-                        '</div>' +
-                        '<div>' +
                           '<label class="block text-[10px] uppercase font-bold text-muted mb-0.5">Home Run Target</label>' +
                           '<select data-ch-hr="' + sbIdx + '-' + chIdx + '" class="bg-panel font-mono text-xs font-bold rounded border ' + (hrCh ? 'border-accent text-accent' : 'border-line text-muted') + ' py-1 px-1.5 w-full">' +
                             '<option value="">(Unassigned / Drop)</option>' +
@@ -1931,18 +1696,22 @@ RMTP.presets = (function () {
                             }).join('') +
                           '</select>' +
                         '</div>' +
-                      '</div>' +
-                      
-                      // Repatch Button
-                      '<div class="flex justify-end pt-1">' +
-                        '<button type="button" data-ch-duplicate="' + sbIdx + '-' + chIdx + '" class="btn btn-ghost !py-1 !px-2.5 text-[10px] text-accent font-semibold flex items-center gap-1 border border-accent/20">' +
-                          ui.icon('copy', 'w-3 h-3') + '<span>Add Changeover</span>' +
-                        '</button>' +
+                        '<div>' +
+                          '<div class="flex items-center justify-between mb-0.5">' +
+                            '<label class="inline-flex items-center gap-1 cursor-pointer select-none">' +
+                              '<input type="checkbox" data-ch-repatch="' + sbIdx + '-' + chIdx + '" class="w-3.5 h-3.5 accent-[var(--warning)] cursor-pointer" ' + (ch.repatch ? 'checked' : '') + ' />' +
+                              '<span class="text-[10px] font-bold ' + (ch.repatch ? 'text-warning' : 'text-muted') + '">Changeover Swap</span>' +
+                            '</label>' +
+                          '</div>' +
+                          (ch.repatch ? (
+                            '<input data-ch-repatch-to="' + sbIdx + '-' + chIdx + '" class="field !py-1 !px-1.5 text-xs bg-panel text-warning font-medium w-full" value="' + ui.esc(ch.repatchTo || '') + '" placeholder="e.g. Swap to Act 2 Key DI" />'
+                          ) : (
+                            '<div class="text-[11px] text-muted italic py-1">Static across event</div>'
+                          )) +
+                        '</div>' +
                       '</div>' +
                     '</div>'
                   );
-                }).join('') +
-                '</div>';
                 }).join('')
               )) +
             '</div>' +
@@ -1957,176 +1726,92 @@ RMTP.presets = (function () {
                     '<th class="py-2 px-2.5 min-w-[140px]">Instrument / Source</th>' +
                     '<th class="py-2 px-2.5 min-w-[130px]">Mic / DI Model</th>' +
                     '<th class="py-2 px-2 w-16 text-center">+48V</th>' +
-                    '<th class="py-2 px-2.5 min-w-[130px]">Connector</th>' +
+                    '<th class="py-2 px-2.5 min-w-[150px]">Repatch / Swap</th>' +
                     '<th class="py-2 px-2.5 min-w-[140px]">Home Run Target</th>' +
-                    '<th class="py-2 px-2.5 w-20 text-center" title="Add another act to this socket">Changeover</th>' +
                     '<th class="py-2 px-2 w-10 text-center"></th>' +
                   '</tr>' +
                 '</thead>' +
                 '<tbody class="divide-y divide-line/40">' +
                   (!(box.channels && box.channels.length) ? (
-                    '<tr><td colspan="9" class="text-center py-4 text-muted italic">No sockets in this stagebox. Click "Add Input Socket" above.</td></tr>'
+                    '<tr><td colspan="8" class="text-center py-4 text-muted italic">No sockets in this stagebox. Click "Add Socket" above.</td></tr>'
                   ) : (
-                    socketGroups.map((grp) => {
-                      return grp.layers.map((ch, layerIdx) => {
-                        const chIdx = ch._originalIndex;
-                        const act = (sheet.acts || []).find((a) => a.id === ch.actId);
-                        const col = act ? getActColorObj(act.color) : ACT_COLORS[0];
-                        const hrCh = parseInt(ch.homeRunCh, 10);
-                        const isRepatch = layerIdx > 0;
-                        return (
-                          '<tr class="hover:bg-panel transition-colors group ' + (isRepatch ? 'bg-panel2/50 relative' : '') + '">' +
-                            // Skt Badge
-                            '<td class="py-2 px-2.5 text-center align-middle">' +
-                              (isRepatch ? 
-                                '<div class="flex items-center justify-center text-accent/60" title="Same socket '+(box.letter||'')+grp.socket+'">' + ui.icon('corner-down-right', 'w-4 h-4') + '</div>' : 
-                                '<span class="font-mono font-bold text-xs px-2 py-0.5 rounded border inline-block ' + col.border + ' ' + col.bg + ' ' + col.text + '">' +
-                                  (box.letter || '') + (grp.socket) +
-                                '</span>'
-                              ) +
-                            '</td>' +
+                    (box.channels || []).map((ch, chIdx) => {
+                      const act = (sheet.acts || []).find((a) => a.id === ch.actId);
+                      const col = act ? getActColorObj(act.color) : ACT_COLORS[0];
+                      const hrCh = parseInt(ch.homeRunCh, 10);
+                      return (
+                        '<tr class="hover:bg-panel transition-colors group">' +
+                          // Skt Badge
+                          '<td class="py-2 px-2.5 text-center align-middle">' +
+                            '<span class="font-mono font-bold text-xs px-2 py-0.5 rounded border inline-block ' + col.border + ' ' + col.bg + ' ' + col.text + '">' +
+                              (box.letter || '') + (ch.socket || (chIdx + 1)) +
+                            '</span>' +
+                          '</td>' +
 
-                            // Act Select
-                            '<td class="py-2 px-2.5 align-middle relative">' +
-                              (isRepatch ? '<div class="absolute left-0 top-0 bottom-0 w-0.5 bg-warning/50"></div>' : '') +
-                              '<select data-ch-act="' + sbIdx + '-' + chIdx + '" class="bg-panel font-medium text-[11px] rounded border border-line py-1 px-1.5 w-full">' +
-                                sheet.acts.map((a) => '<option value="' + a.id + '" ' + (a.id === ch.actId ? 'selected' : '') + '>' + ui.esc(a.name) + '</option>').join('') +
-                              '</select>' +
-                            '</td>' +
+                          // Act Select
+                          '<td class="py-2 px-2.5 align-middle">' +
+                            '<select data-ch-act="' + sbIdx + '-' + chIdx + '" class="bg-panel font-medium text-[11px] rounded border border-line py-1 px-1.5 w-full">' +
+                              sheet.acts.map((a) => '<option value="' + a.id + '" ' + (a.id === ch.actId ? 'selected' : '') + '>' + ui.esc(a.name) + '</option>').join('') +
+                            '</select>' +
+                          '</td>' +
 
-                            // Instrument / Source
-                            '<td class="py-2 px-2.5 align-middle">' +
-                              '<input data-ch-inst="' + sbIdx + '-' + chIdx + '" class="field !py-1 !px-2 text-xs bg-panel w-full" value="' + ui.esc(ch.instrument || '') + '" placeholder="e.g. Kick, Lead Vox, Key L" />' +
-                            '</td>' +
+                          // Instrument / Source
+                          '<td class="py-2 px-2.5 align-middle">' +
+                            '<input data-ch-inst="' + sbIdx + '-' + chIdx + '" class="field !py-1 !px-2 text-xs bg-panel w-full" value="' + ui.esc(ch.instrument || '') + '" placeholder="e.g. Kick, Lead Vox, Key L" />' +
+                          '</td>' +
 
-                            // Mic / DI
-                            '<td class="py-2 px-2.5 align-middle">' +
-                              '<input data-ch-mic="' + sbIdx + '-' + chIdx + '" class="field !py-1 !px-2 text-xs bg-panel w-full" value="' + ui.esc(ch.mic || '') + '" placeholder="e.g. SM58, B91A, Radial DI" />' +
-                            '</td>' +
+                          // Mic / DI
+                          '<td class="py-2 px-2.5 align-middle">' +
+                            '<input data-ch-mic="' + sbIdx + '-' + chIdx + '" class="field !py-1 !px-2 text-xs bg-panel w-full" value="' + ui.esc(ch.mic || '') + '" placeholder="e.g. SM58, B91A, Radial DI" />' +
+                          '</td>' +
 
-                            // +48V Phantom
-                            '<td class="py-2 px-2 text-center align-middle">' +
-                              '<label class="inline-flex items-center justify-center gap-1 cursor-pointer py-1 select-none" title="Toggle +48V Phantom Power">' +
-                                '<input type="checkbox" data-ch-48v="' + sbIdx + '-' + chIdx + '" class="w-3.5 h-3.5 accent-[var(--danger)] cursor-pointer" ' + (ch.phantom ? 'checked' : '') + ' />' +
-                                '<span class="text-[10px] font-bold ' + (ch.phantom ? 'text-danger' : 'text-muted/60') + '">+48V</span>' +
+                          // +48V Phantom
+                          '<td class="py-2 px-2 text-center align-middle">' +
+                            '<label class="inline-flex items-center justify-center gap-1 cursor-pointer py-1 select-none" title="Toggle +48V Phantom Power">' +
+                              '<input type="checkbox" data-ch-48v="' + sbIdx + '-' + chIdx + '" class="w-3.5 h-3.5 accent-[var(--danger)] cursor-pointer" ' + (ch.phantom ? 'checked' : '') + ' />' +
+                              '<span class="text-[10px] font-bold ' + (ch.phantom ? 'text-danger' : 'text-muted/60') + '">+48V</span>' +
+                            '</label>' +
+                          '</td>' +
+
+                          // Repatch
+                          '<td class="py-2 px-2.5 align-middle">' +
+                            '<div class="flex items-center gap-1.5">' +
+                              '<label class="inline-flex items-center gap-1 cursor-pointer shrink-0 select-none">' +
+                                '<input type="checkbox" data-ch-repatch="' + sbIdx + '-' + chIdx + '" class="w-3.5 h-3.5 accent-[var(--warning)] cursor-pointer" ' + (ch.repatch ? 'checked' : '') + ' />' +
+                                '<span class="text-[10px] font-semibold ' + (ch.repatch ? 'text-warning font-bold' : 'text-muted') + '">Swap</span>' +
                               '</label>' +
-                            '</td>' +
+                              (ch.repatch ? (
+                                '<input data-ch-repatch-to="' + sbIdx + '-' + chIdx + '" class="field !py-0.5 !px-1.5 text-[11px] bg-panel text-warning font-medium w-full min-w-[100px]" value="' + ui.esc(ch.repatchTo || '') + '" placeholder="Repatch info..." />'
+                              ) : '') +
+                            '</div>' +
+                          '</td>' +
 
-                            // Connector
-                            '<td class="py-2 px-2.5 align-middle">' +
-                              '<select data-ch-conn="' + sbIdx + '-' + chIdx + '" class="field !py-0.5 !px-1.5 text-[11px] w-full">' +
-                                CONNECTOR_TYPES.map((c) => '<option ' + (c === ch.connectorType ? 'selected' : '') + '>' + c + '</option>').join('') +
-                              '</select>' +
-                            '</td>' +
+                          // Home Run Target
+                          '<td class="py-2 px-2.5 align-middle">' +
+                            '<select data-ch-hr="' + sbIdx + '-' + chIdx + '" class="bg-panel font-mono text-[11px] font-bold rounded border ' + (hrCh ? 'border-accent text-accent' : 'border-line text-muted') + ' py-1 px-1.5 w-full">' +
+                              '<option value="">(Unassigned / Drop)</option>' +
+                              Array.from({ length: totalHrInputs }, (_, i) => {
+                                const num = i + 1;
+                                const pad = num < 10 ? '0' + num : '' + num;
+                                return '<option value="' + num + '" ' + (hrCh === num ? 'selected' : '') + '>' + hrPrefix + ' ' + pad + '</option>';
+                              }).join('') +
+                            '</select>' +
+                          '</td>' +
 
-                            // Home Run Target
-                            '<td class="py-2 px-2.5 align-middle">' +
-                              '<select data-ch-hr="' + sbIdx + '-' + chIdx + '" class="bg-panel font-mono text-[11px] font-bold rounded border ' + (hrCh ? 'border-accent text-accent' : 'border-line text-muted') + ' py-1 px-1.5 w-full">' +
-                                '<option value="">(Unassigned / Drop)</option>' +
-                                Array.from({ length: totalHrInputs }, (_, i) => {
-                                  const num = i + 1;
-                                  const pad = num < 10 ? '0' + num : '' + num;
-                                  return '<option value="' + num + '" ' + (hrCh === num ? 'selected' : '') + '>' + hrPrefix + ' ' + pad + '</option>';
-                                }).join('') +
-                              '</select>' +
-                            '</td>' +
-
-                            // Repatch Button
-                            '<td class="py-2 px-2.5 text-center align-middle">' +
-                              '<button type="button" data-ch-duplicate="' + sbIdx + '-' + chIdx + '" class="text-accent hover:text-accent-ink p-1 rounded hover:bg-accent/10 transition-colors" title="Add Artist Changeover (Repatch)">' +
-                                ui.icon('copy', 'w-3.5 h-3.5') +
-                              '</button>' +
-                            '</td>' +
-
-                            // Delete Socket
-                            '<td class="py-2 px-2 text-center align-middle">' +
-                              '<button type="button" data-ch-del="' + sbIdx + '-' + chIdx + '" class="text-muted hover:text-danger p-1 rounded hover:bg-panel transition-colors" title="Remove socket layer">' +
-                                ui.icon('x', 'w-3.5 h-3.5') +
-                              '</button>' +
-                            '</td>' +
-                          '</tr>'
-                        );
-                      }).join('');
+                          // Delete Socket
+                          '<td class="py-2 px-2 text-center align-middle">' +
+                            '<button type="button" data-ch-del="' + sbIdx + '-' + chIdx + '" class="text-muted hover:text-danger p-1 rounded hover:bg-panel transition-colors" title="Remove socket">' +
+                              ui.icon('x', 'w-3.5 h-3.5') +
+                            '</button>' +
+                          '</td>' +
+                        '</tr>'
+                      );
                     }).join('')
                   )) +
                 '</tbody>' +
               '</table>' +
-            '</div>' + 
-
-                        // Outputs Table View
-            '<div class="mt-4 border-t border-line/60 pt-4">' +
-              '<div class="text-[11px] font-bold text-muted uppercase tracking-wider mb-3">Outputs (Returns / Sends)</div>' +
-              
-              // Mobile Outputs
-              '<div class="md:hidden grid gap-2.5">' +
-                (!(box.outputs && box.outputs.length) ? (
-                  '<div class="text-center py-4 text-muted italic bg-panel2/30 rounded-lg border border-line p-3">No outputs in this stagebox.</div>'
-                ) : (
-                  box.outputs.map((out, outIdx) => {
-                    return (
-                      '<div class="p-3 rounded-lg bg-panel border border-line shadow-2xs grid gap-2 relative">' +
-                        '<div class="flex items-center gap-2">' +
-                          '<span class="font-mono font-bold text-xs px-2 py-0.5 rounded border border-line bg-panel2">' + (box.letter || '') + (out.socket) + '</span>' +
-                          '<input data-out-dest="' + sbIdx + '-' + outIdx + '" class="field !py-1 !px-2 text-xs bg-panel flex-1" value="' + ui.esc(out.destination || '') + '" placeholder="e.g. Wedge 1, IEM L" />' +
-                        '</div>' +
-                        '<div>' +
-                          '<label class="block text-[10px] uppercase font-bold text-muted mb-0.5">Home Run Target</label>' +
-                          '<select data-out-hr="' + sbIdx + '-' + outIdx + '" class="bg-panel font-mono text-xs font-bold rounded border ' + (out.homeRunCh ? 'border-accent text-accent' : 'border-line text-muted') + ' py-1 px-1.5 w-full">' +
-                            '<option value="">(Unassigned / Drop)</option>' +
-                            Array.from({ length: Math.max(1, parseInt(hr.outputChannels, 10) || 16) }, (_, i) => {
-                              const num = i + 1;
-                              const pad = num < 10 ? '0' + num : '' + num;
-                              return '<option value="' + num + '" ' + (parseInt(out.homeRunCh, 10) === num ? 'selected' : '') + '>' + hrPrefix + ' Out ' + pad + '</option>';
-                            }).join('') +
-                          '</select>' +
-                        '</div>' +
-                      '</div>'
-                    );
-                  }).join('')
-                )) +
-              '</div>' +
-
-              // Desktop Outputs
-              '<div class="hidden md:block overflow-x-auto rounded-lg border border-line bg-panel2/30">' +
-                '<table class="w-full text-left text-xs border-collapse">' +
-                  '<thead>' +
-                    '<tr class="border-b border-line bg-panel2/80 text-[10px] font-bold text-muted uppercase tracking-wider">' +
-                      '<th class="py-2 px-2.5 w-14 text-center">Out</th>' +
-                      '<th class="py-2 px-2.5">Destination / Monitor</th>' +
-                      '<th class="py-2 px-2.5 min-w-[140px]">Home Run Target</th>' +
-                    '</tr>' +
-                  '</thead>' +
-                  '<tbody class="divide-y divide-line/40">' +
-                    (!(box.outputs && box.outputs.length) ? (
-                      '<tr><td colspan="3" class="text-center py-4 text-muted italic">No outputs in this stagebox.</td></tr>'
-                    ) : (
-                      box.outputs.map((out, outIdx) => {
-                        return (
-                          '<tr class="hover:bg-panel transition-colors">' +
-                            '<td class="py-2 px-2.5 text-center font-mono font-bold text-xs"><span class="px-2 py-0.5 rounded border border-line bg-panel2">' + (box.letter || '') + (out.socket) + '</span></td>' +
-                            '<td class="py-2 px-2.5">' +
-                              '<input data-out-dest="' + sbIdx + '-' + outIdx + '" class="field !py-1 !px-2 text-xs bg-panel w-full" value="' + ui.esc(out.destination || '') + '" placeholder="e.g. Wedge 1, IEM L" />' +
-                            '</td>' +
-                            '<td class="py-2 px-2.5">' +
-                              '<select data-out-hr="' + sbIdx + '-' + outIdx + '" class="bg-panel font-mono text-[11px] font-bold rounded border ' + (out.homeRunCh ? 'border-accent text-accent' : 'border-line text-muted') + ' py-1 px-1.5 w-full">' +
-                                '<option value="">(Unassigned / Drop)</option>' +
-                                Array.from({ length: Math.max(1, parseInt(hr.outputChannels, 10) || 16) }, (_, i) => {
-                                  const num = i + 1;
-                                  const pad = num < 10 ? '0' + num : '' + num;
-                                  return '<option value="' + num + '" ' + (parseInt(out.homeRunCh, 10) === num ? 'selected' : '') + '>' + hrPrefix + ' Out ' + pad + '</option>';
-                                }).join('') +
-                              '</select>' +
-                            '</td>' +
-                          '</tr>'
-                        );
-                      }).join('')
-                    )) +
-                  '</tbody>' +
-                '</table>' +
-              '</div>' +
             '</div>' +
           '</div>'
-
         );
       }).join('');
 
@@ -2198,24 +1883,17 @@ RMTP.presets = (function () {
           sheet.stageboxes[sbIdx].channels[chIdx].phantom = chk.checked;
         });
       });
-      container.querySelectorAll('[data-ch-conn]').forEach((sel) => {
-        sel.addEventListener('change', () => {
-          const [sbIdx, chIdx] = sel.getAttribute('data-ch-conn').split('-').map(Number);
-          sheet.stageboxes[sbIdx].channels[chIdx].connectorType = sel.value;
-        });
-      });
-
-      container.querySelectorAll('[data-out-dest]').forEach((inp) => {
-        inp.addEventListener('input', () => {
-          const [sbIdx, outIdx] = inp.getAttribute('data-out-dest').split('-').map(Number);
-          sheet.stageboxes[sbIdx].outputs[outIdx].destination = inp.value;
-        });
-      });
-      container.querySelectorAll('[data-out-hr]').forEach((sel) => {
-        sel.addEventListener('change', () => {
-          const [sbIdx, outIdx] = sel.getAttribute('data-out-hr').split('-').map(Number);
-          sheet.stageboxes[sbIdx].outputs[outIdx].homeRunCh = sel.value ? parseInt(sel.value, 10) : null;
+      container.querySelectorAll('[data-ch-repatch]').forEach((chk) => {
+        chk.addEventListener('change', () => {
+          const [sbIdx, chIdx] = chk.getAttribute('data-ch-repatch').split('-').map(Number);
+          sheet.stageboxes[sbIdx].channels[chIdx].repatch = chk.checked;
           renderStageboxes();
+        });
+      });
+      container.querySelectorAll('[data-ch-repatch-to]').forEach((inp) => {
+        inp.addEventListener('input', () => {
+          const [sbIdx, chIdx] = inp.getAttribute('data-ch-repatch-to').split('-').map(Number);
+          sheet.stageboxes[sbIdx].channels[chIdx].repatchTo = inp.value;
         });
       });
       container.querySelectorAll('[data-ch-hr]').forEach((sel) => {
@@ -2229,36 +1907,8 @@ RMTP.presets = (function () {
         btn.addEventListener('click', () => {
           const [sbIdx, chIdx] = btn.getAttribute('data-ch-del').split('-').map(Number);
           sheet.stageboxes[sbIdx].channels.splice(chIdx, 1);
-          // renumber unique sockets
-          const channels = sheet.stageboxes[sbIdx].channels;
-          let currentSocket = 1;
-          let lastSocketSeen = -1;
-          channels.forEach((c) => {
-            if (c.socket !== lastSocketSeen) {
-              lastSocketSeen = c.socket;
-              c.socket = currentSocket++;
-            } else {
-              c.socket = currentSocket - 1;
-            }
-          });
-          renderStageboxes();
-        });
-      });
-      container.querySelectorAll('[data-ch-duplicate]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const [sbIdx, chIdx] = btn.getAttribute('data-ch-duplicate').split('-').map(Number);
-          const box = sheet.stageboxes[sbIdx];
-          const sourceCh = box.channels[chIdx];
-          const newCh = JSON.parse(JSON.stringify(sourceCh));
-          // Find next act index
-          const acts = sheet.acts || [];
-          const currentActIdx = acts.findIndex(a => a.id === sourceCh.actId);
-          if (currentActIdx >= 0 && currentActIdx < acts.length - 1) {
-            newCh.actId = acts[currentActIdx + 1].id;
-          }
-          newCh.repatch = true;
-          // Insert immediately after the source channel
-          box.channels.splice(chIdx + 1, 0, newCh);
+          // renumber
+          sheet.stageboxes[sbIdx].channels.forEach((c, i) => { c.socket = i + 1; });
           renderStageboxes();
         });
       });
@@ -2483,10 +2133,7 @@ RMTP.presets = (function () {
             // Mobile Card View for Stagebox Routing
             '<div class="md:hidden grid gap-2">' +
               sheet.stageboxes.map((box, sbIdx) => {
-                return '<div class="p-2 font-bold text-accent bg-panel2/60 border-y border-line text-xs flex justify-between items-center">' +
-                  '<span>Box ' + box.letter + ' (' + box.name + ')</span>' +
-                  '<button type="button" data-sb-patch-11="' + sbIdx + '" class="btn btn-ghost !py-0.5 !px-2 text-[10px] border border-accent/30 text-accent">Patch 1:1</button>' +
-                  '</div>' + (box.channels || []).map((ch, chIdx) => {
+                return (box.channels || []).map((ch, chIdx) => {
                   const act = (sheet.acts || []).find((a) => a.id === ch.actId);
                   const col = act ? getActColorObj(act.color) : ACT_COLORS[0];
                   const hrCh = parseInt(ch.homeRunCh, 10);
@@ -2536,11 +2183,7 @@ RMTP.presets = (function () {
                 '</tr></thead>' +
                 '<tbody>' +
                   sheet.stageboxes.map((box, sbIdx) => {
-                    return '<tr class="bg-panel2 border-b border-line"><td colspan="6" class="p-2 font-bold text-accent">' +
-                      'Box ' + box.letter + ' - ' + box.name + ' (' + box.location + ')' +
-                      '</td><td class="p-2 text-right"><button type="button" data-sb-patch-11="' + sbIdx + '" class="btn btn-ghost !py-1 !px-2.5 text-[11px] border border-accent/30 text-accent font-semibold flex items-center gap-1 ml-auto">' +
-                      ui.icon('sliders', 'w-3 h-3') + ' Patch 1:1</button></td></tr>' +
-                    (box.channels || []).map((ch, chIdx) => {
+                    return (box.channels || []).map((ch, chIdx) => {
                       const act = (sheet.acts || []).find((a) => a.id === ch.actId);
                       const col = act ? getActColorObj(act.color) : ACT_COLORS[0];
                       const hrCh = parseInt(ch.homeRunCh, 10);
@@ -2574,46 +2217,6 @@ RMTP.presets = (function () {
             sel.addEventListener('change', () => {
               const [sbIdx, chIdx] = sel.getAttribute('data-table-hr').split('-').map(Number);
               sheet.stageboxes[sbIdx].channels[chIdx].homeRunCh = sel.value ? parseInt(sel.value, 10) : null;
-              renderSignalFlow();
-              renderStageboxes();
-            });
-          });
-
-          routingTableEl.querySelectorAll('[data-sb-patch-11]').forEach((btn) => {
-            btn.addEventListener('click', () => {
-              const sbIdx = +btn.getAttribute('data-sb-patch-11');
-              const box = sheet.stageboxes[sbIdx];
-              if (!box || !box.channels || !box.channels.length) return;
-
-              // Find used HR channels
-              const usedHrChannels = new Set();
-              sheet.stageboxes.forEach((b, bIdx) => {
-                if (bIdx !== sbIdx) {
-                  (b.channels || []).forEach(c => {
-                    if (c.homeRunCh) usedHrChannels.add(c.homeRunCh);
-                  });
-                }
-              });
-
-              // Get unique sockets in order
-              const uniqueSockets = [...new Set(box.channels.map(c => c.socket))].sort((a,b) => a-b);
-              let currentHrSearch = 1;
-              const totalInputs = Math.max(1, parseInt(sheet.homeRun.inputChannels, 10) || 32);
-
-              uniqueSockets.forEach(snum => {
-                // Find next available HR channel
-                while(usedHrChannels.has(currentHrSearch) && currentHrSearch <= totalInputs) {
-                  currentHrSearch++;
-                }
-                if (currentHrSearch <= totalInputs) {
-                  // Assign all layers of this socket to the same HR channel
-                  box.channels.forEach(c => {
-                    if (c.socket === snum) c.homeRunCh = currentHrSearch;
-                  });
-                  usedHrChannels.add(currentHrSearch);
-                }
-              });
-
               renderSignalFlow();
               renderStageboxes();
             });
@@ -2730,140 +2333,24 @@ RMTP.presets = (function () {
         return;
       }
 
-      // Group by Transition (From Act -> To Act)
-      const transitions = {};
-      repatches.forEach(r => {
-        const key = r.fromAct + '|||' + r.toAct;
-        if (!transitions[key]) transitions[key] = [];
-        transitions[key].push(r);
-      });
-
-      summaryEl.innerHTML = Object.keys(transitions).map((key) => {
-        const [fromAct, toAct] = key.split('|||');
-        const items = transitions[key];
-        
-        return '<div class="mb-4 rounded-xl border border-line bg-panel2/50 overflow-hidden">' +
-          '<div class="px-3 py-2 bg-panel2 border-b border-line flex items-center justify-between">' +
-            '<div class="flex items-center gap-2">' +
-              '<span class="font-bold text-ink text-xs uppercase tracking-wider">Changeover:</span>' +
-              '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-panel border border-line text-muted">' + ui.esc(fromAct) + '</span>' +
-              ui.icon('arrowR', 'w-3 h-3 text-muted') +
-              '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-accent/15 border border-accent/30 text-accent">' + ui.esc(toAct) + '</span>' +
+      summaryEl.innerHTML = repatches.map((r) => {
+        const col = getActColorObj(r.actColor);
+        const hrLabel = r.homeRunCh ? hrPrefix + ' ' + (r.homeRunCh < 10 ? '0' + r.homeRunCh : r.homeRunCh) : 'Unassigned';
+        return (
+          '<div class="p-2.5 rounded-lg bg-panel border border-line flex items-center justify-between flex-wrap gap-2">' +
+            '<div class="flex items-center gap-2 flex-wrap">' +
+              '<span class="font-mono font-bold text-warning text-xs px-2 py-0.5 rounded bg-warning/15 border border-warning/30">Box ' + r.stageboxLetter + ' Ch ' + r.socket + '</span>' +
+              '<span class="font-mono text-[11px] font-bold text-accent px-1.5 py-0.5 rounded bg-panel2 border border-line">' + hrLabel + '</span>' +
+              '<span class="text-xs font-semibold text-ink">' + ui.esc(r.stageboxLocation || r.stageboxName) + '</span>' +
+              '<span class="text-[10px] px-1.5 py-0.2 rounded ' + col.bg + ' ' + col.text + ' font-bold">' + ui.esc(r.currentAct) + '</span>' +
+              '<span class="text-xs font-medium text-ink">(' + ui.esc(r.currentInstrument) + ')</span>' +
             '</div>' +
-            '<span class="text-[10px] font-mono text-muted">' + items.length + ' operations</span>' +
-          '</div>' +
-          '<div class="p-2 grid gap-1.5">' +
-            items.map(r => {
-              const hrLabel = r.homeRunCh ? hrPrefix + ' ' + (r.homeRunCh < 10 ? '0' + r.homeRunCh : r.homeRunCh) : 'Unassigned';
-              return (
-                '<div class="p-2.5 rounded-lg bg-panel border border-line flex items-center justify-between flex-wrap gap-2 shadow-2xs">' +
-                  '<div class="flex items-center gap-2 flex-wrap">' +
-                    '<span class="font-mono font-bold text-warning text-[11px] px-2 py-0.5 rounded bg-warning/15 border border-warning/30">Box ' + r.stageboxLetter + ' Ch ' + r.socket + '</span>' +
-                    '<span class="font-mono text-[11px] font-bold text-accent px-1.5 py-0.5 rounded bg-panel2 border border-line">' + hrLabel + '</span>' +
-                    '<span class="text-xs font-semibold text-ink">' + ui.esc(r.stageboxLocation || r.stageboxName) + '</span>' +
-                  '</div>' +
-                  '<div class="text-[11px] font-medium flex items-center gap-2 flex-1 justify-end">' +
-                    '<span class="text-muted line-through">Unplug: ' + ui.esc(r.fromInst) + '</span>' +
-                    ui.icon('arrowR', 'w-3.5 h-3.5 text-warning') + 
-                    '<span class="text-ink font-bold">Plug In: ' + ui.esc(r.toInst) + (r.mic ? ' (' + ui.esc(r.mic) + ')' : '') + '</span>' +
-                  '</div>' +
-                '</div>'
-              );
-            }).join('') +
-          '</div>' +
-        '</div>';
+            '<div class="text-xs text-warning font-medium flex items-center gap-1">' +
+              ui.icon('arrowR', 'w-3.5 h-3.5') + '<span>' + ui.esc(r.instructions) + '</span>' +
+            '</div>' +
+          '</div>'
+        );
       }).join('');
-    }
-
-
-    function renderMixingIOSummary() {
-      const ioEl = m.root.querySelector('#ps-mixing-io-preview');
-      if (!ioEl) return;
-      const hr = getHomeRunConfig(sheet);
-      const mapping = computeHomeRunMapping(sheet);
-      
-      const acts = sheet.acts || [];
-      const performingActs = acts.filter(a => a.id !== 'act-house');
-      if (performingActs.length === 0) {
-         ioEl.innerHTML = '<div class="p-4 text-center text-muted italic">Add acts to the event to view the IO summary grid.</div>';
-         return;
-      }
-      
-      // Build header row with Acts
-      let thead = '<thead><tr class="border-b border-line bg-panel2/60 text-muted uppercase text-[10px] font-bold">' +
-        '<th class="p-2 border-r border-line w-20 sticky left-0 z-10 bg-panel2 font-mono">CH</th>';
-      
-      performingActs.forEach(act => {
-        const col = getActColorObj(act.color);
-        thead += '<th class="p-2 border-r border-line/40 text-center min-w-[120px]"><span class="px-2 py-0.5 rounded ' + col.bg + ' ' + col.text + ' border ' + col.border + '">' + ui.esc(act.name) + '</span></th>';
-      });
-      thead += '</tr></thead>';
-      
-      let tbody = '<tbody class="divide-y divide-line/40">';
-      
-      mapping.forEach(mRow => {
-        let anyPatched = mRow.assignedSockets.length > 0;
-        if (!anyPatched) return; // skip entirely unused channels to keep it dense, or maybe show them? let's show all for a true patch sheet, or just ones up to highest used? Let's show all up to highest used.
-      });
-      
-      // Find highest patched channel to trim empty tail
-      let highestUsed = 0;
-      mapping.forEach((mRow, i) => {
-         if (mRow.assignedSockets.length > 0) highestUsed = i;
-      });
-      
-      for (let i = 0; i <= highestUsed; i++) {
-        const mRow = mapping[i];
-        
-        tbody += '<tr class="hover:bg-panel2/40 transition-colors">' +
-          '<td class="p-2 border-r border-line font-mono font-bold text-accent sticky left-0 z-10 bg-panel">' + mRow.label + '</td>';
-          
-        performingActs.forEach(act => {
-           // Find socket for this act
-           // It's this act if actId matches, OR if it's 'act-house'.
-           // If multiple, repatch/changeover logic dictates we take the one assigned to this act, or the shared one.
-           let actSocket = mRow.assignedSockets.find(s => s.actId === act.id);
-           if (!actSocket) {
-             actSocket = mRow.assignedSockets.find(s => s.actId === 'act-house');
-           }
-           
-           const isMuted = sheet.actMutes && sheet.actMutes[act.id] && sheet.actMutes[act.id][mRow.chNumber];
-           
-           if (!actSocket) {
-             tbody += '<td class="p-2 border-r border-line/40 text-center"><span class="text-muted/40 font-mono text-[10px]">—</span></td>';
-           } else {
-             const bgClass = isMuted ? 'opacity-30 grayscale hover:opacity-100 cursor-pointer' : 'hover:bg-accent/10 cursor-pointer';
-             const iconHtml = isMuted ? '<div class="absolute top-1 left-1 text-danger/80" title="Unassigned / Muted for this act">' + ui.icon('x', 'w-3 h-3') + '</div>' : '';
-             
-             tbody += '<td class="p-2 border-r border-line/40 text-center relative transition-all ' + bgClass + '" data-toggle-mute="' + act.id + '-' + mRow.chNumber + '">' +
-               iconHtml + 
-               '<div class="font-bold text-ink text-[11px]">' + ui.esc(actSocket.instrument || 'Line') + '</div>' +
-               '<div class="text-[10px] text-muted font-mono mt-0.5">' + ui.esc(actSocket.mic || '') + ' ' + (actSocket.phantom ? '<b class="text-danger">+48V</b>' : '') + '</div>' +
-             '</td>';
-           }
-        });
-        
-        tbody += '</tr>';
-      }
-      
-      tbody += '</tbody>';
-      
-      ioEl.innerHTML = '<table class="w-full border-collapse text-left text-xs bg-panel">' + thead + tbody + '</table>';
-      
-      // Wire events
-      ioEl.querySelectorAll('[data-toggle-mute]').forEach(td => {
-        td.addEventListener('click', () => {
-           const parts = td.getAttribute('data-toggle-mute').split('-');
-           const actId = parts.slice(0, parts.length - 1).join('-');
-           const chNum = parseInt(parts[parts.length - 1], 10);
-           
-           if (!sheet.actMutes) sheet.actMutes = {};
-           if (!sheet.actMutes[actId]) sheet.actMutes[actId] = {};
-           
-           sheet.actMutes[actId][chNum] = !sheet.actMutes[actId][chNum];
-           renderMixingIOSummary();
-        });
-      });
     }
 
     function renderMasterSchedule() {
@@ -2941,7 +2428,6 @@ RMTP.presets = (function () {
           name: 'Stagebox ' + letter,
           location: 'Stage Left',
           capacity: count,
-          outCapacity: count === 16 ? 8 : count === 8 ? 4 : 4,
           channels: Array.from({ length: count }, (_, i) => ({
             socket: i + 1,
             actId: sheet.acts[0] ? sheet.acts[0].id : 'act-house',
@@ -2951,47 +2437,11 @@ RMTP.presets = (function () {
             repatch: false,
             repatchTo: '',
             homeRunCh: null
-          })),
-          outputs: Array.from({ length: count === 16 ? 8 : count === 8 ? 4 : 4 }, (_, i) => ({
-            socket: i + 1,
-            destination: ''
           }))
         });
         renderStageboxes();
       });
     });
-
-    const addLocalBtn = m.root.querySelector('#btn-add-local-sb');
-    if (addLocalBtn) {
-      addLocalBtn.addEventListener('click', () => {
-        const letter = 'L'; // L for local
-        const inCap = sheet.homeRun.localInputChannels || 8;
-        const outCap = sheet.homeRun.localOutputChannels || 8;
-        sheet.stageboxes.push({
-          id: store.uid('sb'),
-          letter: letter,
-          name: 'Local Desk I/O',
-          location: 'FOH',
-          capacity: inCap,
-          outCapacity: outCap,
-          channels: Array.from({ length: inCap }, (_, i) => ({
-            socket: i + 1,
-            actId: sheet.acts[0] ? sheet.acts[0].id : 'act-house',
-            instrument: '',
-            mic: '',
-            phantom: false,
-            repatch: false,
-            repatchTo: '',
-            homeRunCh: null
-          })),
-          outputs: Array.from({ length: outCap }, (_, i) => ({
-            socket: i + 1,
-            destination: ''
-          }))
-        });
-        renderStageboxes();
-      });
-    }
 
     const addCustomBtn = m.root.querySelector('#btn-add-custom-sb');
     if (addCustomBtn) {
@@ -3003,7 +2453,6 @@ RMTP.presets = (function () {
           name: 'Custom Box ' + letter,
           location: 'Centre Stage',
           capacity: 12,
-          outCapacity: 4,
           channels: Array.from({ length: 12 }, (_, i) => ({
             socket: i + 1,
             actId: sheet.acts[0] ? sheet.acts[0].id : 'act-house',
@@ -3013,10 +2462,6 @@ RMTP.presets = (function () {
             repatch: false,
             repatchTo: '',
             homeRunCh: null
-          })),
-          outputs: Array.from({ length: 4 }, (_, i) => ({
-            socket: i + 1,
-            destination: ''
           }))
         });
         renderStageboxes();
@@ -3037,7 +2482,6 @@ RMTP.presets = (function () {
               sheet.space = linkedEv.space;
               const spEl = m.root.querySelector('#ps-space');
               if (spEl) spEl.value = linkedEv.space;
-              applyVenueRoomIO(linkedEv.space, true);
             }
             if (linkedEv.date) {
               sheet.date = linkedEv.date;
@@ -3048,9 +2492,6 @@ RMTP.presets = (function () {
             if (nameEl && (!nameEl.value || nameEl.value.trim() === 'Event Patch Sheet' || nameEl.value.trim() === 'New Event Patch Sheet')) {
               nameEl.value = (linkedEv.name || 'Event') + ' — Stagebox Patch Plan';
               sheet.name = nameEl.value;
-            }
-            if (sheet.acts.length <= 1) {
-              syncArtistsFromEvent(sheet, linkedEv, true);
             }
 
             const schedule = Array.isArray(linkedEv.schedule_items) ? linkedEv.schedule_items : (Array.isArray(linkedEv.scheduleItems) ? linkedEv.scheduleItems : []);
@@ -3066,27 +2507,6 @@ RMTP.presets = (function () {
           sheet.eventName = '';
         }
         renderEventSyncBanner();
-      });
-    }
-
-    
-    const spSelect = m.root.querySelector('#ps-space');
-    if (spSelect) {
-      spSelect.addEventListener('change', () => {
-        sheet.space = spSelect.value;
-        applyVenueRoomIO(spSelect.value, true);
-        ui.toast('Applied Venue I/O defaults for ' + spSelect.value, 'ok');
-      });
-    }
-
-    const loadRoomBtn = m.root.querySelector('#btn-save-room-io');
-    if (loadRoomBtn) {
-      loadRoomBtn.addEventListener('click', () => {
-        sheet.space = m.root.querySelector('#ps-space').value || 'The Stage';
-        if (confirm('Overwrite current Home Run and Stagebox setup with ' + sheet.space + ' venue defaults?')) {
-          applyVenueRoomIO(sheet.space, true);
-          ui.toast('Pulled Venue I/O defaults', 'ok');
-        }
       });
     }
 
@@ -3404,43 +2824,27 @@ RMTP.presets = (function () {
     ];
 
     if (repatches.length) {
-      // Group by Transition (From Act -> To Act)
-      const transitions = {};
-      repatches.forEach(r => {
-        const key = r.fromAct + '|||' + r.toAct;
-        if (!transitions[key]) transitions[key] = [];
-        transitions[key].push(r);
-      });
-
       sections.push({
-        title: '3. STAGE CHANGEOVER & REPATCH CUE SHEET (' + repatches.length + ' OPERATIONS)',
-        html: Object.keys(transitions).map((key) => {
-          const [fromAct, toAct] = key.split('|||');
-          const items = transitions[key];
-          return '<div style="margin-bottom: 24px;">' +
-            '<h4 style="margin: 0 0 8px 0; font-size: 14px; font-weight: bold; color: #334155; border-bottom: 2px solid #e2e8f0; padding-bottom: 4px;">' +
-              'CHANGEOVER: ' + ui.esc(fromAct) + ' \u2192 ' + ui.esc(toAct) +
-            '</h4>' +
-            '<table>' +
-              '<thead><tr><th style="width: 140px;">Socket</th><th style="width: 100px;">Home Run</th><th style="width: 150px;">Location</th><th>Unplug</th><th style="width: 30px;"></th><th>Plug In</th></tr></thead>' +
-              '<tbody>' +
-                items.map((r) => {
-                  const hrLabel = r.homeRunCh ? (hr.prefix || 'HR') + ' ' + (r.homeRunCh < 10 ? '0' + r.homeRunCh : r.homeRunCh) : '\u2014';
-                  return (
-                    '<tr>' +
-                      '<td style="font-weight: bold; font-family: monospace;">Box ' + r.stageboxLetter + ' Ch ' + r.socket + '</td>' +
-                      '<td style="font-family: monospace; font-weight: bold; color: #0284c7;">' + hrLabel + '</td>' +
-                      '<td>' + ui.esc(r.stageboxLocation) + '</td>' +
-                      '<td style="text-decoration: line-through; color: #64748b;">' + ui.esc(r.fromInst) + '</td>' +
-                      '<td style="color: #b45309; text-align: center; font-weight: bold;">\u2192</td>' +
-                      '<td style="font-weight: bold;">' + ui.esc(r.toInst) + (r.mic ? ' (' + ui.esc(r.mic) + ')' : '') + '</td>' +
-                    '</tr>'
-                  );
-                }).join('') +
-              '</tbody>' +
-            '</table>' +
-          '</div>';
-        }).join('')
+        title: '3. CHANGEOVER REPATCH CHECKLIST (' + repatches.length + ' REPATCHES)',
+        html:
+          '<table>' +
+            '<thead><tr><th>Socket</th><th>Home Run</th><th>Location</th><th>Current Act</th><th>Source</th><th>Changeover Instructions</th></tr></thead>' +
+            '<tbody>' +
+              repatches.map((r) => {
+                const hrLabel = r.homeRunCh ? (hr.prefix || 'HR') + ' ' + (r.homeRunCh < 10 ? '0' + r.homeRunCh : r.homeRunCh) : '\u2014';
+                return (
+                  '<tr>' +
+                    '<td style="font-weight: bold; font-family: monospace;">Box ' + r.stageboxLetter + ' Ch ' + r.socket + '</td>' +
+                    '<td style="font-family: monospace; font-weight: bold; color: #0284c7;">' + hrLabel + '</td>' +
+                    '<td>' + ui.esc(r.stageboxLocation) + '</td>' +
+                    '<td>' + ui.esc(r.currentAct) + '</td>' +
+                    '<td>' + ui.esc(r.currentInstrument) + '</td>' +
+                    '<td style="font-weight: bold; color: #b45309;">' + ui.esc(r.instructions) + '</td>' +
+                  '</tr>'
+                );
+              }).join('') +
+            '</tbody>' +
+          '</table>'
       });
     }
 
@@ -3761,44 +3165,6 @@ RMTP.presets = (function () {
       meta: meta || [],
       sections: sections
     });
-  }
-
-  function renderSaveRoomIOModal(sheet) {
-    const m = ui.modal('Save Room I/O Preset', 
-      '<div class="flex flex-col gap-4 max-w-md">' +
-        '<div class="text-sm text-muted">Save the current Home Run matrix, output patching, and connected stageboxes as a reusable preset for a specific room or venue space. Repatch layers and act assignments are not saved.</div>' +
-        '<div class="grid gap-1.5">' +
-          '<label class="text-[10px] uppercase font-bold text-muted">Room / Space Name</label>' +
-          '<input type="text" id="rio-space-name" class="field" value="' + ui.esc(sheet.space || 'The Stage') + '" placeholder="e.g. The Stage, Main Hall" />' +
-        '</div>' +
-        '<div class="flex justify-end gap-2 mt-4 pt-4 border-t border-line">' +
-          '<button type="button" id="rio-cancel" class="btn btn-ghost">Cancel</button>' +
-          '<button type="button" id="rio-save" class="btn btn-primary">Save I/O Preset</button>' +
-        '</div>' +
-      '</div>'
-    );
-    
-    m.root.querySelector('#rio-cancel').onclick = m.close;
-    m.root.querySelector('#rio-save').onclick = () => {
-      const spaceName = m.root.querySelector('#rio-space-name').value.trim();
-      if (!spaceName) return ui.toast('Please enter a room name', 'error');
-      
-      // Filter out repatch layers, only save original physical sockets (layer 0)
-      const presetBoxes = sheet.stageboxes.map(box => {
-        const clonedBox = JSON.parse(JSON.stringify(box));
-        clonedBox.channels = clonedBox.channels.filter(ch => !ch.repatch);
-        return clonedBox;
-      });
-      
-      saveRoomIOPreset({
-        space: spaceName,
-        homeRun: sheet.homeRun,
-        stageboxes: presetBoxes
-      });
-      
-      ui.toast('Saved Room I/O Preset: ' + spaceName, 'ok');
-      m.close();
-    };
   }
 
   return {

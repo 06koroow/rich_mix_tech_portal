@@ -16,7 +16,7 @@
 RMTP.syncSb = (function () {
   const store = RMTP.store, sb = RMTP.supabase, files = RMTP.files;
   const tables = () => (RMTP.supabaseConfig || {}).tables || {};
-  const COLLS = ['users', 'inventory', 'maintenance', 'advancing', 'reports', 'signoffs', 'procedures', 'patch_presets', 'patch_sheets'];
+  const COLLS = ['users', 'inventory', 'maintenance', 'advancing', 'reports', 'signoffs', 'procedures', 'patch_presets', 'patch_sheets', 'dmx_personalities', 'dmx_patches', 'venues'];
 
   /* ---- dynamic table & column compatibility cache & sanitizer ---- */
   let unsupportedTables = {};
@@ -76,6 +76,24 @@ RMTP.syncSb = (function () {
 
     rows.forEach((r) => {
       const prev = existingMap.get(r.id) || {};
+      if (coll === 'dmx_personalities') {
+        r.manufacturer = r.manufacturer || prev.manufacturer || 'Generic';
+        r.model = r.model || prev.model || '';
+        r.mode = r.mode || prev.mode || 'Standard';
+        r.channels = r.channels !== undefined ? r.channels : (prev.channels || 1);
+        r.category = r.category || prev.category || 'Fixtures';
+        r.isFactory = r.isFactory !== undefined ? r.isFactory : (prev.isFactory || false);
+        r.notes = r.notes || prev.notes || '';
+      }
+      if (coll === 'dmx_patches') {
+        r.title = r.title || r.name || prev.title || prev.name || 'DMX Lighting Patch';
+        r.space = r.space || prev.space || '';
+        r.date = r.date || prev.date || '';
+        r.eventId = r.eventId || prev.eventId || null;
+        r.eventName = r.eventName || prev.eventName || '';
+        r.notes = r.notes || prev.notes || '';
+        r.fixtures = Array.isArray(r.fixtures) ? r.fixtures : (prev.fixtures || []);
+      }
       if (coll === 'patch_presets') {
         r.channels = Array.isArray(r.channels) ? r.channels : (prev.channels || []);
         r.type = r.type || prev.type || 'input';
@@ -89,10 +107,16 @@ RMTP.syncSb = (function () {
         r.patchPoints = Array.isArray(r.patchPoints) ? r.patchPoints : (prev.patchPoints || []);
         r.stageboxes = Array.isArray(r.stageboxes) ? r.stageboxes : (prev.stageboxes || []);
         r.repatches = Array.isArray(r.repatches) ? r.repatches : (prev.repatches || []);
+        r.dmx_fixtures = Array.isArray(r.dmx_fixtures) ? r.dmx_fixtures : (Array.isArray(r.dmxFixtures) ? r.dmxFixtures : (Array.isArray(prev.dmx_fixtures) ? prev.dmx_fixtures : []));
         r.eventName = r.eventName || prev.eventName || '';
         r.space = r.space || prev.space || '';
         r.date = r.date || prev.date || '';
         r.notes = r.notes || prev.notes || '';
+      }
+      if (coll === 'venues') {
+        r.stageDimensions = r.stageDimensions || prev.stageDimensions || '';
+        r.audio = r.audio || prev.audio || {};
+        r.dmx = r.dmx || prev.dmx || [];
       }
       if (coll === 'inventory') {
         r.movements = r.movements || prev.movements || [];
@@ -127,6 +151,7 @@ RMTP.syncSb = (function () {
         r.parent_event_id = r.parent_event_id || r.parentEventId || prev.parent_event_id || prev.parentEventId || null;
         r.dcp_test_event_id = r.dcp_test_event_id || r.dcpTestEventId || prev.dcp_test_event_id || prev.dcpTestEventId || null;
         r.linked_maintenance_ids = Array.isArray(r.linked_maintenance_ids) ? r.linked_maintenance_ids : (Array.isArray(r.linkedMaintenanceIds) ? r.linkedMaintenanceIds : (Array.isArray(prev.linked_maintenance_ids) ? prev.linked_maintenance_ids : []));
+        r.dmx_fixtures = Array.isArray(r.dmx_fixtures) ? r.dmx_fixtures : (Array.isArray(r.dmxFixtures) ? r.dmxFixtures : (Array.isArray(prev.dmx_fixtures) ? prev.dmx_fixtures : []));
         r.lighting_notes = r.lighting_notes || r.lightingNotes || prev.lighting_notes || prev.lightingNotes || '';
         r.floor_package = r.floor_package || r.floorPackage || prev.floor_package || prev.floorPackage || '';
         r.floor_tags = Array.isArray(r.floor_tags) ? r.floor_tags : (Array.isArray(r.floorTags) ? r.floorTags : (Array.isArray(prev.floor_tags) ? prev.floor_tags : []));
@@ -210,6 +235,7 @@ RMTP.syncSb = (function () {
         parent_event_id: r.parent_event_id || r.parentEventId || null,
         dcp_test_event_id: r.dcp_test_event_id || r.dcpTestEventId || null,
         linked_maintenance_ids: Array.isArray(r.linked_maintenance_ids) ? r.linked_maintenance_ids : (Array.isArray(r.linkedMaintenanceIds) ? r.linkedMaintenanceIds : []),
+        dmx_fixtures: Array.isArray(r.dmx_fixtures) ? r.dmx_fixtures : (Array.isArray(r.dmxFixtures) ? r.dmxFixtures : []),
         lighting_notes: r.lighting_notes || r.lightingNotes || '',
         floor_package: r.floor_package || r.floorPackage || '',
         floor_tags: Array.isArray(r.floor_tags) ? r.floor_tags : (Array.isArray(r.floorTags) ? r.floorTags : []),
@@ -285,8 +311,49 @@ RMTP.syncSb = (function () {
         patchPoints: Array.isArray(r.patchPoints) ? r.patchPoints : [],
         stageboxes: Array.isArray(r.stageboxes) ? r.stageboxes : [],
         repatches: Array.isArray(r.repatches) ? r.repatches : [],
+        dmx_fixtures: Array.isArray(r.dmx_fixtures) ? r.dmx_fixtures : (Array.isArray(r.dmxFixtures) ? r.dmxFixtures : []),
         createdAt: r.createdAt || Date.now(),
         updatedAt: r.updatedAt || Date.now(),
+      };
+    }
+    if (coll === 'dmx_personalities') {
+      return {
+        id: r.id,
+        manufacturer: r.manufacturer || 'Generic',
+        model: r.model || '',
+        mode: r.mode || 'Standard',
+        channels: parseInt(r.channels, 10) || 1,
+        category: r.category || 'Fixtures',
+        isFactory: !!r.isFactory,
+        notes: r.notes || '',
+        createdAt: r.createdAt || Date.now(),
+        updatedAt: r.updatedAt || Date.now(),
+      };
+    }
+    if (coll === 'dmx_patches') {
+      return {
+        id: r.id,
+        title: r.title || r.name || 'DMX Lighting Patch',
+        eventId: r.eventId || null,
+        eventName: r.eventName || '',
+        space: r.space || '',
+        date: r.date || '',
+        notes: r.notes || '',
+        fixtures: Array.isArray(r.fixtures) ? r.fixtures : [],
+        createdAt: r.createdAt || Date.now(),
+        updatedAt: r.updatedAt || Date.now(),
+      };
+    }
+    if (coll === 'venues') {
+      return {
+        id: r.id,
+        name: r.name || '',
+        capacity: r.capacity || '',
+        stageDimensions: r.stageDimensions || '',
+        inventory: r.inventory || '',
+        audio: r.audio || {},
+        dmx: r.dmx || [],
+        createdAt: r.createdAt || new Date().toISOString()
       };
     }
     return r;

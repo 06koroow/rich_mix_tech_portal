@@ -16,7 +16,11 @@ RMTP.views.inventory = function (el, params, query) {
   const me = auth.current();
   const isAdmin = !!(me && me.admin);
 
-  const CATEGORIES = ['Sound - Console/Stageboxes', 'Sound - PA/Speakers', 'Sound - Microphones', 'Sound - DI/Stands', 'Sound - Playback', 'Sound - Control', 'Backline', 'DJ Equipment', 'Lighting - Control', 'Lighting - Fixtures', 'Lighting - Rigging/Other', 'AV - Projection/Screens', 'Network - Projection/Screens', 'Power', 'Staging/Flooring', 'Other'];
+  function getCategories() {
+    const baseCats = ['Sound - Consoles', 'Sound - PA/Speakers', 'Sound - Microphones', 'Sound - DI/Stands', 'Sound - Playback', 'Sound - Control', 'Backline', 'DJ Equipment', 'Lighting - Control', 'Lighting - Fixtures', 'Lighting - Rigging/Other', 'AV - Projection/Screens', 'Network - Projection/Screens', 'Power', 'Staging/Flooring', 'Other'];
+    const usedCats = store.all('inventory').map(it => it.category).filter(Boolean);
+    return Array.from(new Set(baseCats.concat(usedCats))).sort((a, b) => a.localeCompare(b));
+  }
   const condColour = { 'Excellent': 'var(--ok)', 'Good': 'var(--ok)', 'Fair': 'var(--accent)', 'Poor': 'var(--danger)', 'Damaged': 'var(--danger)', 'Out of service': 'var(--danger)' };
   const isStatic = (r) => !!r.static;
 
@@ -113,6 +117,7 @@ RMTP.views.inventory = function (el, params, query) {
     return (canMove ? '<button id="toggle-select-mode" class="btn ' + (selectMode ? 'btn-primary' : 'btn-ghost') + '">' + ui.icon('check', 'w-4 h-4') + (selectMode ? 'Done' : 'Select Multiple') + '</button>' : '') +
       (canMove ? '<button id="scan-item" class="btn btn-primary">' + ui.icon('qr', 'w-4 h-4') + 'Scan QR</button>' : '') +
       (canManage ? '<button id="print-labels" class="btn btn-ghost">' + ui.icon('print', 'w-4 h-4') + 'Labels</button>' : '') +
+      (canManage ? '<button id="setup-cats" class="btn btn-ghost">' + ui.icon('list', 'w-4 h-4') + 'Setup Categories</button>' : '') +
       (canManage ? '<button id="add-item" class="btn btn-ghost">' + ui.icon('plus', 'w-4 h-4') + 'Add</button>' : '');
   }
 
@@ -152,6 +157,8 @@ RMTP.views.inventory = function (el, params, query) {
     if (scanBtn) scanBtn.addEventListener('click', handleScan);
     const labelsBtn = hw.querySelector('#print-labels');
     if (labelsBtn) labelsBtn.addEventListener('click', () => qr.labelPreview(store.all('inventory')));
+    const setupCatsBtn = hw.querySelector('#setup-cats');
+    if (setupCatsBtn) setupCatsBtn.addEventListener('click', () => renderSetupCategories());
     const toggleSelectBtn = hw.querySelector('#toggle-select-mode');
     if (toggleSelectBtn) toggleSelectBtn.addEventListener('click', () => {
       selectMode = !selectMode;
@@ -284,7 +291,7 @@ RMTP.views.inventory = function (el, params, query) {
     const sel = el.querySelector('#inv-category-filter');
     if (!sel) return;
     const all = store.all('inventory');
-    const distinct = Array.from(new Set(CATEGORIES.concat(all.map((r) => r.category).filter(Boolean))));
+    const distinct = Array.from(new Set(getCategories().concat(all.map((r) => r.category).filter(Boolean))));
     const countFor = (cat) => all.filter((r) => r.category === cat).length;
     const opts = ['<option value="">All Categories (' + all.length + ')</option>'].concat(
       distinct.map((c) => {
@@ -1269,6 +1276,69 @@ RMTP.views.inventory = function (el, params, query) {
     return html + '</select>';
   }
 
+  function renderSetupCategories() {
+    const renderList = (container) => {
+      const all = getCategories();
+      const html = all.map(c => 
+        '<div class="flex items-center justify-between p-2 border border-line rounded bg-panel">' +
+          '<input type="text" class="field !py-1 !px-2 flex-1 mr-2 bg-transparent hover:border-line focus:bg-panel2" value="' + ui.esc(c) + '" data-old-cat="' + ui.esc(c) + '" />' +
+          '<button class="btn btn-ghost text-danger !p-1" data-del-cat="' + ui.esc(c) + '" title="Remove from all items">' + ui.icon('x', 'w-4 h-4') + '</button>' +
+        '</div>'
+      ).join('');
+      container.innerHTML = html || '<div class="text-muted text-sm italic">No categories found.</div>';
+      
+      container.querySelectorAll('input[data-old-cat]').forEach(inp => {
+        inp.addEventListener('change', () => {
+          const old = inp.getAttribute('data-old-cat');
+          const nu = inp.value.trim();
+          if (nu && nu !== old) {
+            let updated = 0;
+            store.all('inventory').forEach(it => {
+              if (it.category === old) {
+                it.category = nu;
+                store.upsert('inventory', it);
+                updated++;
+              }
+            });
+            if (updated > 0) ui.toast('Updated ' + updated + ' items to ' + nu, 'ok');
+            renderList(container);
+            render();
+          }
+        });
+      });
+      container.querySelectorAll('button[data-del-cat]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const cat = btn.getAttribute('data-del-cat');
+          if (confirm('Reassign all items in "' + cat + '" to "Other"?')) {
+            let updated = 0;
+            store.all('inventory').forEach(it => {
+              if (it.category === cat) {
+                it.category = 'Other';
+                store.upsert('inventory', it);
+                updated++;
+              }
+            });
+            if (updated > 0) ui.toast('Reassigned ' + updated + ' items to Other', 'ok');
+            renderList(container);
+            render();
+          }
+        });
+      });
+    };
+
+    const modal = ui.modal({
+      title: 'Setup Categories',
+      size: 'md:max-w-md',
+      body:
+        '<p class="text-xs text-muted mb-4">Categories are automatically generated from your inventory list. Renaming or deleting here will apply to all existing items.</p>' +
+        '<div class="space-y-2 max-h-96 overflow-y-auto" id="cat-list"></div>',
+      actions: [ { label: 'Done', type: 'ghost', click: () => { modal.close(); render(); } } ]
+    });
+    
+    const container = modal.root.querySelector('#cat-list');
+    renderList(container);
+  }
+
   function openForm(existing) {
     const r = existing || {};
     const opt = (arr, val) => arr.map((v) => '<option ' + (v === val ? 'selected' : '') + '>' + v + '</option>').join('');
@@ -1282,7 +1352,7 @@ RMTP.views.inventory = function (el, params, query) {
             '<div class="col-span-2">' + inner('Name', '<input id="i-name" class="field" value="' + ui.esc(r.name || '') + '" placeholder="Shure SM58" />') + '</div>' +
           '</div>' +
           '<div class="grid grid-cols-2 gap-4">' +
-            fld('Category', '<select id="i-category" class="field">' + opt(CATEGORIES, r.category) + '</select>') +
+            fld('Category', '<select id="i-category" class="field">' + opt(getCategories(), r.category) + '<option value="--add--">+ Add Category...</option></select>') +
             fld('Condition', '<select id="i-condition" class="field">' + opt(RMTP.CONDITIONS, r.condition || 'Good') + '</select>') +
           '</div>' +
           '<div class="grid grid-cols-2 gap-4">' +
@@ -1301,6 +1371,20 @@ RMTP.views.inventory = function (el, params, query) {
         '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
         '<button class="btn btn-primary" data-save data-primary>' + (existing ? 'Save changes' : 'Add item') + '</button>',
     });
+    
+    m.root.querySelector('#i-category').addEventListener('change', (e) => {
+      if (e.target.value === '--add--') {
+        const catName = prompt('Enter new category name:');
+        if (catName && catName.trim()) {
+          const newName = catName.trim();
+          e.target.innerHTML = opt(getCategories().concat([newName]), newName) + '<option value="--add--">+ Add Category...</option>';
+          e.target.value = newName;
+        } else {
+          e.target.value = r.category || getCategories()[0] || '';
+        }
+      }
+    });
+
     m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
     m.root.querySelector('[data-save]').addEventListener('click', () => {
       const name = m.root.querySelector('#i-name').value.trim();

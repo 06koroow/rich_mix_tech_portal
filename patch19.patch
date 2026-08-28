@@ -1,0 +1,30 @@
+--- js/views/inventory.js
++++ js/views/inventory.js
+@@ -1286,7 +1286,7 @@
+             '<div class="col-span-2">' + inner('Name', '<input id="i-name" class="field" value="' + ui.esc(r.name || '') + '" placeholder="Shure SM58" />') + '</div>' +
+           '</div>' +
+           '<div class="grid grid-cols-2 gap-4">' +
+-            fld('Category', '<select id="i-category" class="field">' + opt(CATEGORIES, r.category) + '</select>') +
++            fld('Category', '<select id="i-category" class="field">' + opt(getCategories(), r.category) + '<option value="--add--">+ Add Category...</option></select>') +
+             fld('Condition', '<select id="i-condition" class="field">' + opt(RMTP.CONDITIONS, r.condition || 'Good') + '</select>') +
+           '</div>' +
+           '<div class="grid grid-cols-2 gap-4">' +
+@@ -1310,6 +1310,17 @@
+         ]
+       );
+ 
++      m.root.querySelector('#i-category').addEventListener('change', (e) => {
++        if (e.target.value === '--add--') {
++          const catName = prompt('Enter new category name:');
++          if (catName && catName.trim()) {
++            store.upsert('inventory_categories', { id: store.uid('cat'), name: catName.trim() });
++            e.target.innerHTML = opt(getCategories(), catName.trim()) + '<option value="--add--">+ Add Category...</option>';
++            e.target.value = catName.trim();
++          } else {
++            e.target.value = r.category || getCategories()[0] || '';
++          }
++        }
++      });
++
+       if (!isStatic(r)) {
+         m.root.querySelector('#i-status').addEventListener('change', (e) => {

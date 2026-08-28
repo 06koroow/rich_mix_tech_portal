@@ -1,0 +1,57 @@
+--- js/views/presets.js
++++ js/views/presets.js
+@@ -2151,15 +2151,18 @@
+         } else {
+           routingTableEl.innerHTML =
+             // Mobile Card View for Stagebox Routing
+             '<div class="md:hidden grid gap-2">' +
+               sheet.stageboxes.map((box, sbIdx) => {
+-                return (box.channels || []).map((ch, chIdx) => {
++                return '<div class="p-2 font-bold text-accent bg-panel2/60 border-y border-line text-xs flex justify-between items-center">' +
++                  '<span>Box ' + box.letter + ' (' + box.name + ')</span>' +
++                  '<button type="button" data-sb-patch-11="' + sbIdx + '" class="btn btn-ghost !py-0.5 !px-2 text-[10px] border border-accent/30 text-accent">Patch 1:1</button>' +
++                  '</div>' + (box.channels || []).map((ch, chIdx) => {
+                   const act = (sheet.acts || []).find((a) => a.id === ch.actId);
+                   const col = act ? getActColorObj(act.color) : ACT_COLORS[0];
+                   const hrCh = parseInt(ch.homeRunCh, 10);
+                   return (
+                     '<div class="p-2.5 rounded-lg bg-panel border border-line flex flex-col gap-1.5 text-xs shadow-2xs">' +
+                       '<div class="flex items-center justify-between gap-2">' +
+                         '<div class="flex items-center gap-1.5">' +
+                           '<span class="font-mono font-bold text-xs px-1.5 py-0.5 rounded ' + col.border + ' ' + col.bg + ' ' + col.text + ' border">' +
+                             'Box ' + (box.letter || '?') + ' \u00b7 Skt ' + (ch.socket || (chIdx + 1)) +
+@@ -2188,27 +2191,33 @@
+               }).join('') +
+             '</div>' +
+ 
+             // Desktop Table View
+             '<div class="hidden md:block overflow-x-auto rounded-lg border border-line">' +
+               '<table class="w-full border-collapse text-left text-xs">' +
+                 '<thead><tr class="border-b border-line bg-panel2/60 text-muted uppercase text-[10px] font-bold">' +
+                   '<th class="p-2">Stagebox & Socket</th>' +
+                   '<th class="p-2">Physical Loc</th>' +
+                   '<th class="p-2">Act / Artist</th>' +
+                   '<th class="p-2">Instrument</th>' +
+                   '<th class="p-2">Target Home Run Channel</th>' +
+                 '</tr></thead>' +
+-                '<tbody class="divide-y divide-line/40">' +
+-                  sheet.stageboxes.map((box, sbIdx) => {
+-                    return (box.channels || []).map((ch, chIdx) => {
++                '<tbody>' +
++                  sheet.stageboxes.map((box, sbIdx) => {
++                    return '<tr class="bg-panel2 border-b border-line"><td colspan="4" class="p-2 font-bold text-accent">' +
++                      'Box ' + box.letter + ' - ' + box.name + ' (' + box.location + ')' +
++                      '</td><td class="p-2 text-right"><button type="button" data-sb-patch-11="' + sbIdx + '" class="btn btn-ghost !py-1 !px-2.5 text-[11px] border border-accent/30 text-accent font-semibold flex items-center gap-1 ml-auto">' +
++                      ui.icon('sliders', 'w-3 h-3') + ' Patch 1:1</button></td></tr>' +
++                    (box.channels || []).map((ch, chIdx) => {
+                       const act = (sheet.acts || []).find((a) => a.id === ch.actId);
+                       const col = act ? getActColorObj(act.color) : ACT_COLORS[0];
+                       const hrCh = parseInt(ch.homeRunCh, 10);
+                       return (
+-                        '<tr class="hover:bg-panel transition-colors">' +
++                        '<tr class="hover:bg-panel transition-colors border-b border-line/40">' +
+                           '<td class="p-2">' +
+                             '<span class="font-mono font-bold px-1.5 py-0.5 rounded border ' + col.border + ' ' + col.bg + ' ' + col.text + '">' +
+                               'Box ' + (box.letter || '?') + ' \u00b7 ' + (ch.socket || (chIdx + 1)) +
+                             '</span>' +
+                           '</td>' +

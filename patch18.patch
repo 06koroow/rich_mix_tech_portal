@@ -1,0 +1,42 @@
+--- js/views/inventory.js
++++ js/views/inventory.js
+@@ -16,8 +16,13 @@
+   const me = auth.current();
+   const isAdmin = !!(me && me.admin);
+ 
+-  const CATEGORIES = ['Sound - Console/Stageboxes', 'Sound - PA/Speakers', 'Sound - Microphones', 'Sound - DI/Stands', 'Sound - Playback', 'Sound - Control', 'Backline', 'DJ Equipment', 'Lighting - Control', 'Lighting - Fixtures', 'Lighting - Rigging/Other', 'AV - Projection/Screens', 'Network - Projection/Screens', 'Power', 'Staging/Flooring', 'Other'];
++  function getCategories() {
++    const cats = store.all('inventory_categories');
++    if (cats.length > 0) return cats.map(c => c.name);
++    return ['Sound - Consoles', 'Sound - PA/Speakers', 'Sound - Microphones', 'Sound - DI/Stands', 'Sound - Playback', 'Sound - Control', 'Backline', 'DJ Equipment', 'Lighting - Control', 'Lighting - Fixtures', 'Lighting - Rigging/Other', 'AV - Projection/Screens', 'Network - Projection/Screens', 'Power', 'Staging/Flooring', 'Other'];
++  }
++
+   const condColour = { 'Excellent': 'var(--ok)', 'Good': 'var(--ok)', 'Fair': 'var(--accent)', 'Poor': 'var(--danger)', 'Damaged': 'var(--danger)', 'Out of service': 'var(--danger)' };
+   const isStatic = (r) => !!r.static;
+ 
+@@ -113,6 +118,7 @@
+     return (canMove ? '<button id="toggle-select-mode" class="btn ' + (selectMode ? 'btn-primary' : 'btn-ghost') + '">' + ui.icon('check', 'w-4 h-4') + (selectMode ? 'Done' : 'Select Multiple') + '</button>' : '') +
+       (canMove ? '<button id="scan-item" class="btn btn-primary">' + ui.icon('qr', 'w-4 h-4') + 'Scan QR</button>' : '') +
+       (canManage ? '<button id="print-labels" class="btn btn-ghost">' + ui.icon('print', 'w-4 h-4') + 'Labels</button>' : '') +
++      (canManage ? '<button id="setup-cats" class="btn btn-ghost">' + ui.icon('list', 'w-4 h-4') + 'Setup Categories</button>' : '') +
+       (canManage ? '<button id="add-item" class="btn btn-ghost">' + ui.icon('plus', 'w-4 h-4') + 'Add</button>' : '');
+   }
+ 
+@@ -152,6 +158,8 @@
+     const scanBtn = hw.querySelector('#scan-item');
+     if (scanBtn) scanBtn.addEventListener('click', handleScan);
+     const labelsBtn = hw.querySelector('#print-labels');
+     if (labelsBtn) labelsBtn.addEventListener('click', () => qr.labelPreview(store.all('inventory')));
++    const setupCatsBtn = hw.querySelector('#setup-cats');
++    if (setupCatsBtn) setupCatsBtn.addEventListener('click', () => renderSetupCategories());
+     const toggleSelectBtn = hw.querySelector('#toggle-select-mode');
+     if (toggleSelectBtn) toggleSelectBtn.addEventListener('click', () => {
+@@ -284,7 +292,7 @@
+     const sel = el.querySelector('#inv-category-filter');
+     if (!sel) return;
+     const all = store.all('inventory');
+-    const distinct = Array.from(new Set(CATEGORIES.concat(all.map((r) => r.category).filter(Boolean))));
++    const distinct = Array.from(new Set(getCategories().concat(all.map((r) => r.category).filter(Boolean))));
+     const countFor = (cat) => all.filter((r) => r.category === cat).length;
+     const opts = ['<option value="">All Categories (' + all.length + ')</option>'].concat(
+       distinct.map((c) => {

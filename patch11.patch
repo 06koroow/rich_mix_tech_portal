@@ -1,0 +1,18 @@
+--- js/views/presets.js
++++ js/views/presets.js
+@@ -1610,6 +1610,15 @@
+       const hrPrefix = (hr.prefix || 'HR').trim();
+ 
+       container.innerHTML = sheet.stageboxes.map((box, sbIdx) => {
++        // Group channels by physical socket for repatch layers
++        const sGroups = {};
++        (box.channels || []).forEach((ch, idx) => {
++          ch._originalIndex = idx;
++          if (!sGroups[ch.socket]) sGroups[ch.socket] = [];
++          sGroups[ch.socket].push(ch);
++        });
++        const socketGroups = Object.keys(sGroups).sort((a, b) => a - b).map(k => ({ socket: k, layers: sGroups[k] }));
++
+         return (
+           '<div class="panel p-4 rounded-xl border border-line bg-panel shadow-sm flex flex-col gap-3">' +
+             // Stagebox Header

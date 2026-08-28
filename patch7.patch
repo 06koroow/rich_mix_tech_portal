@@ -1,0 +1,48 @@
+--- js/views/presets.js
++++ js/views/presets.js
+@@ -2243,6 +2243,45 @@
+               renderStageboxes();
+             });
+           });
++          
++          routingTableEl.querySelectorAll('[data-sb-patch-11]').forEach((btn) => {
++            btn.addEventListener('click', () => {
++              const sbIdx = +btn.getAttribute('data-sb-patch-11');
++              const box = sheet.stageboxes[sbIdx];
++              if (!box || !box.channels || !box.channels.length) return;
++              
++              // Find used HR channels
++              const usedHrChannels = new Set();
++              sheet.stageboxes.forEach((b, bIdx) => {
++                if (bIdx !== sbIdx) { // Ignore current box for used channels calculation to allow overwriting/re-patching
++                  (b.channels || []).forEach(c => {
++                    if (c.homeRunCh) usedHrChannels.add(c.homeRunCh);
++                  });
++                }
++              });
++
++              // Get unique sockets in order
++              const uniqueSockets = [...new Set(box.channels.map(c => c.socket))].sort((a,b) => a-b);
++              let currentHrSearch = 1;
++              const totalInputs = Math.max(1, parseInt(sheet.homeRun.inputChannels, 10) || 32);
++              
++              uniqueSockets.forEach(snum => {
++                // Find next available HR channel
++                while(usedHrChannels.has(currentHrSearch) && currentHrSearch <= totalInputs) {
++                  currentHrSearch++;
++                }
++                if (currentHrSearch <= totalInputs) {
++                  // Assign all layers of this socket to the same HR channel
++                  box.channels.forEach(c => {
++                    if (c.socket === snum) c.homeRunCh = currentHrSearch;
++                  });
++                  usedHrChannels.add(currentHrSearch);
++                }
++              });
++              
++              renderSignalFlow();
++              renderStageboxes();
++            });
++          });
+         }
+       }

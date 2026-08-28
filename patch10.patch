@@ -1,0 +1,50 @@
+--- js/views/presets.js
++++ js/views/presets.js
+@@ -3242,6 +3242,47 @@
+     });
+   }
+ 
++  function renderSaveRoomIOModal(sheet) {
++    const m = ui.modal('Save Room I/O Preset', 
++      '<div class="flex flex-col gap-4 max-w-md">' +
++        '<div class="text-sm text-muted">Save the current Home Run matrix, output patching, and connected stageboxes as a reusable preset for a specific room or venue space. Repatch layers and act assignments are not saved.</div>' +
++        '<div class="grid gap-1.5">' +
++          '<label class="text-[10px] uppercase font-bold text-muted">Room / Space Name</label>' +
++          '<input type="text" id="rio-space-name" class="field" value="' + ui.esc(sheet.space || 'The Stage') + '" placeholder="e.g. The Stage, Main Hall" />' +
++        '</div>' +
++        '<div class="flex justify-end gap-2 mt-4 pt-4 border-t border-line">' +
++          '<button type="button" id="rio-cancel" class="btn btn-ghost">Cancel</button>' +
++          '<button type="button" id="rio-save" class="btn btn-primary">Save I/O Preset</button>' +
++        '</div>' +
++      '</div>'
++    );
++    
++    m.root.querySelector('#rio-cancel').onclick = m.close;
++    m.root.querySelector('#rio-save').onclick = () => {
++      const spaceName = m.root.querySelector('#rio-space-name').value.trim();
++      if (!spaceName) return ui.toast('Please enter a room name', 'error');
++      
++      // Filter out repatch layers, only save original physical sockets (layer 0)
++      const presetBoxes = sheet.stageboxes.map(box => {
++        const clonedBox = JSON.parse(JSON.stringify(box));
++        clonedBox.channels = clonedBox.channels.filter(ch => !ch.repatch);
++        return clonedBox;
++      });
++      
++      saveRoomIOPreset({
++        space: spaceName,
++        homeRun: sheet.homeRun,
++        stageboxes: presetBoxes
++      });
++      
++      ui.toast('Saved Room I/O Preset: ' + spaceName, 'ok');
++      
++      // refresh select in step 1 if exists
++      const spEl = document.querySelector('#ps-space');
++      m.close();
++    };
++  }
++
+   return {
+     getAllPresets,
+     getInputs,

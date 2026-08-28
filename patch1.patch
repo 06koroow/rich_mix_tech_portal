@@ -1,0 +1,110 @@
+--- js/views/presets.js
++++ js/views/presets.js
+@@ -1221,11 +1221,43 @@
+               '</div>' +
+               '<div>' +
+                 '<label class="block text-xs font-semibold mb-1">Space / Venue</label>' +
+-                '<select id="ps-space" class="field">' +
++                '<select id="ps-space" class="field text-accent font-semibold">' +
+                   RMTP.SPACES.map((s) => '<option ' + (s === sheet.space ? 'selected' : '') + '>' + s + '</option>').join('') +
+                 '</select>' +
+               '</div>' +
++              '<div class="sm:col-span-3 mt-2">' +
++                '<div class="flex items-center justify-between pb-2 border-b border-line/60 flex-wrap gap-2">' +
++                  '<div class="flex items-center gap-2">' +
++                    '<span class="text-accent">' + ui.icon('sliders', 'w-4 h-4') + '</span>' +
++                    '<span class="font-bold text-ink uppercase tracking-wider text-xs">Room I/O & Home Run Trunk</span>' +
++                  '</div>' +
++                  '<div class="flex items-center gap-2">' +
++                    '<button type="button" id="btn-save-room-io" class="btn btn-ghost !py-1 !px-2.5 text-xs text-accent font-semibold flex items-center gap-1.5 border border-accent/30 hover:bg-accent/10" title="Save current Home Run & Stageboxes as a Room Preset">' +
++                      ui.icon('save', 'w-3.5 h-3.5') + '<span>Save Room I/O Preset</span>' +
++                    '</button>' +
++                  '</div>' +
++                '</div>' +
++                '<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 mt-3">' +
++                  '<div>' +
++                    '<label class="block text-[11px] font-semibold text-muted mb-1">Home Run Name</label>' +
++                    '<input id="ps-hr-name" class="field !py-1.5 !px-2 text-xs font-semibold" value="' + ui.esc(sheet.homeRun.name || 'Main Stage Rack') + '" placeholder="e.g. Main Stage Rack (DL32)" />' +
++                  '</div>' +
++                  '<div>' +
++                    '<label class="block text-[11px] font-semibold text-muted mb-1">Rack / Trunk Type</label>' +
++                    '<select id="ps-hr-type" class="field !py-1.5 !px-2 text-xs">' +
++                      HOME_RUN_TYPES.map((t) => '<option ' + (t === sheet.homeRun.type ? 'selected' : '') + '>' + t + '</option>').join('') +
++                    '</select>' +
++                  '</div>' +
++                  '<div class="grid grid-cols-2 gap-2">' +
++                    '<div><label class="block text-[11px] font-semibold text-muted mb-1">Inputs</label><input id="ps-hr-inputs" type="number" min="1" max="128" class="field !py-1.5 !px-1.5 text-xs font-mono font-bold text-center" value="' + (sheet.homeRun.inputChannels || 32) + '" /></div>' +
++                    '<div><label class="block text-[11px] font-semibold text-muted mb-1">Outputs</label><input id="ps-hr-outputs" type="number" min="0" max="64" class="field !py-1.5 !px-1.5 text-xs font-mono font-bold text-center" value="' + (sheet.homeRun.outputChannels || 16) + '" /></div>' +
++                  '</div>' +
++                  '<div class="grid grid-cols-2 gap-2">' +
++                    '<div><label class="block text-[11px] font-semibold text-muted mb-1">Prefix</label><input id="ps-hr-prefix" class="field !py-1.5 !px-1.5 text-xs font-mono uppercase font-bold text-center" value="' + ui.esc(sheet.homeRun.prefix || 'HR') + '" /></div>' +
++                    '<div><label class="block text-[11px] font-semibold text-muted mb-1">Location</label><select id="ps-hr-location" class="field !py-1.5 !px-1.5 text-xs">' + STAGE_LOCATIONS.map((loc) => '<option ' + (loc === sheet.homeRun.location ? 'selected' : '') + '>' + loc + '</option>').join('') + '</select></div>' +
++                  '</div>' +
++                '</div>' +
++              '</div>' +
+               '<div>' +
+                 '<label class="block text-xs font-semibold mb-1">Date</label>' +
+                 '<input id="ps-date" type="date" class="field font-mono" value="' + ui.esc(sheet.date || '') + '" />' +
+@@ -1276,60 +1308,12 @@
+ 
+           // STEP 3: SIGNAL FLOW & HOME RUN (MAIN I/O)
+           '<div id="ps-step-3" class="' + (currentStep === 3 ? 'grid gap-5' : 'hidden') + '">' +
+-            // Home Run Configuration Panel
+-            '<div class="panel p-4 rounded-xl border border-line bg-panel shadow-sm flex flex-col gap-3.5">' +
+-              '<div class="flex items-center justify-between pb-2.5 border-b border-line/60 flex-wrap gap-2">' +
+-                '<div class="flex items-center gap-2">' +
+-                  '<span class="text-accent">' + ui.icon('sliders', 'w-4 h-4') + '</span>' +
+-                  '<span class="font-bold text-ink uppercase tracking-wider text-xs">Home Run (Main I/O Trunk) Configuration</span>' +
+-                '</div>' +
+-                '<div class="flex items-center gap-2">' +
+-                  '<span class="text-[11px] text-muted">Load Rack Preset:</span>' +
+-                  '<select id="ps-hr-preset-select" class="field !py-1 !px-2 text-xs bg-panel2 font-semibold">' +
+-                    '<option value="">Select standard rack\u2026</option>' +
+-                    HOME_RUN_PRESETS.map((p, idx) => '<option value="' + idx + '">' + p.label + '</option>').join('') +
+-                  '</select>' +
+-                '</div>' +
+-              '</div>' +
+-
+-              '<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">' +
+-                '<div>' +
+-                  '<label class="block text-[11px] font-semibold text-muted mb-1">Home Run Name</label>' +
+-                  '<input id="ps-hr-name" class="field !py-1.5 !px-2 text-xs font-semibold" value="' + ui.esc(sheet.homeRun.name || 'Main Stage Rack') + '" placeholder="e.g. Main Stage Rack (DL32)" />' +
+-                '</div>' +
+-                '<div>' +
+-                  '<label class="block text-[11px] font-semibold text-muted mb-1">Rack / Trunk Type</label>' +
+-                  '<select id="ps-hr-type" class="field !py-1.5 !px-2 text-xs">' +
+-                    HOME_RUN_TYPES.map((t) => '<option ' + (t === sheet.homeRun.type ? 'selected' : '') + '>' + t + '</option>').join('') +
+-                  '</select>' +
+-                '</div>' +
+-                '<div>' +
+-                  '<label class="block text-[11px] font-semibold text-muted mb-1">Physical Location</label>' +
+-                  '<select id="ps-hr-location" class="field !py-1.5 !px-2 text-xs">' +
+-                    STAGE_LOCATIONS.map((loc) => '<option ' + (loc === sheet.homeRun.location ? 'selected' : '') + '>' + loc + '</option>').join('') +
+-                  '</select>' +
+-                '</div>' +
+-                '<div class="grid grid-cols-3 gap-2">' +
+-                  '<div>' +
+-                    '<label class="block text-[11px] font-semibold text-muted mb-1">Inputs</label>' +
+-                    '<input id="ps-hr-inputs" type="number" min="1" max="128" class="field !py-1.5 !px-1.5 text-xs font-mono font-bold text-center" value="' + (sheet.homeRun.inputChannels || 32) + '" />' +
+-                  '</div>' +
+-                  '<div>' +
+-                    '<label class="block text-[11px] font-semibold text-muted mb-1">Outputs</label>' +
+-                    '<input id="ps-hr-outputs" type="number" min="0" max="64" class="field !py-1.5 !px-1.5 text-xs font-mono font-bold text-center" value="' + (sheet.homeRun.outputChannels || 16) + '" />' +
+-                  '</div>' +
+-                  '<div>' +
+-                    '<label class="block text-[11px] font-semibold text-muted mb-1">Prefix</label>' +
+-                    '<input id="ps-hr-prefix" class="field !py-1.5 !px-1.5 text-xs font-mono uppercase font-bold text-center" value="' + ui.esc(sheet.homeRun.prefix || 'HR') + '" />' +
+-                  '</div>' +
+-                '</div>' +
+-              '</div>' +
+-            '</div>' +
+-
+             // Health & Stats Bar
+             '<div id="ps-hr-health-bar" class="grid grid-cols-2 sm:grid-cols-4 gap-3"></div>' +
+ 
+             // Action Bar & View Filter
+-            '<div class="flex items-center justify-between flex-wrap gap-2 p-2 rounded-xl bg-panel2/60 border border-line">' +
++            '<div class="flex items-center justify-between flex-wrap gap-2 p-2 rounded-xl bg-panel border border-line">' +
+               '<div class="flex items-center gap-1.5 flex-wrap">' +
+                 '<button type="button" data-sf-filter="all" class="px-2.5 py-1 rounded-lg text-xs font-semibold border ' + (signalFlowFilter === 'all' ? 'bg-accent text-accent-ink border-accent' : 'bg-panel border-line text-muted hover:text-ink') + '">All Channels</button>' +
+                 '<button type="button" data-sf-filter="patched" class="px-2.5 py-1 rounded-lg text-xs font-semibold border ' + (signalFlowFilter === 'patched' ? 'bg-accent text-accent-ink border-accent' : 'bg-panel border-line text-muted hover:text-ink') + '">Patched</button>' +

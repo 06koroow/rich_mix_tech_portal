@@ -1,0 +1,208 @@
+--- js/views/venues.js
++++ js/views/venues.js
+@@ -4,7 +4,7 @@
+ (function () {
+   const ui = RMTP.ui, store = RMTP.store;
+-  let m = { root: null, activeSpace: null, venueData: null };
++  let m = { root: null, activeSpace: null, venueData: null, invSearch: '', invSelected: new Set() };
+ 
+   function loadVenueData() {
+@@ -94,6 +94,29 @@
+               '</div>' +
+             '</div>' +
+ 
++            '<div class="grid gap-4">' +
++              '<h3 class="text-xs font-bold uppercase tracking-wider text-muted border-b border-line pb-2">Venue Inventory (Live)</h3>' +
++              '<div class="flex items-center justify-between gap-2">' +
++                '<input type="text" id="v-inv-search" class="field w-64" placeholder="Search inventory..." value="' + ui.esc(m.invSearch) + '">' +
++                '<div class="flex gap-2">' +
++                  '<label class="btn btn-ghost text-xs border border-line shadow-xs cursor-pointer">' +
++                    ui.icon('upload', 'w-3 h-3 mr-1') + ' Import CSV' +
++                    '<input type="file" id="v-inv-csv" accept=".csv" class="hidden">' +
++                  '</label>' +
++                  '<button type="button" id="btn-add-inv" class="btn btn-ghost text-xs border border-line shadow-xs">' + ui.icon('plus', 'w-3 h-3 mr-1') + 'Add Item</button>' +
++                  '<button type="button" id="btn-del-inv" class="btn btn-ghost text-danger text-xs border border-line shadow-xs ' + (m.invSelected.size > 0 ? '' : 'hidden') + '">' + ui.icon('trash', 'w-3 h-3 mr-1') + 'Delete Selected</button>' +
++                '</div>' +
++              '</div>' +
++              '<div class="overflow-x-auto overflow-y-auto rounded-lg border border-line max-h-64">' +
++                '<table class="w-full text-left text-xs relative">' +
++                  '<thead class="bg-panel2/90 backdrop-blur border-b border-line uppercase text-[10px] text-muted sticky top-0 z-10">' +
++                    '<tr><th class="p-2 w-8 text-center"><input type="checkbox" id="v-inv-sel-all"></th><th class="p-2">Name</th><th class="p-2">Category</th><th class="p-2">Condition</th><th class="p-2">Tag/Barcode</th><th class="p-2">Qty</th></tr>' +
++                  '</thead>' +
++                  '<tbody id="v-inv-tbody" class="divide-y divide-line/40"></tbody>' +
++                '</table>' +
++              '</div>' +
++            '</div>' +
++
+           '</div>' +
+         '</div>' +
+       '</div>';
+ 
+     attachEvents();
++    renderInventory();
+   }
+@@ -102,6 +125,74 @@
+     m.root.querySelectorAll('[data-space]').forEach(btn => {
+       btn.addEventListener('click', () => {
+         m.activeSpace = btn.getAttribute('data-space');
++        m.invSelected.clear();
++        m.invSearch = '';
+         loadVenueData();
+         render();
+@@ -165,6 +256,92 @@
+       saveBtn.addEventListener('click', saveVenueData);
+     }
++
++    const invSearch = m.root.querySelector('#v-inv-search');
++    if (invSearch) {
++      invSearch.addEventListener('input', () => {
++        m.invSearch = invSearch.value;
++        renderInventory();
++      });
++    }
++
++    const btnAddInv = m.root.querySelector('#btn-add-inv');
++    if (btnAddInv) {
++      btnAddInv.addEventListener('click', () => {
++        const item = { id: store.uid('inv'), name: 'New Item', category: 'General', condition: 'Good', tag: '', qty: 1, location: m.activeSpace, status: 'in' };
++        store.upsert('inventory', item);
++        renderInventory();
++      });
++    }
++
++    const btnDelInv = m.root.querySelector('#btn-del-inv');
++    if (btnDelInv) {
++      btnDelInv.addEventListener('click', () => {
++        if (confirm('Delete ' + m.invSelected.size + ' item(s)?')) {
++          m.invSelected.forEach(id => store.remove('inventory', id));
++          m.invSelected.clear();
++          renderInventory();
++          updateInvSelectionUI();
++        }
++      });
++    }
++
++    const selAll = m.root.querySelector('#v-inv-sel-all');
++    if (selAll) {
++      selAll.addEventListener('change', () => {
++        const tbody = m.root.querySelector('#v-inv-tbody');
++        const chks = tbody.querySelectorAll('.v-inv-chk');
++        m.invSelected.clear();
++        if (selAll.checked) {
++          chks.forEach(chk => {
++            chk.checked = true;
++            m.invSelected.add(chk.getAttribute('data-id'));
++          });
++        } else {
++          chks.forEach(chk => chk.checked = false);
++        }
++        renderInventory();
++        updateInvSelectionUI();
++      });
++    }
++
++    const csvInput = m.root.querySelector('#v-inv-csv');
++    if (csvInput) {
++      csvInput.addEventListener('change', (e) => {
++        const file = e.target.files[0];
++        if (!file) return;
++        const reader = new FileReader();
++        reader.onload = (ev) => {
++          const text = ev.target.result;
++          const lines = text.split('\n').map(l => l.trim()).filter(l => l);
++          if (lines.length < 2) return ui.toast('CSV must have a header row and at least one item', 'danger');
++          
++          const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
++          let count = 0;
++          for (let i = 1; i < lines.length; i++) {
++            const parts = lines[i].split(',').map(p => p.trim());
++            const item = { id: store.uid('inv'), location: m.activeSpace, status: 'in', qty: 1 };
++            headers.forEach((h, idx) => {
++              if (h === 'name') item.name = parts[idx] || 'Unknown';
++              if (h === 'category') item.category = parts[idx] || 'General';
++              if (h === 'condition') item.condition = parts[idx] || 'Good';
++              if (h === 'tag' || h === 'barcode') item.tag = parts[idx] || '';
++              if (h === 'qty' || h === 'quantity') item.qty = parseInt(parts[idx], 10) || 1;
++            });
++            if (item.name) {
++              store.upsert('inventory', item);
++              count++;
++            }
++          }
++          ui.toast('Imported ' + count + ' items from CSV', 'ok');
++          csvInput.value = '';
++          renderInventory();
++        };
++        reader.readAsText(file);
++      });
++    }
+   }
++
++  function updateInvSelectionUI() {
++    const delBtn = m.root.querySelector('#btn-del-inv');
++    if (delBtn) {
++      if (m.invSelected.size > 0) delBtn.classList.remove('hidden');
++      else delBtn.classList.add('hidden');
++    }
++  }
++
++  function renderInventory() {
++    const tbody = m.root.querySelector('#v-inv-tbody');
++    if (!tbody) return;
++
++    let items = store.all('inventory').filter(it => it.location === m.activeSpace);
++    
++    if (m.invSearch) {
++      const q = m.invSearch.toLowerCase();
++      items = items.filter(it => 
++        (it.name || '').toLowerCase().includes(q) || 
++        (it.category || '').toLowerCase().includes(q) ||
++        (it.tag || '').toLowerCase().includes(q)
++      );
++    }
++
++    if (items.length === 0) {
++      tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-muted italic">No inventory found for this venue.</td></tr>';
++      return;
++    }
++
++    tbody.innerHTML = items.map(it => {
++      const sel = m.invSelected.has(it.id);
++      return '<tr class="hover:bg-panel2/30 ' + (sel ? 'bg-primary/5' : '') + '">' +
++        '<td class="p-2 text-center"><input type="checkbox" class="v-inv-chk" data-id="' + it.id + '" ' + (sel ? 'checked' : '') + '></td>' +
++        '<td class="p-2"><input type="text" class="field !py-1 !px-1.5 w-full bg-transparent border-transparent hover:border-line focus:bg-panel" value="' + ui.esc(it.name) + '" data-inv-field="name" data-inv-id="' + it.id + '"></td>' +
++        '<td class="p-2"><input type="text" class="field !py-1 !px-1.5 w-24 bg-transparent border-transparent hover:border-line focus:bg-panel" value="' + ui.esc(it.category) + '" data-inv-field="category" data-inv-id="' + it.id + '" placeholder="Audio, Light..."></td>' +
++        '<td class="p-2"><select class="field !py-1 !px-1.5 w-24 bg-transparent border-transparent hover:border-line focus:bg-panel" data-inv-field="condition" data-inv-id="' + it.id + '">' +
++          ['Excellent', 'Good', 'Fair', 'Poor', 'Damaged', 'Out of service'].map(c => 
++            '<option value="' + c + '" ' + (it.condition === c ? 'selected' : '') + '>' + c + '</option>'
++          ).join('') +
++        '</select></td>' +
++        '<td class="p-2"><input type="text" class="field !py-1 !px-1.5 w-24 bg-transparent border-transparent hover:border-line focus:bg-panel" value="' + ui.esc(it.tag) + '" data-inv-field="tag" data-inv-id="' + it.id + '"></td>' +
++        '<td class="p-2"><input type="number" class="field !py-1 !px-1.5 w-16 bg-transparent border-transparent hover:border-line focus:bg-panel" value="' + (it.qty || 1) + '" data-inv-field="qty" data-inv-id="' + it.id + '"></td>' +
++      '</tr>';
++    }).join('');
++
++    tbody.querySelectorAll('[data-inv-field]').forEach(el => {
++      el.addEventListener('change', () => {
++        const id = el.getAttribute('data-inv-id');
++        const field = el.getAttribute('data-inv-field');
++        const val = el.type === 'number' ? parseInt(el.value, 10) || 1 : el.value;
++        const item = store.find('inventory', id);
++        if (item) {
++          item[field] = val;
++          store.upsert('inventory', item);
++        }
++      });
++    });
++
++    tbody.querySelectorAll('.v-inv-chk').forEach(chk => {
++      chk.addEventListener('change', () => {
++        const id = chk.getAttribute('data-id');
++        if (chk.checked) m.invSelected.add(id);
++        else m.invSelected.delete(id);
++        updateInvSelectionUI();
++      });
++    });
++  }
+ 
+   RMTP.views.venues = function(el) {

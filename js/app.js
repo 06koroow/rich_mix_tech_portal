@@ -156,7 +156,8 @@
   // Seed first-run data, establish identity, draw chips, then route.
   (async function boot() {
     const sbOn = RMTP.supabase && RMTP.supabase.isConfigured();
-    const spOn = !sbOn && RMTP.graph && RMTP.graph.isConfigured();
+    // (SharePoint/Graph backend disabled — using Supabase backend)
+    // const spOn = !sbOn && RMTP.graph && RMTP.graph.isConfigured();
 
     if (sbOn) {
       try {
@@ -175,6 +176,7 @@
         showBackendError(e && e.message);
         return;
       }
+    /*
     } else if (spOn) {
       try {
         await RMTP.graph.init();
@@ -190,6 +192,7 @@
         showBackendError(e && e.message);
         return;
       }
+    */
     } else {
       RMTP.store.init();
       RMTP.auth.ensureSession();                // locked login if nobody is signed in

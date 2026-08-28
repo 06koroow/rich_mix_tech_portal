@@ -50,6 +50,19 @@
       m.activeSpace = spaces[0];
       loadVenueData();
     }
+    
+    if (spaces.length === 0) {
+      m.root.innerHTML = '<div class="flex h-[calc(100vh-100px)] border border-line rounded-xl bg-panel overflow-hidden shadow-sm">' +
+        '<div class="w-64 border-r border-line bg-panel2/30 flex flex-col">' +
+          '<div class="p-3 border-b border-line"><h2 class="font-display font-semibold text-sm">Venues & Spaces</h2></div>' +
+          '<div class="flex-1 p-4 text-sm text-muted italic">No spaces configured.</div>' +
+          '<div class="p-3 border-t border-line"><button id="btn-add-space" class="btn btn-ghost w-full border border-dashed border-line text-xs flex items-center justify-center gap-1.5">' + ui.icon('plus', 'w-3 h-3') + ' Add Space</button></div>' +
+        '</div>' +
+        '<div class="flex-1 flex items-center justify-center text-muted italic">Please add a space to continue.</div>' +
+      '</div>';
+      attachEvents();
+      return;
+    }
 
     // Backward compatibility for newly added fields
     if (!m.venueData.audio.mixingDeskProtocol) m.venueData.audio.mixingDeskProtocol = 'Dante';
@@ -79,6 +92,7 @@
               '</button>';
             }).join('') +
           '</div>' +
+          '<div class="p-3 border-t border-line"><button id="btn-add-space" class="btn btn-ghost w-full border border-dashed border-line text-xs flex items-center justify-center gap-1.5">' + ui.icon('plus', 'w-3 h-3') + ' Add Space</button></div>' +
         '</div>' +
 
         // Right Main Canvas: Configuration
@@ -92,6 +106,8 @@
               '<button class="btn btn-ghost border border-line btn-sm flex items-center gap-1.5 shadow-sm" onclick="alert(\'Printing Venue Specs to PDF...\')">' +
                 ui.icon('printer', 'w-4 h-4') + ' Print Tech Spec' +
               '</button>' +
+              (RMTP.auth.current() && RMTP.auth.current().admin && m.activeSpace ? 
+              '<button id="btn-delete-space" class="btn btn-danger btn-sm flex items-center gap-1.5 shadow-sm" title="Delete Space">' + ui.icon('trash', 'w-4 h-4') + ' Delete Space</button>' : '') +
             '</div>' +
           '</div>' +
           '<div class="flex-1 overflow-y-auto p-6 space-y-8" id="venue-config-forms">' +
@@ -228,7 +244,8 @@
       });
     };
 
-    bindInput('#v-capacity', m.venueData, 'capacity');
+    if (m.venueData) {
+      bindInput('#v-capacity', m.venueData, 'capacity');
     bindInput('#v-dims', m.venueData, 'stageDimensions');
     bindInput('#v-inv', m.venueData, 'inventory');
     bindInput('#v-audio-in', m.venueData.audio, 'inputChannels', true);
@@ -290,8 +307,54 @@
         render();
       });
     });
+    }
+
+
+    const btnAddSpace = m.root.querySelector('#btn-add-space');
+    if (btnAddSpace) {
+      btnAddSpace.addEventListener('click', () => {
+        const name = prompt('Enter name for the new space:');
+        if (name && name.trim()) {
+          const newName = name.trim();
+          if (RMTP.SPACES.indexOf(newName) === -1) {
+            RMTP.SPACES.push(newName);
+            RMTP.SPACES.sort();
+            RMTP.LOCATIONS = RMTP.SPACES.concat(RMTP.STORES || []);
+            m.activeSpace = newName;
+            loadVenueData(); // creates the default store entry
+            store.upsert('venues', m.venueData);
+            ui.toast('Space added: ' + newName, 'ok');
+            render();
+          } else {
+            ui.toast('Space already exists', 'danger');
+          }
+        }
+      });
+    }
+
+    const btnDeleteSpace = m.root.querySelector('#btn-delete-space');
+    if (btnDeleteSpace) {
+      btnDeleteSpace.addEventListener('click', () => {
+        if (!m.activeSpace) return;
+        const confirmName = prompt('WARNING: You are about to delete the space "' + m.activeSpace + '".\nThis cannot be undone. Type the name of the space exactly to confirm:');
+        if (confirmName === m.activeSpace) {
+          store.remove('venues', m.activeSpace);
+          const idx = RMTP.SPACES.indexOf(m.activeSpace);
+          if (idx > -1) {
+            RMTP.SPACES.splice(idx, 1);
+            RMTP.LOCATIONS = RMTP.SPACES.concat(RMTP.STORES || []);
+          }
+          ui.toast('Space deleted: ' + m.activeSpace, 'ok');
+          m.activeSpace = null;
+          render();
+        } else if (confirmName !== null) {
+          ui.toast('Deletion cancelled: Space name did not match', 'danger');
+        }
+      });
+    }
 
     const saveBtn = m.root.querySelector('#btn-save-venue');
+
     if (saveBtn) {
       saveBtn.addEventListener('click', saveVenueData);
     }

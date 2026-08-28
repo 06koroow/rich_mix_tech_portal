@@ -197,6 +197,12 @@
       RMTP.store.init();
       RMTP.auth.ensureSession();                // locked login if nobody is signed in
     }
+    // Sync RMTP.SPACES with database venues
+    const dbVenues = RMTP.store.all('venues');
+    if (dbVenues && dbVenues.length) {
+      RMTP.SPACES = dbVenues.map(v => v.name).sort();
+      RMTP.LOCATIONS = RMTP.SPACES.concat(RMTP.STORES);
+    }
     refreshIdentity();
     RMTP.router.start();
   })();

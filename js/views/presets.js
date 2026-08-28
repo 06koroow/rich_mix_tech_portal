@@ -5743,17 +5743,8 @@ RMTP.views.presets = function (contentEl) {
             dmxPatch.id = saved.id;
           }
 
-          // If linked to an event, also update advancing event dmx_fixtures
-          if (dmxPatch.eventId && store) {
-            const ev = store.find('advancing', dmxPatch.eventId);
-            if (ev) {
-              const updatedEv = Object.assign({}, ev, {
-                dmx_fixtures: dmxPatch.fixtures || [],
-                updatedAt: Date.now()
-              });
-              store.upsert('advancing', updatedEv);
-            }
-          }
+          // The dmx_patches collection handles persistence independently
+          // No need to duplicate this data into the advancing table.
 
           saveDmxPatchState();
           ui.toast('DMX Lighting Patch saved to backend database' + (dmxPatch.eventId ? ' & linked event' : '') + '!', 'ok');

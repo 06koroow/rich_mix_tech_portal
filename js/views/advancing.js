@@ -4477,12 +4477,6 @@ RMTP.views.advancing = function (el, params, query) {
         dcp_test_datetime: dcpTestDatetime,
 
         // Lighting & Production Package
-        lighting_notes: lightingNotes,
-        floor_package: floorPackage,
-        floor_tags: floorTags,
-        specials: specialsObj,
-        special_notes: specialNotes,
-        dmx_patch: ev.dmx_patch || ev.dmxPatch || [],
         production_package: {
           lighting_notes: lightingNotes,
           floor_package: floorPackage,

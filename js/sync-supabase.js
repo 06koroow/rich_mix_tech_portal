@@ -151,19 +151,8 @@ RMTP.syncSb = (function () {
         r.parent_event_id = r.parent_event_id || r.parentEventId || prev.parent_event_id || prev.parentEventId || null;
         r.dcp_test_event_id = r.dcp_test_event_id || r.dcpTestEventId || prev.dcp_test_event_id || prev.dcpTestEventId || null;
         r.linked_maintenance_ids = Array.isArray(r.linked_maintenance_ids) ? r.linked_maintenance_ids : (Array.isArray(r.linkedMaintenanceIds) ? r.linkedMaintenanceIds : (Array.isArray(prev.linked_maintenance_ids) ? prev.linked_maintenance_ids : []));
-        r.dmx_fixtures = Array.isArray(r.dmx_fixtures) ? r.dmx_fixtures : (Array.isArray(r.dmxFixtures) ? r.dmxFixtures : (Array.isArray(prev.dmx_fixtures) ? prev.dmx_fixtures : []));
-        r.lighting_notes = r.lighting_notes || r.lightingNotes || prev.lighting_notes || prev.lightingNotes || '';
-        r.floor_package = r.floor_package || r.floorPackage || prev.floor_package || prev.floorPackage || '';
-        r.floor_tags = Array.isArray(r.floor_tags) ? r.floor_tags : (Array.isArray(r.floorTags) ? r.floorTags : (Array.isArray(prev.floor_tags) ? prev.floor_tags : []));
-        r.specials = r.specials || prev.specials || {};
-        r.special_notes = r.special_notes || r.specialNotes || prev.special_notes || prev.specialNotes || '';
-        r.production_package = r.production_package || prev.production_package || {
-          lighting_notes: r.lighting_notes,
-          floor_package: r.floor_package,
-          floor_tags: r.floor_tags,
-          specials: r.specials,
-          special_notes: r.special_notes,
-        };
+        r.production_package = r.production_package || prev.production_package || {};
+        r.technicians = Array.isArray(r.technicians) ? r.technicians : (Array.isArray(prev.technicians) ? prev.technicians : []);
         r.clientContact = r.clientContact || r.clientcontact || prev.clientContact || '';
         r.guestEngineer = r.guestEngineer !== undefined ? r.guestEngineer : (prev.guestEngineer !== undefined ? prev.guestEngineer : false);
         r.techInfo = r.techInfo || r.techinfo || prev.techInfo || '';
@@ -174,7 +163,7 @@ RMTP.syncSb = (function () {
       if (coll === 'reports') {
         r.eventId = r.eventId || r.eventid || prev.eventId || '';
         r.shiftDate = r.shiftDate || r.shiftdate || prev.shiftDate || '';
-        r.crew = r.crew || prev.crew || '';
+
         r.summary = r.summary || prev.summary || '';
         r.issues = r.issues || prev.issues || '';
         r.followUp = r.followUp || r.followup || prev.followUp || '';
@@ -235,19 +224,7 @@ RMTP.syncSb = (function () {
         parent_event_id: r.parent_event_id || r.parentEventId || null,
         dcp_test_event_id: r.dcp_test_event_id || r.dcpTestEventId || null,
         linked_maintenance_ids: Array.isArray(r.linked_maintenance_ids) ? r.linked_maintenance_ids : (Array.isArray(r.linkedMaintenanceIds) ? r.linkedMaintenanceIds : []),
-        dmx_fixtures: Array.isArray(r.dmx_fixtures) ? r.dmx_fixtures : (Array.isArray(r.dmxFixtures) ? r.dmxFixtures : []),
-        lighting_notes: r.lighting_notes || r.lightingNotes || '',
-        floor_package: r.floor_package || r.floorPackage || '',
-        floor_tags: Array.isArray(r.floor_tags) ? r.floor_tags : (Array.isArray(r.floorTags) ? r.floorTags : []),
-        specials: r.specials || {},
-        special_notes: r.special_notes || r.specialNotes || '',
-        production_package: r.production_package || {
-          lighting_notes: r.lighting_notes || r.lightingNotes || '',
-          floor_package: r.floor_package || r.floorPackage || '',
-          floor_tags: Array.isArray(r.floor_tags) ? r.floor_tags : (Array.isArray(r.floorTags) ? r.floorTags : []),
-          specials: r.specials || {},
-          special_notes: r.special_notes || r.specialNotes || '',
-        },
+        production_package: r.production_package || {},
         technicians: Array.isArray(r.technicians) ? r.technicians : [],
         clientContact: r.clientContact || '',
         guestEngineer: !!r.guestEngineer,

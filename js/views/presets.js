@@ -10,6 +10,26 @@
    4. Generate live Changeover / Repatch checklists for show technicians.
    ============================================================ */
 RMTP.presets = (function () {
+  function getInventoryMicSuggestions() {
+    const all = RMTP.store.all('inventory') || [];
+    const mics = all.filter(r => r.category === 'Sound - Microphones' || r.category === 'Sound - DI/Stands');
+    const names = new Set(mics.map(m => (m.name || '').trim()).filter(Boolean));
+    const sorted = Array.from(names).sort((a, b) => a.localeCompare(b));
+    return sorted.length ? sorted : [
+      'Shure Beta 52', 'Shure SM57', 'Shure SM58', 'Shure Beta 58', 'Shure Beta 91A', 'Sennheiser e604', 'Sennheiser e906',
+      'AKG C414', 'AKG D112', 'Radial ProDI', 'Radial ProD2', 'BSS AR-133', 'DPA 4099', 'Neumann KM184', 'Wireless Handheld'
+    ];
+  }
+  function injectMicDatalist() {
+    let dl = document.getElementById('inv-mic-suggestions');
+    if (!dl) {
+      dl = document.createElement('datalist');
+      dl.id = 'inv-mic-suggestions';
+      document.body.appendChild(dl);
+    }
+    dl.innerHTML = getInventoryMicSuggestions().map(p => '<option value="' + RMTP.ui.esc(p) + '"></option>').join('');
+  }
+
   const store = RMTP.store;
   const ui = RMTP.ui;
 
@@ -803,7 +823,7 @@ RMTP.presets = (function () {
   }
 
   /* ---- Standalone Channel Preset Editor Modal ---- */
-  function openEditorModal(presetOrNull, defaultType, onSaved) {
+  function openEditorModal(presetOrNull, defaultType, onSaved) { injectMicDatalist();
     const isEdit = !!(presetOrNull && presetOrNull.id);
     const type = (presetOrNull && presetOrNull.type) || defaultType || 'input';
     const isInput = type === 'input';
@@ -848,7 +868,7 @@ RMTP.presets = (function () {
               '</div>' +
               '<div>' +
                 '<label class="block text-[10px] text-muted mb-0.5 font-medium">Mic / DI Model</label>' +
-                '<input data-p-inp-mic="' + idx + '" class="field !py-1 !px-2 text-xs" value="' + ui.esc(ch.mic || '') + '" placeholder="e.g. Beta 58, ProDI" />' +
+                '<input list="inv-mic-suggestions" data-p-inp-mic="' + idx + '" class="field !py-1 !px-2 text-xs" value="' + ui.esc(ch.mic || '') + '" placeholder="e.g. Beta 58, ProDI" />' +
               '</div>' +
               '<div>' +
                 '<label class="block text-[10px] text-muted mb-0.5 font-medium">Stand</label>' +
@@ -1173,7 +1193,7 @@ RMTP.presets = (function () {
   }
 
   /* ---- Full Patch Sheet Builder & Editor Modal with Signal Flow ---- */
-  function openPatchSheetModal(sheetOrNull, onSaved, initialStep) {
+  function openPatchSheetModal(sheetOrNull, onSaved, initialStep) { injectMicDatalist();
     const isEdit = !!(sheetOrNull && sheetOrNull.id);
     let sheet = sheetOrNull ? JSON.parse(JSON.stringify(sheetOrNull)) : {
       id: store.uid('ps'),
@@ -1928,7 +1948,7 @@ RMTP.presets = (function () {
                         '</div>' +
                         '<div>' +
                           '<label class="block text-[10px] uppercase font-bold text-muted mb-0.5">Mic / DI Model</label>' +
-                          '<input data-ch-mic="' + sbIdx + '-' + chIdx + '" class="field !py-1 !px-2 text-xs bg-panel w-full" value="' + ui.esc(ch.mic || '') + '" placeholder="e.g. SM58, B91A, Radial DI" />' +
+                          '<input list="inv-mic-suggestions" data-ch-mic="' + sbIdx + '-' + chIdx + '" class="field !py-1 !px-2 text-xs bg-panel w-full" value="' + ui.esc(ch.mic || '') + '" placeholder="e.g. SM58, B91A, Radial DI" />' +
                         '</div>' +
                       '</div>' +
 
@@ -2021,7 +2041,7 @@ RMTP.presets = (function () {
 
                             // Mic / DI
                             '<td class="py-2 px-2.5 align-middle">' +
-                              '<input data-ch-mic="' + sbIdx + '-' + chIdx + '" class="field !py-1 !px-2 text-xs bg-panel w-full" value="' + ui.esc(ch.mic || '') + '" placeholder="e.g. SM58, B91A, Radial DI" />' +
+                              '<input list="inv-mic-suggestions" data-ch-mic="' + sbIdx + '-' + chIdx + '" class="field !py-1 !px-2 text-xs bg-panel w-full" value="' + ui.esc(ch.mic || '') + '" placeholder="e.g. SM58, B91A, Radial DI" />' +
                             '</td>' +
 
                             // +48V Phantom
@@ -4409,7 +4429,7 @@ RMTP.views.presets = function (contentEl) {
                         '</div>' +
                         '<div>' +
                           '<label class="block text-[10px] uppercase font-bold text-muted mb-0.5">Mic / DI Model</label>' +
-                          '<input data-ts-inp-mic="' + idx + '" class="field !py-1 !px-2 text-xs w-full" value="' + ui.esc(ch.mic || '') + '" placeholder="e.g. Beta 52, SM58, Active DI" />' +
+                          '<input list="inv-mic-suggestions" data-ts-inp-mic="' + idx + '" class="field !py-1 !px-2 text-xs w-full" value="' + ui.esc(ch.mic || '') + '" placeholder="e.g. Beta 52, SM58, Active DI" />' +
                         '</div>' +
                       '</div>' +
                       '<div class="grid grid-cols-2 gap-2">' +
@@ -4463,7 +4483,7 @@ RMTP.views.presets = function (contentEl) {
                             '<input data-ts-inp-inst="' + idx + '" class="field !py-1 !px-2 text-xs w-full font-medium" value="' + ui.esc(ch.instrument || '') + '" placeholder="e.g. Kick Drum, Vocal" />' +
                           '</td>' +
                           '<td class="p-1.5">' +
-                            '<input data-ts-inp-mic="' + idx + '" class="field !py-1 !px-2 text-xs w-full" value="' + ui.esc(ch.mic || '') + '" placeholder="e.g. Beta 52, SM58, Active DI" />' +
+                            '<input list="inv-mic-suggestions" data-ts-inp-mic="' + idx + '" class="field !py-1 !px-2 text-xs w-full" value="' + ui.esc(ch.mic || '') + '" placeholder="e.g. Beta 52, SM58, Active DI" />' +
                           '</td>' +
                           '<td class="p-1.5">' +
                             '<select data-ts-inp-stand="' + idx + '" class="field !py-1 !px-1.5 text-xs w-full">' +

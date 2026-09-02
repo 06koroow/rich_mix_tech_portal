@@ -946,16 +946,17 @@ RMTP.views.advancing = function (el, params, query) {
               const hasOutputs = !!(Array.isArray(item.channelOutputs) && item.channelOutputs.length);
               const hasChannels = hasInputs || hasOutputs;
 
-              let techReqBadge = '';
-              if (item.techReqType === 'text' || hasNotes) techReqBadge = '<span class="text-[10px] px-1.5 py-0.5 rounded bg-panel border border-accent/40 text-accent font-semibold">Rich Text</span>';
-              else if (item.techReqType === 'file' || hasFile) techReqBadge = '<span class="text-[10px] px-1.5 py-0.5 rounded bg-panel border border-info/40 text-info font-semibold">PDF Rider</span>';
-              else if (item.techReqType === 'channels' || hasChannels) {
+              let badgeParts = [];
+              if (hasNotes) badgeParts.push('<span class="text-[10px] px-1.5 py-0.5 rounded bg-panel border border-accent/40 text-accent font-semibold">Rich Text</span>');
+              if (hasFile) badgeParts.push('<span class="text-[10px] px-1.5 py-0.5 rounded bg-panel border border-info/40 text-info font-semibold">PDF Rider</span>');
+              if (hasChannels) {
                 const inCount = item.channelInputs ? item.channelInputs.length : 0;
                 const outCount = item.channelOutputs ? item.channelOutputs.length : 0;
-                techReqBadge = '<span class="text-[10px] px-1.5 py-0.5 rounded bg-panel border border-ok/40 text-ok font-semibold font-mono">' +
-                  (inCount ? inCount + ' In' : '') + (inCount && outCount ? ' \u00b7 ' : '') + (outCount ? outCount + ' Out' : (!inCount ? '0 Patch' : '')) +
-                '</span>';
+                badgeParts.push('<span class="text-[10px] px-1.5 py-0.5 rounded bg-panel border border-ok/40 text-ok font-semibold font-mono">' +
+                  (inCount ? inCount + ' In' : '') + (inCount && outCount ? ' · ' : '') + (outCount ? outCount + ' Out' : (!inCount ? '0 Patch' : '')) +
+                '</span>');
               }
+              let techReqBadge = badgeParts.join(' ');
 
               return (
                 '<div class="p-2.5 rounded-lg bg-panel border border-line flex flex-col gap-2 text-xs">' +
@@ -1523,19 +1524,22 @@ RMTP.views.advancing = function (el, params, query) {
           '</thead>' +
           '<tbody>' +
             scheduleItems.map((it) => {
-              let techReqDesc = '—';
+              let techReqParts = [];
               if (it.techNotes && it.techNotes.trim()) {
-                techReqDesc = '<span style="font-size:11px;color:#1e293b;"><strong>Notes:</strong> ' + ui.esc(it.techNotes) + '</span>';
-              } else if (it.techFile) {
-                techReqDesc = '<span style="font-size:11px;color:#0284c7;"><strong>Rider:</strong> ' + ui.esc(it.techFile.name) + ' (' + files.humanSize(it.techFile.size) + ')</span>';
-              } else if ((Array.isArray(it.channelInputs) && it.channelInputs.length) || (Array.isArray(it.channelOutputs) && it.channelOutputs.length)) {
+                techReqParts.push('<span style="font-size:11px;color:#1e293b;display:block;"><strong>Notes:</strong> ' + ui.esc(it.techNotes) + '</span>');
+              }
+              if (it.techFile) {
+                techReqParts.push('<span style="font-size:11px;color:#0284c7;display:block;"><strong>Rider:</strong> ' + ui.esc(it.techFile.name) + ' (' + files.humanSize(it.techFile.size) + ')</span>');
+              }
+              if ((Array.isArray(it.channelInputs) && it.channelInputs.length) || (Array.isArray(it.channelOutputs) && it.channelOutputs.length)) {
                 const inList = Array.isArray(it.channelInputs) ? it.channelInputs : [];
                 const outList = Array.isArray(it.channelOutputs) ? it.channelOutputs : [];
                 let parts = [];
                 if (inList.length) parts.push('<strong style="color:#059669;">' + inList.length + ' In:</strong> ' + ui.esc(inList.map((c) => (c.channel || '') + ':' + (c.instrument || 'In')).join(', ')));
                 if (outList.length) parts.push('<strong style="color:#0284c7;">' + outList.length + ' Out:</strong> ' + ui.esc(outList.map((o) => (o.num || '') + ':' + (o.name || o.dest || 'Mix')).join(', ')));
-                techReqDesc = '<div style="font-size:11px;display:flex;flex-direction:column;gap:2px;">' + parts.join('') + '</div>';
+                techReqParts.push('<div style="font-size:11px;display:flex;flex-direction:column;gap:2px;">' + parts.join('') + '</div>');
               }
+              let techReqDesc = techReqParts.length ? techReqParts.join('<div style="height:4px;"></div>') : '—';
               return (
                 '<tr style="border-bottom:1px solid #e2e8f0;">' +
                   '<td style="padding:6px 8px;font-weight:600;">' + ui.esc(it.label || it.type) + '</td>' +
@@ -2355,10 +2359,17 @@ RMTP.views.advancing = function (el, params, query) {
       'Overhead L', 'Overhead R', 'Bass DI', 'Bass Mic', 'Gtr 1', 'Gtr 2', 'Acoustic Gtr', 'Keys L', 'Keys R',
       'Lead Vox', 'BV 1', 'BV 2', 'Host Mic', 'DJ L', 'DJ R', 'Playback L', 'Playback R', 'Talkback'
     ];
-    const INPUT_MIC_PRESETS = [
-      'Shure Beta 52', 'Shure SM57', 'Shure SM58', 'Shure Beta 58', 'Shure Beta 91A', 'Sennheiser e604', 'Sennheiser e906',
-      'AKG C414', 'AKG D112', 'Radial ProDI', 'Radial ProD2', 'BSS AR-133', 'DPA 4099', 'Neumann KM184', 'Wireless Handheld'
-    ];
+    function getInventoryMicSuggestions() {
+      const all = RMTP.store.all('inventory') || [];
+      const mics = all.filter(r => r.category === 'Sound - Microphones' || r.category === 'Sound - DI/Stands');
+      const names = new Set(mics.map(m => m.name.trim()).filter(Boolean));
+      const sorted = Array.from(names).sort((a, b) => a.localeCompare(b));
+      return sorted.length ? sorted : [
+        'Shure Beta 52', 'Shure SM57', 'Shure SM58', 'Shure Beta 58', 'Shure Beta 91A', 'Sennheiser e604', 'Sennheiser e906',
+        'AKG C414', 'AKG D112', 'Radial ProDI', 'Radial ProD2', 'BSS AR-133', 'DPA 4099', 'Neumann KM184', 'Wireless Handheld'
+      ];
+    }
+    const INPUT_MIC_PRESETS = getInventoryMicSuggestions();
     const INPUT_STAND_PRESETS = ['Tall Boom', 'Short Boom', 'Straight Stand', 'Claw / Clip', 'N/A'];
     const INPUT_POSITIONS = ['Upstage Left', 'Upstage Centre', 'Upstage Right', 'Centre Stage', 'Downstage Left', 'Downstage Centre', 'Downstage Right'];
     const OUTPUT_TYPE_PRESETS = ['IEM', 'Wedge', 'Record Matrix', 'Stream Feed', 'Lobby / Foyer', 'Delay', 'Other'];

@@ -50,6 +50,19 @@ RMTP.views.inventory = function (el, params, query) {
   let selectedIds = new Set();
   let selectMode = false;
 
+  // --- Tracker Persistence Helpers ---
+  function takeTrackers(item, qtyToTake) {
+    if (!item.unitTrackers) RMTP.qr.ensureItemTrackers(item);
+    const trackers = item.unitTrackers || [];
+    const taken = trackers.slice(0, qtyToTake);
+    const remaining = trackers.slice(qtyToTake);
+    return { taken, remaining };
+  }
+  function mergeTrackers(targetItem, incomingTrackers) {
+    if (!targetItem.unitTrackers) RMTP.qr.ensureItemTrackers(targetItem);
+    return (targetItem.unitTrackers || []).concat(incomingTrackers || []);
+  }
+
   // Robust item lookup helper across tags, IDs, barcodes, refNumbers, unitTrackers, names
   function findItemsByQuery(tagOrId) {
     if (!tagOrId) return [];
@@ -726,9 +739,15 @@ RMTP.views.inventory = function (el, params, query) {
           const svc = grp.location === 'SERVICE' || grp.status === 'service' || grp.items.some(inService);
           const isSelected = grp.itemIds.some((id) => selectedIds.has(id));
           const locPill = RMTP.isSpace(grp.location) ? ui.pill(grp.location, 'var(--accent)') : '';
-          const tagChipsHtml = grp.tags.length
-            ? grp.tags.map((t) => '<span class="tabular text-xs text-accent font-mono inline-flex items-center px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 font-medium">' + ui.esc(t) + '</span>').join(' ')
-            : '';
+          let tagChipsHtml = '';
+          if (grp.tags.length) {
+            const previewTags = grp.tags.slice(0, 4);
+            const extraCount = grp.tags.length - 4;
+            tagChipsHtml = previewTags.map((t) => '<span class="tabular text-xs text-accent font-mono inline-flex items-center px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 font-medium">' + ui.esc(t) + '</span>').join(' ');
+            if (extraCount > 0) {
+              tagChipsHtml += ' <span class="tabular text-xs text-muted font-medium inline-flex items-center px-1.5 py-0.5 rounded bg-panel2 border border-line">[+' + extraCount + ' more]</span>';
+            }
+          }
 
           return '<div class="flex items-center gap-3 px-4 py-3 ' + (isSelected ? 'bg-panel2/60' : '') + '">' +
             (canMove && selectMode ? '<input type="checkbox" data-check-grp="' + grp.id + '" class="w-4 h-4 rounded border-line accent-[var(--accent)] shrink-0 cursor-pointer" ' + (isSelected ? 'checked' : '') + ' />' : '') +
@@ -875,23 +894,28 @@ RMTP.views.inventory = function (el, params, query) {
         '</div>'
       : '';
 
-    const unitsListBlock = matchingItems.length > 1
-      ? '<div class="mb-4">' +
-          '<p class="eyebrow mb-2">Tracked units in this group (' + matchingItems.length + ' entities \u00b7 ' + totalQty + ' total)</p>' +
-          '<div class="panel divide-y divide-line overflow-hidden max-h-40 overflow-y-auto">' +
-            matchingItems.map((it) =>
-              '<div class="px-3 py-2 text-xs flex items-center justify-between gap-2">' +
-                '<div class="flex items-center gap-2 min-w-0">' +
-                  '<span class="tabular text-accent font-mono font-medium px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20">#' + ui.esc(it.tag || 'No tag') + '</span>' +
-                  '<span class="truncate font-medium">' + ui.esc(it.name) + '</span>' +
+    const unitsListBlock = matchingItems.length > 0
+      ? '<div class="mb-5">' +
+          '<p class="eyebrow mb-3 flex items-center justify-between"><span>Tracked Units (' + matchingItems.length + ')</span></p>' +
+          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[40vh] overflow-y-auto pr-1">' +
+            matchingItems.map((it) => {
+              const qrPayload = (window.RMTP && RMTP.qr && RMTP.qr.encodeItem) ? RMTP.qr.encodeItem(it.tag || it.id) : (it.tag || it.id);
+              const qrSvg = (window.RMTP && RMTP.qr && RMTP.qr.svg) ? RMTP.qr.svg(qrPayload, { margin: 1 }) : '';
+              return '<div class="panel bg-panel p-3 flex gap-3 items-center">' +
+                '<div class="w-16 h-16 shrink-0 bg-white p-1 rounded border border-line flex items-center justify-center">' + qrSvg + '</div>' +
+                '<div class="min-w-0 flex-1">' +
+                  '<div class="flex items-center justify-between gap-2">' +
+                    '<span class="tabular text-xs text-accent font-mono inline-flex items-center px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 font-semibold">' + ui.esc(it.tag || 'No tag') + '</span>' +
+                    (canManage ? '<button data-sub-edit="' + it.id + '" class="btn btn-ghost !p-1 text-[11px]" title="Edit this unit">' + ui.icon('pen', 'w-3.5 h-3.5') + '</button>' : '') +
+                  '</div>' +
+                  '<div class="text-[11px] font-medium text-ink truncate mt-1">' + ui.esc(it.name) + '</div>' +
+                  '<div class="flex items-center gap-1.5 mt-1.5">' +
+                    ui.pill(it.status === 'out' ? 'Out' : 'In', it.status === 'out' ? 'var(--info)' : 'var(--accent)') +
+                    ui.pill(it.condition, condColour[it.condition] || 'var(--muted)') +
+                  '</div>' +
                 '</div>' +
-                '<div class="flex items-center gap-2 shrink-0">' +
-                  '<span class="tabular text-muted font-semibold">' + (it.qty || 1) + ' \u00d7</span>' +
-                  ui.pill(it.condition, condColour[it.condition] || 'var(--muted)') +
-                  (canManage ? '<button data-sub-edit="' + it.id + '" class="btn btn-ghost !p-1 text-[11px]" title="Edit this unit">' + ui.icon('pen', 'w-3.5 h-3.5') + '</button>' : '') +
-                '</div>' +
-              '</div>'
-            ).join('') +
+              '</div>';
+            }).join('') +
           '</div>' +
         '</div>'
       : '';
@@ -1066,6 +1090,14 @@ RMTP.views.inventory = function (el, params, query) {
       ui.toast('No item with tag or ID \u201c' + parsed.value + '\u201d', 'danger');
       return;
     }
+    if (parsed.unit) {
+      const exactMatch = lines.find(r => Array.isArray(r.unitTrackers) && r.unitTrackers.some(ut => ut.unit === parsed.unit));
+      if (exactMatch) {
+        openDetail(exactMatch);
+        return;
+      }
+    }
+    
     if (lines.length === 1) {
       openDetail(lines[0]);
       return;
@@ -1207,35 +1239,26 @@ RMTP.views.inventory = function (el, params, query) {
   async function signInGroup(items, after) {
     if (!items || !items.length) return;
     const first = items[0];
-    const totalQty = items.reduce((acc, it) => acc + (Math.max(1, Number(it.qty) || 1)), 0);
+    const totalQty = items.length;
     if (items.some(isFlagged) && !isAdmin) {
-      ui.toast('Only an admin can return reported kit to use \u2014 resolve it in Maintenance', 'danger');
+      ui.toast('Only an admin can return reported kit to use — resolve it in Maintenance', 'danger');
       if (after) after();
       return;
     }
-    const ok = await ui.confirm('Sign ' + (totalQty > 1 ? totalQty + ' \u00d7 ' : '') + '\u201c' + first.name + '\u201d back in' + (first.heldBy ? ' from ' + first.heldBy : '') + '?',
+    const ok = await ui.confirm('Sign ' + (totalQty > 1 ? totalQty + ' × ' : '') + '“' + first.name + '” back in' + (first.heldBy ? ' from ' + first.heldBy : '') + '?',
       { title: 'Sign back in', confirmLabel: 'Sign in' });
     if (!ok) { if (after) after(); return; }
 
     items.forEach((item) => {
       const fresh = store.find('inventory', item.id);
       if (!fresh) return;
-      const target = findMergeTarget(fresh.tag, fresh.location, fresh.condition, fresh.id);
-      if (target) {
-        store.upsert('inventory', Object.assign({}, target, {
-          qty: qtyOf(target) + qtyOf(fresh),
-          movements: (target.movements || []).concat({
-            from: fresh.location || '',
-            to: fresh.location || '',
-            at: new Date().toISOString(),
-            by: actor(),
-            note: 'Signed in ' + qtyOf(fresh)
-          })
-        }));
-        store.remove('inventory', fresh.id);
-      } else {
-        store.upsert('inventory', Object.assign({}, fresh, { status: 'in', heldBy: '', outAt: '' }));
-      }
+      const at = new Date().toISOString(), by = actor();
+      store.upsert('inventory', Object.assign({}, fresh, { 
+        status: 'in', 
+        heldBy: '', 
+        outAt: '',
+        movements: (fresh.movements || []).concat({ from: fresh.location || '', to: fresh.location || '', at, by, note: 'Signed in' })
+      }));
     });
 
     ui.toast(first.name + ' back in', 'ok');
@@ -1394,21 +1417,37 @@ RMTP.views.inventory = function (el, params, query) {
       if (existing && r.location && newLocation !== r.location) {
         movements.push({ from: r.location, to: newLocation, at: new Date().toISOString(), by: auth.displayName(auth.current()) || 'Unknown', note: 'Edited' });
       }
-      const record = Object.assign({}, r, {
-        id: r.id || store.uid('inv'),
-        tag: m.root.querySelector('#i-tag').value.trim(),
+      const isNew = !r.id;
+      const targetQty = Number(m.root.querySelector('#i-qty').value) || 1;
+      const baseTag = m.root.querySelector('#i-tag').value.trim();
+      const sharedData = {
         name: name,
         category: m.root.querySelector('#i-category').value,
         condition: m.root.querySelector('#i-condition').value,
         location: newLocation,
         homeLocation: m.root.querySelector('#i-home-location').value || newLocation,
-        qty: Number(m.root.querySelector('#i-qty').value) || 0,
         notes: m.root.querySelector('#i-notes').value.trim(),
         static: m.root.querySelector('#i-static').checked,
         status: r.status || 'in',
         movements: movements,
-      });
-      store.upsert('inventory', record);
+      };
+
+      if (isNew && targetQty > 1) {
+        for (let i = 1; i <= targetQty; i++) {
+          const suffix = '-' + String(i).padStart(2, '0');
+          store.upsert('inventory', Object.assign({}, r, sharedData, {
+            id: store.uid('inv'),
+            tag: baseTag ? baseTag + suffix : '',
+            qty: 1
+          }));
+        }
+      } else {
+        store.upsert('inventory', Object.assign({}, r, sharedData, {
+          id: r.id || store.uid('inv'),
+          tag: baseTag,
+          qty: isNew ? 1 : targetQty // Preserve existing qty if they didn't migrate
+        }));
+      }
       m.close(); ui.toast(existing ? 'Item updated' : 'Item added', 'ok'); render();
     });
   }

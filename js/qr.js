@@ -111,8 +111,11 @@ RMTP.qr = (function () {
     const { refNumber, qrCode, unitTrackers, unitTags } = generateTrackers(item);
     item.refNumber = item.refNumber || refNumber;
     item.qrCode = item.qrCode || qrCode;
-    item.unitTrackers = unitTrackers;
-    item.unitTags = unitTags;
+    const currentQty = Math.max(1, Number(item.qty) || 1);
+    if (!Array.isArray(item.unitTrackers) || item.unitTrackers.length !== currentQty) {
+      item.unitTrackers = unitTrackers;
+      item.unitTags = unitTags;
+    }
     return item;
   }
 

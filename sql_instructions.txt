@@ -1,10 +1,10 @@
-You can apply these schema migrations via the Supabase SQL editor to prune the redundant columns and centralize the data into their JSONB buckets and respective external tables.
-
-```sql
--- 1. Migrate legacy text 'crew' to jsonb 'technicians'
+-- 1. Migrate legacy 'crew' (JSONB) to jsonb 'technicians'
 UPDATE public.advancing 
-SET technicians = ('[{"userId":"","role":"' || crew || '"}]')::jsonb 
-WHERE crew IS NOT NULL AND crew != '' AND crew != '[]' AND crew != 'null' 
+SET technicians = jsonb_build_array(
+    jsonb_build_object('userId', '', 'role', crew#>>'{}')
+)
+WHERE crew IS NOT NULL 
+  AND crew::text NOT IN ('""', '[]', 'null', '{}', '""') 
   AND (technicians IS NULL OR technicians::text = '[]' OR technicians::text = 'null');
 
 -- 2. Migrate legacy 'techUserId' to 'responsible_for_advancing'
@@ -50,4 +50,3 @@ ALTER TABLE public.advancing
   DROP COLUMN IF EXISTS floor_tags,
   DROP COLUMN IF EXISTS specials,
   DROP COLUMN IF EXISTS special_notes;
-```

@@ -1509,7 +1509,7 @@ RMTP.presets = (function () {
             '</div>' +
 
             // Interactive Home Run Signal Flow Matrix
-            '<div id="ps-signal-flow-matrix" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3"></div>' +
+            '<div id="ps-signal-flow-matrix" class="w-full"></div>' +
 
             // Stagebox Quick-Patch Table Reference
             '<div class="p-3.5 rounded-xl bg-panel border border-line flex flex-col gap-3 shadow-xs">' +

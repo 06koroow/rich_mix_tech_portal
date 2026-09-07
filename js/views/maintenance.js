@@ -520,7 +520,7 @@ RMTP.views.maintenance = function (el, params, query) {
         '<textarea id="res-notes" class="field mb-4" rows="3" placeholder="What was done to fix it\u2026"></textarea>' +
         (item
           ? '<div class="grid gap-3.5 mb-2">' +
-              '<div class="grid grid-cols-2 gap-3">' +
+              '<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">' +
                 '<div>' +
                   '<label class="block text-sm font-medium mb-1">Return condition</label>' +
                   '<select id="res-cond" class="field">' + condOpts.map((c) => '<option>' + c + '</option>').join('') + '</select>' +

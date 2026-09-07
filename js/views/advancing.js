@@ -222,9 +222,19 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   function techLabel(t) {
-    const name = userName(t.userId);
+    let name;
+    if (t.isFreelancer) {
+      name = (t.freelancerName || 'Freelancer').trim();
+    } else {
+      name = userName(t.userId);
+    }
     if (!name) return null;
-    return t.role ? name + ' (' + t.role + ')' : name;
+    let label = name;
+    if (t.role) label += ' (' + t.role + ')';
+    if (t.startTime || t.finishTime) {
+      label += ' [' + (t.startTime || 'TBD') + '-' + (t.finishTime || 'TBD') + ']';
+    }
+    return label;
   }
 
   function reportsFor(eventId) {
@@ -236,6 +246,7 @@ RMTP.views.advancing = function (el, params, query) {
 
   // Unified filter bar open/closed state (persisted across render)
   let filtersPanelOpen = (RMTP._advFiltersPanelOpen !== undefined ? RMTP._advFiltersPanelOpen : false);
+  let quickSearch = RMTP._advQuickSearch || '';
 
   // Pool of all events in system
   const allEvents = store.all('advancing') || [];
@@ -264,7 +275,20 @@ RMTP.views.advancing = function (el, params, query) {
 
   const shown = base
     .filter((e) => (currentTab === 'past' ? isPastEvent(e.date) : !isPastEvent(e.date)))
-    .filter((e) => (!filters.space || e.space === filters.space) && (!filters.date || e.date === filters.date))
+    .filter((e) => {
+      if (filters.space && e.space !== filters.space) return false;
+      if (filters.date && e.date !== filters.date) return false;
+      if (quickSearch) {
+        const q = quickSearch.toLowerCase();
+        const evName = (e.name || '').toLowerCase();
+        const evSpace = (e.space || '').toLowerCase();
+        const evDate = (e.date ? ui.formatDate(e.date).toLowerCase() : '');
+        if (!evName.includes(q) && !evSpace.includes(q) && !evDate.includes(q)) {
+          return false;
+        }
+      }
+      return true;
+    })
     .sort((a, b) => (currentTab === 'past' ? (b.date || '').localeCompare(a.date || '') : (a.date || '9999').localeCompare(b.date || '9999')));
 
   const emptyMsg = !base.length
@@ -300,15 +324,25 @@ RMTP.views.advancing = function (el, params, query) {
           ? '<button id="artifax-sync" class="btn btn-ghost text-xs" title="Pull events from Artifax">' + ui.icon('reset', 'w-3.5 h-3.5') + '<span class="hidden sm:inline">Sync Artifax</span></button>' : '')
       ) +
 
-      // Top Control Bar: Collapsible Filter Menu Trigger (Left) + Add Event Button (Right)
-      '<div class="flex items-center justify-between gap-3 mb-4">' +
-        '<button id="adv-filter-toggle-btn" class="btn btn-ghost text-xs flex items-center gap-2 border border-line bg-panel2 hover:bg-panel font-medium py-2 px-3 rounded-lg transition">' +
-          ui.icon('filter', 'w-3.5 h-3.5 text-accent') +
-          '<span>Filters & Crew</span>' +
-          (activeFilterCount > 0 ? '<span class="px-1.5 py-0.2 rounded-full text-[10px] bg-accent text-accent-ink font-bold">' + activeFilterCount + '</span>' : '') +
-          '<span class="text-muted transition-transform ' + (filtersPanelOpen ? 'rotate-180 text-accent' : '') + '">' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</span>' +
-        '</button>' +
-        (canManageEvents ? '<button id="add-event" class="btn btn-primary text-xs py-2 px-3 flex items-center gap-1.5">' + ui.icon('plus', 'w-4 h-4') + 'Add event</button>' : '') +
+      // Top Control Bar: Search Input (Mobile) + Collapsible Filter Menu Trigger (Left) + Add Event Button (Right)
+      '<div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">' +
+        '<div class="flex items-center w-full md:hidden bg-panel border border-line rounded-lg px-3 py-1 shadow-xs">' +
+          ui.icon('search', 'w-4 h-4 text-muted') +
+          '<input type="text" id="adv-quick-search-mobile" class="field flex-1 border-none shadow-none bg-transparent focus:ring-0 text-sm ml-2" placeholder="Search events..." value="' + ui.esc(quickSearch) + '">' +
+        '</div>' +
+        '<div class="flex items-center justify-between md:justify-start gap-3 w-full">' +
+          '<button id="adv-filter-toggle-btn" class="btn btn-ghost text-xs flex items-center gap-2 border border-line bg-panel2 hover:bg-panel font-medium py-2 px-3 rounded-lg transition shrink-0">' +
+            ui.icon('filter', 'w-3.5 h-3.5 text-accent') +
+            '<span>Filters & Crew</span>' +
+            (activeFilterCount > 0 ? '<span class="px-1.5 py-0.2 rounded-full text-[10px] bg-accent text-accent-ink font-bold">' + activeFilterCount + '</span>' : '') +
+            '<span class="text-muted transition-transform ' + (filtersPanelOpen ? 'rotate-180 text-accent' : '') + '">' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</span>' +
+          '</button>' +
+          '<div class="hidden md:flex items-center bg-panel border border-line rounded-lg px-3 py-1 shadow-xs max-w-xs">' +
+            ui.icon('search', 'w-4 h-4 text-muted') +
+            '<input type="text" id="adv-quick-search-desktop" class="field border-none shadow-none bg-transparent focus:ring-0 text-sm ml-2" placeholder="Search events..." value="' + ui.esc(quickSearch) + '">' +
+          '</div>' +
+          (canManageEvents ? '<button id="add-event" class="btn btn-primary text-xs py-2 px-3 flex items-center gap-1.5 shrink-0 ml-auto">' + ui.icon('plus', 'w-4 h-4') + '<span class="hidden sm:inline">Add event</span></button>' : '') +
+        '</div>' +
       '</div>' +
 
       // Unified Collapsible Filter Drawer
@@ -1723,13 +1757,6 @@ RMTP.views.advancing = function (el, params, query) {
         '<div style="font-size:13px;font-weight:600;color:#334155;margin-bottom:16px;">' +
           ui.esc(ev.date ? ui.formatDate(ev.date) : 'TBC') + (times ? ' • ' + ui.esc(times) : '') + ' — ' + ui.esc(ev.space || 'No Space') +
         '</div>' +
-        liveTimingsSection +
-        liveScheduleSection +
-        cinemaChecksHtml +
-        lightingProductionPrintSection +
-        channelListPrintSection +
-        linkedMaintSection +
-
         '<div class="adv-print-section">' +
           '<div class="adv-print-section-title">Crew & Contacts</div>' +
           '<div class="adv-print-grid">' +
@@ -1751,6 +1778,13 @@ RMTP.views.advancing = function (el, params, query) {
             '</div>' +
           '</div>' +
         '</div>' +
+
+        liveTimingsSection +
+        liveScheduleSection +
+        cinemaChecksHtml +
+        lightingProductionPrintSection +
+        channelListPrintSection +
+        linkedMaintSection +
 
         (ev.techInfo ? (
           '<div class="adv-print-section">' +
@@ -2064,7 +2098,7 @@ RMTP.views.advancing = function (el, params, query) {
       ) : '';
 
       det.innerHTML =
-        '<div class="grid grid-cols-2 gap-2 mt-2">' +
+        '<div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">' +
           '<div class="p-3 rounded-lg bg-panel2/40 border border-line">' +
             '<div class="eyebrow">Advancing Collection</div>' +
             '<div class="text-sm font-semibold mt-1">Local: ' + advLocal + ' \u00b7 Supabase: ' + advRemote + '</div>' +
@@ -2325,7 +2359,14 @@ RMTP.views.advancing = function (el, params, query) {
     const blankOpt = (arr, val, blank) => '<option value="" ' + (!val ? 'selected' : '') + '>' + blank + '</option>' +
       arr.map((v) => '<option ' + (v === val ? 'selected' : '') + '>' + v + '</option>').join('');
 
-    let techs = RMTP.eventTechnicians(ev).map((t) => ({ userId: t.userId, role: t.role || '' }));
+    let techs = RMTP.eventTechnicians(ev).map((t) => ({ 
+      userId: t.userId || '', 
+      role: t.role || '',
+      isFreelancer: !!t.isFreelancer,
+      freelancerName: t.freelancerName || '',
+      startTime: t.startTime || '',
+      finishTime: t.finishTime || ''
+    }));
 
     // Dynamic schedule items for Live spaces: [{ type, label, customName, time, duration, techReqType, techNotes, techFile, channelInputs, channelOutputs }]
     let scheduleItems = (Array.isArray(ev.schedule_items) ? ev.schedule_items : (Array.isArray(ev.scheduleItems) ? ev.scheduleItems : []))
@@ -2477,7 +2518,7 @@ RMTP.views.advancing = function (el, params, query) {
               fld('Event Date', '<input id="e-date" type="date" class="field" value="' + ui.esc(ev.date || '') + '" />') +
             '</div>' +
 
-            '<div class="grid grid-cols-2 gap-4">' +
+            '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
               fld('Overall Start Time', '<input id="e-start" type="time" class="field font-mono" value="' + ui.esc(ev.startTime || '') + '" />') +
               fld('Overall Finish Time', '<input id="e-finish" type="time" class="field font-mono" value="' + ui.esc(ev.finishTime || '') + '" />') +
             '</div>' +
@@ -2530,6 +2571,7 @@ RMTP.views.advancing = function (el, params, query) {
                 '</div>' +
               '</div>' +
 
+              (ev.dcp_parent_event_id ? '' : 
               '<div class="pt-2 border-t border-line/60 grid grid-cols-1 sm:grid-cols-2 gap-4">' +
                 fld('Testing Engineer', '<select id="e-dcp-tester" class="field">' + userOptionsHtml(ev.dcp_tester_user_id || ev.dcpTesterUserId || '') + '</select>') +
                 fld('Testing Date & Time', '<input id="e-dcp-test-datetime" type="datetime-local" class="field font-mono" value="' + ui.esc(ev.dcp_test_datetime || ev.dcpTestDatetime || '') + '" />') +
@@ -2537,7 +2579,7 @@ RMTP.views.advancing = function (el, params, query) {
               '<label class="flex items-center gap-2 text-xs font-semibold cursor-pointer text-accent pt-1">' +
                 '<input type="checkbox" id="e-gen-dcp-shift" class="w-4 h-4 accent-[var(--accent)]" ' + (ev.dcp_test_event_id || (!existing && (ev.category === 'Cinema' || isScreenInitial)) ? 'checked' : 'checked') + ' />' +
                 '<span>Generate / Update Linked DCP Test Shift in Calendar</span>' +
-              '</label>' +
+              '</label>') +
             '</div>' +
 
             /* Cinema Linked Maintenance Tasks */
@@ -4252,36 +4294,78 @@ RMTP.views.advancing = function (el, params, query) {
     function techAreaHtml() {
       const rows = techs.map((t, i) => {
         const usedElsewhere = techs.filter((x, j) => j !== i).map((x) => x.userId);
-        const uOpts = '<option value="">Select technician\u2026</option>' + allUsers
+        let uOpts = '<option value="">Select technician…</option>' + allUsers
           .filter((u) => u.id === t.userId || usedElsewhere.indexOf(u.id) === -1)
-          .map((u) => '<option value="' + u.id + '" ' + (u.id === t.userId ? 'selected' : '') + '>' + ui.esc(auth.displayName(u)) + '</option>').join('');
-        const rOpts = '<option value="">Select role\u2026</option>' + RMTP.SHIFT_ROLES
+          .map((u) => '<option value="' + u.id + '" ' + (u.id === t.userId && !t.isFreelancer ? 'selected' : '') + '>' + ui.esc(auth.displayName(u)) + '</option>').join('');
+        uOpts += '<option value="__freelancer__" ' + (t.isFreelancer ? 'selected' : '') + '>Freelancer (Custom)</option>';
+
+        const rOpts = '<option value="">Select role…</option>' + RMTP.SHIFT_ROLES
           .map((r) => '<option ' + (r === t.role ? 'selected' : '') + '>' + r + '</option>').join('');
-        return '<div class="flex items-center gap-2">' +
-          '<select data-t-user="' + i + '" class="field flex-1">' + uOpts + '</select>' +
-          '<select data-t-role="' + i + '" class="field w-36 shrink-0">' + rOpts + '</select>' +
-          '<button type="button" data-t-remove="' + i + '" class="btn btn-danger !p-2 shrink-0" title="Remove">' + ui.icon('trash', 'w-4 h-4') + '</button>' +
-        '</div>';
+          
+        let rowHtml = '<div class="flex flex-col gap-2 p-2 border border-line rounded-lg bg-panel2/50">' +
+          '<div class="flex items-center gap-2">' +
+            '<select data-t-user="' + i + '" class="field flex-1">' + uOpts + '</select>';
+            
+        if (t.isFreelancer) {
+          rowHtml += '<input type="text" data-t-freelancer="' + i + '" class="field flex-1" placeholder="Freelancer Name" value="' + ui.esc(t.freelancerName) + '">';
+        }
+        
+        rowHtml += '<select data-t-role="' + i + '" class="field w-32 shrink-0">' + rOpts + '</select>' +
+            '<button type="button" data-t-remove="' + i + '" class="btn btn-danger !p-2 shrink-0" title="Remove">' + ui.icon('trash', 'w-4 h-4') + '</button>' +
+          '</div>';
+
+        const placeholderStart = (m.root.querySelector('#e-start') ? m.root.querySelector('#e-start').value : ev.startTime) || '';
+        const placeholderEnd = (m.root.querySelector('#e-finish') ? m.root.querySelector('#e-finish').value : ev.finishTime) || '';
+        
+        rowHtml += '<div class="flex items-center gap-2 text-xs">' +
+            '<span class="text-muted w-12">Times:</span>' +
+            '<input type="time" data-t-start="' + i + '" class="field !py-1 !px-2 flex-1" value="' + (t.startTime || '') + '" placeholder="' + placeholderStart + '">' +
+            '<span class="text-muted">to</span>' +
+            '<input type="time" data-t-end="' + i + '" class="field !py-1 !px-2 flex-1" value="' + (t.finishTime || '') + '" placeholder="' + placeholderEnd + '">' +
+            '<span class="text-muted italic text-[10px] ml-1">(Blank = event times)</span>' +
+          '</div>';
+
+        rowHtml += '</div>';
+        return rowHtml;
       }).join('');
       return (rows ? '<div class="grid gap-2 mb-2">' + rows + '</div>' : '<p class="text-xs text-muted mb-2">No technicians tagged yet.</p>') +
-        '<button type="button" data-t-add class="btn btn-ghost">' + ui.icon('plus', 'w-4 h-4') + 'Add technician</button>';
+        '<button type="button" data-t-add class="btn btn-ghost">' + ui.icon('plus', 'w-4 h-4') + 'Add technician / freelancer</button>';
     }
+
     function wireTechs() {
       ['#e-tech-area', '#e-cinema-tech-area'].forEach((sel) => {
         const area = m.root.querySelector(sel);
         if (!area) return;
         area.innerHTML = techAreaHtml();
         area.querySelectorAll('[data-t-user]').forEach((s) => s.addEventListener('change', () => {
-          techs[+s.getAttribute('data-t-user')].userId = s.value; wireTechs();
+          const val = s.value;
+          const idx = +s.getAttribute('data-t-user');
+          if (val === '__freelancer__') {
+            techs[idx].isFreelancer = true;
+            techs[idx].userId = '';
+          } else {
+            techs[idx].isFreelancer = false;
+            techs[idx].userId = val;
+          }
+          wireTechs();
+        }));
+        area.querySelectorAll('[data-t-freelancer]').forEach((s) => s.addEventListener('input', () => {
+          techs[+s.getAttribute('data-t-freelancer')].freelancerName = s.value;
         }));
         area.querySelectorAll('[data-t-role]').forEach((s) => s.addEventListener('change', () => {
           techs[+s.getAttribute('data-t-role')].role = s.value;
+        }));
+        area.querySelectorAll('[data-t-start]').forEach((s) => s.addEventListener('change', () => {
+          techs[+s.getAttribute('data-t-start')].startTime = s.value;
+        }));
+        area.querySelectorAll('[data-t-end]').forEach((s) => s.addEventListener('change', () => {
+          techs[+s.getAttribute('data-t-end')].finishTime = s.value;
         }));
         area.querySelectorAll('[data-t-remove]').forEach((btn) => btn.addEventListener('click', () => {
           techs.splice(+btn.getAttribute('data-t-remove'), 1); wireTechs();
         }));
         const addBtn = area.querySelector('[data-t-add]');
-        if (addBtn) addBtn.addEventListener('click', () => { techs.push({ userId: '', role: '' }); wireTechs(); });
+        if (addBtn) addBtn.addEventListener('click', () => { techs.push({ userId: '', role: '', isFreelancer: false, freelancerName: '', startTime: '', finishTime: '' }); wireTechs(); });
       });
       updateSectionBannerPills();
     }
@@ -4407,7 +4491,7 @@ RMTP.views.advancing = function (el, params, query) {
       const name = m.root.querySelector('#e-name').value.trim();
       if (!name) { ui.toast('Give the event a name', 'danger'); return; }
 
-      const finalTechs = techs.filter((t) => t.userId);
+      const finalTechs = techs.filter((t) => t.userId || (t.isFreelancer && t.freelancerName.trim()));
       if (finalTechs.some((t) => !t.role)) { ui.toast('Pick a role for each tagged technician', 'danger'); return; }
 
       let finalSpec = cleared ? null : specMeta;

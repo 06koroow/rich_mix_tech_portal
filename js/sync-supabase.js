@@ -48,11 +48,27 @@ RMTP.syncSb = (function () {
     return !!unsupportedTables[table];
   }
 
-  function isTableMissingError(err) {
+        function isTableMissingError(err) {
     if (!err) return false;
+    
+    // Explicitly check for PGRST204 (Missing Column) and do NOT treat it as a missing table.
+    // This is the bug: PGRST204 was triggering "schema cache" string match, causing the whole table to be marked unsupported.
+    if (err.code === 'PGRST204') return false; 
+
+    // Explicitly check for Missing Table
     if (err.code === 'PGRST205' || err.code === '42P01') return true;
+
     const msg = (err.message || '') + ' ' + (err.details || '') + ' ' + (err.hint || '') + ' ' + (typeof err === 'string' ? err : '');
-    return /Could not find the table/i.test(msg) || /relation .+ does not exist/i.test(msg) || /schema cache/i.test(msg);
+    
+    // We must be VERY careful with the string "schema cache". Both PGRST204 (missing column) 
+    // and PGRST205 (missing table) mention "schema cache".
+    // We only want to match if it explicitly says "find the X table" or "relation X does not exist".
+    if (/relation .+ does not exist/i.test(msg)) return true;
+    if (/Could not find the '.+' table/i.test(msg)) return true;
+    
+    // If it mentions schema cache but isn't explicitly a table error, assume it's NOT a table error 
+    // (likely a column error) to avoid blacklisting the whole table.
+    return false;
   }
 
   /* ---- pull ---- */
@@ -60,7 +76,7 @@ RMTP.syncSb = (function () {
     const table = tables()[coll]; if (!table) return;
     let rows = [];
     try {
-      rows = await sb.selectAll(table);
+            rows = await sb.selectAll(table);
       clearTableUnsupported(table);
     } catch (err) {
       if (isTableMissingError(err)) {
@@ -68,7 +84,18 @@ RMTP.syncSb = (function () {
         console.warn('[syncSb] Table "' + table + '" is not present in remote Supabase schema cache (' + (err.message || err.code || 'PGRST205') + '). Running with local data for ' + coll + '. Run docs/supabase-setup.sql or docs/patch-sheets-setup.sql to enable cloud sync.');
         return;
       }
-      throw err;
+      
+      // If we get a schema cache error during pull (like PGRST204 missing column from our wildcards),
+      // we shouldn't throw the error, we should fallback to local data, otherwise the whole app wipes!
+      // This handles cases where a column was added locally but Supabase is returning PGRST204 
+      // because someone modified the table and didn't reload the cache, or vice-versa.
+      if (err.code === 'PGRST204' || /schema cache/i.test(err.message || '')) {
+         console.warn('[syncSb] Remote schema cache is stale for table "' + table + '" (' + (err.code || 'PGRST204') + '). Using local data cache for this run.');
+         return; 
+      }
+      
+      console.error('[syncSb] Error pulling collection: ' + coll, err);
+      return; // Do NOT throw, failing to pull shouldn't break the app and clear local state!
     }
     if (coll === 'procedures') return regroupProcedures(rows);
     const existing = store.all(coll);
@@ -209,7 +236,12 @@ RMTP.syncSb = (function () {
         off_stage: r.off_stage || r.offStage || '',
         curfew: r.curfew || '',
         load_out: r.load_out || r.loadOut || '',
-        schedule_items: Array.isArray(r.schedule_items) ? r.schedule_items : (Array.isArray(r.scheduleItems) ? r.scheduleItems : []),
+        schedule_items: await Promise.all((Array.isArray(r.schedule_items) ? r.schedule_items : (Array.isArray(r.scheduleItems) ? r.scheduleItems : [])).map(async (it) => {
+          if (it.techFile) {
+            it.techFile = await files.toRemote(it.techFile);
+          }
+          return it;
+        })),
         screening_starts_time: r.screening_starts_time || r.screeningStartsTime || '',
         film_duration: r.film_duration || r.filmDuration || '',
         media_type: r.media_type || r.mediaType || '',
@@ -356,7 +388,7 @@ RMTP.syncSb = (function () {
     return cleaned;
   }
 
-  function extractMissingColumn(err) {
+    function extractMissingColumn(err) {
     if (!err) return null;
     const msg = (err.message || '') + ' ' + (err.details || '') + ' ' + (err.hint || '') + ' ' + (typeof err === 'string' ? err : '');
     if (!msg.trim()) return null;
@@ -366,6 +398,9 @@ RMTP.syncSb = (function () {
     if (match) return match[1];
     match = msg.match(/column "?([a-zA-Z0-9_]+)"? does not exist/i);
     if (match) return match[1];
+    // Supabase JS often doesn't give the exact column name for PGRST204 in the message if we used a wildcard, 
+    // but the error is explicitly that the schema cache is stale.
+    // Let's at least ensure we don't crash if we can't parse the column.
     return null;
   }
 
@@ -453,9 +488,11 @@ RMTP.syncSb = (function () {
     let attempts = 0;
     while (attempts < 20) {
       attempts++;
-      const rowToSend = sanitizeRow(table, baseRow);
+            const rowToSend = sanitizeRow(table, baseRow);
       try {
         await sb.upsertRow(table, rowToSend);
+        // If we succeeded, we know the table is completely fine.
+        clearTableUnsupported(table);
         return;
       } catch (err) {
         if (isTableMissingError(err)) {
@@ -463,13 +500,25 @@ RMTP.syncSb = (function () {
           console.warn('[syncSb] Table "' + table + '" does not exist in remote Supabase schema cache. Skipping upsert.');
           return;
         }
-        const missingCol = extractMissingColumn(err);
-        if (missingCol && (baseRow[missingCol] !== undefined || rowToSend[missingCol] !== undefined)) {
-          markColumnUnsupported(table, missingCol);
-          console.warn('[syncSb] Table "' + table + '" missing column "' + missingCol + '" in remote schema cache (PGRST204). Pruning for Supabase upsert.');
-          delete baseRow[missingCol];
-          continue;
+        
+        // If it's a missing column (PGRST204), but we can't extract the name, we shouldn't throw an error and kill the sync queue forever.
+        // The table exists, but the schema cache is out of date. 
+        if (err.code === 'PGRST204') {
+            const missingCol = extractMissingColumn(err);
+            if (missingCol && (baseRow[missingCol] !== undefined || rowToSend[missingCol] !== undefined)) {
+              markColumnUnsupported(table, missingCol);
+              console.warn('[syncSb] Table "' + table + '" missing column "' + missingCol + '" in remote schema cache (PGRST204). Pruning for Supabase upsert.');
+              delete baseRow[missingCol];
+              continue; // Retry loop
+            } else {
+              // We couldn't parse the exact column, but we know it's a PGRST204 schema cache issue.
+              // Just warn and drop this row from the sync queue to prevent the queue from stalling completely.
+              // (Or we could attempt a reload of the schema cache here, but dropping is safer for now).
+              console.warn('[syncSb] PGRST204 schema cache error on table "' + table + '", but could not parse missing column name. Dropping row from queue to prevent stall.', err);
+              return; 
+            }
         }
+        
         throw err;
       }
     }

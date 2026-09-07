@@ -1157,9 +1157,10 @@ RMTP.presets = (function () {
 
     const houseAct = (targetSheet.acts || []).find((a) => a.id === 'act-house') || { id: 'act-house', name: 'House / Venue Core', color: 'slate' };
     
-    // Sync master global channels into House Act
+        // Sync master global channels into House Act
     const techReqs = eventRecord.tech_requirements || eventRecord.techRequirements || {};
-    if (techReqs.channel_list) {
+    const hasGlobal = techReqs.channel_list && (techReqs.channel_list.inputs || techReqs.channel_list.outputs);
+    if (hasGlobal) {
       if (Array.isArray(techReqs.channel_list.inputs)) {
         houseAct.channelInputs = JSON.parse(JSON.stringify(techReqs.channel_list.inputs));
       }
@@ -1183,8 +1184,9 @@ RMTP.presets = (function () {
         color: colObj.id,
         stageTime: it.time || '',
         duration: it.duration || '',
-        channelInputs: Array.isArray(it.channelInputs) ? JSON.parse(JSON.stringify(it.channelInputs)) : [],
-        channelOutputs: Array.isArray(it.channelOutputs) ? JSON.parse(JSON.stringify(it.channelOutputs)) : []
+        // If a global patch sheet exists, ignore the artist specific custom lists
+        channelInputs: hasGlobal ? [] : (Array.isArray(it.channelInputs) ? JSON.parse(JSON.stringify(it.channelInputs)) : []),
+        channelOutputs: hasGlobal ? [] : (Array.isArray(it.channelOutputs) ? JSON.parse(JSON.stringify(it.channelOutputs)) : [])
       });
     });
 
@@ -1767,7 +1769,7 @@ RMTP.presets = (function () {
       // Render Custom Channel Allocator
       const allocatorEl = m.root.querySelector('#ps-custom-channels-allocator');
       if (allocatorEl) {
-        let actsWithChannels = (sheet.acts || []).filter(a => a.channelInputs && a.channelInputs.length > 0 && a.id !== 'act-house');
+        let actsWithChannels = (sheet.acts || []).filter(a => a.channelInputs && a.channelInputs.length > 0);
         if (actsWithChannels.length > 0) {
           allocatorEl.innerHTML = '<div class="p-3 mb-4 rounded-xl border border-accent/40 bg-accent/5 shadow-2xs">' +
             '<div class="flex items-center gap-2 mb-2">' +
@@ -1894,8 +1896,11 @@ RMTP.presets = (function () {
                 '</div>' +
               '</div>' +
               '<div class="flex items-center gap-1.5">' +
-                '<button type="button" data-sb-add-ch="' + sbIdx + '" class="btn btn-ghost !py-1 !px-2 text-xs text-accent font-semibold flex items-center gap-1">' +
-                  ui.icon('plus', 'w-3 h-3') + '<span>Add Socket</span>' +
+                '<button type="button" data-sb-add-ch="' + sbIdx + '" class="btn btn-ghost !py-1 !px-2 text-xs text-accent font-semibold flex items-center gap-1" title="Add Input Socket">' +
+                  ui.icon('plus', 'w-3 h-3') + '<span>In</span>' +
+                '</button>' +
+                '<button type="button" data-sb-add-out="' + sbIdx + '" class="btn btn-ghost !py-1 !px-2 text-xs text-accent font-semibold flex items-center gap-1" title="Add Output Socket">' +
+                  ui.icon('plus', 'w-3 h-3') + '<span>Out</span>' +
                 '</button>' +
                 '<button type="button" data-sb-del="' + sbIdx + '" class="btn btn-danger !p-1.5" title="Delete Stagebox">' +
                   ui.icon('trash', 'w-3.5 h-3.5') +
@@ -2211,6 +2216,19 @@ RMTP.presets = (function () {
           renderStageboxes();
         });
       });
+      container.querySelectorAll('[data-sb-add-out]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-sb-add-out');
+          const box = sheet.stageboxes[idx];
+          if (!box.outputs) box.outputs = [];
+          box.outputs.push({
+            socket: box.outputs.length + 1,
+            destination: '',
+            homeRunCh: null
+          });
+          renderStageboxes();
+        });
+      });
 
       // Wire channel inputs
       container.querySelectorAll('[data-ch-act]').forEach((sel) => {
@@ -2309,452 +2327,164 @@ RMTP.presets = (function () {
       const hr = getHomeRunConfig(sheet);
       const totalInputs = Math.max(1, parseInt(hr.inputChannels, 10) || 32);
       const hrPrefix = (hr.prefix || 'HR').trim();
-      const mapping = computeHomeRunMapping(sheet);
-      const unassigned = computeUnassignedSockets(sheet);
-
-      // 1. Render Health & Progress Bar
-      const healthEl = m.root.querySelector('#ps-hr-health-bar');
-      if (healthEl) {
-        const patchedCount = mapping.filter((m) => m.isPatched).length;
-        const spareCount = totalInputs - patchedCount;
-        const collisionCount = mapping.filter((m) => m.isCollision).length;
-        const patchedPercent = Math.round((patchedCount / totalInputs) * 100);
-
-        healthEl.innerHTML =
-          '<div class="p-3 rounded-xl bg-panel border border-line flex flex-col gap-1 shadow-2xs">' +
-            '<span class="text-[10px] uppercase font-bold text-muted">Total Capacity</span>' +
-            '<div class="flex items-baseline gap-1">' +
-              '<span class="text-xl font-bold font-mono text-ink">' + totalInputs + '</span>' +
-              '<span class="text-xs text-muted">Inputs</span>' +
-            '</div>' +
-            '<span class="text-[11px] text-muted font-mono">' + (hr.outputChannels || 16) + ' Outs (' + ui.esc(hr.prefix || 'HR') + ')</span>' +
-          '</div>' +
-
-          '<div class="p-3 rounded-xl bg-panel border border-line flex flex-col gap-1.5 shadow-2xs">' +
-            '<div class="flex items-center justify-between">' +
-              '<span class="text-[10px] uppercase font-bold text-muted">Patched Channels</span>' +
-              '<span class="text-xs font-mono font-bold text-accent">' + patchedCount + ' / ' + totalInputs + ' (' + patchedPercent + '%)</span>' +
-            '</div>' +
-            '<div class="w-full bg-panel2 h-2 rounded-full overflow-hidden border border-line/60">' +
-              '<div class="bg-accent h-full transition-all duration-300" style="width: ' + patchedPercent + '%;"></div>' +
-            '</div>' +
-            '<span class="text-[10px] text-muted">' + spareCount + ' open spare channels</span>' +
-          '</div>' +
-
-          '<div class="p-3 rounded-xl ' + (collisionCount > 0 ? 'bg-danger/10 border-danger/30 text-danger' : 'bg-panel border-line text-ink') + ' border flex flex-col gap-1 shadow-2xs">' +
-            '<span class="text-[10px] uppercase font-bold ' + (collisionCount > 0 ? 'text-danger' : 'text-muted') + '">Collision Check</span>' +
-            '<div class="flex items-center gap-1.5">' +
-              (collisionCount > 0 ? ui.icon('alert', 'w-4 h-4 text-danger') : ui.icon('check', 'w-4 h-4 text-ok')) +
-              '<span class="text-base font-bold">' + (collisionCount > 0 ? collisionCount + ' Conflicts' : '0 Collisions') + '</span>' +
-            '</div>' +
-            '<span class="text-[10px] ' + (collisionCount > 0 ? 'text-danger font-semibold' : 'text-muted') + '">' +
-              (collisionCount > 0 ? 'Multiple sockets patched to same channel' : 'All channels mapped cleanly') +
-            '</span>' +
-          '</div>' +
-
-          '<div class="p-3 rounded-xl ' + (unassigned.length > 0 ? 'bg-warning/10 border-warning/30' : 'bg-panel border-line') + ' border flex flex-col gap-1 shadow-2xs">' +
-            '<span class="text-[10px] uppercase font-bold ' + (unassigned.length > 0 ? 'text-warning' : 'text-muted') + '">Unassigned Sockets</span>' +
-            '<div class="flex items-baseline gap-1">' +
-              '<span class="text-xl font-bold font-mono ' + (unassigned.length > 0 ? 'text-warning' : 'text-ink') + '">' + unassigned.length + '</span>' +
-              '<span class="text-xs text-muted">Sockets</span>' +
-            '</div>' +
-            '<span class="text-[10px] ' + (unassigned.length > 0 ? 'text-warning font-semibold' : 'text-muted') + '">' +
-              (unassigned.length > 0 ? 'Drop sockets not mapped to Home Run' : 'All stagebox sockets mapped') +
-            '</span>' +
-          '</div>';
-      }
-
-      // 2. Render Signal Flow Matrix Grid
       const matrixEl = m.root.querySelector('#ps-signal-flow-matrix');
-      if (matrixEl) {
-        // Collect all stagebox sockets for dropdown option list
-        const allSockets = [];
-        (sheet.stageboxes || []).forEach((b, sbIdx) => {
-          (b.channels || []).forEach((c, chIdx) => {
-            const act = (sheet.acts || []).find((a) => a.id === c.actId);
-            allSockets.push({
-              key: sbIdx + '-' + chIdx,
-              boxLetter: b.letter || '?',
-              boxName: b.name || 'Stagebox',
-              location: b.location || '',
-              socket: c.socket || (chIdx + 1),
-              instrument: c.instrument || 'Line',
-              mic: c.mic || '',
-              actName: act ? act.name : 'House',
-              currentHrCh: c.homeRunCh
-            });
-          });
-        });
+      if (!matrixEl) return;
 
-        const filteredChannels = mapping.filter((item) => {
-          if (signalFlowFilter === 'patched' && !item.isPatched) return false;
-          if (signalFlowFilter === 'spare' && item.isPatched) return false;
-          if (signalFlowFilter === 'collisions' && !item.isCollision) return false;
-          return true;
-        });
-
-        if (!filteredChannels.length) {
-          matrixEl.innerHTML = '<div class="col-span-full p-8 text-center text-muted italic bg-panel rounded-xl border border-line">No channels match the active filter (' + ui.esc(signalFlowFilter) + ').</div>';
-        } else {
-          matrixEl.innerHTML = filteredChannels.map((item) => {
-            const prim = item.primarySocket;
-            const col = prim ? getActColorObj(prim.actColor) : ACT_COLORS[0];
-            return (
-              '<div class="p-3 rounded-xl border ' + (item.isCollision ? 'border-danger/60 bg-danger/5' : item.isPatched ? col.border + ' ' + col.bg : 'border-line bg-panel') + ' flex flex-col justify-between gap-2 text-xs shadow-2xs transition-all relative group">' +
-                // Channel Header & Badge
-                '<div class="flex items-center justify-between gap-2">' +
-                  '<div class="flex items-center gap-1.5">' +
-                    '<span class="font-mono font-bold text-xs px-2 py-0.5 rounded ' + (item.isPatched ? 'bg-panel border border-line text-ink' : 'bg-panel2 text-muted') + '">' +
-                      item.label +
-                    '</span>' +
-                    (item.isCollision ? (
-                      '<span class="px-1.5 py-0.5 rounded bg-danger text-white text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 animate-pulse">' +
-                        ui.icon('alert', 'w-3 h-3') + 'Collision' +
-                      '</span>'
-                    ) : item.isPatched ? (
-                      '<span class="text-[10px] px-1.5 py-0.5 rounded font-bold border ' + col.border + ' ' + col.bg + ' ' + col.text + '">' +
-                        ui.esc(prim.actName) +
-                      '</span>'
-                    ) : (
-                      '<span class="text-[10px] font-mono text-muted uppercase">Spare / Open</span>'
-                    )) +
-                  '</div>' +
-                  (item.isPatched ? (
-                    '<button type="button" data-unpatch-hr="' + item.chNumber + '" class="text-muted hover:text-danger p-1 rounded hover:bg-panel" title="Unpatch channel">' +
-                      ui.icon('x', 'w-3 h-3') +
-                    '</button>'
-                  ) : '') +
-                '</div>' +
-
-                // Main Source Selector
-                '<div class="grid gap-1.5">' +
-                  '<div class="flex items-center justify-between text-[11px] text-muted">' +
-                    '<span>Source Socket:</span>' +
-                    (prim ? '<span class="font-mono font-bold text-ink">Box ' + prim.boxLetter + ' \u00b7 Skt ' + prim.socket + ' (' + ui.esc(prim.boxLocation) + ')</span>' : '') +
-                  '</div>' +
-                  '<select data-assign-hr="' + item.chNumber + '" class="bg-panel text-xs rounded border border-line py-1 px-2 font-medium w-full">' +
-                    '<option value="">\u2014 Unassigned / Spare \u2014</option>' +
-                    allSockets.map((s) => {
-                      const isSelected = (s.currentHrCh === item.chNumber);
-                      const isUsedElsewhere = (s.currentHrCh && s.currentHrCh !== item.chNumber);
-                      const label = 'Box ' + s.boxLetter + ' Skt ' + s.socket + ': ' + (s.instrument || 'Line') + (s.mic ? ' (' + s.mic + ')' : '') + (isUsedElsewhere ? ' \u2192 ' + hrPrefix + ' ' + s.currentHrCh : '');
-                      return '<option value="' + s.key + '" ' + (isSelected ? 'selected' : '') + '>' + ui.esc(label) + '</option>';
-                    }).join('') +
-                  '</select>' +
-                '</div>' +
-
-                // Patched Source Details Card
-                (item.isPatched ? (
-                  '<div class="pt-1.5 border-t border-line/60 grid gap-1 text-[11px]">' +
-                    '<div class="flex items-center justify-between">' +
-                      '<span class="font-bold text-ink text-xs">' + ui.esc(prim.instrument || 'Line Level') + '</span>' +
-                      '<span class="text-muted font-mono">' + ui.esc(prim.mic || 'Standard') + '</span>' +
-                    '</div>' +
-                    '<div class="flex items-center justify-between text-muted text-[10px]">' +
-                      '<span class="flex items-center gap-1">' +
-                        (prim.phantom ? '<b class="text-danger">+48V</b> \u00b7 ' : '') +
-                        ui.esc(prim.boxName || 'Stagebox') +
-                      '</span>' +
-                      (prim.repatch ? '<span class="text-warning font-bold flex items-center gap-1">' + ui.icon('alert', 'w-2.5 h-2.5') + 'Repatch</span>' : '') +
-                    '</div>' +
-                    (item.isCollision ? (
-                      '<div class="mt-1 p-1.5 rounded bg-danger/15 border border-danger/40 text-danger text-[10px] font-bold leading-tight">' +
-                        'Multiple sockets assigned: ' + item.assignedSockets.map((as) => 'Box ' + as.boxLetter + ' Skt ' + as.socket + ' (' + ui.esc(as.instrument || 'Line') + ')').join(' & ') +
-                      '</div>'
-                    ) : '') +
-                  '</div>'
-                ) : '') +
-              '</div>'
-            );
-          }).join('');
-
-          // Wire Source Selectors in Matrix
-          matrixEl.querySelectorAll('[data-assign-hr]').forEach((sel) => {
-            sel.addEventListener('change', () => {
-              const hrTarget = +sel.getAttribute('data-assign-hr');
-              const val = sel.value;
-
-              // Clear previous sockets assigned to this hrTarget if selecting a new one
-              sheet.stageboxes.forEach((b) => {
-                (b.channels || []).forEach((c) => {
-                  if (c.homeRunCh === hrTarget) {
-                    c.homeRunCh = null;
-                  }
-                });
-              });
-
-              if (val) {
-                const [sbIdx, chIdx] = val.split('-').map(Number);
-                if (sheet.stageboxes[sbIdx] && sheet.stageboxes[sbIdx].channels[chIdx]) {
-                  sheet.stageboxes[sbIdx].channels[chIdx].homeRunCh = hrTarget;
-                }
-              }
-
-              renderSignalFlow();
-              renderStageboxes();
-            });
-          });
-
-          // Wire Unpatch button
-          matrixEl.querySelectorAll('[data-unpatch-hr]').forEach((btn) => {
-            btn.addEventListener('click', () => {
-              const hrTarget = +btn.getAttribute('data-unpatch-hr');
-              sheet.stageboxes.forEach((b) => {
-                (b.channels || []).forEach((c) => {
-                  if (c.homeRunCh === hrTarget) {
-                    c.homeRunCh = null;
-                  }
-                });
-              });
-              renderSignalFlow();
-              renderStageboxes();
-            });
-          });
+      const acts = sheet.acts || [];
+      
+      let thead = '<tr class="border-b border-line bg-panel2 text-[10px] font-bold text-muted uppercase tracking-wider">';
+      thead += '<th class="py-2 px-3 border-r border-line bg-panel sticky left-0 z-10 w-24">Home Run</th>';
+      
+      for (let i = 0; i < acts.length; i++) {
+        const act = acts[i];
+        const isHouse = act.id === 'act-house';
+        thead += '<th class="py-2 px-3 min-w-[180px] ' + (isHouse ? 'bg-panel2/50' : '') + '">' + ui.esc(act.name) + '</th>';
+        if (i < acts.length - 1) {
+           thead += '<th class="py-2 px-2 w-24 text-center bg-panel2 border-x border-line/60">Changeover</th>';
         }
       }
+      thead += '</tr>';
 
-      // 3. Render Stagebox Routing Overview (Mobile cards + Desktop table)
-      const routingTableEl = m.root.querySelector('#ps-stagebox-routing-table');
-      if (routingTableEl) {
-        if (!sheet.stageboxes.length) {
-          routingTableEl.innerHTML = '<div class="text-xs text-muted italic p-2 bg-panel rounded">No stageboxes configured.</div>';
-        } else {
-          routingTableEl.innerHTML =
-            // Mobile Card View for Stagebox Routing
-            '<div class="md:hidden grid gap-2">' +
-              sheet.stageboxes.map((box, sbIdx) => {
-                return '<div class="p-2 font-bold text-accent bg-panel2/60 border-y border-line text-xs flex justify-between items-center">' +
-                  '<span>Box ' + box.letter + ' (' + box.name + ')</span>' +
-                  '<button type="button" data-sb-patch-11="' + sbIdx + '" class="btn btn-ghost !py-0.5 !px-2 text-[10px] border border-accent/30 text-accent">Patch 1:1</button>' +
-                  '</div>' + (box.channels || []).map((ch, chIdx) => {
-                  const act = (sheet.acts || []).find((a) => a.id === ch.actId);
-                  const col = act ? getActColorObj(act.color) : ACT_COLORS[0];
-                  const hrCh = parseInt(ch.homeRunCh, 10);
-                  return (
-                    '<div class="p-2.5 rounded-lg bg-panel border border-line flex flex-col gap-1.5 text-xs shadow-2xs">' +
-                      '<div class="flex items-center justify-between gap-2">' +
-                        '<div class="flex items-center gap-1.5">' +
-                          '<span class="font-mono font-bold text-xs px-1.5 py-0.5 rounded ' + col.border + ' ' + col.bg + ' ' + col.text + ' border">' +
-                            'Box ' + (box.letter || '?') + ' \u00b7 Skt ' + (ch.socket || (chIdx + 1)) +
-                          '</span>' +
-                          '<span class="text-[10px] text-muted">' + ui.esc(box.location || 'Stage') + '</span>' +
-                        '</div>' +
-                        (ch.phantom ? '<span class="text-[10px] font-bold text-danger font-mono bg-danger/15 px-1.5 py-0.2 rounded border border-danger/30">+48V</span>' : '') +
-                      '</div>' +
-                      '<div class="flex items-center justify-between text-xs">' +
-                        '<span class="font-semibold text-ink">' + ui.esc(ch.instrument || 'Line') + '</span>' +
-                        '<span class="text-muted font-mono text-[11px]">' + ui.esc(ch.mic || 'Direct') + '</span>' +
-                      '</div>' +
-                      '<div class="flex items-center justify-between gap-2 pt-1 border-t border-line/60">' +
-                        '<span class="text-[10px] uppercase font-bold text-muted">Home Run:</span>' +
-                        '<select data-table-hr="' + sbIdx + '-' + chIdx + '" class="bg-panel2 font-mono text-xs font-bold rounded border ' + (hrCh ? 'border-accent text-accent' : 'border-line text-muted') + ' py-0.5 px-2 flex-1 max-w-[180px]">' +
-                          '<option value="">(Unassigned)</option>' +
-                          Array.from({ length: totalInputs }, (_, i) => {
-                            const num = i + 1;
-                            const pad = num < 10 ? '0' + num : '' + num;
-                            return '<option value="' + num + '" ' + (hrCh === num ? 'selected' : '') + '>' + hrPrefix + ' ' + pad + '</option>';
-                          }).join('') +
-                        '</select>' +
-                      '</div>' +
-                    '</div>'
-                  );
-                }).join('');
-              }).join('') +
-            '</div>' +
-
-            // Desktop Table View
-            '<div class="hidden md:block overflow-x-auto rounded-lg border border-line">' +
-              '<table class="w-full border-collapse text-left text-xs">' +
-                '<thead><tr class="border-b border-line bg-panel2/60 text-muted uppercase text-[10px] font-bold">' +
-                  '<th class="p-2">Stagebox & Socket</th>' +
-                  '<th class="p-2">Physical Loc</th>' +
-                  '<th class="p-2">Act / Artist</th>' +
-                  '<th class="p-2">Instrument</th>' +
-                  '<th class="p-2">Mic / DI</th>' +
-                  '<th class="p-2">+48V</th>' +
-                  '<th class="p-2 font-mono text-accent">Assigned Home Run</th>' +
-                '</tr></thead>' +
-                '<tbody>' +
-                  sheet.stageboxes.map((box, sbIdx) => {
-                    return '<tr class="bg-panel2 border-b border-line"><td colspan="6" class="p-2 font-bold text-accent">' +
-                      'Box ' + box.letter + ' - ' + box.name + ' (' + box.location + ')' +
-                      '</td><td class="p-2 text-right"><button type="button" data-sb-patch-11="' + sbIdx + '" class="btn btn-ghost !py-1 !px-2.5 text-[11px] border border-accent/30 text-accent font-semibold flex items-center gap-1 ml-auto">' +
-                      ui.icon('sliders', 'w-3 h-3') + ' Patch 1:1</button></td></tr>' +
-                    (box.channels || []).map((ch, chIdx) => {
-                      const act = (sheet.acts || []).find((a) => a.id === ch.actId);
-                      const col = act ? getActColorObj(act.color) : ACT_COLORS[0];
-                      const hrCh = parseInt(ch.homeRunCh, 10);
-                      return (
-                        '<tr class="border-b border-line/40 hover:bg-panel2/40 transition-colors">' +
-                          '<td class="p-2 font-mono font-bold text-ink">Box ' + (box.letter || '?') + ' \u00b7 Skt ' + (ch.socket || (chIdx + 1)) + '</td>' +
-                          '<td class="p-2 text-muted">' + ui.esc(box.location || 'Stage') + '</td>' +
-                          '<td class="p-2"><span class="px-1.5 py-0.2 rounded text-[10px] font-bold border ' + col.border + ' ' + col.bg + ' ' + col.text + '">' + (act ? ui.esc(act.name) : 'House') + '</span></td>' +
-                          '<td class="p-2 font-semibold text-ink">' + ui.esc(ch.instrument || '\u2014') + '</td>' +
-                          '<td class="p-2 text-muted font-mono">' + ui.esc(ch.mic || '\u2014') + '</td>' +
-                          '<td class="p-2">' + (ch.phantom ? '<b class="text-danger font-mono">+48V</b>' : '\u2014') + '</td>' +
-                          '<td class="p-2">' +
-                            '<select data-table-hr="' + sbIdx + '-' + chIdx + '" class="bg-panel font-mono text-[11px] font-bold rounded border ' + (hrCh ? 'border-accent text-accent' : 'border-line text-muted') + ' py-0.5 px-2">' +
-                              '<option value="">(Unassigned)</option>' +
-                              Array.from({ length: totalInputs }, (_, i) => {
-                                const num = i + 1;
-                                const pad = num < 10 ? '0' + num : '' + num;
-                                return '<option value="' + num + '" ' + (hrCh === num ? 'selected' : '') + '>' + hrPrefix + ' ' + pad + '</option>';
-                              }).join('') +
-                            '</select>' +
-                          '</td>' +
-                        '</tr>'
-                      );
-                    }).join('');
-                  }).join('') +
-                '</tbody>' +
-              '</table>' +
-            '</div>';
-
-          routingTableEl.querySelectorAll('[data-table-hr]').forEach((sel) => {
-            sel.addEventListener('change', () => {
-              const [sbIdx, chIdx] = sel.getAttribute('data-table-hr').split('-').map(Number);
-              sheet.stageboxes[sbIdx].channels[chIdx].homeRunCh = sel.value ? parseInt(sel.value, 10) : null;
-              renderSignalFlow();
-              renderStageboxes();
-            });
-          });
-
-          routingTableEl.querySelectorAll('[data-sb-patch-11]').forEach((btn) => {
-            btn.addEventListener('click', () => {
-              const sbIdx = +btn.getAttribute('data-sb-patch-11');
-              const box = sheet.stageboxes[sbIdx];
-              if (!box || !box.channels || !box.channels.length) return;
-
-              // Find used HR channels
-              const usedHrChannels = new Set();
-              sheet.stageboxes.forEach((b, bIdx) => {
-                if (bIdx !== sbIdx) {
-                  (b.channels || []).forEach(c => {
-                    if (c.homeRunCh) usedHrChannels.add(c.homeRunCh);
-                  });
-                }
-              });
-
-              // Get unique sockets in order
-              const uniqueSockets = [...new Set(box.channels.map(c => c.socket))].sort((a,b) => a-b);
-              let currentHrSearch = 1;
-              const totalInputs = Math.max(1, parseInt(sheet.homeRun.inputChannels, 10) || 32);
-
-              uniqueSockets.forEach(snum => {
-                // Find next available HR channel
-                while(usedHrChannels.has(currentHrSearch) && currentHrSearch <= totalInputs) {
-                  currentHrSearch++;
-                }
-                if (currentHrSearch <= totalInputs) {
-                  // Assign all layers of this socket to the same HR channel
-                  box.channels.forEach(c => {
-                    if (c.socket === snum) c.homeRunCh = currentHrSearch;
-                  });
-                  usedHrChannels.add(currentHrSearch);
-                }
-              });
-
-              renderSignalFlow();
-              renderStageboxes();
-            });
-          });
+      let tbody = '';
+      for (let ch = 1; ch <= totalInputs; ch++) {
+        const padCh = ch < 10 ? '0' + ch : ch;
+        let row = '<tr class="border-b border-line/40 hover:bg-panel/50">';
+        row += '<td class="py-2 px-3 border-r border-line bg-panel sticky left-0 z-10"><span class="font-mono font-bold text-ink">' + hrPrefix + ' ' + padCh + '</span></td>';
+        
+        let prevCellData = null;
+        
+        for (let i = 0; i < acts.length; i++) {
+          const act = acts[i];
+          
+          let cellPatch = null;
+          let sbObj = null;
+          let chIdxObj = -1;
+          let sbIdxObj = -1;
+          
+          for (let sbIdx = 0; sbIdx < sheet.stageboxes.length; sbIdx++) {
+            const b = sheet.stageboxes[sbIdx];
+            const cIdx = (b.channels || []).findIndex(c => c.actId === act.id && parseInt(c.homeRunCh, 10) === ch);
+            if (cIdx > -1) {
+              cellPatch = b.channels[cIdx];
+              sbObj = b;
+              chIdxObj = cIdx;
+              sbIdxObj = sbIdx;
+              break;
+            }
+          }
+          
+          const hasPatch = !!cellPatch;
+          const sbName = hasPatch ? (sbObj.name || 'Box ' + sbObj.letter) : '';
+          const inst = hasPatch ? (cellPatch.instrument || '') : '';
+          const mic = hasPatch ? (cellPatch.mic || '') : '';
+          
+          const currentCellData = hasPatch ? { sb: sbObj.id, socket: cellPatch.socket, inst: inst, mic: mic } : null;
+          
+          if (i > 0) {
+            let coText = '';
+            let coClass = 'text-muted';
+            let coBg = 'bg-panel2';
+            
+            if (!currentCellData) {
+               coText = 'Not Used Next Act';
+               coClass = 'text-muted';
+            } else if (!prevCellData) {
+               coText = 'ADD PATCH';
+               coClass = 'text-info font-bold';
+               coBg = 'bg-info/10';
+            } else {
+               if (currentCellData.sb === prevCellData.sb && currentCellData.socket === prevCellData.socket && currentCellData.inst === prevCellData.inst && currentCellData.mic === prevCellData.mic) {
+                  coText = 'No Change';
+                  coClass = 'text-muted';
+               } else {
+                  coText = 'REPATCH';
+                  coClass = 'text-warning font-bold';
+                  coBg = 'bg-warning/20';
+               }
+            }
+            row += '<td class="py-2 px-2 text-center text-[10px] ' + coClass + ' ' + coBg + ' border-x border-line/60">' + coText + '</td>';
+          }
+          
+          row += '<td class="py-2 px-2 align-top">';
+          if (hasPatch) {
+             row += '<div class="grid gap-1 bg-panel border border-line p-1.5 rounded text-xs shadow-2xs">' +
+                 '<div class="flex justify-between items-center text-[10px] font-bold text-muted uppercase">' +
+                   '<span>' + ui.esc(sbName) + ' &middot; Skt ' + cellPatch.socket + '</span>' +
+                   '<button type="button" data-mat-unpatch="' + sbIdxObj + '-' + chIdxObj + '" class="text-danger hover:bg-danger/10 px-1 rounded" title="Remove Patch">' + ui.icon('x', 'w-3 h-3') + '</button>' +
+                 '</div>' +
+                 '<input type="text" data-mat-inst="' + sbIdxObj + '-' + chIdxObj + '" class="field !py-0.5 !px-1.5 text-xs font-bold text-ink w-full" value="' + ui.esc(inst) + '" placeholder="Instrument..." />' +
+                 '<input type="text" data-mat-mic="' + sbIdxObj + '-' + chIdxObj + '" class="field !py-0.5 !px-1.5 text-[10px] text-muted w-full" value="' + ui.esc(mic) + '" placeholder="Mic..." />' +
+               '</div>';
+          } else {
+             row += '<select data-mat-add="' + act.id + '-' + ch + '" class="bg-panel2/50 text-xs border border-line/50 rounded py-1 px-1 text-muted w-full">' +
+                 '<option value="">+ Add Patch...</option>' +
+                 sheet.stageboxes.map((sb, sIdx) => {
+                   return '<optgroup label="' + ui.esc(sb.name || sb.letter) + '">' + 
+                     Array.from({length: sb.capacity}, (_, sockI) => sockI+1).map(sock => {
+                       return '<option value="' + sIdx + '-' + sock + '">' + ui.esc(sb.letter || '') + sock + '</option>';
+                     }).join('') +
+                   '</optgroup>';
+                 }).join('') +
+               '</select>';
+          }
+          row += '</td>';
+          prevCellData = currentCellData;
         }
+        row += '</tr>';
+        tbody += row;
       }
 
-      // Wire Filter Buttons
-      m.root.querySelectorAll('[data-sf-filter]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          signalFlowFilter = btn.getAttribute('data-sf-filter');
-          m.root.querySelectorAll('[data-sf-filter]').forEach((b) => {
-            const isActive = (b.getAttribute('data-sf-filter') === signalFlowFilter);
-            b.className = 'px-2.5 py-1 rounded-lg text-xs font-semibold border ' +
-              (isActive ? 'bg-accent text-accent-ink border-accent' : 'bg-panel border-line text-muted hover:text-ink');
+      matrixEl.innerHTML = '<div class="overflow-x-auto bg-panel border border-line rounded-xl shadow-xs">' +
+          '<table class="w-full text-left border-collapse min-w-max">' +
+            '<thead>' + thead + '</thead>' +
+            '<tbody>' + tbody + '</tbody>' +
+          '</table>' +
+        '</div>';
+
+      matrixEl.querySelectorAll('[data-mat-add]').forEach(sel => {
+        sel.addEventListener('change', () => {
+          if (!sel.value) return;
+          const [actId, hrCh] = sel.getAttribute('data-mat-add').split('-');
+          const [sbIdx, socket] = sel.value.split('-').map(Number);
+          const box = sheet.stageboxes[sbIdx];
+          if (!box.channels) box.channels = [];
+          box.channels.push({
+            socket: socket,
+            actId: actId,
+            instrument: '',
+            mic: '',
+            phantom: false,
+            repatch: false,
+            homeRunCh: parseInt(hrCh, 10)
           });
           renderSignalFlow();
         });
       });
 
-      // Wire Auto-Patch Button
-      const autoPatchBtn = m.root.querySelector('#btn-hr-auto-patch');
-      if (autoPatchBtn) {
-        autoPatchBtn.onclick = () => {
-          autoPatchHomeRun(sheet, 1);
-          ui.toast('Auto-patched stagebox sockets sequentially into Home Run channels', 'ok');
+      matrixEl.querySelectorAll('[data-mat-unpatch]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const [sbIdx, chIdx] = btn.getAttribute('data-mat-unpatch').split('-').map(Number);
+          sheet.stageboxes[sbIdx].channels.splice(chIdx, 1);
           renderSignalFlow();
-          renderStageboxes();
-        };
-      }
+        });
+      });
 
-      // Wire Clear Patches Button
-      const clearBtn = m.root.querySelector('#btn-hr-clear-all');
-      if (clearBtn) {
-        clearBtn.onclick = () => {
-          clearHomeRunPatches(sheet);
-          ui.toast('Cleared all Home Run channel mappings', 'ok');
-          renderSignalFlow();
-          renderStageboxes();
-        };
-      }
+      matrixEl.querySelectorAll('[data-mat-inst]').forEach(inp => {
+        inp.addEventListener('input', () => {
+          const [sbIdx, chIdx] = inp.getAttribute('data-mat-inst').split('-').map(Number);
+          sheet.stageboxes[sbIdx].channels[chIdx].instrument = inp.value;
+        });
+      });
 
-      // Wire Home Run Configuration inputs
-      const hrNameInp = m.root.querySelector('#ps-hr-name');
-      if (hrNameInp) {
-        hrNameInp.oninput = () => { sheet.homeRun.name = hrNameInp.value; };
-      }
-      const hrTypeSel = m.root.querySelector('#ps-hr-type');
-      if (hrTypeSel) {
-        hrTypeSel.onchange = () => { sheet.homeRun.type = hrTypeSel.value; };
-      }
-      const hrLocSel = m.root.querySelector('#ps-hr-location');
-      if (hrLocSel) {
-        hrLocSel.onchange = () => { sheet.homeRun.location = hrLocSel.value; };
-      }
-      const hrInputsInp = m.root.querySelector('#ps-hr-inputs');
-      if (hrInputsInp) {
-        hrInputsInp.onchange = () => {
-          sheet.homeRun.inputChannels = Math.max(1, parseInt(hrInputsInp.value, 10) || 32);
-          renderSignalFlow();
-          renderStageboxes();
-        };
-      }
-      const hrOutputsInp = m.root.querySelector('#ps-hr-outputs');
-      if (hrOutputsInp) {
-        hrOutputsInp.onchange = () => {
-          sheet.homeRun.outputChannels = Math.max(0, parseInt(hrOutputsInp.value, 10) || 16);
-        };
-      }
-      const hrPrefixInp = m.root.querySelector('#ps-hr-prefix');
-      if (hrPrefixInp) {
-        hrPrefixInp.oninput = () => {
-          sheet.homeRun.prefix = (hrPrefixInp.value || 'HR').trim();
-          renderSignalFlow();
-          renderStageboxes();
-        };
-      }
-
-      // Wire Home Run Presets Select
-      const presetSel = m.root.querySelector('#ps-hr-preset-select');
-      if (presetSel) {
-        presetSel.onchange = () => {
-          const idx = parseInt(presetSel.value, 10);
-          if (!isNaN(idx) && HOME_RUN_PRESETS[idx]) {
-            const p = HOME_RUN_PRESETS[idx];
-            sheet.homeRun.inputChannels = p.inputs;
-            sheet.homeRun.outputChannels = p.outputs;
-            sheet.homeRun.type = p.type;
-            sheet.homeRun.prefix = p.prefix;
-            if (hrInputsInp) hrInputsInp.value = p.inputs;
-            if (hrOutputsInp) hrOutputsInp.value = p.outputs;
-            if (hrTypeSel) hrTypeSel.value = p.type;
-            if (hrPrefixInp) hrPrefixInp.value = p.prefix;
-            ui.toast('Loaded preset: ' + p.label, 'ok');
-            renderSignalFlow();
-            renderStageboxes();
-          }
-        };
-      }
+      matrixEl.querySelectorAll('[data-mat-mic]').forEach(inp => {
+        inp.addEventListener('input', () => {
+          const [sbIdx, chIdx] = inp.getAttribute('data-mat-mic').split('-').map(Number);
+          sheet.stageboxes[sbIdx].channels[chIdx].mic = inp.value;
+        });
+      });
     }
 
+    /* ---- Step 4: Repatches (Auto-Computed) ---- */
     function renderRepatches() {
       const summaryEl = m.root.querySelector('#ps-repatch-summary-list');
       const countBadge = m.root.querySelector('#ps-repatch-count-badge');
@@ -3035,31 +2765,46 @@ RMTP.presets = (function () {
 
     const addCustomBtn = m.root.querySelector('#btn-add-custom-sb');
     if (addCustomBtn) {
-      addCustomBtn.addEventListener('click', () => {
-        const letter = nextLetter();
-        sheet.stageboxes.push({
-          id: store.uid('sb'),
-          letter: letter,
-          name: 'Custom Box ' + letter,
-          location: 'Centre Stage',
-          capacity: 12,
-          outCapacity: 4,
-          channels: Array.from({ length: 12 }, (_, i) => ({
-            socket: i + 1,
-            actId: sheet.acts[0] ? sheet.acts[0].id : 'act-house',
-            instrument: '',
-            mic: '',
-            phantom: false,
-            repatch: false,
-            repatchTo: '',
-            homeRunCh: null
-          })),
-          outputs: Array.from({ length: 4 }, (_, i) => ({
-            socket: i + 1,
-            destination: ''
-          }))
+            addCustomBtn.addEventListener('click', () => {
+        const pm = ui.modal({
+          title: 'Custom Stagebox',
+          body: '<div class="grid gap-3">' +
+                '<div><label class="block text-xs font-bold uppercase text-muted mb-1">Inputs</label><input type="number" id="cus-ins" class="field" value="12" min="0" max="128" /></div>' +
+                '<div><label class="block text-xs font-bold uppercase text-muted mb-1">Outputs</label><input type="number" id="cus-outs" class="field" value="4" min="0" max="128" /></div>' +
+                '</div>',
+          footer: '<button type="button" class="btn btn-primary mr-auto" data-cus-create>Create Box</button>' +
+                  '<button type="button" class="btn btn-ghost" data-cus-cancel>Cancel</button>'
         });
-        renderStageboxes();
+        pm.root.querySelector('[data-cus-cancel]').addEventListener('click', pm.close);
+        pm.root.querySelector('[data-cus-create]').addEventListener('click', () => {
+          const ins = parseInt(pm.root.querySelector('#cus-ins').value, 10) || 0;
+          const outs = parseInt(pm.root.querySelector('#cus-outs').value, 10) || 0;
+          pm.close();
+          const letter = nextLetter();
+          sheet.stageboxes.push({
+            id: store.uid('sb'),
+            letter: letter,
+            name: 'Custom Box ' + letter,
+            location: 'Centre Stage',
+            capacity: ins,
+            outCapacity: outs,
+            channels: Array.from({ length: ins }, (_, i) => ({
+              socket: i + 1,
+              actId: sheet.acts[0] ? sheet.acts[0].id : 'act-house',
+              instrument: '',
+              mic: '',
+              phantom: false,
+              repatch: false,
+              repatchTo: '',
+              homeRunCh: null
+            })),
+            outputs: Array.from({ length: outs }, (_, i) => ({
+              socket: i + 1,
+              destination: ''
+            }))
+          });
+          renderStageboxes();
+        });
       });
     }
 

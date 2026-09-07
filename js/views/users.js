@@ -245,15 +245,15 @@ RMTP.views.users = function (el) {
       size: 'md:max-w-lg',
       body:
         '<div class="grid gap-4">' +
-          '<div class="grid grid-cols-2 gap-4">' +
+          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
             fld('First name', '<input id="u-first" class="field" value="' + ui.esc(u.firstName || '') + '" placeholder="First" />') +
             fld('Last name',  '<input id="u-last" class="field" value="' + ui.esc(u.lastName || '') + '" placeholder="Last" />') +
           '</div>' +
-          '<div class="grid grid-cols-2 gap-4">' +
+          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
             fld('Email', '<input id="u-email" type="email" class="field" value="' + ui.esc(u.email || '') + '" placeholder="you@richmix.local" />') +
             fld(existing ? 'Reset password' : 'Password', '<input id="u-pass" type="password" class="field" placeholder="' + (existing ? 'Leave blank to keep' : 'At least 6 characters') + '" />') +
           '</div>' +
-          '<div class="grid grid-cols-2 gap-4">' +
+          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
             fld('Position', '<select id="u-position" class="field">' + opt(auth.POSITIONS, u.position || 'Duty Tech') + '</select>') +
           '</div>' +
           '<div class="grid gap-2">' +

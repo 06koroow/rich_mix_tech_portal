@@ -740,16 +740,96 @@ RMTP.views.advancing = function (el, params, query) {
 
   const afx = el.querySelector('#artifax-sync');
   if (afx) afx.addEventListener('click', async () => {
-    afx.disabled = true; ui.toast('Syncing from Artifax\u2026', 'info');
+    afx.disabled = true; ui.toast('Syncing from Artifax...', 'info');
     try {
-      const res = await RMTP.supabase.invokeFunction('artifax-sync');
-      if (!res.ok) { ui.toast('Artifax sync failed: ' + (res.message || 'unknown error'), 'danger'); afx.disabled = false; return; }
-      const d = res.data || {};
-      if (RMTP.syncSb && RMTP.syncSb.pullCollection) await RMTP.syncSb.pullCollection('advancing');
-      ui.toast('Artifax: ' + (d.created || 0) + ' added, ' + (d.updated || 0) + ' updated', 'ok');
+      const res = await fetch('/api/artifax/sync');
+      if (!res.ok) {
+        const text = await res.text();
+        ui.toast('Artifax HTTP Error: ' + text, 'danger'); 
+        afx.disabled = false; 
+        return; 
+      }
+      
+      const data = await res.json();
+      if (data.error) {
+        ui.toast('Artifax API Error: ' + data.error, 'danger');
+        afx.disabled = false;
+        return;
+      }
+      
+      const list = Array.isArray(data) ? data : (data.instances ?? data.results ?? data.events ?? []);
+      
+      const ROOM_TO_SPACE = {
+        "The Stage": "The Stage",
+        "Studio": "The Studio",
+        "The Studio": "The Studio",
+        "Mix": "The Mix",
+        "The Mix": "The Mix",
+        "Screen 1": "Screen One",
+        "Screen 2": "Screen Two",
+        "Screen 3": "Screen Three"
+      };
+
+      const toCategory = (type) => {
+        const t = (type || "").toLowerCase();
+        if (/cinema|film|screening|dcp/.test(t)) return "Cinema";
+        if (/hire|private|wedding|corporate|conference|launch/.test(t)) return "Private Hires";
+        return "Programme";
+      };
+
+      let created = 0, updated = 0, skipped = 0;
+      const existingEvents = store.getAll('advancing');
+
+      for (const r of list) {
+        const id = String(r.id ?? r.instanceId ?? r.InstanceId);
+        const title = r.title ?? r.name ?? r.EventName ?? "Untitled";
+        const room = r.room ?? r.roomName ?? r.RoomName ?? "";
+        const type = r.type ?? r.arrangementType ?? r.ArrangementType ?? "";
+        const start = r.start ?? r.startDateTime ?? r.StartDateTime;
+        const end = r.end ?? r.endDateTime ?? r.EndDateTime;
+        const contact = r.contact ?? r.contactName ?? r.CustomerName ?? "";
+        const status = r.status ?? r.Status ?? "Confirmed";
+
+        const space = ROOM_TO_SPACE[room] ?? "";
+        if (!space) { skipped++; continue; }
+
+        const startDate = start ? new Date(start) : null;
+        const endDate = end ? new Date(end) : null;
+        const hhmm = (d) => (d ? d.toISOString().slice(11, 16) : "");
+        const cancelled = /cancel/i.test(status);
+
+        const booking = {
+          artifaxId: id,
+          name: title,
+          category: toCategory(type),
+          space: space,
+          date: startDate ? startDate.toISOString().slice(0, 10) : "",
+          startTime: hhmm(startDate),
+          finishTime: hhmm(endDate),
+          clientContact: contact,
+          status: cancelled ? "Cancelled" : "Confirmed"
+        };
+
+        const existing = existingEvents.find(e => e.artifaxId === id);
+        let row = null;
+        
+        if (existing) {
+          row = { ...existing, ...booking, id: existing.id };
+          updated++;
+        } else {
+          row = { id: 'evt-afx-' + id, ...booking };
+          created++;
+        }
+        
+        store.upsert('advancing', row);
+      }
+
+      if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
+      
+      ui.toast('Artifax: ' + created + ' added, ' + updated + ' updated', 'ok');
       RMTP.router.render();
     } catch (e) {
-      ui.toast('Artifax sync failed \u2014 is the function deployed?', 'danger'); afx.disabled = false;
+      ui.toast('Artifax sync failed: ' + e.message, 'danger'); afx.disabled = false;
     }
   });
 
@@ -2577,7 +2657,7 @@ RMTP.views.advancing = function (el, params, query) {
                 fld('Testing Date & Time', '<input id="e-dcp-test-datetime" type="datetime-local" class="field font-mono" value="' + ui.esc(ev.dcp_test_datetime || ev.dcpTestDatetime || '') + '" />') +
               '</div>' +
               '<label class="flex items-center gap-2 text-xs font-semibold cursor-pointer text-accent pt-1">' +
-                '<input type="checkbox" id="e-gen-dcp-shift" class="w-4 h-4 accent-[var(--accent)]" ' + (ev.dcp_test_event_id || (!existing && (ev.category === 'Cinema' || isScreenInitial)) ? 'checked' : 'checked') + ' />' +
+                '<input type="checkbox" id="e-gen-dcp-shift" class="w-4 h-4 accent-[var(--accent)]" ' + (ev.dcp_test_event_id ? 'checked' : '') + ' />' +
                 '<span>Generate / Update Linked DCP Test Shift in Calendar</span>' +
               '</label>') +
             '</div>' +

@@ -83,7 +83,13 @@ async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInsta
     from: from.toISOString().slice(0, 10),
     to: to.toISOString().slice(0, 10),
   });
-  const res = await fetch(`${ARTIFAX_URL}/api/instances?${params}`, {
+    // Ensure base URL doesn't have a trailing slash or trailing /api since we append it
+  const baseUrl = ARTIFAX_URL.replace(/\/api\/?$/, '').replace(/\/$/, '');
+  
+  // Use the correct Artifax Events endpoint
+  const endpoint = `${baseUrl}/api/arrangements/event?${params}`;
+  
+  const res = await fetch(endpoint, {
     headers: { "Authorization": `Bearer ${ARTIFAX_API_KEY}`, "Accept": "application/json" },
   });
   if (!res.ok) throw new Error(`Artifax responded ${res.status}: ${await res.text()}`);

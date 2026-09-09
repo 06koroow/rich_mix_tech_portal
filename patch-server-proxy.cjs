@@ -1,22 +1,11 @@
-import express from 'express';
-import path from 'path';
-import { fileURLToPath } from 'url';
+const fs = require('fs');
+let serverCode = fs.readFileSync('server.js', 'utf8');
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const app = express();
-const PORT = 3000;
-
-// Serve static assets from root directory
-app.use(express.static(__dirname));
-
-// Fallback to index.html for SPA routing
-
+const proxyCode = `
 // Artifax Proxy Route
 app.get('/api/artifax/sync', async (req, res) => {
   const apiKey = process.env.ARTIFAX_API_KEY || "5fd9bd7f5b9748a5efacd8606964d6b1";
-  const baseUrl = (process.env.ARTIFAX_URL || "https://richmix.artifaxevent.com").replace(/\/api\/?$/, '').replace(/\/$/, '');
+  const baseUrl = (process.env.ARTIFAX_URL || "https://richmix.artifaxevent.com").replace(/\\/api\\/?$/, '').replace(/\\/$/, '');
   
   const from = new Date();
   const to = new Date(Date.now() + 120 * 864e5); // 120 days
@@ -26,7 +15,7 @@ app.get('/api/artifax/sync', async (req, res) => {
     to: to.toISOString().slice(0, 10),
   });
   
-  const endpoint = `${baseUrl}/api/arrangements/event?${params}`;
+  const endpoint = \`\${baseUrl}/api/arrangements/event?\${params}\`;
   
   try {
     const fetch = (await import('node-fetch')).default || globalThis.fetch;
@@ -39,7 +28,7 @@ app.get('/api/artifax/sync', async (req, res) => {
     
     if (!response.ok) {
       const text = await response.text();
-      return res.status(response.status).json({ error: `Artifax responded ${response.status}: ${text}` });
+      return res.status(response.status).json({ error: \`Artifax responded \${response.status}: \${text}\` });
     }
     
     const data = await response.json();
@@ -48,11 +37,12 @@ app.get('/api/artifax/sync', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+`;
 
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running at http://0.0.0.0:${PORT}`);
-});
+if (!serverCode.includes('/api/artifax/sync')) {
+  serverCode = serverCode.replace('app.get(\'*\', (req, res) => {', proxyCode + '\napp.get(\'*\', (req, res) => {');
+  fs.writeFileSync('server.js', serverCode);
+  console.log("Patched server.js");
+} else {
+  console.log("Already patched");
+}

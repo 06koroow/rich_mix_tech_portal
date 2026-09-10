@@ -216,20 +216,27 @@ select.field { appearance: none; background-image: url("data:image/svg+xml,%3Csv
   margin-bottom: 14px;
 }
 .adv-print-section {
-  margin-bottom: 14px;
-  border-bottom: 1px solid #e2e8f0;
-  padding-bottom: 12px;
+  margin-bottom: 20px;
+  padding-bottom: 4px;
   page-break-inside: avoid;
   break-inside: avoid;
 }
 .adv-print-section-title {
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 10px;
-  font-weight: 700;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 13px;
+  font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 0.14em;
-  color: #475569;
-  margin-bottom: 8px;
+  letter-spacing: 0.05em;
+  color: #0f172a;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-left: 4px solid #0f172a;
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 .adv-print-grid {
   display: grid;

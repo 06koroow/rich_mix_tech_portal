@@ -1,0 +1,101 @@
+  1650	                const outList = Array.isArray(it.channelOutputs) ? it.channelOutputs : [];
+  1651	                let parts = [];
+  1652	                if (inList.length) parts.push('<strong style="color:#059669;">' + inList.length + ' In:</strong> ' + ui.esc(inList.map((c) => (c.channel || '') + ':' + (c.instrument || 'In')).join(', ')));
+  1653	                if (outList.length) parts.push('<strong style="color:#0284c7;">' + outList.length + ' Out:</strong> ' + ui.esc(outList.map((o) => (o.num || '') + ':' + (o.name || o.dest || 'Mix')).join(', ')));
+  1654	                techReqParts.push('<div style="font-size:11px;display:flex;flex-direction:column;gap:2px;">' + parts.join('') + '</div>');
+  1655	              }
+  1656	              let techReqDesc = techReqParts.length ? techReqParts.join('<div style="height:4px;"></div>') : '—';
+  1657	              return (
+  1658	                '<tr style="border-bottom:1px solid #e2e8f0;">' +
+  1659	                  '<td style="padding:6px 8px;font-weight:600;">' + ui.esc(it.label || it.type) + '</td>' +
+  1660	                  '<td style="padding:6px 8px;font-weight:500;">' + ui.esc(it.customName || '—') + '</td>' +
+  1661	                  '<td style="padding:6px 8px;font-family:monospace;">' + ui.esc(it.time || '—') + '</td>' +
+  1662	                  '<td style="padding:6px 8px;font-family:monospace;">' + ui.esc(it.duration || '—') + '</td>' +
+  1663	                  '<td style="padding:6px 8px;">' + techReqDesc + '</td>' +
+  1664	                '</tr>'
+  1665	              );
+  1666	            }).join('') +
+  1667	          '</tbody>' +
+  1668	        '</table>' +
+  1669	      '</div>'
+  1670	    ) : '';
+  1671	
+  1672	    const cinemaChecksHtml = isCinema ? (
+  1673	      '<div class="adv-print-section">' +
+  1674	        '<div class="adv-print-section-title" style="display:flex;justify-content:space-between;align-items:center;">' +
+  1675	          '<span>Cinema Screening Checklist & Testing</span>' +
+  1676	          '<div style="display:flex;gap:8px;font-size:11px;font-family:monospace;font-weight:600;">' +
+  1677	            (filmDurationVal ? '<span style="color:#334155;">Film: ' + ui.esc(filmDurationVal) + '</span>' : '') +
+  1678	            (mediaTypeVal ? '<span style="color:#0284c7;">Media: ' + ui.esc(mediaTypeVal) + '</span>' : '') +
+  1679	          '</div>' +
+  1680	        '</div>' +
+  1681	        '<div class="adv-print-grid-4">' +
+  1682	          [
+  1683	            { label: 'DCP Received', val: ev.dcp_received !== undefined ? !!ev.dcp_received : !!ev.dcpReceived },
+  1684	            { label: 'Checks Completed', val: ev.checks_completed !== undefined ? !!ev.checks_completed : !!ev.checksCompleted },
+  1685	            { label: 'Intermission', val: !!ev.intermission },
+  1686	            { label: 'Q&A', val: !!ev.qa },
+  1687	          ].map((c) => (
+  1688	            '<div class="adv-print-check-card ' + (c.val ? 'checked' : 'unchecked') + '">' +
+  1689	              '<span class="adv-print-label">' + ui.esc(c.label) + '</span>' +
+  1690	              '<span class="adv-print-val">' + (c.val ? 'YES' : 'NO') + '</span>' +
+  1691	            '</div>'
+  1692	          )).join('') +
+  1693	        '</div>' +
+  1694	        '<div class="adv-print-grid" style="margin-top:8px;">' +
+  1695	          '<div class="adv-print-field"><div class="adv-print-label">Testing Engineer</div><div class="adv-print-val">' + ui.esc(dcpTesterName || 'Unassigned') + '</div></div>' +
+  1696	          '<div class="adv-print-field"><div class="adv-print-label">DCP Test Date/Time</div><div class="adv-print-val">' + ui.esc(dcpTestTimeStr || 'Not scheduled') + '</div></div>' +
+  1697	        '</div>' +
+  1698	      '</div>'
+  1699	    ) : '';
+  1700	
+  1701	    const channelListPrintSection = (channelInputs.length || channelOutputs.length) ? (
+  1702	      '<div class="adv-print-section">' +
+  1703	        '<div class="adv-print-section-title">Global / Festival Patch List (Custom List)</div>' +
+  1704	        (channelInputs.length ? (
+  1705	          '<div style="margin-bottom:8px;">' +
+  1706	            '<div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:4px;">Inputs (' + channelInputs.length + ')</div>' +
+  1707	            '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
+  1708	              '<thead><tr style="border-bottom:1px solid #cbd5e1;text-align:left;color:#475569;"><th style="padding:3px 6px;">Ch</th><th style="padding:3px 6px;">Patch</th><th style="padding:3px 6px;">Instrument</th><th style="padding:3px 6px;">Mic / DI</th><th style="padding:3px 6px;">Stand</th><th style="padding:3px 6px;">Pos</th><th style="padding:3px 6px;">+48V</th></tr></thead>' +
+  1709	              '<tbody>' +
+  1710	                channelInputs.map((ch, i) => (
+  1711	                  '<tr style="border-bottom:1px solid #f1f5f9;">' +
+  1712	                    '<td style="padding:3px 6px;font-weight:600;font-family:monospace;">Ch ' + (ch.channel || (i + 1)) + '</td>' +
+  1713	                    '<td style="padding:3px 6px;font-family:monospace;color:#64748b;font-size:10px;">' + ui.esc(ch.patch || '—') + '</td>' +
+  1714	                    '<td style="padding:3px 6px;font-weight:500;">' + ui.esc(ch.instrument || '—') + '</td>' +
+  1715	                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(ch.mic || '—') + '</td>' +
+  1716	                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(ch.stand || '—') + '</td>' +
+  1717	                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(ch.pos || '—') + '</td>' +
+  1718	                    '<td style="padding:3px 6px;font-family:monospace;' + (ch.phantom ? 'color:#dc2626;font-weight:700;' : 'color:#94a3b8;') + '">' + (ch.phantom ? '+48V' : '—') + '</td>' +
+  1719	                  '</tr>'
+  1720	                )).join('') +
+  1721	              '</tbody>' +
+  1722	            '</table>' +
+  1723	          '</div>'
+  1724	        ) : '') +
+  1725	        (channelOutputs.length ? (
+  1726	          '<div>' +
+  1727	            '<div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:4px;">Outputs / Monitors (' + channelOutputs.length + ')</div>' +
+  1728	            '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
+  1729	              '<thead><tr style="border-bottom:1px solid #cbd5e1;text-align:left;color:#475569;"><th style="padding:3px 6px;">Out</th><th style="padding:3px 6px;">Name</th><th style="padding:3px 6px;">Type</th><th style="padding:3px 6px;">Destination</th></tr></thead>' +
+  1730	              '<tbody>' +
+  1731	                channelOutputs.map((out, i) => (
+  1732	                  '<tr style="border-bottom:1px solid #f1f5f9;">' +
+  1733	                    '<td style="padding:3px 6px;font-weight:600;font-family:monospace;">Out ' + (out.num || (i + 1)) + (out.stereo ? ' (St)' : '') + '</td>' +
+  1734	                    '<td style="padding:3px 6px;font-weight:500;">' + ui.esc(out.name || '—') + '</td>' +
+  1735	                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(out.type || '—') + '</td>' +
+  1736	                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(out.dest || '—') + '</td>' +
+  1737	                  '</tr>'
+  1738	                )).join('') +
+  1739	              '</tbody>' +
+  1740	            '</table>' +
+  1741	          '</div>'
+  1742	        ) : '') +
+  1743	      '</div>'
+  1744	    ) : '';
+  1745	
+  1746	    const linkedMaintSection = linkedFaults.length ? (
+  1747	      '<div class="adv-print-section">' +
+  1748	        '<div class="adv-print-section-title">Linked Maintenance Tasks (' + linkedFaults.length + ')</div>' +
+  1749	        '<div style="display:flex;flex-direction:column;gap:4px;">' +
+  1750	          linkedFaults.map((f) => (

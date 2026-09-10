@@ -2589,7 +2589,14 @@ RMTP.views.advancing = function (el, params, query) {
                   '</span>' +
                   '<select id="e-space" class="field font-semibold text-accent pl-8.5 cursor-pointer ' + (!hasSpaceInitial ? 'border-accent/40 bg-accent/5 ring-2 ring-accent/10' : '') + '">' +
                     blankOpt(RMTP.SPACES, ev.space, '\u25cb Choose a Space / Room\u2026') +
+                    (!existing ? '<option value="Multi Room">Multi Room...</option>' : '') +
                   '</select>' +
+                '</div>' +
+                '<div id="e-multi-room-wrap" class="hidden mt-3 p-3 bg-panel2/50 border border-line rounded-lg">' +
+                  '<p class="text-[11px] font-bold text-ink uppercase tracking-wider mb-2">Select Linked Spaces</p>' +
+                  '<div class="grid grid-cols-2 gap-2">' +
+                    RMTP.SPACES.map(s => '<label class="flex items-center gap-2 text-xs cursor-pointer"><input type="checkbox" name="e-multi-spaces" value="'+s+'" class="w-3.5 h-3.5 accent-[var(--accent)]"><span>'+s+'</span></label>').join('') +
+                  '</div>' +
                 '</div>' +
                 '<div id="space-select-hint" class="' + (hasSpaceInitial ? 'hidden' : '') + ' text-[11px] text-accent/80 font-medium flex items-center gap-1">' +
                   ui.icon('arrowR', 'w-3 h-3') + 'Select room to begin advancing' +
@@ -3140,6 +3147,10 @@ RMTP.views.advancing = function (el, params, query) {
         spaceSelect.classList.toggle('bg-accent/5', !hasSpace);
         spaceSelect.classList.toggle('ring-2', !hasSpace);
         spaceSelect.classList.toggle('ring-accent/10', !hasSpace);
+      }
+      const multiWrap = m.root.querySelector('#e-multi-room-wrap');
+      if (multiWrap) {
+        multiWrap.classList.toggle('hidden', currentSpace !== 'Multi Room');
       }
 
       const unselectedPrompt = m.root.querySelector('#space-unselected-prompt');
@@ -4724,7 +4735,24 @@ RMTP.views.advancing = function (el, params, query) {
       }
       record.dcp_test_event_id = linkedDcpId;
 
-      store.upsert('advancing', record);
+      if (chosenSpace === 'Multi Room') {
+        const checkedSpaces = Array.from(m.root.querySelectorAll('input[name="e-multi-spaces"]:checked')).map(cb => cb.value);
+        if (checkedSpaces.length === 0) {
+          ui.toast('Please select at least one space for Multi Room', 'danger');
+          return;
+        }
+        
+        const baseId = record.id;
+        checkedSpaces.forEach((sp, idx) => {
+          const multiRecord = Object.assign({}, record, {
+            id: idx === 0 ? baseId : store.uid('evt'),
+            space: sp
+          });
+          store.upsert('advancing', multiRecord);
+        });
+      } else {
+        store.upsert('advancing', record);
+      }
 
       // Bi-directional Sync: Keep linked Patch Sheet updated with Advancing schedule artists
       if (RMTP.presets && typeof RMTP.presets.getAllPatchSheets === 'function' && typeof RMTP.presets.savePatchSheet === 'function') {

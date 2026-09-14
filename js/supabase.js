@@ -79,7 +79,23 @@ RMTP.supabase = (function () {
   /* ---- Edge Functions ---- */
   async function invokeFunction(name, body) {
     const { data, error } = await db().functions.invoke(name, { body: body || {} });
-    if (error) return { ok: false, message: error.message, error: error };
+    
+    // If the edge function returns a 500 error, the Supabase JS client throws a FunctionsHttpError.
+    // However, our edge function sends a JSON body `{ error: "message" }` when it crashes.
+    // The SDK sometimes attaches that context to the error object, or returns it in `data`.
+    if (error) {
+      // Try to parse out the real error message if the function sent one
+      let msg = error.message;
+      try {
+        if (error.context && typeof error.context.text === 'function') {
+           const bodyText = await error.context.text();
+           const bodyJson = JSON.parse(bodyText);
+           if (bodyJson.error) msg = bodyJson.error;
+        }
+      } catch(e) {}
+      
+      return { ok: false, message: msg, error: error };
+    }
     return { ok: true, data: data };
   }
 

@@ -272,13 +272,18 @@ RMTP.views.advancing = function (el, params, query) {
 
   const base = allEvents.filter(matchesTechFilter);
 
-  const upcomingCount = base.filter((e) => !isPastEvent(e.date)).length;
-  const pastCount = base.filter((e) => isPastEvent(e.date)).length;
+  const upcomingCount = base.filter((e) => e.deleted !== true && !isPastEvent(e.date)).length;
+  const pastCount = base.filter((e) => e.deleted !== true && isPastEvent(e.date)).length;
+  const deletedCount = base.filter((e) => e.deleted === true).length;
 
   const currentTab = filters.tab || 'upcoming';
 
   const shown = base
-    .filter((e) => (currentTab === 'past' ? isPastEvent(e.date) : !isPastEvent(e.date)))
+    .filter((e) => {
+      if (currentTab === 'deleted') return e.deleted === true;
+      if (currentTab === 'past') return e.deleted !== true && isPastEvent(e.date);
+      return e.deleted !== true && !isPastEvent(e.date);
+    })
     .filter((e) => {
       if (filters.space && e.space !== filters.space) return false;
       if (filters.date && e.date !== filters.date) return false;
@@ -294,7 +299,7 @@ RMTP.views.advancing = function (el, params, query) {
       return true;
     })
     .sort((a, b) => {
-      if (currentTab === 'past') {
+      if (currentTab === 'past' || currentTab === 'deleted') {
         const dateCmp = (b.date || '').localeCompare(a.date || '');
         if (dateCmp !== 0) return dateCmp;
         return (b.startTime || '').localeCompare(a.startTime || '');
@@ -310,7 +315,9 @@ RMTP.views.advancing = function (el, params, query) {
                          : ['user', 'No shifts found for selected technician(s)', 'Try selecting "All Team Shifts" or a different technician filter.'])
     : (currentTab === 'past'
       ? ['clip', 'No past events found', 'Past events will appear here once their date has passed.']
-      : ['clip', 'Nothing matches these filters', 'Try a different space, tab, or clear the date.']);
+      : currentTab === 'deleted' 
+        ? ['trash', 'No deleted events', 'Events you delete will appear here.']
+        : ['clip', 'Nothing matches these filters', 'Try a different space, tab, or clear the date.']);
 
   // Active filter count summary badge
   let activeFilterCount = 0;
@@ -386,7 +393,11 @@ RMTP.views.advancing = function (el, params, query) {
       crewPillText = selectedTechs.length + ' crew selected';
     }
 
-    const tabPool = base.filter((e) => (currentTab === 'past' ? isPastEvent(e.date) : !isPastEvent(e.date)));
+    const tabPool = base.filter((e) => {
+      if (currentTab === 'deleted') return e.deleted === true;
+      if (currentTab === 'past') return e.deleted !== true && isPastEvent(e.date);
+      return e.deleted !== true && !isPastEvent(e.date);
+    });
     const chip = (id, label, n, active) =>
       '<button data-space="' + ui.esc(id) + '" class="px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ' +
         (active ? 'bg-accent text-accent-ink border-accent font-semibold shadow-2xs' : 'bg-panel border-line text-muted hover:text-ink hover:border-line/80') + '">' +
@@ -463,8 +474,8 @@ RMTP.views.advancing = function (el, params, query) {
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     const monthName = monthNames[month];
 
-    // Filter base events by space if space filter active
-    const calEvents = base.filter((e) => !filters.space || e.space === filters.space);
+    // Filter base events by space if space filter active, and exclude deleted events
+    const calEvents = base.filter((e) => e.deleted !== true && (!filters.space || e.space === filters.space));
 
     // Map events by YYYY-MM-DD
     const eventsByDate = {};
@@ -814,6 +825,12 @@ RMTP.views.advancing = function (el, params, query) {
       let created = 0, updated = 0, skipped = 0;
       const existingEvents = store.all('advancing');
 
+      if (data && data.created !== undefined && list.length === 0) {
+        created = data.created || 0;
+        updated = data.updated || 0;
+        skipped = data.skipped || 0;
+      }
+
       for (const r of list) {
         const id = String(r.id ?? r.instanceId ?? r.InstanceId ?? r.event_id);
         const title = r.title ?? r.name ?? r.EventName ?? r.arrangement_description ?? r.arrangement_name ?? "Untitled";
@@ -977,7 +994,8 @@ RMTP.views.advancing = function (el, params, query) {
     if (selectedForBulkDelete.size === 0) return;
     if (!confirm(`Are you sure you want to delete ${selectedForBulkDelete.size} event(s)?`)) return;
     for (let id of selectedForBulkDelete) {
-      store.remove('advancing', id);
+      const ev = store.find('advancing', id);
+      if (ev) store.upsert('advancing', Object.assign({}, ev, { deleted: true }));
     }
     selectedForBulkDelete.clear();
     bulkDeleteMode = RMTP._advBulkDeleteMode = false;
@@ -1012,6 +1030,7 @@ RMTP.views.advancing = function (el, params, query) {
 
     const e = q('[data-edit="' + ev.id + '"]'); if (e) e.addEventListener('click', (evt) => { evt.stopPropagation(); openForm(ev); });
     const d = q('[data-del="' + ev.id + '"]'); if (d) d.addEventListener('click', (evt) => { evt.stopPropagation(); del(ev); });
+    const rn = q('[data-reinstate="' + ev.id + '"]'); if (rn) rn.addEventListener('click', (evt) => { evt.stopPropagation(); reinstate(ev); });
     const rp = q('[data-reports="' + ev.id + '"]'); if (rp) rp.addEventListener('click', (evt) => { evt.stopPropagation(); openReports(ev); });
     const sp = q('[data-spec="' + ev.id + '"]'); if (sp) sp.addEventListener('click', (evt) => { evt.stopPropagation(); files.open(ev.techSpec); });
     const pr = q('[data-print="' + ev.id + '"]'); if (pr) pr.addEventListener('click', (evt) => { evt.stopPropagation(); printAdvance(ev); });
@@ -1108,7 +1127,7 @@ RMTP.views.advancing = function (el, params, query) {
 
   function tabBar() {
     return (
-      '<div class="flex items-center gap-2 mb-4 p-1 bg-panel2 rounded-lg border border-line w-full sm:w-fit overflow-x-auto">' +
+      '<div class="flex items-center gap-2 mb-4 p-1 bg-panel2 rounded-lg border border-line w-full sm:w-fit overflow-x-auto whitespace-nowrap hide-scrollbar">' +
         '<button data-adv-tab="upcoming" class="flex-1 sm:flex-initial px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 sm:gap-2 ' +
           (currentTab === 'upcoming' ? 'bg-accent text-accent-ink shadow-sm' : 'text-muted hover:text-ink') + '">' +
           ui.icon('clip', 'w-4 h-4') + '<span>Upcoming</span>' +
@@ -1118,6 +1137,11 @@ RMTP.views.advancing = function (el, params, query) {
           (currentTab === 'past' ? 'bg-accent text-accent-ink shadow-sm' : 'text-muted hover:text-ink') + '">' +
           ui.icon('clock', 'w-4 h-4') + '<span>Past Events</span>' +
           '<span class="px-1.5 py-0.5 rounded text-[11px] ' + (currentTab === 'past' ? 'bg-black/20 text-accent-ink' : 'bg-line text-muted') + '">' + pastCount + '</span>' +
+        '</button>' +
+        '<button data-adv-tab="deleted" class="flex-1 sm:flex-initial px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 sm:gap-2 ' +
+          (currentTab === 'deleted' ? 'bg-danger text-white shadow-sm' : 'text-muted hover:text-ink') + '">' +
+          ui.icon('trash', 'w-4 h-4') + '<span>Deleted</span>' +
+          '<span class="px-1.5 py-0.5 rounded text-[11px] ' + (currentTab === 'deleted' ? 'bg-black/20 text-white' : 'bg-line text-muted') + '">' + deletedCount + '</span>' +
         '</button>' +
       '</div>'
     );
@@ -1187,14 +1211,18 @@ RMTP.views.advancing = function (el, params, query) {
           '</div>' +
 
           '<div class="flex items-center gap-1.5 shrink-0 self-end sm:self-start w-full sm:w-auto justify-end pt-2 sm:pt-0 border-t sm:border-t-0 border-line/40">' +
-            '<button data-open-modal="' + ev.id + '" class="btn btn-ghost !py-1.5 !px-3 text-xs font-semibold text-accent flex items-center gap-1.5 hover:bg-accent/10 rounded-lg flex-1 sm:flex-initial justify-center">' +
-              ui.icon('eye', 'w-4 h-4') + '<span>View Advance</span>' +
-            '</button>' +
-            '<button data-print="' + ev.id + '" class="btn btn-ghost !p-2" title="Export Advance PDF">' + ui.icon('print', 'w-4 h-4') + '</button>' +
-            '<button data-reports="' + ev.id + '" class="btn btn-ghost !p-2" title="Shift Reports">' + ui.icon('clip', 'w-4 h-4') + '</button>' +
-            (canManageEvents ?
-              '<button data-edit="' + ev.id + '" class="btn btn-ghost !p-2" title="Edit Event">' + ui.icon('pen', 'w-4 h-4') + '</button>' +
-              '<button data-del="' + ev.id + '" class="btn btn-danger !p-2" title="Delete Event">' + ui.icon('trash', 'w-4 h-4') + '</button>' : '') +
+            (ev.deleted ? 
+              '<button data-reinstate="' + ev.id + '" class="btn btn-ok !py-1.5 !px-3 text-xs font-semibold flex items-center gap-1.5 rounded-lg flex-1 sm:flex-initial justify-center">' + ui.icon('refresh', 'w-4 h-4') + '<span>Reinstate Event</span></button>' 
+            :
+              '<button data-open-modal="' + ev.id + '" class="btn btn-ghost !py-1.5 !px-3 text-xs font-semibold text-accent flex items-center gap-1.5 hover:bg-accent/10 rounded-lg flex-1 sm:flex-initial justify-center">' +
+                ui.icon('eye', 'w-4 h-4') + '<span>View Advance</span>' +
+              '</button>' +
+              '<button data-print="' + ev.id + '" class="btn btn-ghost !p-2" title="Export Advance PDF">' + ui.icon('print', 'w-4 h-4') + '</button>' +
+              '<button data-reports="' + ev.id + '" class="btn btn-ghost !p-2" title="Shift Reports">' + ui.icon('clip', 'w-4 h-4') + '</button>' +
+              (canManageEvents ?
+                '<button data-edit="' + ev.id + '" class="btn btn-ghost !p-2" title="Edit Event">' + ui.icon('pen', 'w-4 h-4') + '</button>' +
+                '<button data-del="' + ev.id + '" class="btn btn-danger !p-2" title="Delete Event">' + ui.icon('trash', 'w-4 h-4') + '</button>' : '')
+            ) +
           '</div>' +
         '</div>' +
       '</div>'
@@ -1721,15 +1749,21 @@ RMTP.views.advancing = function (el, params, query) {
         '</div>' +
         '<div class="flex items-center gap-2">' +
           (canManageEvents ?
-            '<button id="modal-merge-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
-              ui.icon('refresh', 'w-4 h-4') + '<span>Merge</span>' +
-            '</button>' +
-            '<button id="modal-edit-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
-              ui.icon('pen', 'w-4 h-4') + '<span>Edit</span>' +
-            '</button>' +
-            '<button id="modal-del-btn" class="btn btn-danger text-xs flex items-center gap-1.5">' +
-              ui.icon('trash', 'w-4 h-4') + '<span>Delete</span>' +
-            '</button>' : '') +
+            (ev.deleted ?
+              '<button id="modal-reinstate-btn" class="btn btn-ok text-xs flex items-center gap-1.5">' +
+                ui.icon('refresh', 'w-4 h-4') + '<span>Reinstate Event</span>' +
+              '</button>'
+            :
+              '<button id="modal-merge-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
+                ui.icon('refresh', 'w-4 h-4') + '<span>Merge</span>' +
+              '</button>' +
+              '<button id="modal-edit-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
+                ui.icon('pen', 'w-4 h-4') + '<span>Edit</span>' +
+              '</button>' +
+              '<button id="modal-del-btn" class="btn btn-danger text-xs flex items-center gap-1.5">' +
+                ui.icon('trash', 'w-4 h-4') + '<span>Delete</span>' +
+              '</button>')
+          : '') +
           '<button data-close class="btn btn-primary text-xs !px-4">Close</button>' +
         '</div>' +
       '</div>';
@@ -1792,6 +1826,9 @@ RMTP.views.advancing = function (el, params, query) {
     const delBtn = m.root.querySelector('#modal-del-btn');
     if (delBtn) delBtn.addEventListener('click', () => { m.close(); del(ev); });
 
+    const reinstateBtn = m.root.querySelector('#modal-reinstate-btn');
+    if (reinstateBtn) reinstateBtn.addEventListener('click', () => { m.close(); reinstate(ev); });
+
     const linkedDcpBtn = m.root.querySelector('#btn-open-linked-dcp');
     if (linkedDcpBtn && dcpTestEvent) {
       linkedDcpBtn.addEventListener('click', () => { m.close(); openEventModal(dcpTestEvent); });
@@ -1803,30 +1840,36 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   function openMergeModal(targetEv) {
-    const allEvents = store.all('advancing').filter(e => e.id !== targetEv.id);
-    
-    // Sort by date (descending)
-    allEvents.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+    const allEvents = store.all('advancing').filter(e => 
+      e.id !== targetEv.id && 
+      !e.deleted && 
+      !isPastEvent(e.date) && 
+      e.space === targetEv.space
+    );
+      
+    // Sort by date (ascending)
+    allEvents.sort((a, b) => new Date(a.date || '9999').getTime() - new Date(b.date || '9999').getTime());
 
     const optionsHtml = allEvents.map(e => 
-      '<option value="' + e.id + '">' + (e.date || '') + ' \u2013 ' + ui.esc(e.name || '') + (e.space ? ' (' + e.space + ')' : '') + '</option>'
+      '<option value="' + e.id + '">' + (e.date ? ui.formatDate(e.date) : 'TBC') + ' – ' + ui.esc(e.name || '') + '</option>'
     ).join('');
 
     const bodyHtml = 
       '<div class="text-sm text-ink/80 mb-4">' +
-        'Merging will combine this event with another. The selected event\'s Artifax ID and basic details will be applied to the target event, and the selected event will be deleted.' +
+        'Select another upcoming event in <strong>' + ui.esc(targetEv.space || 'this space') + '</strong> to merge into <strong>' + ui.esc(targetEv.name) + '</strong>.' +
       '</div>' +
       '<div class="form-group">' +
-        '<label>Select event to merge INTO <strong>' + ui.esc(targetEv.name) + '</strong></label>' +
+        '<label>Select source event</label>' +
         '<select id="merge-target" class="form-control">' +
           '<option value="">-- Select Event --</option>' +
           optionsHtml +
         '</select>' +
-      '</div>';
+      '</div>' +
+      '<div id="merge-comparison" class="hidden mt-4 space-y-4 border-t border-line pt-4"></div>';
 
     const footerHtml = 
       '<button data-close class="btn btn-ghost">Cancel</button>' +
-      '<button id="confirm-merge-btn" class="btn btn-primary">Merge Events</button>';
+      '<button id="confirm-merge-btn" class="btn btn-primary" disabled>Merge Events</button>';
 
     const m = ui.modal({
       title: 'Merge Event',
@@ -1834,31 +1877,111 @@ RMTP.views.advancing = function (el, params, query) {
       footer: footerHtml
     });
 
-    m.root.querySelector('#confirm-merge-btn').addEventListener('click', async () => {
-      const mergeId = m.root.querySelector('#merge-target').value;
-      if (!mergeId) return ui.toast('Select an event to merge', 'warning');
+    const mergeSelect = m.root.querySelector('#merge-target');
+    const compContainer = m.root.querySelector('#merge-comparison');
+    const confirmBtn = m.root.querySelector('#confirm-merge-btn');
+
+    mergeSelect.addEventListener('change', () => {
+      const sourceId = mergeSelect.value;
+      if (!sourceId) {
+        compContainer.classList.add('hidden');
+        confirmBtn.disabled = true;
+        return;
+      }
       
-      const sourceEv = store.find('advancing', mergeId);
-      if (!sourceEv) return;
+      const src = store.find('advancing', sourceId);
+      if (!src) return;
+
+      compContainer.classList.remove('hidden');
+      confirmBtn.disabled = false;
+      
+      const renderSection = (sectionName, key, tHtml, sHtml) => {
+        return '<div class="mb-4">' +
+                 '<div class="text-xs font-semibold uppercase text-muted tracking-wider mb-2">' + sectionName + '</div>' +
+                 '<div class="grid grid-cols-2 gap-3">' +
+                   '<label class="block p-3 rounded border border-line bg-panel2 cursor-pointer hover:border-accent transition relative">' +
+                     '<div class="flex items-center justify-between mb-2 border-b border-line pb-1"><span class="font-medium text-ink text-xs">Target (Keep This)</span><input type="radio" name="merge_' + key + '" value="target" class="w-3.5 h-3.5" checked></div>' +
+                     '<div class="text-xs text-muted space-y-1">' + tHtml + '</div>' +
+                   '</label>' +
+                   '<label class="block p-3 rounded border border-line bg-panel2 cursor-pointer hover:border-accent transition relative">' +
+                     '<div class="flex items-center justify-between mb-2 border-b border-line pb-1"><span class="font-medium text-ink text-xs">Source Event</span><input type="radio" name="merge_' + key + '" value="source" class="w-3.5 h-3.5"></div>' +
+                     '<div class="text-xs text-muted space-y-1">' + sHtml + '</div>' +
+                   '</label>' +
+                 '</div>' +
+               '</div>';
+      };
+
+      const tSched = Array.isArray(targetEv.schedule_items) ? targetEv.schedule_items.length : 0;
+      const sSched = Array.isArray(src.schedule_items) ? src.schedule_items.length : 0;
+
+      const tTechCount = Object.keys(targetEv.techRequirements || {}).length + (targetEv.techInfo ? 1 : 0);
+      const sTechCount = Object.keys(src.techRequirements || {}).length + (src.techInfo ? 1 : 0);
+
+      compContainer.innerHTML = 
+        renderSection('Core Details', 'core', 
+          '<div><strong class="text-ink">' + ui.esc(targetEv.name) + '</strong></div>' +
+          '<div>' + ui.esc(targetEv.date || 'TBC') + ' ' + ui.esc(targetEv.startTime || '') + ' - ' + ui.esc(targetEv.finishTime || '') + '</div>' +
+          '<div>' + (targetEv.artifaxId ? 'Artifax: ' + targetEv.artifaxId : 'No Artifax Link') + '</div>',
+          '<div><strong class="text-ink">' + ui.esc(src.name) + '</strong></div>' +
+          '<div>' + ui.esc(src.date || 'TBC') + ' ' + ui.esc(src.startTime || '') + ' - ' + ui.esc(src.finishTime || '') + '</div>' +
+          '<div>' + (src.artifaxId ? 'Artifax: ' + src.artifaxId : 'No Artifax Link') + '</div>'
+        ) +
+        renderSection('Tech Requirements', 'tech',
+          '<div>' + tTechCount + ' tech sections/notes filled</div>',
+          '<div>' + sTechCount + ' tech sections/notes filled</div>'
+        ) +
+        renderSection('Schedule', 'schedule',
+          '<div>' + tSched + ' schedule items</div>',
+          '<div>' + sSched + ' schedule items</div>'
+        ) +
+        '<div class="text-[11px] text-muted mt-2">Note: Linked reports and maintenance issues from both events will be combined automatically. The source event will be moved to the Deleted Events tab.</div>';
+    });
+
+    confirmBtn.addEventListener('click', async () => {
+      const sourceId = mergeSelect.value;
+      if (!sourceId) return;
+      const src = store.find('advancing', sourceId);
+      if (!src) return;
 
       const merged = Object.assign({}, targetEv);
       
-      // Copy fields from the selected event to the target event
-      if (sourceEv.artifaxId) merged.artifaxId = sourceEv.artifaxId;
-      if (sourceEv.name) merged.name = sourceEv.name;
-      if (sourceEv.date) merged.date = sourceEv.date;
-      if (sourceEv.space) merged.space = sourceEv.space;
-      if (sourceEv.startTime) merged.startTime = sourceEv.startTime;
-      if (sourceEv.finishTime) merged.finishTime = sourceEv.finishTime;
-      if (sourceEv.category) merged.category = sourceEv.category;
-      if (sourceEv.clientContact) merged.clientContact = sourceEv.clientContact;
-      if (sourceEv.status) merged.status = sourceEv.status;
-      
+      const getVal = (key) => {
+        const checked = compContainer.querySelector('input[name="merge_' + key + '"]:checked');
+        return checked ? checked.value : 'target';
+      };
+
+      if (getVal('core') === 'source') {
+        merged.name = src.name || '';
+        merged.date = src.date || '';
+        merged.startTime = src.startTime || '';
+        merged.finishTime = src.finishTime || '';
+        merged.artifaxId = src.artifaxId || '';
+        merged.category = src.category || '';
+        merged.clientContact = src.clientContact || '';
+        merged.status = src.status || '';
+      }
+
+      if (getVal('tech') === 'source') {
+        merged.techRequirements = JSON.parse(JSON.stringify(src.techRequirements || {}));
+        merged.techInfo = src.techInfo || '';
+      }
+
+      if (getVal('schedule') === 'source') {
+        merged.schedule_items = JSON.parse(JSON.stringify(src.schedule_items || []));
+      }
+
+      // Re-assign reports from source to target
+      const sReports = reportsFor(src.id);
+      for (const r of sReports) {
+        r.eventId = targetEv.id;
+        store.upsert('reports', r);
+      }
+
       store.upsert('advancing', merged);
-      store.remove('advancing', sourceEv.id);
-      
+      store.upsert('advancing', Object.assign({}, src, { deleted: true })); // Soft delete source event
+        
       if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
-      
+        
       ui.toast('Events merged successfully', 'ok');
       m.close();
       openEventModal(merged);
@@ -5120,18 +5243,24 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   async function del(ev) {
-    const ok = await ui.confirm('Delete \u201c' + ev.name + '\u201d and its shift reports?',
+    const ok = await ui.confirm('Move \u201c' + ev.name + '\u201d to Deleted Events?',
       { title: 'Delete event', confirmLabel: 'Delete', danger: true });
     if (ok) {
-      reportsFor(ev.id).forEach((r) => store.remove('reports', r.id));
-      if (ev.techSpec) files.remove(ev.techSpec);
-      store.remove('advancing', ev.id);
+      store.upsert('advancing', Object.assign({}, ev, { deleted: true }));
       
       const currentScroll = window.scrollY || document.documentElement.scrollTop;
-      ui.toast('Event deleted', 'ok'); 
+      ui.toast('Event moved to Deleted Events', 'ok'); 
       RMTP.router.render();
       window.scrollTo(0, currentScroll);
     }
+  }
+
+  async function reinstate(ev) {
+    store.upsert('advancing', Object.assign({}, ev, { deleted: false }));
+    const currentScroll = window.scrollY || document.documentElement.scrollTop;
+    ui.toast('Event reinstated', 'ok'); 
+    RMTP.router.render();
+    window.scrollTo(0, currentScroll);
   }
 
   function fld(label, control) { return '<div><label class="block text-sm font-medium mb-2">' + ui.esc(label) + '</label>' + control + '</div>'; }

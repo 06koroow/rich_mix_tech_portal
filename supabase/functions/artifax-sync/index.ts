@@ -90,7 +90,12 @@ async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInsta
   const endpoint = `${baseUrl}/api/arrangements/event?${params}`;
   
   const res = await fetch(endpoint, {
-    headers: { "Authorization": `Bearer ${ARTIFAX_API_KEY}`, "Accept": "application/json" },
+    headers: { 
+      "Authorization": `Bearer ${ARTIFAX_API_KEY}`,
+      "ApiKey": ARTIFAX_API_KEY,
+      "X-API-Key": ARTIFAX_API_KEY,
+      "Accept": "application/json" 
+    },
   });
   if (!res.ok) throw new Error(`Artifax responded ${res.status}: ${await res.text()}`);
   const data = await res.json();

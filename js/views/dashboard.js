@@ -6,7 +6,7 @@ RMTP.views.dashboard = function (el) {
 
   const cards = [
     { id: 'advancing',   desc: 'Gather show info, assign techs and file shift reports.',
-      stat: () => store.all('advancing').length, unit: 'events' },
+      stat: () => store.all('advancing').filter(e => !e.deleted).length, unit: 'events' },
     { id: 'inventory',   desc: 'Scan kit in and out; track where everything lives.',
       stat: () => store.all('inventory').filter((r) => r.status === 'out').length, unit: 'signed out' },
     { id: 'maintenance', desc: 'Log faults and track repairs across the venue.',
@@ -74,12 +74,12 @@ RMTP.views.dashboard = function (el) {
     if (!me) return '';
     const today = new Date().toISOString().slice(0, 10);
     const myAdvances = store.all('advancing')
-      .filter((e) => (RMTP.eventAssignedTo(e, me.id) || RMTP.isAdvancingLead(e, me.id)) && e.status !== 'Complete' && e.category !== 'DCP Test' && e.category !== 'Maintenance')
+      .filter((e) => !e.deleted && (RMTP.eventAssignedTo(e, me.id) || RMTP.isAdvancingLead(e, me.id)) && e.status !== 'Complete' && e.category !== 'DCP Test' && e.category !== 'Maintenance')
       .filter((e) => !e.date || String(e.date).slice(0, 10) >= today)
       .sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
 
     // DCP Tests: both dedicated 'DCP Test' shifts and screenings with scheduled DCP test
-    const allAdv = store.all('advancing');
+    const allAdv = store.all('advancing').filter(e => !e.deleted);
     const myDcpTests = allAdv
       .filter((e) => {
         const isTester = (e.dcp_tester_user_id === me.id || e.dcpTesterUserId === me.id || RMTP.eventAssignedTo(e, me.id));
@@ -276,7 +276,7 @@ RMTP.views.dashboard = function (el) {
 
   function todaysShifts() {
     const today = new Date().toISOString().slice(0, 10);
-    let list = store.all('advancing').filter((e) => e.date === today);
+    let list = store.all('advancing').filter((e) => !e.deleted && e.date === today);
     if (me && !me.admin) list = list.filter((e) => RMTP.eventAssignedTo(e, me.id));
     return list.sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
   }

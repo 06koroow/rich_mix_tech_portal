@@ -46,11 +46,11 @@ serve(async (req) => {
   }
 
   try {
-    // 1. Get credentials securely from Supabase Secrets
-    const apiKey = Deno.env.get("ARTIFAX_API_KEY");
-    const username = Deno.env.get("ARTIFAX_USERNAME");
-    const password = Deno.env.get("ARTIFAX_PASSWORD");
-    const baseUrl = (Deno.env.get("ARTIFAX_URL") || "https://richmix.artifaxevent.com").replace(/\/api\/?$/, '').replace(/\/$/, '');
+    // 1. Get credentials securely from Supabase Secrets (with .trim() to catch copy-paste whitespace)
+    const apiKey = (Deno.env.get("ARTIFAX_API_KEY") || "").trim();
+    const username = (Deno.env.get("ARTIFAX_USERNAME") || "").trim();
+    const password = (Deno.env.get("ARTIFAX_PASSWORD") || "").trim();
+    const baseUrl = (Deno.env.get("ARTIFAX_URL") || "https://richmix.artifaxevent.com").trim().replace(/\/api\/?$/, '').replace(/\/$/, '');
 
     if (!apiKey || !username || !password) {
       throw new Error("Missing Artifax credentials in Edge Function secrets");
@@ -76,7 +76,7 @@ serve(async (req) => {
     const response = await fetch(endpoint, {
       method: 'GET',
       headers: {
-        "X-API-KEY": apiKey,
+        "X-API-Key": apiKey, // Some Artifax instances strictly require this exact casing
         "Authorization": basicAuth,
         "Accept": "application/json"
       }

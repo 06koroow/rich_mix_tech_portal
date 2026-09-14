@@ -2196,9 +2196,15 @@ RMTP.views.advancing = function (el, params, query) {
         '</div>' +
       '</div>';
 
+    const originalTitle = document.title;
+    const fileDate = ev.date ? ev.date.slice(0, 10) : 'TBC';
+    const fileSpace = ev.space || 'No Space';
+    document.title = `${fileDate} - ${ev.name || 'Untitled Event'} - Rich Mix: Technical Advance - ${fileSpace}`;
+
     document.body.classList.add('is-printing');
     window.print();
     const cleanup = () => {
+      document.title = originalTitle;
       document.body.classList.remove('is-printing');
       window.removeEventListener('afterprint', cleanup);
     };

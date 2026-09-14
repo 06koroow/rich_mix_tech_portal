@@ -770,13 +770,15 @@ RMTP.views.advancing = function (el, params, query) {
          throw new Error("Supabase is not configured. Cannot call Edge Function.");
       }
       
-      const { data, error } = await RMTP.supabase.client.functions.invoke('artifax-sync');
+      const res = await RMTP.supabase.invokeFunction('artifax-sync');
       
-      if (error) {
-        ui.toast('Edge Function Error: ' + error.message, 'danger'); 
+      if (!res.ok) {
+        ui.toast('Edge Function Error: ' + res.message, 'danger'); 
         if (afx) afx.disabled = false;
         return;
       }
+      
+      const data = res.data;
       if (data && data.error) {
         ui.toast('Artifax API Error: ' + data.error, 'danger');
         if (afx) afx.disabled = false;

@@ -205,6 +205,13 @@
     }
     refreshIdentity();
     RMTP.router.start();
+    
+    // Auto-sync Artifax on boot if configured and function is available
+    setTimeout(() => {
+      if (typeof RMTP.syncArtifax === 'function') {
+        RMTP.syncArtifax(true); // pass silent flag if supported
+      }
+    }, 2000);
   })();
 
   // Full-screen "can't reach the database" state — replaces the old silent

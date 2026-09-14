@@ -15,24 +15,37 @@ app.use(express.static(__dirname));
 
 // Artifax Proxy Route
 app.get('/api/artifax/sync', async (req, res) => {
-  const apiKey = process.env.ARTIFAX_API_KEY || "5fd9bd7f5b9748a5efacd8606964d6b1";
+  const apiKey = process.env.ARTIFAX_API_KEY;
+  const username = process.env.ARTIFAX_USERNAME;
+  const password = process.env.ARTIFAX_PASSWORD;
   const baseUrl = (process.env.ARTIFAX_URL || "https://richmix.artifaxevent.com").replace(/\/api\/?$/, '').replace(/\/$/, '');
-  
+
+  if (!apiKey || !username || !password) {
+    return res.status(500).json({ error: "Artifax API credentials are not configured on the server." });
+  }
+
   const from = new Date();
   const to = new Date(Date.now() + 120 * 864e5); // 120 days
   
+  // The documentation states: "Use the date parameter to enable date/time filtering. Use schedule_output=1 to include schedule data."
   const params = new URLSearchParams({
-    from: from.toISOString().slice(0, 10),
-    to: to.toISOString().slice(0, 10),
+    date: 'between',
+    start_date: from.toISOString().slice(0, 10),
+    end_date: to.toISOString().slice(0, 10),
+    schedule_output: "1"
   });
   
   const endpoint = `${baseUrl}/api/arrangements/event?${params}`;
   
   try {
-    const fetch = (await import('node-fetch')).default || globalThis.fetch;
-    const response = await fetch(endpoint, {
+    const fetchFn = globalThis.fetch;
+    const basicAuth = 'Basic ' + Buffer.from(username + ':' + password).toString('base64');
+    
+    const response = await fetchFn(endpoint, {
+      method: 'GET',
       headers: {
-        "X-API-Key": apiKey,
+        "X-API-KEY": apiKey,
+        "Authorization": basicAuth,
         "Accept": "application/json"
       }
     });

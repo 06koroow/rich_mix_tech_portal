@@ -17,6 +17,10 @@ RMTP.views.advancing = function (el, params, query) {
   const filters = (RMTP._advFilters = RMTP._advFilters || { space: '', date: '', tab: 'upcoming' });
   let mobileFiltersOpen = (RMTP._advMobileFiltersOpen !== undefined ? RMTP._advMobileFiltersOpen : false);
   const expandedEvents = (RMTP._expandedAdvEvents = RMTP._expandedAdvEvents || new Set());
+  
+  // Bulk Delete State
+  let bulkDeleteMode = (RMTP._advBulkDeleteMode = RMTP._advBulkDeleteMode || false);
+  const selectedForBulkDelete = (RMTP._advSelectedForBulkDelete = RMTP._advSelectedForBulkDelete || new Set());
 
   // Advancing view mode state ('list' | 'calendar')
   let advViewMode = (RMTP._advViewMode = RMTP._advViewMode || 'list');
@@ -289,7 +293,17 @@ RMTP.views.advancing = function (el, params, query) {
       }
       return true;
     })
-    .sort((a, b) => (currentTab === 'past' ? (b.date || '').localeCompare(a.date || '') : (a.date || '9999').localeCompare(b.date || '9999')));
+    .sort((a, b) => {
+      if (currentTab === 'past') {
+        const dateCmp = (b.date || '').localeCompare(a.date || '');
+        if (dateCmp !== 0) return dateCmp;
+        return (b.startTime || '').localeCompare(a.startTime || '');
+      } else {
+        const dateCmp = (a.date || '9999').localeCompare(b.date || '9999');
+        if (dateCmp !== 0) return dateCmp;
+        return (a.startTime || '23:59').localeCompare(b.startTime || '23:59');
+      }
+    });
 
   const emptyMsg = !base.length
     ? (!allEvents.length ? ['clip', 'No events yet', 'Add an event to start advancing it.']
@@ -321,7 +335,8 @@ RMTP.views.advancing = function (el, params, query) {
           '<span class="ml-1 px-1.5 py-0.5 rounded text-[11px] bg-panel border border-line font-mono text-accent font-semibold">' + getReportRecipients().length + '</span>' +
         '</button>' +
         (isAdmin && canManageEvents && RMTP.supabase && RMTP.supabase.isConfigured()
-          ? '<button id="artifax-sync" class="btn btn-ghost text-xs" title="Pull events from Artifax">' + ui.icon('reset', 'w-3.5 h-3.5') + '<span class="hidden sm:inline">Sync Artifax</span></button>' : '')
+          ? '<button id="artifax-sync" class="btn btn-ghost text-xs" title="Pull events from Artifax">' + ui.icon('reset', 'w-3.5 h-3.5') + '<span class="hidden sm:inline">Sync Artifax</span></button>' 
+          : '')
       ) +
 
       // Top Control Bar: Search Input (Mobile) + Collapsible Filter Menu Trigger (Left) + Add Event Button (Right)
@@ -423,7 +438,14 @@ RMTP.views.advancing = function (el, params, query) {
             '<input id="adv-date" type="date" class="field !w-auto !py-1 text-xs" value="' + ui.esc(filters.date || '') + '" />' +
             '<button id="adv-today" class="btn btn-ghost !py-1 text-xs">Today</button>' +
           '</div>' +
-          '<div>' +
+          '<div class="flex items-center gap-4 flex-wrap">' +
+            '<label class="flex items-center gap-1.5 text-xs text-danger font-semibold cursor-pointer select-none">' +
+              '<input type="checkbox" id="adv-bulk-delete-toggle" class="w-3.5 h-3.5 rounded accent-[var(--danger)]" ' + (bulkDeleteMode ? 'checked' : '') + ' />' +
+              '<span>Bulk Delete Mode</span>' +
+            '</label>' +
+            (bulkDeleteMode && selectedForBulkDelete.size > 0
+              ? '<button type="button" id="adv-bulk-delete-btn" class="btn btn-danger !py-1 text-xs flex items-center gap-1">' + ui.icon('trash', 'w-3 h-3') + '<span>Delete Selected (' + selectedForBulkDelete.size + ')</span></button>'
+              : '') +
             (activeFilterCount > 0
               ? '<button id="adv-clear" class="btn btn-ghost !py-1 text-xs text-danger hover:border-danger flex items-center gap-1">' + ui.icon('x', 'w-3 h-3') + 'Reset all filters</button>'
               : '<span class="text-xs text-muted">Showing all matching records</span>'
@@ -738,36 +760,46 @@ RMTP.views.advancing = function (el, params, query) {
   const addEv = el.querySelector('#add-event');
   if (addEv) addEv.addEventListener('click', () => openForm());
 
-  const afx = el.querySelector('#artifax-sync');
-  if (afx) afx.addEventListener('click', async () => {
-    afx.disabled = true; ui.toast('Syncing from Artifax...', 'info');
+  RMTP.syncArtifax = async (silent = false) => {
+    const afx = el.querySelector('#artifax-sync');
+    if (afx) afx.disabled = true; 
+    if (!silent) ui.toast('Syncing from Artifax...', 'info');
     try {
-      const res = await fetch('/api/artifax/sync');
-      if (!res.ok) {
-        const text = await res.text();
-        ui.toast('Artifax HTTP Error: ' + text, 'danger'); 
-        afx.disabled = false; 
-        return; 
+      // Use Supabase Edge Function to bypass the need for a Node server on static hosts
+      if (!RMTP.supabase || !RMTP.supabase.isConfigured()) {
+         throw new Error("Supabase is not configured. Cannot call Edge Function.");
       }
       
-      const data = await res.json();
-      if (data.error) {
+      const { data, error } = await RMTP.supabase.client.functions.invoke('artifax-sync');
+      
+      if (error) {
+        ui.toast('Edge Function Error: ' + error.message, 'danger'); 
+        if (afx) afx.disabled = false;
+        return;
+      }
+      if (data && data.error) {
         ui.toast('Artifax API Error: ' + data.error, 'danger');
-        afx.disabled = false;
+        if (afx) afx.disabled = false;
         return;
       }
       
       const list = Array.isArray(data) ? data : (data.instances ?? data.results ?? data.events ?? []);
       
       const ROOM_TO_SPACE = {
+        "The Stage (MS)": "The Stage",
         "The Stage": "The Stage",
+        "The Studio (V1)": "The Studio",
         "Studio": "The Studio",
         "The Studio": "The Studio",
+        "The Mix & Bar (V2)": "The Mix",
         "Mix": "The Mix",
         "The Mix": "The Mix",
         "Screen 1": "Screen One",
         "Screen 2": "Screen Two",
-        "Screen 3": "Screen Three"
+        "Screen 3": "Screen Three",
+        "Cinema 1": "Screen One",
+        "Cinema 2": "Screen Two",
+        "Cinema 3": "Screen Three"
       };
 
       const toCategory = (type) => {
@@ -778,25 +810,98 @@ RMTP.views.advancing = function (el, params, query) {
       };
 
       let created = 0, updated = 0, skipped = 0;
-      const existingEvents = store.getAll('advancing');
+      const existingEvents = store.all('advancing');
 
       for (const r of list) {
-        const id = String(r.id ?? r.instanceId ?? r.InstanceId);
-        const title = r.title ?? r.name ?? r.EventName ?? "Untitled";
-        const room = r.room ?? r.roomName ?? r.RoomName ?? "";
-        const type = r.type ?? r.arrangementType ?? r.ArrangementType ?? "";
-        const start = r.start ?? r.startDateTime ?? r.StartDateTime;
-        const end = r.end ?? r.endDateTime ?? r.EndDateTime;
-        const contact = r.contact ?? r.contactName ?? r.CustomerName ?? "";
-        const status = r.status ?? r.Status ?? "Confirmed";
+        const id = String(r.id ?? r.instanceId ?? r.InstanceId ?? r.event_id);
+        const title = r.title ?? r.name ?? r.EventName ?? r.arrangement_description ?? r.arrangement_name ?? "Untitled";
+        const room = r.room ?? r.roomName ?? r.RoomName ?? r.room_name ?? "";
+        const type = r.type ?? r.arrangementType ?? r.ArrangementType ?? r.arrangement_type_name ?? "";
+        
+        // Parse date and time directly if available (or fallback to datetime)
+        const dateStr = r.date ?? r.start ?? r.startDateTime ?? r.StartDateTime ?? r.start_date_time;
+        const start = r.start_time ?? r.start ?? r.startDateTime ?? r.StartDateTime ?? r.start_date_time;
+        const end = r.end_time ?? r.end ?? r.endDateTime ?? r.EndDateTime ?? r.end_date_time;
+        
+        const contact = r.contact ?? r.contactName ?? r.CustomerName ?? r.client_name ?? r.arrangement_contact_entity_full_name ?? "";
+        
+        // Status can be in multiple places depending on the API output
+        const eventStatus = (r.status ?? r.Status ?? r.event_status_name ?? "").toLowerCase();
+        const salesStatus = (r.sales_process_stage_name ?? "").toLowerCase();
+        
+        const combinedStatus = eventStatus + " " + salesStatus;
+        
+        const existing = existingEvents.find(e => e.artifaxId === id);
 
-        const space = ROOM_TO_SPACE[room] ?? "";
-        if (!space) { skipped++; continue; }
+        // Skip explicitly cancelled, tentative, or provisional events, unless they already exist and we need to update them to cancelled.
+        const isExcluded = combinedStatus.includes("cancel") || 
+                           combinedStatus.includes("tentative") || 
+                           combinedStatus.includes("provisional") ||
+                           combinedStatus.includes("enquiry") ||
+                           combinedStatus.includes("inquiry");
+                           
+        if (!existing && isExcluded && !combinedStatus.includes("confirm") && !combinedStatus.includes("contract")) {
+          skipped++;
+          continue;
+        }
 
-        const startDate = start ? new Date(start) : null;
-        const endDate = end ? new Date(end) : null;
-        const hhmm = (d) => (d ? d.toISOString().slice(11, 16) : "");
-        const cancelled = /cancel/i.test(status);
+        let space = ROOM_TO_SPACE[room];
+        if (!space) {
+          const raw = room.toLowerCase().replace(/[^a-z0-9]/g, '');
+          space = RMTP.SPACES.find(s => s.toLowerCase().replace(/[^a-z0-9]/g, '') === raw);
+        }
+        
+        // Filter out any events not in the explicitly defined spaces
+        if (!space) { 
+          skipped++; 
+          continue; 
+        }
+
+        const startDate = dateStr ? new Date(dateStr) : null;
+        
+        // Try to parse exact times
+        let startTimeStr = "";
+        let finishTimeStr = "";
+        
+        if (start && typeof start === 'string' && start.includes(':')) {
+           // If it's a timestamp like 09:00:00.0000
+           if (/^\d{2}:\d{2}/.test(start)) {
+             startTimeStr = start.slice(0, 5);
+           } else {
+             startTimeStr = new Date(start).toISOString().slice(11, 16);
+           }
+        }
+        if (end && typeof end === 'string' && end.includes(':')) {
+           if (/^\d{2}:\d{2}/.test(end)) {
+             finishTimeStr = end.slice(0, 5);
+           } else {
+             finishTimeStr = new Date(end).toISOString().slice(11, 16);
+           }
+        }
+        
+        // Check for Custom Form Room Layout Notes
+        let techInfoNotes = "";
+        if (Array.isArray(r.custom_forms)) {
+          for (const form of r.custom_forms) {
+            if (form.custom_form_name === "Room Layout" || form.custom_form_name === "Event Details") {
+              if (Array.isArray(form.custom_form_sections)) {
+                for (const section of form.custom_form_sections) {
+                  if (Array.isArray(section.custom_form_elements)) {
+                    for (const el of section.custom_form_elements) {
+                      const val = el.custom_form_data_value;
+                      if (val && typeof val === 'string' && val.trim().length > 0) {
+                        techInfoNotes += `[${el.custom_form_element_name}]: ${val.trim()}\n`;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        techInfoNotes = techInfoNotes.trim();
+
+        const cancelled = /cancel/i.test(eventStatus) || /cancel/i.test(salesStatus);
 
         const booking = {
           artifaxId: id,
@@ -804,17 +909,40 @@ RMTP.views.advancing = function (el, params, query) {
           category: toCategory(type),
           space: space,
           date: startDate ? startDate.toISOString().slice(0, 10) : "",
-          startTime: hhmm(startDate),
-          finishTime: hhmm(endDate),
+          startTime: startTimeStr,
+          finishTime: finishTimeStr,
           clientContact: contact,
           status: cancelled ? "Cancelled" : "Confirmed"
         };
+        
+        // Only set techInfo if we found something, to avoid overwriting existing notes unnecessarily
+        if (techInfoNotes) {
+          booking.techInfo = techInfoNotes;
+        }
 
-        const existing = existingEvents.find(e => e.artifaxId === id);
         let row = null;
         
         if (existing) {
           row = { ...existing, ...booking, id: existing.id };
+          
+          // Smart update for tech notes so we don't wipe out user notes, but append new Artifax data
+          let newNotes = [];
+          if (existing.startTime !== booking.startTime) newNotes.push(`[Time Change]: Start time updated to ${booking.startTime}`);
+          if (existing.finishTime !== booking.finishTime) newNotes.push(`[Time Change]: Finish time updated to ${booking.finishTime}`);
+          if (existing.space !== booking.space) newNotes.push(`[Space Change]: Moved to ${booking.space}`);
+          
+          if (techInfoNotes && (!existing.techInfo || !existing.techInfo.includes(techInfoNotes))) {
+             newNotes.push(`[Artifax Layout Notes]:\n${techInfoNotes}`);
+          }
+          
+          if (newNotes.length > 0) {
+             let baseInfo = existing.techInfo || '';
+             // Remove the booking.techInfo overwrite so we can construct it safely
+             row.techInfo = baseInfo + (baseInfo ? '\n\n' : '') + '--- ' + new Date().toLocaleDateString() + ' Updates ---\n' + newNotes.join('\n');
+          } else {
+             row.techInfo = existing.techInfo || '';
+          }
+          
           updated++;
         } else {
           row = { id: 'evt-afx-' + id, ...booking };
@@ -824,14 +952,45 @@ RMTP.views.advancing = function (el, params, query) {
         store.upsert('advancing', row);
       }
 
-      if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
+      if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
       
-      ui.toast('Artifax: ' + created + ' added, ' + updated + ' updated', 'ok');
+      const skippedMsg = skipped > 0 ? `, ${skipped} skipped (unconfirmed)` : '';
+      if (!silent || created > 0 || updated > 0) {
+         ui.toast('Artifax: ' + created + ' added, ' + updated + ' updated' + skippedMsg, 'ok');
+      }
+      if (afx) afx.disabled = false;
       RMTP.router.render();
     } catch (e) {
-      ui.toast('Artifax sync failed: ' + e.message, 'danger'); afx.disabled = false;
+      if (!silent) ui.toast('Artifax sync failed: ' + e.message, 'danger'); 
+      if (afx) afx.disabled = false;
     }
-  });
+  };
+
+  const afx = el.querySelector('#artifax-sync');
+  if (afx) afx.addEventListener('click', () => RMTP.syncArtifax(false));
+
+  // Bulk Delete Function
+  const handleBulkDelete = async (e) => {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    if (selectedForBulkDelete.size === 0) return;
+    if (!confirm(`Are you sure you want to delete ${selectedForBulkDelete.size} event(s)?`)) return;
+    for (let id of selectedForBulkDelete) {
+      store.remove('advancing', id);
+    }
+    selectedForBulkDelete.clear();
+    bulkDeleteMode = RMTP._advBulkDeleteMode = false;
+    if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
+    const currentScroll = window.scrollY || document.documentElement.scrollTop;
+    ui.toast('Selected events deleted', 'ok');
+    RMTP.router.render();
+    window.scrollTo(0, currentScroll);
+  };
+
+  // Attach to existing button if rendered on load
+  const initialBtnDel = el.querySelector('#adv-bulk-delete-btn');
+  if (initialBtnDel) {
+    initialBtnDel.addEventListener('click', handleBulkDelete);
+  }
 
   // Card interactive listeners
   shown.forEach((ev) => {
@@ -854,7 +1013,52 @@ RMTP.views.advancing = function (el, params, query) {
     const rp = q('[data-reports="' + ev.id + '"]'); if (rp) rp.addEventListener('click', (evt) => { evt.stopPropagation(); openReports(ev); });
     const sp = q('[data-spec="' + ev.id + '"]'); if (sp) sp.addEventListener('click', (evt) => { evt.stopPropagation(); files.open(ev.techSpec); });
     const pr = q('[data-print="' + ev.id + '"]'); if (pr) pr.addEventListener('click', (evt) => { evt.stopPropagation(); printAdvance(ev); });
+
+    // Bulk select checkbox
+    const bulkCb = q('[data-bulk-select="' + ev.id + '"]'); 
+    if (bulkCb) bulkCb.addEventListener('change', (evt) => {
+      if (evt.target.checked) {
+        selectedForBulkDelete.add(ev.id);
+        if (card) card.classList.add('border-danger', 'bg-danger/5');
+      } else {
+        selectedForBulkDelete.delete(ev.id);
+        if (card) card.classList.remove('border-danger', 'bg-danger/5');
+      }
+      
+      let btnDel = el.querySelector('#adv-bulk-delete-btn');
+      if (selectedForBulkDelete.size > 0) {
+        if (!btnDel) {
+          const container = el.querySelector('#adv-bulk-delete-toggle').closest('div');
+          if (container) {
+            btnDel = document.createElement('button');
+            btnDel.type = 'button';
+            btnDel.id = 'adv-bulk-delete-btn';
+            btnDel.className = 'btn btn-danger !py-1 text-xs flex items-center gap-1';
+            btnDel.innerHTML = ui.icon('trash', 'w-3 h-3') + '<span>Delete Selected (' + selectedForBulkDelete.size + ')</span>';
+            btnDel.addEventListener('click', handleBulkDelete);
+            container.appendChild(btnDel);
+          }
+        } else {
+          const span = btnDel.querySelector('span');
+          if (span) span.textContent = 'Delete Selected (' + selectedForBulkDelete.size + ')';
+        }
+      } else {
+        if (btnDel) btnDel.remove();
+      }
+    });
   });
+
+  // Bulk Delete Toggle
+  const toggleBulk = el.querySelector('#adv-bulk-delete-toggle');
+  if (toggleBulk) {
+    toggleBulk.addEventListener('change', (e) => {
+      bulkDeleteMode = RMTP._advBulkDeleteMode = e.target.checked;
+      if (!bulkDeleteMode) selectedForBulkDelete.clear();
+      const currentScroll = window.scrollY || document.documentElement.scrollTop;
+      RMTP.router.render();
+      window.scrollTo(0, currentScroll);
+    });
+  }
 
   // Quick status change selector for admins
   el.querySelectorAll('[data-quick-status]').forEach((sel) => {
@@ -948,10 +1152,16 @@ RMTP.views.advancing = function (el, params, query) {
           '</select>' +
         '</div>'
       : ui.pill(ev.status, statusColour[ev.status] || 'var(--muted)');
+      
+    const checkboxHtml = bulkDeleteMode ?
+      '<div class="pr-3 flex items-center justify-center shrink-0" onclick="event.stopPropagation()">' +
+        '<input type="checkbox" data-bulk-select="' + ev.id + '" class="w-4 h-4 rounded accent-[var(--danger)] cursor-pointer" ' + (selectedForBulkDelete.has(ev.id) ? 'checked' : '') + ' />' +
+      '</div>' : '';
 
     return (
-      '<div data-event-card="' + ev.id + '" class="panel w-full p-4 sm:p-5 transition-all hover:border-accent hover:shadow-lg cursor-pointer group select-none relative flex flex-col justify-between gap-3">' +
+      '<div data-event-card="' + ev.id + '" class="panel w-full p-4 sm:p-5 transition-all hover:border-accent hover:shadow-lg cursor-pointer group select-none relative flex flex-col justify-between gap-3 ' + (bulkDeleteMode && selectedForBulkDelete.has(ev.id) ? 'border-danger bg-danger/5' : '') + '">' +
         '<div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3 w-full">' +
+          checkboxHtml +
           '<div class="min-w-0 flex-1 w-full">' +
             '<div class="flex items-center gap-2 flex-wrap mb-1.5">' +
               '<h3 class="font-display text-base sm:text-lg font-semibold text-ink group-hover:text-accent transition-colors break-words">' + ui.esc(ev.name) + '</h3>' +
@@ -1509,6 +1719,9 @@ RMTP.views.advancing = function (el, params, query) {
         '</div>' +
         '<div class="flex items-center gap-2">' +
           (canManageEvents ?
+            '<button id="modal-merge-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
+              ui.icon('refresh', 'w-4 h-4') + '<span>Merge</span>' +
+            '</button>' +
             '<button id="modal-edit-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
               ui.icon('pen', 'w-4 h-4') + '<span>Edit</span>' +
             '</button>' +
@@ -1571,6 +1784,9 @@ RMTP.views.advancing = function (el, params, query) {
     const editBtn = m.root.querySelector('#modal-edit-btn');
     if (editBtn) editBtn.addEventListener('click', () => { m.close(); openForm(ev); });
 
+    const mergeBtn = m.root.querySelector('#modal-merge-btn');
+    if (mergeBtn) mergeBtn.addEventListener('click', () => { m.close(); openMergeModal(ev); });
+
     const delBtn = m.root.querySelector('#modal-del-btn');
     if (delBtn) delBtn.addEventListener('click', () => { m.close(); del(ev); });
 
@@ -1582,6 +1798,70 @@ RMTP.views.advancing = function (el, params, query) {
     if (parentEvBtn && dcpParentEvent) {
       parentEvBtn.addEventListener('click', () => { m.close(); openEventModal(dcpParentEvent); });
     }
+  }
+
+  function openMergeModal(targetEv) {
+    const allEvents = store.all('advancing').filter(e => e.id !== targetEv.id);
+    
+    // Sort by date (descending)
+    allEvents.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+
+    const optionsHtml = allEvents.map(e => 
+      '<option value="' + e.id + '">' + (e.date || '') + ' \u2013 ' + ui.esc(e.name || '') + (e.space ? ' (' + e.space + ')' : '') + '</option>'
+    ).join('');
+
+    const bodyHtml = 
+      '<div class="text-sm text-ink/80 mb-4">' +
+        'Merging will combine this event with another. The selected event\'s Artifax ID and basic details will be applied to the target event, and the selected event will be deleted.' +
+      '</div>' +
+      '<div class="form-group">' +
+        '<label>Select event to merge INTO <strong>' + ui.esc(targetEv.name) + '</strong></label>' +
+        '<select id="merge-target" class="form-control">' +
+          '<option value="">-- Select Event --</option>' +
+          optionsHtml +
+        '</select>' +
+      '</div>';
+
+    const footerHtml = 
+      '<button data-close class="btn btn-ghost">Cancel</button>' +
+      '<button id="confirm-merge-btn" class="btn btn-primary">Merge Events</button>';
+
+    const m = ui.modal({
+      title: 'Merge Event',
+      body: bodyHtml,
+      footer: footerHtml
+    });
+
+    m.root.querySelector('#confirm-merge-btn').addEventListener('click', async () => {
+      const mergeId = m.root.querySelector('#merge-target').value;
+      if (!mergeId) return ui.toast('Select an event to merge', 'warning');
+      
+      const sourceEv = store.find('advancing', mergeId);
+      if (!sourceEv) return;
+
+      const merged = Object.assign({}, targetEv);
+      
+      // Copy fields from the selected event to the target event
+      if (sourceEv.artifaxId) merged.artifaxId = sourceEv.artifaxId;
+      if (sourceEv.name) merged.name = sourceEv.name;
+      if (sourceEv.date) merged.date = sourceEv.date;
+      if (sourceEv.space) merged.space = sourceEv.space;
+      if (sourceEv.startTime) merged.startTime = sourceEv.startTime;
+      if (sourceEv.finishTime) merged.finishTime = sourceEv.finishTime;
+      if (sourceEv.category) merged.category = sourceEv.category;
+      if (sourceEv.clientContact) merged.clientContact = sourceEv.clientContact;
+      if (sourceEv.status) merged.status = sourceEv.status;
+      
+      store.upsert('advancing', merged);
+      store.remove('advancing', sourceEv.id);
+      
+      if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
+      
+      ui.toast('Events merged successfully', 'ok');
+      m.close();
+      openEventModal(merged);
+      RMTP.router.render();
+    });
   }
 
   /* ---- PDF Export / Print ---- */
@@ -4838,7 +5118,11 @@ RMTP.views.advancing = function (el, params, query) {
       reportsFor(ev.id).forEach((r) => store.remove('reports', r.id));
       if (ev.techSpec) files.remove(ev.techSpec);
       store.remove('advancing', ev.id);
-      ui.toast('Event deleted', 'ok'); RMTP.router.render();
+      
+      const currentScroll = window.scrollY || document.documentElement.scrollTop;
+      ui.toast('Event deleted', 'ok'); 
+      RMTP.router.render();
+      window.scrollTo(0, currentScroll);
     }
   }
 

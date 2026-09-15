@@ -380,7 +380,17 @@ RMTP.views.advancing = function (el, params, query) {
       return item.events[0];
     }
     if (item.isGroup && item.events.length > 1) {
-       item.events.sort((a, b) => (a.space || '').localeCompare(b.space || ''));
+       const spaceOrder = {
+        'The Stage': 1, 'The Studio': 2, 'The Mix': 3, 
+        'Screen One': 4, 'Screen Two': 5, 'Screen Three': 6
+      };
+      item.events.sort((a, b) => {
+        const sa = a.space || '';
+        const sb = b.space || '';
+        const wa = spaceOrder[sa] || 99;
+        const wb = spaceOrder[sb] || 99;
+        return wa !== wb ? wa - wb : sa.localeCompare(sb);
+      });
     }
     return item;
   });

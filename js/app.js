@@ -200,7 +200,15 @@
     // Sync RMTP.SPACES with database venues
     const dbVenues = RMTP.store.all('venues');
     if (dbVenues && dbVenues.length) {
-      RMTP.SPACES = dbVenues.map(v => v.name).sort();
+      const spaceOrder = {
+        'The Stage': 1, 'The Studio': 2, 'The Mix': 3, 
+        'Screen One': 4, 'Screen Two': 5, 'Screen Three': 6
+      };
+      RMTP.SPACES = dbVenues.map(v => v.name).sort((a, b) => {
+        const wa = spaceOrder[a] || 99;
+        const wb = spaceOrder[b] || 99;
+        return wa !== wb ? wa - wb : a.localeCompare(b);
+      });
       RMTP.LOCATIONS = RMTP.SPACES.concat(RMTP.STORES);
     }
     refreshIdentity();

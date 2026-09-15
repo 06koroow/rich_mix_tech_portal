@@ -64,6 +64,7 @@ const json = (body: unknown, status = 200) =>
 // ------------------------------------------------------------
 interface ArtifaxInstance {
   id: string;            // stable Artifax instance id
+  groupId?: string;      // arrangement id / group id for multi-room takeovers
   title: string;
   room: string;          // room/space name
   type?: string;         // booking type / arrangement type
@@ -104,6 +105,7 @@ async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInsta
   const list: any[] = Array.isArray(data) ? data : (data.instances ?? data.results ?? []);
   return list.map((r) => ({
     id: String(r.id ?? r.instanceId ?? r.InstanceId),
+    groupId: String(r.arrangement_id ?? r.arrangementId ?? r.ArrangementId ?? r.groupId ?? r.GroupId ?? ""),
     title: r.title ?? r.name ?? r.EventName ?? "Untitled",
     room: r.room ?? r.roomName ?? r.RoomName ?? "",
     type: r.type ?? r.arrangementType ?? r.ArrangementType ?? "",
@@ -124,6 +126,7 @@ function mapInstance(i: ArtifaxInstance) {
   const cancelled = /cancel/i.test(i.status || "");
   return {
     artifaxId: i.id,
+    groupId: i.groupId || null,
     name: i.title,
     category: toCategory(i.type || ""),
     space,

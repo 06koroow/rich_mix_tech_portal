@@ -73,6 +73,7 @@ create table if not exists public.advancing (
   "dcp_test_datetime" text default '',
   "dcp_test_event_id" text default null,
   "parent_event_id" text default null,
+  "groupId" text default null,
   "linked_maintenance_ids" jsonb default '[]'::jsonb,
   "lighting_notes" text default '',
   "floor_package" text default '',

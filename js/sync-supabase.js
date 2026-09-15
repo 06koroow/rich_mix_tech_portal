@@ -176,6 +176,7 @@ RMTP.syncSb = (function () {
         r.responsible_for_advancing = r.responsible_for_advancing || r.responsible_for_advancing_user_id || r.responsibleForAdvancingUserId || prev.responsible_for_advancing || prev.responsible_for_advancing_user_id || prev.responsibleForAdvancingUserId || '';
         r.responsible_for_advancing_user_id = r.responsible_for_advancing_user_id || r.responsible_for_advancing || r.responsibleForAdvancingUserId || prev.responsible_for_advancing_user_id || prev.responsible_for_advancing || prev.responsibleForAdvancingUserId || '';
         r.parent_event_id = r.parent_event_id || r.parentEventId || prev.parent_event_id || prev.parentEventId || null;
+        r.groupId = r.groupId || prev.groupId || null;
         r.dcp_test_event_id = r.dcp_test_event_id || r.dcpTestEventId || prev.dcp_test_event_id || prev.dcpTestEventId || null;
         r.linked_maintenance_ids = Array.isArray(r.linked_maintenance_ids) ? r.linked_maintenance_ids : (Array.isArray(r.linkedMaintenanceIds) ? r.linkedMaintenanceIds : (Array.isArray(prev.linked_maintenance_ids) ? prev.linked_maintenance_ids : []));
         r.production_package = r.production_package || prev.production_package || {};
@@ -254,6 +255,7 @@ RMTP.syncSb = (function () {
         responsible_for_advancing: r.responsible_for_advancing || r.responsible_for_advancing_user_id || r.responsibleForAdvancingUserId || '',
         responsible_for_advancing_user_id: r.responsible_for_advancing_user_id || r.responsible_for_advancing || r.responsibleForAdvancingUserId || '',
         parent_event_id: r.parent_event_id || r.parentEventId || null,
+        groupId: r.groupId || null,
         dcp_test_event_id: r.dcp_test_event_id || r.dcpTestEventId || null,
         linked_maintenance_ids: Array.isArray(r.linked_maintenance_ids) ? r.linked_maintenance_ids : (Array.isArray(r.linkedMaintenanceIds) ? r.linkedMaintenanceIds : []),
         production_package: r.production_package || {},

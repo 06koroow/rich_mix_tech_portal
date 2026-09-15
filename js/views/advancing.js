@@ -10,6 +10,35 @@
 RMTP.views.advancing = function (el, params, query) {
   const ui = RMTP.ui, store = RMTP.store, auth = RMTP.auth, files = RMTP.files;
 
+  // One-time migration for legacy Artifax techInfo strings
+  if (!RMTP._artifaxLegacyMigratedV2) {
+    let migrated = false;
+    let count = 0;
+    const events = store.all('advancing');
+    events.forEach(ev => {
+      if (ev.techInfo && typeof ev.techInfo === 'string' && ev.techInfo.includes('--- ') && ev.techInfo.includes(' Updates ---')) {
+        const parts = ev.techInfo.split(/--- (.*?) Updates ---(?:\r?\n|$)/);
+        if (parts.length > 1) {
+          const newTechInfo = parts[0].trim();
+          const history = ev.artifaxHistory || [];
+          for (let i = 1; i < parts.length; i += 2) {
+             history.push({
+                date: parts[i],
+                notes: (parts[i+1] || '').trim(),
+                changes: ['Imported from legacy notes']
+             });
+          }
+          store.upsert('advancing', { ...ev, techInfo: newTechInfo, artifaxHistory: history });
+          migrated = true;
+          count++;
+        }
+      }
+    });
+    RMTP._artifaxLegacyMigratedV2 = true;
+    console.log('[Artifax Migration V2] Checked ' + events.length + ' events. Migrated: ' + count);
+    if (migrated && RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
+  }
+
   const me = auth.current();
   const isAdmin = !!(me && me.admin);
   const canManageEvents = auth.can('advancing.manage');
@@ -326,6 +355,33 @@ RMTP.views.advancing = function (el, params, query) {
   if (selectedTechs && selectedTechs.length > 0) activeFilterCount++;
   if (!includeUnassigned) activeFilterCount++;
 
+  // Group Multi-Room Events
+  const groupedShown = [];
+  const groupMap = {};
+  
+  for (const e of shown) {
+    if (e.groupId) {
+      const key = e.groupId + '|' + (e.date || 'TBC');
+      if (!groupMap[key]) {
+        groupMap[key] = { isGroup: true, groupId: e.groupId, date: e.date, name: e.name, events: [] };
+        groupedShown.push(groupMap[key]);
+      }
+      groupMap[key].events.push(e);
+    } else {
+      groupedShown.push(e);
+    }
+  }
+
+  const finalShown = groupedShown.map(item => {
+    if (item.isGroup && item.events.length === 1) {
+      return item.events[0];
+    }
+    if (item.isGroup && item.events.length > 1) {
+       item.events.sort((a, b) => (a.space || '').localeCompare(b.space || ''));
+    }
+    return item;
+  });
+
   el.innerHTML =
     '<div class="view-enter">' +
       ui.pageHeader('Advancing', isAdmin ? 'Events & Production Schedules' : 'Your shifts & Production Advancing',
@@ -373,7 +429,7 @@ RMTP.views.advancing = function (el, params, query) {
       (advViewMode === 'calendar'
         ? renderCalendarView()
         : (tabBar() +
-           (shown.length ? '<div class="grid gap-3.5">' + shown.map(renderEventCard).join('') + '</div>'
+           (finalShown.length ? '<div class="grid gap-3.5">' + finalShown.map(item => item.isGroup ? renderGroupedCard(item) : renderEventCard(item)).join('') + '</div>'
                          : ui.empty(emptyMsg[0], emptyMsg[1], emptyMsg[2]))
           )
       ) +
@@ -833,6 +889,7 @@ RMTP.views.advancing = function (el, params, query) {
 
       for (const r of list) {
         const id = String(r.id ?? r.instanceId ?? r.InstanceId ?? r.event_id);
+        const groupId = String(r.arrangement_id ?? r.arrangementId ?? r.ArrangementId ?? r.groupId ?? r.GroupId ?? "");
         const title = r.title ?? r.name ?? r.EventName ?? r.arrangement_description ?? r.arrangement_name ?? "Untitled";
         const room = r.room ?? r.roomName ?? r.RoomName ?? r.room_name ?? "";
         const type = r.type ?? r.arrangementType ?? r.ArrangementType ?? r.arrangement_type_name ?? "";
@@ -924,6 +981,7 @@ RMTP.views.advancing = function (el, params, query) {
 
         const booking = {
           artifaxId: id,
+          groupId: groupId || null,
           name: title,
           category: toCategory(type),
           space: space,
@@ -950,21 +1008,34 @@ RMTP.views.advancing = function (el, params, query) {
           if (existing.finishTime !== booking.finishTime) newNotes.push(`[Time Change]: Finish time updated to ${booking.finishTime}`);
           if (existing.space !== booking.space) newNotes.push(`[Space Change]: Moved to ${booking.space}`);
           
-          if (techInfoNotes && (!existing.techInfo || !existing.techInfo.includes(techInfoNotes))) {
-             newNotes.push(`[Artifax Layout Notes]:\n${techInfoNotes}`);
+          row.artifaxHistory = existing.artifaxHistory || [];
+          const lastArtifaxNotes = row.artifaxHistory.length > 0 ? row.artifaxHistory[row.artifaxHistory.length - 1].notes : "";
+          
+          if (techInfoNotes && techInfoNotes !== lastArtifaxNotes) {
+             newNotes.push(`[Artifax Layout Notes Updated]`);
           }
           
           if (newNotes.length > 0) {
-             let baseInfo = existing.techInfo || '';
-             // Remove the booking.techInfo overwrite so we can construct it safely
-             row.techInfo = baseInfo + (baseInfo ? '\n\n' : '') + '--- ' + new Date().toLocaleDateString() + ' Updates ---\n' + newNotes.join('\n');
-          } else {
-             row.techInfo = existing.techInfo || '';
+             row.artifaxHistory.push({
+                 date: new Date().toISOString(),
+                 notes: techInfoNotes,
+                 changes: newNotes
+             });
           }
           
+          row.techInfo = existing.techInfo || '';
           updated++;
         } else {
           row = { id: 'evt-afx-' + id, ...booking };
+          row.artifaxHistory = [];
+          if (techInfoNotes) {
+              row.artifaxHistory.push({
+                  date: new Date().toISOString(),
+                  notes: techInfoNotes,
+                  changes: ["Initial sync from Artifax"]
+              });
+          }
+          row.techInfo = ''; // Explicitly empty for RMTP local tech info
           created++;
         }
         
@@ -1013,61 +1084,87 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   // Card interactive listeners
-  shown.forEach((ev) => {
+  finalShown.forEach((item) => {
     const q = (sel) => el.querySelector(sel);
     
-    // Open pop-over modal on card click or view button
-    const card = q('[data-event-card="' + ev.id + '"]');
-    const openPop = (e) => {
-      if (e.target.closest('button') && !e.target.closest('[data-open-modal]')) return;
-      if (e.target.closest('select') || e.target.closest('input') || e.target.closest('label')) return;
-      openEventModal(ev);
-    };
-    if (card) card.addEventListener('click', openPop);
+    if (item.isGroup) {
+      const card = q('[data-group-card="' + item.groupId + '"][data-group-date="' + item.date + '"]');
+      const openPop = (e) => {
+        if (e.target.closest('button') || e.target.closest('input')) return;
+        openEventModal(item.events[0], item, 0);
+      };
+      if (card) card.addEventListener('click', openPop);
 
-    const openBtn = q('[data-open-modal="' + ev.id + '"]');
-    if (openBtn) openBtn.addEventListener('click', (evt) => { evt.stopPropagation(); openEventModal(ev); });
-
-    const e = q('[data-edit="' + ev.id + '"]'); if (e) e.addEventListener('click', (evt) => { evt.stopPropagation(); openForm(ev); });
-    const d = q('[data-del="' + ev.id + '"]'); if (d) d.addEventListener('click', (evt) => { evt.stopPropagation(); del(ev); });
-    const rn = q('[data-reinstate="' + ev.id + '"]'); if (rn) rn.addEventListener('click', (evt) => { evt.stopPropagation(); reinstate(ev); });
-    const rp = q('[data-reports="' + ev.id + '"]'); if (rp) rp.addEventListener('click', (evt) => { evt.stopPropagation(); openReports(ev); });
-    const sp = q('[data-spec="' + ev.id + '"]'); if (sp) sp.addEventListener('click', (evt) => { evt.stopPropagation(); files.open(ev.techSpec); });
-    const pr = q('[data-print="' + ev.id + '"]'); if (pr) pr.addEventListener('click', (evt) => { evt.stopPropagation(); printAdvance(ev); });
-
-    // Bulk select checkbox
-    const bulkCb = q('[data-bulk-select="' + ev.id + '"]'); 
-    if (bulkCb) bulkCb.addEventListener('change', (evt) => {
-      if (evt.target.checked) {
-        selectedForBulkDelete.add(ev.id);
-        if (card) card.classList.add('border-danger', 'bg-danger/5');
-      } else {
-        selectedForBulkDelete.delete(ev.id);
-        if (card) card.classList.remove('border-danger', 'bg-danger/5');
-      }
-      
-      let btnDel = el.querySelector('#adv-bulk-delete-btn');
-      if (selectedForBulkDelete.size > 0) {
-        if (!btnDel) {
-          const container = el.querySelector('#adv-bulk-delete-toggle').closest('div');
-          if (container) {
-            btnDel = document.createElement('button');
-            btnDel.type = 'button';
-            btnDel.id = 'adv-bulk-delete-btn';
-            btnDel.className = 'btn btn-danger !py-1 text-xs flex items-center gap-1';
-            btnDel.innerHTML = ui.icon('trash', 'w-3 h-3') + '<span>Delete Selected (' + selectedForBulkDelete.size + ')</span>';
-            btnDel.addEventListener('click', handleBulkDelete);
-            container.appendChild(btnDel);
-          }
+      const bulkCb = q('[data-bulk-select-group="' + item.groupId + '|' + item.date + '"]');
+      if (bulkCb) bulkCb.addEventListener('change', (evt) => {
+        if (evt.target.checked) {
+          item.events.forEach(ev => selectedForBulkDelete.add(ev.id));
+          if (card) card.classList.add('border-danger', 'bg-danger/5');
         } else {
-          const span = btnDel.querySelector('span');
-          if (span) span.textContent = 'Delete Selected (' + selectedForBulkDelete.size + ')';
+          item.events.forEach(ev => selectedForBulkDelete.delete(ev.id));
+          if (card) card.classList.remove('border-danger', 'bg-danger/5');
+        }
+        updateBulkDeleteButton();
+      });
+    } else {
+      const ev = item;
+      
+      // Open pop-over modal on card click or view button
+      const card = q('[data-event-card="' + ev.id + '"]');
+      const openPop = (e) => {
+        if (e.target.closest('button') && !e.target.closest('[data-open-modal]')) return;
+        if (e.target.closest('select') || e.target.closest('input') || e.target.closest('label')) return;
+        openEventModal(ev);
+      };
+      if (card) card.addEventListener('click', openPop);
+
+      const openBtn = q('[data-open-modal="' + ev.id + '"]');
+      if (openBtn) openBtn.addEventListener('click', (evt) => { evt.stopPropagation(); openEventModal(ev); });
+
+      const eBtn = q('[data-edit="' + ev.id + '"]'); if (eBtn) eBtn.addEventListener('click', (evt) => { evt.stopPropagation(); openForm(ev); });
+      const dBtn = q('[data-del="' + ev.id + '"]'); if (dBtn) dBtn.addEventListener('click', (evt) => { evt.stopPropagation(); del(ev); });
+      const rnBtn = q('[data-reinstate="' + ev.id + '"]'); if (rnBtn) rnBtn.addEventListener('click', (evt) => { evt.stopPropagation(); reinstate(ev); });
+      const rpBtn = q('[data-reports="' + ev.id + '"]'); if (rpBtn) rpBtn.addEventListener('click', (evt) => { evt.stopPropagation(); openReports(ev); });
+      const spBtn = q('[data-spec="' + ev.id + '"]'); if (spBtn) spBtn.addEventListener('click', (evt) => { evt.stopPropagation(); files.open(ev.techSpec); });
+      const prBtn = q('[data-print="' + ev.id + '"]'); if (prBtn) prBtn.addEventListener('click', (evt) => { evt.stopPropagation(); printAdvance(ev); });
+
+      // Bulk select checkbox
+      const bulkCb = q('[data-bulk-select="' + ev.id + '"]'); 
+      if (bulkCb) bulkCb.addEventListener('change', (evt) => {
+        if (evt.target.checked) {
+          selectedForBulkDelete.add(ev.id);
+          if (card) card.classList.add('border-danger', 'bg-danger/5');
+        } else {
+          selectedForBulkDelete.delete(ev.id);
+          if (card) card.classList.remove('border-danger', 'bg-danger/5');
+        }
+        updateBulkDeleteButton();
+      });
+    }
+  });
+
+  function updateBulkDeleteButton() {
+    let btnDel = el.querySelector('#adv-bulk-delete-btn');
+    if (selectedForBulkDelete.size > 0) {
+      if (!btnDel) {
+        const container = el.querySelector('#adv-bulk-delete-toggle').closest('div');
+        if (container) {
+          btnDel = document.createElement('button');
+          btnDel.type = 'button';
+          btnDel.id = 'adv-bulk-delete-btn';
+          btnDel.className = 'btn btn-danger !py-1 text-xs flex items-center gap-1';
+          btnDel.innerHTML = ui.icon('trash', 'w-3 h-3') + '<span>Delete Selected (' + selectedForBulkDelete.size + ')</span>';
+          btnDel.addEventListener('click', handleBulkDelete);
+          container.appendChild(btnDel);
         }
       } else {
-        if (btnDel) btnDel.remove();
+        const span = btnDel.querySelector('span');
+        if (span) span.textContent = 'Delete Selected (' + selectedForBulkDelete.size + ')';
       }
-    });
-  });
+    } else {
+      if (btnDel) btnDel.remove();
+    }
+  }
 
   // Bulk Delete Toggle
   const toggleBulk = el.querySelector('#adv-bulk-delete-toggle');
@@ -1229,8 +1326,55 @@ RMTP.views.advancing = function (el, params, query) {
     );
   }
 
+  /* ---- Compact Grouped Event Card (Multi-Room) ---- */
+  function renderGroupedCard(group) {
+    let reportsCount = 0;
+    group.events.forEach(e => { reportsCount += reportsFor(e.id).length; });
+
+    const checkboxHtml = bulkDeleteMode ?
+      '<div class="pr-3 flex items-center justify-center shrink-0" onclick="event.stopPropagation()">' +
+        '<input type="checkbox" data-bulk-select-group="' + group.groupId + '|' + group.date + '" class="w-4 h-4 rounded accent-[var(--danger)] cursor-pointer" />' +
+      '</div>' : '';
+
+    const spacesBreakdown = group.events.map(e => {
+       const times = [e.startTime, e.finishTime].filter(Boolean).join(' \u2013 ');
+       const techs = RMTP.eventTechnicians(e).map(techLabel).filter(Boolean);
+       const techStr = techs.length ? techs.join(', ') : 'Unassigned';
+       const isCinema = isScreenSpace(e.space);
+       return (
+         '<div class="flex flex-col sm:flex-row sm:items-center justify-between text-xs py-1.5 border-t border-line/60 first:border-0">' +
+           '<div class="font-medium text-ink flex items-center gap-2">' + ui.pill(e.space, isCinema ? 'var(--accent)' : 'var(--info)') + ' <span class="text-muted">' + (times || 'No times') + '</span></div>' +
+           '<div class="text-muted">Techs: <span class="text-ink">' + ui.esc(techStr) + '</span></div>' +
+         '</div>'
+       );
+    }).join('');
+
+    return (
+      '<div data-group-card="' + group.groupId + '" data-group-date="' + group.date + '" class="panel w-full p-4 sm:p-5 transition-all hover:border-accent hover:shadow-lg cursor-pointer group select-none relative flex flex-col justify-between gap-3">' +
+        '<div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3 w-full">' +
+          checkboxHtml +
+          '<div class="min-w-0 flex-1 w-full">' +
+            '<div class="flex items-center gap-2 flex-wrap mb-1.5">' +
+              '<h3 class="font-display text-base sm:text-lg font-semibold text-ink group-hover:text-accent transition-colors break-words">' + ui.esc(group.name) + '</h3>' +
+              ui.pill('Multi-Room Takeover', 'var(--warning)') +
+            '</div>' +
+            '<div class="flex items-center gap-2 sm:gap-3 text-xs text-muted flex-wrap mb-3">' +
+              (group.date ? '<span class="flex items-center gap-1 font-medium text-ink">' + ui.icon('clock', 'w-3.5 h-3.5 text-accent') + ui.formatDate(group.date) + '</span>' : '') +
+              '<span class="w-1 h-1 rounded-full bg-line hidden sm:inline-block"></span>' +
+              '<span>' + group.events.length + ' Spaces</span>' +
+              (reportsCount ? '<span class="w-1 h-1 rounded-full bg-line"></span><span class="text-ok font-semibold">' + reportsCount + ' report' + (reportsCount > 1 ? 's' : '') + '</span>' : '') +
+            '</div>' +
+            '<div class="bg-panel2 rounded-lg p-2.5 space-y-1 mt-2">' +
+              spacesBreakdown +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
   /* ---- Pop-over Detail Modal with Darkened Backdrop ---- */
-  function openEventModal(ev) {
+  function openEventModal(ev, group = null, activeIndex = 0) {
     const reports = reportsFor(ev.id);
     const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
     const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
@@ -1654,7 +1798,18 @@ RMTP.views.advancing = function (el, params, query) {
       '</div>'
     ) : '';
 
+    let groupTabsHtml = '';
+    if (group && group.events.length > 1) {
+      groupTabsHtml = '<div class="flex items-center gap-1 overflow-x-auto border-b border-line mb-4 pb-0 hide-scrollbar">';
+      group.events.forEach((gev, i) => {
+        const isActive = i === activeIndex;
+        groupTabsHtml += '<button data-group-tab="' + i + '" class="px-4 py-2.5 text-sm font-semibold transition whitespace-nowrap ' + (isActive ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-ink') + '">' + ui.esc(gev.space) + '</button>';
+      });
+      groupTabsHtml += '</div>';
+    }
+
     const bodyHtml =
+      groupTabsHtml +
       '<div class="grid gap-4">' +
         // Top summary metadata
         '<div class="p-3.5 rounded-xl bg-panel2/50 border border-line text-xs grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">' +
@@ -1694,10 +1849,40 @@ RMTP.views.advancing = function (el, params, query) {
           '</div>'
         ) : '') +
 
+        // Artifax Updates History
+        (ev.artifaxHistory && ev.artifaxHistory.length > 0 ? (
+          (() => {
+            const history = ev.artifaxHistory.slice().reverse(); // newest first
+            const defaultEntry = history[0];
+            const options = history.map((entry, idx) => {
+               const dateLabel = new Date(entry.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+               const changesLabel = entry.changes && entry.changes.length ? entry.changes.join(', ').substring(0, 30) + (entry.changes.join(', ').length > 30 ? '...' : '') : 'Updated';
+               return '<option value="' + idx + '">' + dateLabel + ' - ' + changesLabel + '</option>';
+            }).join('');
+            
+            return (
+              '<div class="p-3.5 rounded-xl bg-panel2/30 border border-line text-xs">' +
+                '<div class="flex items-center justify-between mb-2 gap-2">' +
+                   '<span class="eyebrow block">Artifax Updates</span>' +
+                   '<select id="modal-artifax-history" class="field !py-1 !text-xs !bg-panel w-auto min-w-[150px] max-w-[200px]">' +
+                      options +
+                   '</select>' +
+                '</div>' +
+                '<p id="modal-artifax-notes" class="text-ink/80 whitespace-pre-wrap leading-relaxed">' + ui.esc(defaultEntry.notes || 'No technical notes provided.') + '</p>' +
+              '</div>'
+            );
+          })()
+        ) : (ev.artifaxId ? 
+            '<div class="p-3.5 rounded-xl bg-panel2/30 border border-line text-xs">' +
+              '<span class="eyebrow block mb-1">Artifax Updates</span>' +
+              '<p class="text-muted italic">No update history pulled from Artifax.</p>' +
+            '</div>'
+        : '')) +
+
         // Technical Notes
         (ev.techInfo ? (
           '<div class="p-3.5 rounded-xl bg-panel2/30 border border-line text-xs">' +
-            '<span class="eyebrow block mb-1">Technical Notes</span>' +
+            '<span class="eyebrow block mb-1">Advancing Tech Info</span>' +
             '<p class="text-ink/80 whitespace-pre-wrap leading-relaxed">' + ui.esc(ev.techInfo) + '</p>' +
           '</div>'
         ) : '') +
@@ -1775,8 +1960,30 @@ RMTP.views.advancing = function (el, params, query) {
       size: 'md:max-w-3xl'
     });
 
+    m.root.querySelectorAll('[data-group-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = +btn.getAttribute('data-group-tab');
+        if (group && group.events[idx]) {
+          m.close();
+          openEventModal(group.events[idx], group, idx);
+        }
+      });
+    });
+
     const specBtn = m.root.querySelector('#modal-open-spec');
     if (specBtn) specBtn.addEventListener('click', () => files.open(ev.techSpec));
+
+    const artifaxHistorySel = m.root.querySelector('#modal-artifax-history');
+    const artifaxNotesEl = m.root.querySelector('#modal-artifax-notes');
+    if (artifaxHistorySel && artifaxNotesEl && ev.artifaxHistory) {
+      const reversedHistory = ev.artifaxHistory.slice().reverse();
+      artifaxHistorySel.addEventListener('change', () => {
+        const idx = parseInt(artifaxHistorySel.value, 10);
+        if (reversedHistory[idx]) {
+          artifaxNotesEl.textContent = reversedHistory[idx].notes || 'No technical notes provided.';
+        }
+      });
+    }
 
     m.root.querySelectorAll('[data-act-file-idx]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1806,7 +2013,12 @@ RMTP.views.advancing = function (el, params, query) {
         store.upsert('advancing', updated);
         ui.toast('Advance status updated to ' + newStatus, 'ok');
         m.close();
-        openEventModal(updated);
+        if (group) {
+          group.events[activeIndex] = updated;
+          openEventModal(updated, group, activeIndex);
+        } else {
+          openEventModal(updated);
+        }
         RMTP.router.render();
       });
     }
@@ -2986,6 +3198,36 @@ RMTP.views.advancing = function (el, params, query) {
     const prodInitial = getProductionPackage(ev);
     let floorTags = prodInitial.floor_tags ? prodInitial.floor_tags.slice() : [];
 
+    let artifaxHistoryHtml = '';
+    if (ev.artifaxHistory && ev.artifaxHistory.length > 0) {
+      const history = ev.artifaxHistory.slice().reverse(); // newest first
+      const options = history.map((entry, idx) => {
+         const dateLabel = new Date(entry.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+         const changesLabel = entry.changes && entry.changes.length ? entry.changes.join(', ').substring(0, 30) + (entry.changes.join(', ').length > 30 ? '...' : '') : 'Updated';
+         return '<option value="' + idx + '">' + dateLabel + ' - ' + changesLabel + '</option>';
+      }).join('');
+      
+      artifaxHistoryHtml = (
+        '<div class="mb-4 p-3.5 rounded-xl bg-panel2/30 border border-line">' +
+          '<div class="flex items-center justify-between mb-2 gap-2">' +
+             '<span class="text-xs font-semibold text-muted uppercase tracking-wider block">Artifax Version History</span>' +
+             '<select class="e-artifax-history-select field !py-1 !text-xs !bg-panel w-auto min-w-[150px] max-w-[200px]">' +
+                options +
+             '</select>' +
+          '</div>' +
+          '<textarea class="e-artifax-notes field !text-xs !text-ink/80 bg-transparent border-0" rows="3" readonly>' + ui.esc(history[0].notes || 'No technical notes provided.') + '</textarea>' +
+          '<div class="text-[10px] text-muted text-right mt-1">Read-only. Sync Artifax to update.</div>' +
+        '</div>'
+      );
+    } else if (ev.artifaxId) {
+      artifaxHistoryHtml = (
+        '<div class="mb-4 p-3.5 rounded-xl bg-panel2/30 border border-line">' +
+          '<span class="text-xs font-semibold text-muted uppercase tracking-wider block mb-1">Artifax Version History</span>' +
+          '<p class="text-xs text-muted italic">No update history pulled from Artifax yet.</p>' +
+        '</div>'
+      );
+    }
+
     const m = ui.modal({
       title: existing ? 'Edit Technical Advance' : 'Create Technical Advance',
       size: 'md:max-w-3xl',
@@ -3135,6 +3377,7 @@ RMTP.views.advancing = function (el, params, query) {
               '</div>' +
               fld('Assigned Technicians', '<div id="e-cinema-tech-area"></div>') +
               fld('Artist / Client contact', '<input id="e-cinema-contact" class="field" value="' + ui.esc(ev.clientContact || '') + '" placeholder="Tour manager / client name & contact" />') +
+              artifaxHistoryHtml +
               fld('Technical notes & requirements', '<textarea id="e-cinema-info" class="field" rows="3" placeholder="Audio formatting, subtitles, projection notes, presentation mics\u2026">' + ui.esc(ev.techInfo || '') + '</textarea>') +
               fld('Event Shift Report Email Recipients (Optional Override)', '<input id="e-cinema-email-recipients" class="field font-mono text-xs" value="' + ui.esc(Array.isArray(ev.email_recipients || ev.emailRecipients) ? (ev.email_recipients || ev.emailRecipients).join(', ') : (ev.email_recipients || ev.emailRecipients || '')) + '" placeholder="Leave blank to use Advancing page recipients (' + getReportRecipients().join(', ') + ')" />') +
               '<div>' +
@@ -3181,6 +3424,7 @@ RMTP.views.advancing = function (el, params, query) {
               '<div id="sec-1-content" class="hidden p-4 pt-3 border-t border-line/60 bg-panel2/30 grid gap-4">' +
                 fld('Assigned Technicians', '<div id="e-tech-area"></div>') +
                 fld('Artist / Client contact', '<input id="e-contact" class="field" value="' + ui.esc(ev.clientContact || '') + '" placeholder="Tour manager / client name & contact" />') +
+                artifaxHistoryHtml +
                 fld('Technical notes & requirements', '<textarea id="e-info" class="field" rows="3" placeholder="Power requirements, split boxes, staging notes, audio input list\u2026">' + ui.esc(ev.techInfo || '') + '</textarea>') +
                 '<div>' +
                   '<label class="flex items-center gap-2 cursor-pointer p-2.5 rounded-lg bg-panel border border-line hover:border-accent/40 transition-colors">' +
@@ -3623,6 +3867,18 @@ RMTP.views.advancing = function (el, params, query) {
       const lEmail = m.root.querySelector('#e-email-recipients');
       if (isScreen && cEmail && lEmail && !cEmail.value) cEmail.value = lEmail.value;
       if (!isScreen && cEmail && lEmail && !lEmail.value) lEmail.value = cEmail.value;
+      
+      const historySelects = m.root.querySelectorAll('.e-artifax-history-select');
+      historySelects.forEach((sel) => {
+        sel.addEventListener('change', (e) => {
+          const idx = parseInt(e.target.value, 10);
+          const history = ev.artifaxHistory.slice().reverse();
+          const targetArea = e.target.closest('div.mb-4').querySelector('.e-artifax-notes');
+          if (targetArea && history[idx]) {
+            targetArea.value = history[idx].notes || 'No technical notes provided.';
+          }
+        });
+      });
 
       updateSectionBannerPills();
     }

@@ -885,6 +885,12 @@ RMTP.views.advancing = function (el, params, query) {
         created = data.created || 0;
         updated = data.updated || 0;
         skipped = data.skipped || 0;
+        
+        // The Edge Function synced directly to Supabase.
+        // We must pull the updated collection back down to the local cache.
+        if (RMTP.syncSb && typeof RMTP.syncSb.pullCollection === 'function') {
+           await RMTP.syncSb.pullCollection('advancing');
+        }
       }
 
       for (const r of list) {
@@ -5443,9 +5449,11 @@ RMTP.views.advancing = function (el, params, query) {
         }
         
         const baseId = record.id;
+        const generatedGroupId = store.uid('grp'); // generate a shared groupId
         checkedSpaces.forEach((sp, idx) => {
           const multiRecord = Object.assign({}, record, {
             id: idx === 0 ? baseId : store.uid('evt'),
+            groupId: generatedGroupId,
             space: sp
           });
           store.upsert('advancing', multiRecord);

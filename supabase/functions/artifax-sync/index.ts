@@ -111,7 +111,7 @@ async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInsta
   const list: any[] = Array.isArray(data) ? data : (data.instances ?? data.results ?? []);
   return list.map((r) => ({
     id: String(r.id ?? r.instanceId ?? r.InstanceId),
-    groupId: String(r.arrangement_id ?? r.arrangementId ?? r.ArrangementId ?? r.groupId ?? r.GroupId ?? ""),
+    groupId: String(r.arrangement_id ?? r.arrangementId ?? r.ArrangementId ?? r.groupId ?? r.GroupId ?? r.event_id ?? r.EventId ?? r.title ?? r.name ?? ""),
     title: r.title ?? r.name ?? r.EventName ?? "Untitled",
     room: r.room ?? r.roomName ?? r.RoomName ?? "",
     type: r.type ?? r.arrangementType ?? r.ArrangementType ?? "",

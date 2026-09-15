@@ -11,6 +11,35 @@ RMTP.views.advancing = function (el, params, query) {
   const ui = RMTP.ui, store = RMTP.store, auth = RMTP.auth, files = RMTP.files;
 
   // One-time migration for legacy Artifax techInfo strings
+  if (!RMTP._multiRoomMigrated) {
+    let migratedMulti = false;
+    const allAdv = store.all('advancing');
+    const groups = {};
+    allAdv.forEach(ev => {
+      if (ev.groupId && !ev.groupId.startsWith('implicit-')) {
+        if (!groups[ev.groupId]) groups[ev.groupId] = [];
+        groups[ev.groupId].push(ev);
+      }
+    });
+    for (const gid in groups) {
+      if (groups[gid].length >= 1) {
+        migratedMulti = true;
+        const evts = groups[gid];
+        const primary = evts[0];
+        primary.space = evts.map(e => Array.isArray(e.space) ? e.space[0] : e.space).filter(Boolean);
+        delete primary.groupId;
+        store.upsert('advancing', primary);
+        for (let i = 1; i < evts.length; i++) {
+          store.remove('advancing', evts[i].id);
+        }
+      }
+    }
+    RMTP._multiRoomMigrated = true;
+    if (migratedMulti) {
+      console.log('[Phase 3] Auto-migrated manual multi-room groups to single rows');
+    }
+  }
+
   if (!RMTP._artifaxLegacyMigratedV2) {
     let migrated = false;
     let count = 0;
@@ -62,6 +91,7 @@ RMTP.views.advancing = function (el, params, query) {
   }
   let selectedTechs = RMTP._advTechFilter; // Array of ids/emails, or empty array = all
   let includeUnassigned = (RMTP._advIncludeUnassigned !== undefined ? RMTP._advIncludeUnassigned : true);
+  let filterRequiresCrew = (RMTP._advRequiresCrew !== undefined ? RMTP._advRequiresCrew : false);
 
   function getTodayString() {
     const now = new Date();
@@ -85,7 +115,7 @@ RMTP.views.advancing = function (el, params, query) {
       if (isPastEvent(targetEv.date)) {
         filters.tab = 'past';
       }
-      if (filters.space && filters.space !== targetEv.space) {
+      if (filters.space && (Array.isArray(targetEv.space) ? !targetEv.space.includes(filters.space) : filters.space !== targetEv.space)) {
         filters.space = '';
       }
       if (filters.date && filters.date !== targetEv.date) {
@@ -95,6 +125,9 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   function isScreenSpace(spaceName) {
+    if (Array.isArray(spaceName)) {
+      return spaceName.some(s => s === 'Screen One' || s === 'Screen Two' || s === 'Screen Three');
+    }
     return spaceName === 'Screen One' || spaceName === 'Screen Two' || spaceName === 'Screen Three';
   }
 
@@ -314,12 +347,23 @@ RMTP.views.advancing = function (el, params, query) {
       return e.deleted !== true && !isPastEvent(e.date);
     })
     .filter((e) => {
-      if (filters.space && e.space !== filters.space) return false;
+      if (filterRequiresCrew) {
+        const evTechs = RMTP.eventTechnicians(e);
+        const leadId = RMTP.getAdvancingLeadId(e);
+        if (evTechs.length > 0 || leadId) return false;
+      }
+      if (filters.space) {
+        if (Array.isArray(e.space)) {
+          if (!e.space.includes(filters.space)) return false;
+        } else {
+          if (e.space !== filters.space) return false;
+        }
+      }
       if (filters.date && e.date !== filters.date) return false;
       if (quickSearch) {
         const q = quickSearch.toLowerCase();
         const evName = (e.name || '').toLowerCase();
-        const evSpace = (e.space || '').toLowerCase();
+        const evSpace = (Array.isArray(e.space) ? e.space.join(', ') : (e.space || '')).toLowerCase();
         const evDate = (e.date ? ui.formatDate(e.date).toLowerCase() : '');
         if (!evName.includes(q) && !evSpace.includes(q) && !evDate.includes(q)) {
           return false;
@@ -354,6 +398,7 @@ RMTP.views.advancing = function (el, params, query) {
   if (filters.date) activeFilterCount++;
   if (selectedTechs && selectedTechs.length > 0) activeFilterCount++;
   if (!includeUnassigned) activeFilterCount++;
+  if (filterRequiresCrew) activeFilterCount++;
 
   // Group Multi-Room Events
   const groupedShown = [];
@@ -422,6 +467,7 @@ RMTP.views.advancing = function (el, params, query) {
           '<input type="text" id="adv-quick-search-mobile" class="field flex-1 border-none shadow-none bg-transparent focus:ring-0 text-sm ml-2" placeholder="Search events..." value="' + ui.esc(quickSearch) + '">' +
         '</div>' +
         '<div class="flex items-center justify-between md:justify-start gap-3 w-full">' +
+          (isAdmin ? '<label class="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-line text-xs font-medium cursor-pointer transition select-none ' + (filterRequiresCrew ? 'bg-danger text-white border-danger shadow-2xs' : 'bg-panel2 hover:bg-panel text-ink') + '"><input type="checkbox" id="adv-req-crew-toggle" class="hidden" ' + (filterRequiresCrew ? 'checked' : '') + '> ' + ui.icon('alert', 'w-3.5 h-3.5') + '<span>Requires Crew</span></label>' : '') +
           '<button id="adv-filter-toggle-btn" class="btn btn-ghost text-xs flex items-center gap-2 border border-line bg-panel2 hover:bg-panel font-medium py-2 px-3 rounded-lg transition shrink-0">' +
             ui.icon('filter', 'w-3.5 h-3.5 text-accent') +
             '<span>Filters & Crew</span>' +
@@ -442,8 +488,37 @@ RMTP.views.advancing = function (el, params, query) {
       (advViewMode === 'calendar'
         ? renderCalendarView()
         : (tabBar() +
-           (finalShown.length ? '<div class="grid gap-3.5">' + finalShown.map(item => item.isGroup ? renderGroupedCard(item) : renderEventCard(item)).join('') + '</div>'
-                         : ui.empty(emptyMsg[0], emptyMsg[1], emptyMsg[2]))
+           (finalShown.length ? (() => {
+            if (currentTab !== 'upcoming') {
+              return '<div class="grid gap-3.5">' + finalShown.map(item => item.isGroup ? renderGroupedCard(item) : renderEventCard(item)).join('') + '</div>';
+            }
+            
+            const now = new Date();
+            const todayStr = now.toISOString().slice(0, 10);
+            const tomorrow = new Date(now);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            const tomorrowStr = tomorrow.toISOString().slice(0, 10);
+            
+            const isToday = (e) => e.date === todayStr;
+            const isTomorrow = (e) => e.date === tomorrowStr;
+            const isLater = (e) => e.date > tomorrowStr || !e.date;
+
+            const tdy = finalShown.filter(isToday);
+            const tmw = finalShown.filter(isTomorrow);
+            const ltr = finalShown.filter(isLater);
+
+            let html = '';
+            if (tdy.length) {
+              html += '<div class="mb-6"><h3 class="text-xs font-bold uppercase tracking-wider text-accent mb-3 flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-accent animate-pulse"></span>Today</h3><div class="grid gap-3.5">' + tdy.map(item => item.isGroup ? renderGroupedCard(item) : renderEventCard(item)).join('') + '</div></div>';
+            }
+            if (tmw.length) {
+              html += '<div class="mb-6"><h3 class="text-xs font-bold uppercase tracking-wider text-ink mb-3">Tomorrow</h3><div class="grid gap-3.5">' + tmw.map(item => item.isGroup ? renderGroupedCard(item) : renderEventCard(item)).join('') + '</div></div>';
+            }
+            if (ltr.length) {
+              html += '<div><h3 class="text-xs font-bold uppercase tracking-wider text-muted mb-3">Upcoming</h3><div class="grid gap-3.5">' + ltr.map(item => item.isGroup ? renderGroupedCard(item) : renderEventCard(item)).join('') + '</div></div>';
+            }
+            return html;
+          })() : ui.empty(emptyMsg[0], emptyMsg[1], emptyMsg[2]))
           )
       ) +
     '</div>';
@@ -473,7 +548,7 @@ RMTP.views.advancing = function (el, params, query) {
         ui.esc(label) + ' <span class="tabular text-[10px] opacity-70">(' + n + ')</span></button>';
 
     const spaceChips = [chip('', 'All Spaces', tabPool.length, !filters.space)]
-      .concat(RMTP.SPACES.map((s) => chip(s, s, tabPool.filter((e) => e.space === s).length, filters.space === s))).join('');
+      .concat(RMTP.SPACES.map((s) => chip(s, s, tabPool.filter((e) => Array.isArray(e.space) ? e.space.includes(s) : e.space === s).length, filters.space === s))).join('');
 
     return (
       '<div id="adv-filters-drawer" class="' + (filtersPanelOpen ? 'block' : 'hidden') + ' panel p-4 mb-4 border border-line bg-panel2/60 animate-fadeIn space-y-3.5 shadow-sm">' +
@@ -544,7 +619,12 @@ RMTP.views.advancing = function (el, params, query) {
     const monthName = monthNames[month];
 
     // Filter base events by space if space filter active, and exclude deleted events
-    const calEvents = base.filter((e) => e.deleted !== true && (!filters.space || e.space === filters.space));
+    const calEvents = base.filter((e) => {
+      if (e.deleted === true) return false;
+      if (!filters.space) return true;
+      if (Array.isArray(e.space)) return e.space.includes(filters.space);
+      return e.space === filters.space;
+    });
 
     // Map events by YYYY-MM-DD
     const eventsByDate = {};
@@ -1209,6 +1289,18 @@ RMTP.views.advancing = function (el, params, query) {
         const updated = Object.assign({}, targetEv, { status: newStatus });
         store.upsert('advancing', updated);
         ui.toast('Advance status updated to ' + newStatus, 'ok');
+        if (advViewMode === 'list') {
+          const card = document.querySelector('[data-event-card="' + targetEv.id + '"]');
+          if (card) {
+            const temp = document.createElement('div');
+            temp.innerHTML = renderEventCard(updated);
+            const newCard = temp.firstElementChild;
+            if (newCard) {
+              card.replaceWith(newCard);
+              return;
+            }
+          }
+        }
         RMTP.router.render();
       }
     });
@@ -1265,7 +1357,9 @@ RMTP.views.advancing = function (el, params, query) {
 
   /* ---- Compact Event Card in List View ---- */
   function renderEventCard(ev) {
+    if (Array.isArray(ev.space) && ev.groupId) { delete ev.groupId; }
     const reports = reportsFor(ev.id);
+    const hasReports = reports.length > 0;
     const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
     const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
     const isCinema = isScreenSpace(ev.space);
@@ -1308,10 +1402,11 @@ RMTP.views.advancing = function (el, params, query) {
             '<div class="flex items-center gap-2 flex-wrap mb-1.5">' +
               '<h3 class="font-display text-base sm:text-lg font-semibold text-ink group-hover:text-accent transition-colors break-words">' + ui.esc(ev.name) + '</h3>' +
               statusControl +
-              ui.pill(ev.space, isCinema ? 'var(--accent)' : 'var(--info)') +
+              ui.pill(Array.isArray(ev.space) ? ev.space.join(', ') : ev.space, isCinema ? 'var(--accent)' : 'var(--info)') +
               (leadName ? ui.pill('Lead: ' + leadName, 'var(--accent)') : '') +
               (ev.category ? ui.pill(ev.category, 'var(--muted)') : '') +
               (ev.guestEngineer ? ui.pill('Guest Engineer', 'var(--info)') : '') +
+              (hasReports ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-danger/15 text-danger border border-danger/30" title="Shift reports submitted">' + ui.icon('alert', 'w-3 h-3') + 'Reports</span>' : '') +
             '</div>' +
             '<div class="flex items-center gap-2 sm:gap-3 text-xs text-muted flex-wrap">' +
               (ev.date ? '<span class="flex items-center gap-1 font-medium text-ink">' + ui.icon('clock', 'w-3.5 h-3.5 text-accent') + ui.formatDate(ev.date) + (times ? ' (' + times + ')' : '') + '</span>' : '') +
@@ -1360,9 +1455,10 @@ RMTP.views.advancing = function (el, params, query) {
        const techs = RMTP.eventTechnicians(e).map(techLabel).filter(Boolean);
        const techStr = techs.length ? techs.join(', ') : 'Unassigned';
        const isCinema = isScreenSpace(e.space);
+       const spLabel = Array.isArray(e.space) ? e.space.join(', ') : e.space;
        return (
          '<div class="flex flex-col sm:flex-row sm:items-center justify-between text-xs py-1.5 border-t border-line/60 first:border-0">' +
-           '<div class="font-medium text-ink flex items-center gap-2">' + ui.pill(e.space, isCinema ? 'var(--accent)' : 'var(--info)') + ' <span class="text-muted">' + (times || 'No times') + '</span></div>' +
+           '<div class="font-medium text-ink flex items-center gap-2">' + ui.pill(spLabel, isCinema ? 'var(--accent)' : 'var(--info)') + ' <span class="text-muted">' + (times || 'No times') + '</span></div>' +
            '<div class="text-muted">Techs: <span class="text-ink">' + ui.esc(techStr) + '</span></div>' +
          '</div>'
        );
@@ -1829,7 +1925,13 @@ RMTP.views.advancing = function (el, params, query) {
 
     const bodyHtml =
       groupTabsHtml +
-      '<div class="grid gap-4">' +
+      '<div class="flex items-center gap-4 mb-4 border-b border-line px-1 overflow-x-auto hide-scrollbar">' +
+        '<button data-modal-tab="overview" class="pb-2 text-xs font-semibold text-accent border-b-2 border-accent transition-colors shrink-0">Overview</button>' +
+        '<button data-modal-tab="schedule" class="pb-2 text-xs font-semibold text-muted border-b-2 border-transparent hover:text-ink transition-colors shrink-0">Schedule</button>' +
+        '<button data-modal-tab="tech" class="pb-2 text-xs font-semibold text-muted border-b-2 border-transparent hover:text-ink transition-colors shrink-0">Tech Specs</button>' +
+        '<button data-modal-tab="reports" class="pb-2 text-xs font-semibold text-muted border-b-2 border-transparent hover:text-ink transition-colors shrink-0">Reports</button>' +
+      '</div>' +
+      '<div id="modal-tab-content-overview" class="modal-tab-content grid gap-4">' +
         // Top summary metadata
         '<div class="p-3.5 rounded-xl bg-panel2/50 border border-line text-xs grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">' +
           '<div><div class="text-[10px] font-semibold text-muted uppercase">Venue / Space</div><div class="font-bold text-ink mt-0.5 text-sm">' + ui.esc(ev.space || '—') + '</div></div>' +
@@ -1844,9 +1946,14 @@ RMTP.views.advancing = function (el, params, query) {
             ) : ui.pill(ev.status || 'Confirmed', ev.status === 'Confirmed' ? 'var(--ok)' : (ev.status === 'Cancelled' ? 'var(--danger)' : 'var(--warning)'))) +
           '</div>' +
         '</div>' +
+        cinemaDetailsHtml +
+      '</div>' + // end overview tab
+      '<div id="modal-tab-content-schedule" class="modal-tab-content hidden grid gap-4">' +
         liveTimingsHtml +
         liveScheduleItemsHtml +
-        cinemaDetailsHtml +
+      '</div>' + // end schedule tab
+      '<div id="modal-tab-content-tech" class="modal-tab-content hidden grid gap-4">' +
+
         lightingProductionHtml +
         dmxFixturesHtml +
         channelListHtml +
@@ -1913,6 +2020,8 @@ RMTP.views.advancing = function (el, params, query) {
           '</button>'
         ) : '') +
 
+        '</div>' + // end tech tab
+      '<div id="modal-tab-content-reports" class="modal-tab-content hidden grid gap-4">' +
         // Shift Reports Section
         '<div class="p-3.5 rounded-xl bg-panel2/40 border border-line">' +
           '<div class="flex items-center justify-between gap-2 mb-2.5">' +
@@ -1940,6 +2049,8 @@ RMTP.views.advancing = function (el, params, query) {
           ) : '<div class="text-xs text-muted italic">No shift reports filed yet.</div>') +
         '</div>' +
       '</div>';
+
+    '</div>'; // end reports tab
 
     const footerHtml =
       '<div class="flex items-center justify-between w-full gap-2 flex-wrap">' +
@@ -1978,6 +2089,18 @@ RMTP.views.advancing = function (el, params, query) {
       footer: footerHtml,
       size: 'md:max-w-3xl'
     });
+
+    m.root.querySelectorAll('[data-modal-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        m.root.querySelectorAll('[data-modal-tab]').forEach(b => {
+          b.className = 'pb-2 text-xs font-semibold text-muted border-b-2 border-transparent hover:text-ink transition-colors shrink-0';
+        });
+        btn.className = 'pb-2 text-xs font-semibold text-accent border-b-2 border-accent transition-colors shrink-0';
+        m.root.querySelectorAll('.modal-tab-content').forEach(c => c.classList.add('hidden'));
+        m.root.querySelector('#modal-tab-content-' + btn.getAttribute('data-modal-tab')).classList.remove('hidden');
+      });
+    });
+
 
     m.root.querySelectorAll('[data-group-tab]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -3293,7 +3416,7 @@ RMTP.views.advancing = function (el, params, query) {
                     ui.icon('pin', 'w-4 h-4') +
                   '</span>' +
                   '<select id="e-space" class="field font-semibold text-accent pl-8.5 cursor-pointer ' + (!hasSpaceInitial ? 'border-accent/40 bg-accent/5 ring-2 ring-accent/10' : '') + '">' +
-                    blankOpt(RMTP.SPACES, ev.space, '\u25cb Choose a Space / Room\u2026') +
+                    blankOpt(RMTP.SPACES, Array.isArray(ev.space) ? ev.space[0] : ev.space, '\u25cb Choose a Space / Room\u2026') +
                     (!existing ? '<option value="Multi Room">Multi Room...</option>' : '') +
                   '</select>' +
                 '</div>' +
@@ -3857,7 +3980,15 @@ RMTP.views.advancing = function (el, params, query) {
       }
       const multiWrap = m.root.querySelector('#e-multi-room-wrap');
       if (multiWrap) {
-        multiWrap.classList.toggle('hidden', currentSpace !== 'Multi Room');
+        multiWrap.classList.toggle('hidden', currentSpace !== 'Multi Room' && !Array.isArray(ev.space));
+      if (Array.isArray(ev.space)) {
+        if (spaceSelect) spaceSelect.value = 'Multi Room';
+        ev.space.forEach(sp => {
+          const cb = m.root.querySelector('input[name="e-multi-spaces"][value="' + sp + '"]');
+          if (cb) cb.checked = true;
+        });
+        if (multiWrap) multiWrap.classList.remove('hidden');
+      }
       }
 
       const unselectedPrompt = m.root.querySelector('#space-unselected-prompt');
@@ -5454,26 +5585,15 @@ RMTP.views.advancing = function (el, params, query) {
       }
       record.dcp_test_event_id = linkedDcpId;
 
-      if (chosenSpace === 'Multi Room') {
+      if (chosenSpace === 'Multi Room' || Array.isArray(record.space)) {
         const checkedSpaces = Array.from(m.root.querySelectorAll('input[name="e-multi-spaces"]:checked')).map(cb => cb.value);
         if (checkedSpaces.length === 0) {
           ui.toast('Please select at least one space for Multi Room', 'danger');
           return;
         }
-        
-        const baseId = record.id;
-        const generatedGroupId = store.uid('grp'); // generate a shared groupId
-        checkedSpaces.forEach((sp, idx) => {
-          const multiRecord = Object.assign({}, record, {
-            id: idx === 0 ? baseId : store.uid('evt'),
-            groupId: generatedGroupId,
-            space: sp
-          });
-          store.upsert('advancing', multiRecord);
-        });
-      } else {
-        store.upsert('advancing', record);
+        record.space = checkedSpaces;
       }
+      store.upsert('advancing', record);
 
       // Bi-directional Sync: Keep linked Patch Sheet updated with Advancing schedule artists
       if (RMTP.presets && typeof RMTP.presets.getAllPatchSheets === 'function' && typeof RMTP.presets.savePatchSheet === 'function') {
@@ -5515,6 +5635,19 @@ RMTP.views.advancing = function (el, params, query) {
 
       m.close();
       ui.toast(existing ? 'Event advance updated' : 'Event advance created', 'ok');
+      
+      if (existing && chosenSpace !== 'Multi Room' && typeof advViewMode !== 'undefined' && advViewMode === 'list') {
+        const card = document.querySelector('[data-event-card="' + record.id + '"]');
+        if (card) {
+          const temp = document.createElement('div');
+          temp.innerHTML = renderEventCard(record);
+          const newCard = temp.firstElementChild;
+          if (newCard) {
+            card.replaceWith(newCard);
+            return;
+          }
+        }
+      }
       RMTP.router.render();
     });
   }

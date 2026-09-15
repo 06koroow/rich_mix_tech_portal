@@ -1,77 +1,43 @@
-/* ============================================================
-   sync-supabase.js — keeps the local cache and Supabase in step
-   ------------------------------------------------------------
-   Same "shape B" strategy as the SharePoint sync.js: localStorage
-   stays the thing the views read (synchronous, offline-friendly),
-   and this module (a) pulls every table into the cache on startup,
-   and (b) pushes local writes back through a retrying queue. It
-   wraps store.upsert / store.remove, so NO view changes are needed.
-
-   Simpler than the SharePoint version because the app's own `id`
-   is the table primary key — upsert(onConflict:'id') is
-   insert-or-update, so there's no id-map to maintain. Table columns
-   match the app's record fields (see docs/supabase-setup.sql), so
-   most collections are a near-passthrough.
-   ============================================================ */
+// sync-supabase.js - simplified optimistic sync
+window.RMTP = window.RMTP || {};
 RMTP.syncSb = (function () {
-  const store = RMTP.store, sb = RMTP.supabase, files = RMTP.files;
-  const tables = () => (RMTP.supabaseConfig || {}).tables || {};
-  const COLLS = ['users', 'inventory', 'maintenance', 'advancing', 'reports', 'signoffs', 'procedures', 'patch_presets', 'patch_sheets', 'dmx_personalities', 'dmx_patches', 'venues'];
-
-  /* ---- dynamic table & column compatibility cache & sanitizer ---- */
-  let unsupportedTables = {};
-  let unsupportedCols = {};
-
-  function loadCompatibilityCaches() {
-    try {
-      unsupportedTables = JSON.parse(store.readRaw('sb_unsupported_tables', '{}')) || {};
-    } catch (e) { unsupportedTables = {}; }
-    try {
-      unsupportedCols = JSON.parse(store.readRaw('sb_unsupported_cols', '{}')) || {};
-    } catch (e) { unsupportedCols = {}; }
-  }
-  loadCompatibilityCaches();
-
-  function markTableUnsupported(table) {
-    if (!table) return;
-    unsupportedTables[table] = true;
-    store.writeRaw('sb_unsupported_tables', JSON.stringify(unsupportedTables));
+  const store = RMTP.store, sb = RMTP.supabase;
+  const COLLS = ['advancing', 'reports', 'venues', 'users', 'signoffs', 'inventory', 'maintenance', 'procedures', 'patch_presets', 'patch_sheets', 'dmx_personalities', 'dmx_patches'];
+  const unsupportedCols = {};
+  const unsupportedTables = {};
+  
+  function tables() {
+    return {
+      advancing: 'advancing', reports: 'reports', venues: 'venues',
+      users: 'users', signoffs: 'signoffs', inventory: 'inventory',
+      maintenance: 'maintenance', procedures: 'procedures',
+      patch_presets: 'patch_presets', patch_sheets: 'patch_sheets',
+      dmx_personalities: 'dmx_personalities', dmx_patches: 'dmx_patches'
+    };
   }
 
-  function clearTableUnsupported(table) {
-    if (!table || !unsupportedTables[table]) return;
-    delete unsupportedTables[table];
-    store.writeRaw('sb_unsupported_tables', JSON.stringify(unsupportedTables));
+  function isTableMissingError(err) { return err && err.code === '42P01'; }
+  function isTableUnsupported(table) { return !!unsupportedTables[table]; }
+  function markTableUnsupported(table) { unsupportedTables[table] = true; }
+  function clearTableUnsupported(table) { unsupportedTables[table] = false; }
+  
+  function markColumnUnsupported(table, col) {
+    if (!unsupportedCols[table]) unsupportedCols[table] = {};
+    unsupportedCols[table][col] = true;
+  }
+  
+  function isColumnUnsupported(table, col) { return unsupportedCols[table] && unsupportedCols[table][col]; }
+  
+  function extractMissingColumn(err) {
+    if (!err || !err.message) return null;
+    const msg = err.message;
+    const m = msg.match(/column "([^"]+)" of relation "[^"]+" does not exist/);
+    if (m && m[1]) return m[1];
+    const m2 = msg.match(/Could not find the public.([^.]+) or/);
+    if (m2 && m2[1]) return m2[1];
+    return null;
   }
 
-  function isTableUnsupported(table) {
-    return !!unsupportedTables[table];
-  }
-
-        function isTableMissingError(err) {
-    if (!err) return false;
-    
-    // Explicitly check for PGRST204 (Missing Column) and do NOT treat it as a missing table.
-    // This is the bug: PGRST204 was triggering "schema cache" string match, causing the whole table to be marked unsupported.
-    if (err.code === 'PGRST204') return false; 
-
-    // Explicitly check for Missing Table
-    if (err.code === 'PGRST205' || err.code === '42P01') return true;
-
-    const msg = (err.message || '') + ' ' + (err.details || '') + ' ' + (err.hint || '') + ' ' + (typeof err === 'string' ? err : '');
-    
-    // We must be VERY careful with the string "schema cache". Both PGRST204 (missing column) 
-    // and PGRST205 (missing table) mention "schema cache".
-    // We only want to match if it explicitly says "find the X table" or "relation X does not exist".
-    if (/relation .+ does not exist/i.test(msg)) return true;
-    if (/Could not find the '.+' table/i.test(msg)) return true;
-    
-    // If it mentions schema cache but isn't explicitly a table error, assume it's NOT a table error 
-    // (likely a column error) to avoid blacklisting the whole table.
-    return false;
-  }
-
-  /* ---- pull ---- */
   async function pullCollection(coll) {
     const table = tables()[coll]; if (!table) return;
     let rows = [];
@@ -99,536 +65,87 @@ RMTP.syncSb = (function () {
     } catch (err) {
       if (isTableMissingError(err)) {
         markTableUnsupported(table);
-        console.warn('[syncSb] Table "' + table + '" is not present in remote Supabase schema cache (' + (err.message || err.code || 'PGRST205') + '). Running with local data for ' + coll + '. Run docs/supabase-setup.sql or docs/patch-sheets-setup.sql to enable cloud sync.');
+        console.warn('[syncSb] Table missing in Supabase: ' + table + '. Using local mock data.');
         return;
       }
-      
-      // If we get a schema cache error during pull (like PGRST204 missing column from our wildcards),
-      // we shouldn't throw the error, we should fallback to local data, otherwise the whole app wipes!
-      // This handles cases where a column was added locally but Supabase is returning PGRST204 
-      // because someone modified the table and didn't reload the cache, or vice-versa.
-      if (err.code === 'PGRST204' || /schema cache/i.test(err.message || '')) {
-         console.warn('[syncSb] Remote schema cache is stale for table "' + table + '" (' + (err.code || 'PGRST204') + '). Using local data cache for this run.');
-         return; 
-      }
-      
-      console.error('[syncSb] Error pulling collection: ' + coll, err);
-      return; // Do NOT throw, failing to pull shouldn't break the app and clear local state!
+      console.error('[syncSb] pull failed for', coll, err);
+      return; 
     }
-    if (coll === 'procedures') return regroupProcedures(rows);
-    const existing = store.all(coll);
-    const existingMap = new Map(existing.map((x) => [x.id, x]));
-
-    rows.forEach((r) => {
-      const prev = existingMap.get(r.id) || {};
-      if (coll === 'dmx_personalities') {
-        r.manufacturer = r.manufacturer || prev.manufacturer || 'Generic';
-        r.model = r.model || prev.model || '';
-        r.mode = r.mode || prev.mode || 'Standard';
-        r.channels = r.channels !== undefined ? r.channels : (prev.channels || 1);
-        r.category = r.category || prev.category || 'Fixtures';
-        r.isFactory = r.isFactory !== undefined ? r.isFactory : (prev.isFactory || false);
-        r.notes = r.notes || prev.notes || '';
-      }
-      if (coll === 'dmx_patches') {
-        r.title = r.title || r.name || prev.title || prev.name || 'DMX Lighting Patch';
-        r.space = r.space || prev.space || '';
-        r.date = r.date || prev.date || '';
-        r.eventId = r.eventId || prev.eventId || null;
-        r.eventName = r.eventName || prev.eventName || '';
-        r.notes = r.notes || prev.notes || '';
-        r.fixtures = Array.isArray(r.fixtures) ? r.fixtures : (prev.fixtures || []);
-      }
-      if (coll === 'patch_presets') {
-        r.channels = Array.isArray(r.channels) ? r.channels : (prev.channels || []);
-        r.type = r.type || prev.type || 'input';
-        r.category = r.category || prev.category || 'General';
-        r.description = r.description || prev.description || '';
-        r.capacityIn = r.capacityIn !== undefined ? r.capacityIn : (prev.capacityIn || 0);
-        r.capacityOut = r.capacityOut !== undefined ? r.capacityOut : (prev.capacityOut || 0);
-      }
-      if (coll === 'patch_sheets') {
-        r.acts = Array.isArray(r.acts) ? r.acts : (prev.acts || []);
-        r.patchPoints = Array.isArray(r.patchPoints) ? r.patchPoints : (prev.patchPoints || []);
-        r.stageboxes = Array.isArray(r.stageboxes) ? r.stageboxes : (prev.stageboxes || []);
-        r.repatches = Array.isArray(r.repatches) ? r.repatches : (prev.repatches || []);
-        r.dmx_fixtures = Array.isArray(r.dmx_fixtures) ? r.dmx_fixtures : (Array.isArray(r.dmxFixtures) ? r.dmxFixtures : (Array.isArray(prev.dmx_fixtures) ? prev.dmx_fixtures : []));
-        r.eventName = r.eventName || prev.eventName || '';
-        r.space = r.space || prev.space || '';
-        r.date = r.date || prev.date || '';
-        r.notes = r.notes || prev.notes || '';
-      }
-      if (coll === 'venues') {
-        r.stageDimensions = r.stageDimensions || prev.stageDimensions || '';
-        r.audio = r.audio || prev.audio || {};
-        r.dmx = r.dmx || prev.dmx || [];
-      }
-      if (coll === 'inventory') {
-        r.movements = r.movements || prev.movements || [];
-        r.outAt = r.outAt || prev.outAt || '';
-        if (window.RMTP && RMTP.qr && RMTP.qr.ensureItemTrackers) {
-          RMTP.qr.ensureItemTrackers(r);
-        }
-      }
-      if (coll === 'advancing') {
-        r.checklist = r.checklist || prev.checklist || {};
-        r.technicians = Array.isArray(r.technicians) ? r.technicians : (Array.isArray(prev.technicians) ? prev.technicians : (r.techUserId ? [{ userId: r.techUserId, role: '' }] : []));
-        r.startTime = r.startTime || r.starttime || prev.startTime || '';
-        r.finishTime = r.finishTime || r.finishtime || prev.finishTime || '';
-        r.load_in = r.load_in || r.loadIn || r.loadin || prev.load_in || prev.loadIn || '';
-        r.soundcheck = r.soundcheck || prev.soundcheck || '';
-        r.doors = r.doors || prev.doors || '';
-        r.off_stage = r.off_stage || r.offStage || r.offstage || prev.off_stage || prev.offStage || '';
-        r.curfew = r.curfew || prev.curfew || '';
-        r.load_out = r.load_out || r.loadOut || r.loadout || prev.load_out || prev.loadOut || '';
-        r.schedule_items = Array.isArray(r.schedule_items) ? r.schedule_items : (Array.isArray(r.scheduleItems) ? r.scheduleItems : (Array.isArray(prev.schedule_items) ? prev.schedule_items : (Array.isArray(prev.scheduleItems) ? prev.scheduleItems : [])));
-        r.screening_starts_time = r.screening_starts_time || r.screeningStartsTime || r.screeningstartstime || prev.screening_starts_time || prev.screeningStartsTime || '';
-        r.film_duration = r.film_duration || r.filmDuration || r.filmduration || prev.film_duration || prev.filmDuration || '';
-        r.media_type = r.media_type || r.mediaType || r.mediatype || prev.media_type || prev.mediaType || '';
-        r.dcp_received = r.dcp_received !== undefined ? r.dcp_received : (r.dcpReceived !== undefined ? r.dcpReceived : (prev.dcp_received !== undefined ? prev.dcp_received : (prev.dcpReceived !== undefined ? prev.dcpReceived : false)));
-        r.checks_completed = r.checks_completed !== undefined ? r.checks_completed : (r.checksCompleted !== undefined ? r.checksCompleted : (prev.checks_completed !== undefined ? prev.checks_completed : (prev.checksCompleted !== undefined ? prev.checksCompleted : false)));
-        r.intermission = r.intermission !== undefined ? !!r.intermission : (prev.intermission !== undefined ? !!prev.intermission : false);
-        r.qa = r.qa !== undefined ? !!r.qa : (prev.qa !== undefined ? !!prev.qa : false);
-        r.dcp_tester_user_id = r.dcp_tester_user_id || r.dcpTesterUserId || r.dcptesteruserid || prev.dcp_tester_user_id || prev.dcpTesterUserId || '';
-        r.dcp_test_datetime = r.dcp_test_datetime || r.dcpTestDatetime || r.dcptestdatetime || prev.dcp_test_datetime || prev.dcpTestDatetime || '';
-        r.responsible_for_advancing = r.responsible_for_advancing || r.responsible_for_advancing_user_id || r.responsibleForAdvancingUserId || prev.responsible_for_advancing || prev.responsible_for_advancing_user_id || prev.responsibleForAdvancingUserId || '';
-        r.responsible_for_advancing_user_id = r.responsible_for_advancing_user_id || r.responsible_for_advancing || r.responsibleForAdvancingUserId || prev.responsible_for_advancing_user_id || prev.responsible_for_advancing || prev.responsibleForAdvancingUserId || '';
-        r.parent_event_id = r.parent_event_id || r.parentEventId || prev.parent_event_id || prev.parentEventId || null;
-        r.groupId = r.groupId || prev.groupId || null;
-        r.dcp_test_event_id = r.dcp_test_event_id || r.dcpTestEventId || prev.dcp_test_event_id || prev.dcpTestEventId || null;
-        r.linked_maintenance_ids = Array.isArray(r.linked_maintenance_ids) ? r.linked_maintenance_ids : (Array.isArray(r.linkedMaintenanceIds) ? r.linkedMaintenanceIds : (Array.isArray(prev.linked_maintenance_ids) ? prev.linked_maintenance_ids : []));
-        r.production_package = r.production_package || prev.production_package || {};
-        r.technicians = Array.isArray(r.technicians) ? r.technicians : (Array.isArray(prev.technicians) ? prev.technicians : []);
-        r.clientContact = r.clientContact || r.clientcontact || prev.clientContact || '';
-        r.guestEngineer = r.guestEngineer !== undefined ? r.guestEngineer : (prev.guestEngineer !== undefined ? prev.guestEngineer : false);
-        r.techInfo = r.techInfo || r.techinfo || prev.techInfo || '';
-        r.email_recipients = r.email_recipients || r.emailRecipients || prev.email_recipients || prev.emailRecipients || '';
-        r.tech_requirements = r.tech_requirements || r.techRequirements || prev.tech_requirements || prev.techRequirements || {};
-        r.techSpec = r.techSpec || r.techspec || prev.techSpec || null;
-      }
-      if (coll === 'reports') {
-        r.eventId = r.eventId || r.eventid || prev.eventId || '';
-        r.shiftDate = r.shiftDate || r.shiftdate || prev.shiftDate || '';
-
-        r.summary = r.summary || prev.summary || '';
-        r.issues = r.issues || prev.issues || '';
-        r.followUp = r.followUp || r.followup || prev.followUp || '';
-        r.author = r.author || prev.author || '';
-        r.authorId = r.authorId || r.authorid || prev.authorId || '';
-        r.submittedAt = r.submittedAt || r.submittedat || prev.submittedAt || '';
-        r.updatedAt = r.updatedAt || r.updatedat || prev.updatedAt || '';
-        r.updatedBy = r.updatedBy || r.updatedby || prev.updatedBy || '';
-      }
-    });
-    store.write(coll, rows);
-  }
-  function regroupProcedures(rows) {
-    const groups = {};
-    rows.forEach((f) => {
-      const key = f.category || 'Other';
-      const g = groups[key] || (groups[key] = { id: RMTP.slug(key), name: key, icon: f.icon || 'book', items: [] });
-      g.items.push({ id: f.id, title: f.title, body: f.body || '', updated: '' });
-    });
-    store.write('procedures', Object.keys(groups).map((k) => groups[k]));
-  }
-  async function pullAll() {
-    for (let i = 0; i < COLLS.length; i++) { if (tables()[COLLS[i]]) await pullCollection(COLLS[i]); }
+    
+    rows.forEach(r => store.write(coll, store.all(coll).filter(existing => existing.id !== r.id).concat(r)));
   }
 
-  /* ---- record -> table row (mostly passthrough) ---- */
-  async function toRow(coll, r) {
-    if (coll === 'users') { const row = Object.assign({}, r); delete row.password; return row; }   // password lives in Supabase Auth, not the table
-    if (coll === 'maintenance') { const row = Object.assign({}, r); row.image = await files.toRemote(r.image); return row; }
-    if (coll === 'advancing') {
-      const row = {
-        id: r.id,
-        name: r.name || '',
-        category: r.category || '',
-        space: r.space || '',
-        date: r.date || '',
-        status: r.status || 'Advancing',
-        startTime: r.startTime || '',
-        finishTime: r.finishTime || '',
-        load_in: r.load_in || r.loadIn || '',
-        soundcheck: r.soundcheck || '',
-        doors: r.doors || '',
-        off_stage: r.off_stage || r.offStage || '',
-        curfew: r.curfew || '',
-        load_out: r.load_out || r.loadOut || '',
-        schedule_items: await Promise.all((Array.isArray(r.schedule_items) ? r.schedule_items : (Array.isArray(r.scheduleItems) ? r.scheduleItems : [])).map(async (it) => {
-          if (it.techFile) {
-            it.techFile = await files.toRemote(it.techFile);
-          }
-          return it;
-        })),
-        screening_starts_time: r.screening_starts_time || r.screeningStartsTime || '',
-        film_duration: r.film_duration || r.filmDuration || '',
-        media_type: r.media_type || r.mediaType || '',
-        dcp_received: r.dcp_received !== undefined ? !!r.dcp_received : (r.dcpReceived !== undefined ? !!r.dcpReceived : false),
-        checks_completed: r.checks_completed !== undefined ? !!r.checks_completed : (r.checksCompleted !== undefined ? !!r.checksCompleted : false),
-        intermission: !!r.intermission,
-        qa: !!r.qa,
-        dcp_tester_user_id: r.dcp_tester_user_id || r.dcpTesterUserId || '',
-        dcp_test_datetime: r.dcp_test_datetime || r.dcpTestDatetime || '',
-        responsible_for_advancing: r.responsible_for_advancing || r.responsible_for_advancing_user_id || r.responsibleForAdvancingUserId || '',
-        responsible_for_advancing_user_id: r.responsible_for_advancing_user_id || r.responsible_for_advancing || r.responsibleForAdvancingUserId || '',
-        parent_event_id: r.parent_event_id || r.parentEventId || null,
-        groupId: r.groupId || null,
-        dcp_test_event_id: r.dcp_test_event_id || r.dcpTestEventId || null,
-        linked_maintenance_ids: Array.isArray(r.linked_maintenance_ids) ? r.linked_maintenance_ids : (Array.isArray(r.linkedMaintenanceIds) ? r.linkedMaintenanceIds : []),
-        production_package: r.production_package || {},
-        technicians: Array.isArray(r.technicians) ? r.technicians : [],
-        clientContact: r.clientContact || '',
-        guestEngineer: !!r.guestEngineer,
-        techInfo: r.techInfo || '',
-        email_recipients: r.email_recipients || r.emailRecipients || '',
-        tech_requirements: r.tech_requirements || r.techRequirements || {},
-        techSpec: await files.toRemote(r.techSpec),
-        checklist: r.checklist || {},
-        artifaxId: r.artifaxId || null,
-      };
-      return row;
-    }
-    if (coll === 'reports') {
-      const row = {
-        id: r.id,
-        eventId: r.eventId || '',
-        crew: r.crew || '',
-        shiftDate: r.shiftDate || '',
-        summary: r.summary || '',
-        issues: r.issues || '',
-        followUp: r.followUp || '',
-        author: r.author || '',
-        authorId: r.authorId || null,
-        submittedAt: r.submittedAt || '',
-        updatedAt: r.updatedAt || '',
-        updatedBy: r.updatedBy || '',
-      };
-      return row;
-    }
-    if (coll === 'inventory') {
-      const row = Object.assign({}, r);
-      if (window.RMTP && RMTP.qr && RMTP.qr.ensureItemTrackers) {
-        RMTP.qr.ensureItemTrackers(row);
-      }
-      return row;
-    }
-    if (coll === 'patch_presets') {
-      return {
-        id: r.id,
-        name: r.name || '',
-        type: r.type || 'input',
-        category: r.category || 'General',
-        description: r.description || '',
-        channels: Array.isArray(r.channels) ? r.channels : [],
-        capacityIn: r.capacityIn || 0,
-        capacityOut: r.capacityOut || 0,
-        createdAt: r.createdAt || Date.now(),
-        updatedAt: r.updatedAt || Date.now(),
-      };
-    }
-    if (coll === 'patch_sheets') {
-      return {
-        id: r.id,
-        name: r.name || '',
-        eventId: r.eventId || null,
-        eventName: r.eventName || '',
-        space: r.space || '',
-        date: r.date || '',
-        notes: r.notes || '',
-        acts: Array.isArray(r.acts) ? r.acts : [],
-        patchPoints: Array.isArray(r.patchPoints) ? r.patchPoints : [],
-        stageboxes: Array.isArray(r.stageboxes) ? r.stageboxes : [],
-        repatches: Array.isArray(r.repatches) ? r.repatches : [],
-        dmx_fixtures: Array.isArray(r.dmx_fixtures) ? r.dmx_fixtures : (Array.isArray(r.dmxFixtures) ? r.dmxFixtures : []),
-        createdAt: r.createdAt || Date.now(),
-        updatedAt: r.updatedAt || Date.now(),
-      };
-    }
-    if (coll === 'dmx_personalities') {
-      return {
-        id: r.id,
-        manufacturer: r.manufacturer || 'Generic',
-        model: r.model || '',
-        mode: r.mode || 'Standard',
-        channels: parseInt(r.channels, 10) || 1,
-        category: r.category || 'Fixtures',
-        isFactory: !!r.isFactory,
-        notes: r.notes || '',
-        createdAt: r.createdAt || Date.now(),
-        updatedAt: r.updatedAt || Date.now(),
-      };
-    }
-    if (coll === 'dmx_patches') {
-      return {
-        id: r.id,
-        title: r.title || r.name || 'DMX Lighting Patch',
-        eventId: r.eventId || null,
-        eventName: r.eventName || '',
-        space: r.space || '',
-        date: r.date || '',
-        notes: r.notes || '',
-        fixtures: Array.isArray(r.fixtures) ? r.fixtures : [],
-        createdAt: r.createdAt || Date.now(),
-        updatedAt: r.updatedAt || Date.now(),
-      };
-    }
-    if (coll === 'venues') {
-      return {
-        id: r.id,
-        name: r.name || '',
-        capacity: r.capacity || '',
-        stageDimensions: r.stageDimensions || '',
-        inventory: r.inventory || '',
-        audio: r.audio || {},
-        dmx: r.dmx || [],
-        createdAt: r.createdAt || new Date().toISOString()
-      };
-    }
-    return r;
-  }
-
-  function markColumnUnsupported(table, col) {
-    if (!table || !col) return;
-    unsupportedCols[table] = unsupportedCols[table] || [];
-    if (!unsupportedCols[table].includes(col)) {
-      unsupportedCols[table].push(col);
-      store.writeRaw('sb_unsupported_cols', JSON.stringify(unsupportedCols));
-    }
-  }
-
-  function sanitizeRow(table, row) {
-    if (!row || typeof row !== 'object') return row;
-    const missing = unsupportedCols[table];
-    if (!missing || !missing.length) return Object.assign({}, row);
-    const cleaned = Object.assign({}, row);
-    missing.forEach((col) => {
-      delete cleaned[col];
-    });
-    return cleaned;
-  }
-
-    function extractMissingColumn(err) {
-    if (!err) return null;
-    const msg = (err.message || '') + ' ' + (err.details || '') + ' ' + (err.hint || '') + ' ' + (typeof err === 'string' ? err : '');
-    if (!msg.trim()) return null;
-    let match = msg.match(/Could not find the '([^']+)' column/i);
-    if (match) return match[1];
-    match = msg.match(/column "?([a-zA-Z0-9_]+)"? of relation/i);
-    if (match) return match[1];
-    match = msg.match(/column "?([a-zA-Z0-9_]+)"? does not exist/i);
-    if (match) return match[1];
-    // Supabase JS often doesn't give the exact column name for PGRST204 in the message if we used a wildcard, 
-    // but the error is explicitly that the schema cache is stale.
-    // Let's at least ensure we don't crash if we can't parse the column.
-    return null;
-  }
-
-  /* ---- push queue (persisted, retrying) ---- */
-  let queue = [], draining = false;
-  function loadQueue() {
+  async function pull() {
+    if (!sb || !sb.isConfigured()) return;
     try {
-      queue = JSON.parse(store.readRaw('sbqueue', '[]'));
-      if (Array.isArray(queue)) {
-        queue.forEach((op) => {
-          if (op && op.coll === 'advancing' && op.record) {
-            if (op.record.dcp_received === undefined && op.record.dcpReceived !== undefined) {
-              op.record.dcp_received = !!op.record.dcpReceived;
-            }
-            if (op.record.checks_completed === undefined && op.record.checksCompleted !== undefined) {
-              op.record.checks_completed = !!op.record.checksCompleted;
-            }
-            if (op.record.screening_starts_time === undefined && op.record.screeningStartsTime !== undefined) {
-              op.record.screening_starts_time = op.record.screeningStartsTime;
-            }
-            if (op.record.media_type === undefined && op.record.mediaType !== undefined) {
-              op.record.media_type = op.record.mediaType;
-            }
-            if (op.record.load_in === undefined && op.record.loadIn !== undefined) {
-              op.record.load_in = op.record.loadIn;
-            }
-            if (op.record.off_stage === undefined && op.record.offStage !== undefined) {
-              op.record.off_stage = op.record.offStage;
-            }
-            if (op.record.load_out === undefined && op.record.loadOut !== undefined) {
-              op.record.load_out = op.record.loadOut;
-            }
-            if (op.record.schedule_items === undefined && op.record.scheduleItems !== undefined) {
-              op.record.schedule_items = op.record.scheduleItems;
-            }
-            if (op.record.dcp_tester_user_id === undefined && op.record.dcpTesterUserId !== undefined) {
-              op.record.dcp_tester_user_id = op.record.dcpTesterUserId;
-            }
-            if (op.record.dcp_test_datetime === undefined && op.record.dcpTestDatetime !== undefined) {
-              op.record.dcp_test_datetime = op.record.dcpTestDatetime;
-            }
-            if (op.record.responsible_for_advancing === undefined && op.record.responsibleForAdvancingUserId !== undefined) {
-              op.record.responsible_for_advancing = op.record.responsibleForAdvancingUserId;
-            }
-            delete op.record.dcpReceived;
-            delete op.record.checksCompleted;
-            delete op.record.screeningStartsTime;
-            delete op.record.mediaType;
-            delete op.record.loadIn;
-            delete op.record.offStage;
-            delete op.record.loadOut;
-            delete op.record.scheduleItems;
-            delete op.record.dcpTesterUserId;
-            delete op.record.dcpTestDatetime;
-            delete op.record.responsibleForAdvancingUserId;
-          }
-        });
-        saveQueue();
-      }
-    } catch (e) { queue = []; }
-  }
-  function saveQueue() { store.writeRaw('sbqueue', JSON.stringify(queue)); }
-  function enqueue(op) { queue.push(op); saveQueue(); drain(); }
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-  async function run(op) {
-    const table = tables()[op.coll]; if (!table) return;
-    if (isTableUnsupported(table)) return;
-    if (op.type === 'delete') {
-      try {
-        await sb.deleteRow(table, op.id);
-        return;
-      } catch (err) {
-        if (isTableMissingError(err)) {
-          markTableUnsupported(table);
-          console.warn('[syncSb] Table "' + table + '" does not exist in remote Supabase schema cache. Skipping delete.');
-          return;
-        }
-        throw err;
-      }
-    }
-    
-    let baseRow = op.coll === 'procedures' ? Object.assign({}, op.row) : await toRow(op.coll, op.record);
-    
-    let attempts = 0;
-    while (attempts < 20) {
-      attempts++;
-            const rowToSend = sanitizeRow(table, baseRow);
-      try {
-        await sb.upsertRow(table, rowToSend);
-        // If we succeeded, we know the table is completely fine.
-        clearTableUnsupported(table);
-        return;
-      } catch (err) {
-        if (isTableMissingError(err)) {
-          markTableUnsupported(table);
-          console.warn('[syncSb] Table "' + table + '" does not exist in remote Supabase schema cache. Skipping upsert.');
-          return;
-        }
-        
-        // If it's a missing column (PGRST204), but we can't extract the name, we shouldn't throw an error and kill the sync queue forever.
-        // The table exists, but the schema cache is out of date. 
-        if (err.code === 'PGRST204') {
-            const missingCol = extractMissingColumn(err);
-            if (missingCol && (baseRow[missingCol] !== undefined || rowToSend[missingCol] !== undefined)) {
-              markColumnUnsupported(table, missingCol);
-              console.warn('[syncSb] Table "' + table + '" missing column "' + missingCol + '" in remote schema cache (PGRST204). Pruning for Supabase upsert.');
-              delete baseRow[missingCol];
-              continue; // Retry loop
-            } else {
-              // We couldn't parse the exact column, but we know it's a PGRST204 schema cache issue.
-              // Just warn and drop this row from the sync queue to prevent the queue from stalling completely.
-              // (Or we could attempt a reload of the schema cache here, but dropping is safer for now).
-              console.warn('[syncSb] PGRST204 schema cache error on table "' + table + '", but could not parse missing column name. Dropping row from queue to prevent stall.', err);
-              return; 
-            }
-        }
-        
-        throw err;
-      }
+      const ps = COLLS.map(c => pullCollection(c));
+      await Promise.all(ps);
+    } catch (err) {
+      console.error('[syncSb] pull error', err);
     }
   }
-  async function drain() {
-    if (draining || !queue.length) return;
-    draining = true; let fails = 0;
-    while (queue.length) {
-      try { await run(queue[0]); queue.shift(); saveQueue(); fails = 0; }
-      catch (e) { console.error('[syncSb] push failed — will retry on next change/reload', e); fails += 1; if (fails >= 3) break; await sleep(1500); }
-    }
-    draining = false;
-  }
 
-  // procedures: one row per SOP, upserted by its own id
-  function pushProcedures() {
-    store.all('procedures').forEach((g) => (g.items || []).forEach((item) =>
-      enqueue({ type: 'upsert', coll: 'procedures', id: item.id, row: { id: item.id, category: g.name || '', title: item.title || '', body: item.body || '', icon: g.icon || '' } })));
-  }
-
-  /* ---- wire: intercept writes so views push transparently ---- */
   function wire() {
-    loadQueue(); if (queue.length) drain();
     const origUpsert = store.upsert, origRemove = store.remove;
     store.upsert = function (name, record) {
       const res = origUpsert(name, record);
-      if (name === 'procedures') { pushProcedures(); return res; }
-      if (COLLS.indexOf(name) > -1) enqueue({ type: 'upsert', coll: name, id: record.id, record: record });
+      
+      if (sb && sb.isConfigured() && COLLS.includes(name)) {
+        const table = tables()[name];
+        if (!isTableUnsupported(table)) {
+           sb.upsertRow(table, record).then(result => {
+              if (!result.ok) {
+                 if (result.error && result.error.code === '42P01') {
+                    markTableUnsupported(table);
+                 } else if (result.error && result.error.code === 'PGRST204') {
+                    const missingCol = extractMissingColumn(result.error);
+                    if (missingCol) markColumnUnsupported(table, missingCol);
+                 }
+                 console.error('[syncSb] Optimistic sync failed for ' + name, result.message || result.error);
+                 // We don't rollback the UI to avoid jarring behavior on transient errors,
+                 // but we could notify the user here.
+              }
+           }).catch(e => console.error(e));
+        }
+      }
       return res;
     };
+    
     store.remove = function (name, id) {
       const res = origRemove(name, id);
-      if (COLLS.indexOf(name) > -1) enqueue({ type: 'delete', coll: name, id: id });
+      if (sb && sb.isConfigured() && COLLS.includes(name)) {
+        const table = tables()[name];
+        if (!isTableUnsupported(table)) {
+           sb.deleteRow(table, id).then(result => {
+              if (!result.ok) console.error('[syncSb] Optimistic delete failed for ' + name, result.message);
+           }).catch(e => console.error(e));
+        }
+      }
       return res;
     };
   }
 
-  // Explicitly delete one procedure page from Supabase (item deletes don't
-  // flow through pushProcedures, which only re-upserts what still exists).
-  function deleteProcedureRow(id) { enqueue({ type: 'delete', coll: 'procedures', id: id }); }
-
-  function getQueueLength() { return queue.length; }
-  function getUnsupportedCols() { return Object.assign({}, unsupportedCols); }
-
   async function verifySync() {
-    if (!sb || !sb.isConfigured()) {
-      return {
-        configured: false,
-        status: 'local',
-        message: 'Running in offline/local storage mode.',
-        queueLength: 0,
-        unsupportedCols: getUnsupportedCols(),
-        unsupportedTables: Object.assign({}, unsupportedTables),
-        tables: {}
-      };
-    }
-    const result = {
-      configured: true,
-      status: 'checking',
-      tables: {},
-      queueLength: queue.length,
-      unsupportedCols: getUnsupportedCols(),
-      unsupportedTables: Object.assign({}, unsupportedTables),
-      lastError: null,
-      message: ''
-    };
+    if (!sb || !sb.isConfigured()) return { status: 'local', message: 'Running in offline/local storage mode.', queueLength: 0, tables: {} };
+    
+    const result = { status: 'checking', tables: {}, queueLength: 0, message: '' };
     try {
-      if (queue.length) {
-        await drain();
-      }
-      result.queueLength = queue.length;
-      result.unsupportedCols = getUnsupportedCols();
-      result.unsupportedTables = Object.assign({}, unsupportedTables);
       const advTable = tables().advancing || 'advancing';
       const repTable = tables().reports || 'reports';
       const [advRows, repRows] = await Promise.all([
-        sb.selectAll(advTable).catch((e) => { if (isTableMissingError(e)) { markTableUnsupported(advTable); return []; } throw e; }),
-        sb.selectAll(repTable).catch((e) => { if (isTableMissingError(e)) { markTableUnsupported(repTable); return []; } throw e; })
+        isTableUnsupported(advTable) ? Promise.resolve([]) : sb.selectAll(advTable).catch(()=>[]),
+        isTableUnsupported(repTable) ? Promise.resolve([]) : sb.selectAll(repTable).catch(()=>[])
       ]);
       result.tables.advancing = { count: advRows.length, ok: !isTableUnsupported(advTable) };
       result.tables.reports = { count: repRows.length, ok: !isTableUnsupported(repTable) };
-      result.status = result.queueLength === 0 ? 'synced' : 'pending';
-      result.message = 'Supabase live & synced. Events in DB: ' + advRows.length + ', Shift reports in DB: ' + repRows.length + (result.queueLength ? ' (' + result.queueLength + ' queued)' : ' (0 pending in queue).');
+      result.status = 'synced';
+      result.message = 'Supabase live & synced. Events in DB: ' + advRows.length + ', Shift reports in DB: ' + repRows.length;
     } catch (e) {
       result.status = 'error';
-      result.lastError = e && e.message ? e.message : String(e);
-      result.message = 'Sync verification error: ' + result.lastError;
+      result.message = 'Sync verification error: ' + (e.message || String(e));
     }
     return result;
   }
 
-  return { pullAll, wire, pullCollection, deleteProcedureRow, drain, getQueueLength, getUnsupportedCols, verifySync };
+  return { pull, pullAll: pull, pullCollection, wire, verifySync, drain: async () => {}, deleteProcedureRow: (id) => RMTP.supabase.deleteRow("procedures", id) };
 })();

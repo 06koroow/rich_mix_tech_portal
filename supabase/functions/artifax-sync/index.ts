@@ -109,18 +109,23 @@ async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInsta
 
   // --- Map Artifax's response fields to ArtifaxInstance. Adjust keys. ---
   const list: any[] = Array.isArray(data) ? data : (data.instances ?? data.results ?? []);
-  return list.map((r) => ({
-    id: String(r.id ?? r.instanceId ?? r.InstanceId),
-    groupId: String(r.arrangement_id ?? r.arrangementId ?? r.ArrangementId ?? r.groupId ?? r.GroupId ?? r.event_id ?? r.EventId ?? r.title ?? r.name ?? ""),
-    title: r.title ?? r.name ?? r.EventName ?? "Untitled",
-    room: r.room ?? r.roomName ?? r.RoomName ?? "",
-    type: r.type ?? r.arrangementType ?? r.ArrangementType ?? "",
-    start: r.start ?? r.startDateTime ?? r.StartDateTime,
-    end: r.end ?? r.endDateTime ?? r.EndDateTime,
-    contact: r.contact ?? r.contactName ?? r.CustomerName ?? "",
-    notes: r.notes ?? r.description ?? "",
-    status: r.status ?? r.Status ?? "Confirmed",
-  }));
+  return list.map((r) => {
+    const title = String(r.title || r.name || r.EventName || r.arrangement_description || r.arrangement_name || "Untitled");
+    const groupId = String(r.arrangement_id || r.arrangementId || r.ArrangementId || r.groupId || r.GroupId || r.event_id || r.EventId || title);
+    
+    return {
+      id: String(r.id || r.instanceId || r.InstanceId || r.event_id),
+      groupId: groupId,
+      title: title,
+      room: String(r.room || r.roomName || r.RoomName || r.room_name || ""),
+      type: String(r.type || r.arrangementType || r.ArrangementType || r.arrangement_type_name || ""),
+      start: String(r.start || r.startDateTime || r.StartDateTime || r.start_date_time || ""),
+      end: String(r.end || r.endDateTime || r.EndDateTime || r.end_date_time || ""),
+      contact: String(r.contact || r.contactName || r.CustomerName || r.client_name || r.arrangement_contact_entity_full_name || ""),
+      notes: String(r.notes || r.description || ""),
+      status: String(r.status || r.Status || r.event_status_name || "Confirmed"),
+    };
+  });
 }
 
 // Artifax instance → the booking fields of an advancing row (tech fields excluded).

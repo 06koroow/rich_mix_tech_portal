@@ -361,7 +361,7 @@ RMTP.views.advancing = function (el, params, query) {
   
   for (const e of shown) {
     // Smart Fallback: if no explicit groupId exists, but it's an Artifax event, implicitly group by Name + Date
-    const effectiveGroupId = e.groupId || (e.artifaxId && e.name && e.name !== "Untitled" ? 'implicit-' + e.name.toLowerCase().trim() + '-' + e.date : null);
+    const effectiveGroupId = e.groupId || (e.artifaxId && e.name && e.name !== "Untitled" ? 'implicit-' + e.name.toLowerCase().trim().replace(/[^a-z0-9]/g, '-') + '-' + e.date : null);
     
     if (effectiveGroupId) {
       const key = effectiveGroupId + '|' + (e.date || 'TBC');

@@ -18,8 +18,10 @@
 // ============================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const ARTIFAX_URL = Deno.env.get("ARTIFAX_URL") ?? "";
-const ARTIFAX_API_KEY = Deno.env.get("ARTIFAX_API_KEY") ?? "";
+const ARTIFAX_URL = (Deno.env.get("ARTIFAX_URL") ?? "").trim();
+const ARTIFAX_API_KEY = (Deno.env.get("ARTIFAX_API_KEY") ?? "").trim();
+const ARTIFAX_USERNAME = (Deno.env.get("ARTIFAX_USERNAME") ?? "").trim();
+const ARTIFAX_PASSWORD = (Deno.env.get("ARTIFAX_PASSWORD") ?? "").trim();
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
@@ -76,25 +78,29 @@ interface ArtifaxInstance {
 }
 
 async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInstance[]> {
-  if (!ARTIFAX_URL || !ARTIFAX_API_KEY) {
-    throw new Error("ARTIFAX_URL / ARTIFAX_API_KEY not set — see docs/ARTIFAX-SETUP.md");
+  if (!ARTIFAX_URL || !ARTIFAX_API_KEY || !ARTIFAX_USERNAME || !ARTIFAX_PASSWORD) {
+    throw new Error("ARTIFAX credentials not fully set — see docs/ARTIFAX-EDGE-FUNCTION.md");
   }
   // --- EXAMPLE call — replace path/params/headers per Artifax docs ---
   const params = new URLSearchParams({
-    from: from.toISOString().slice(0, 10),
-    to: to.toISOString().slice(0, 10),
+    date: 'between',
+    start_date: from.toISOString().slice(0, 10),
+    end_date: to.toISOString().slice(0, 10),
+    schedule_output: "1"
   });
     // Ensure base URL doesn't have a trailing slash or trailing /api since we append it
   const baseUrl = ARTIFAX_URL.replace(/\/api\/?$/, '').replace(/\/$/, '');
-  
+    
   // Use the correct Artifax Events endpoint
   const endpoint = `${baseUrl}/api/arrangements/event?${params}`;
-  
+    
+  const basicAuth = 'Basic ' + btoa(ARTIFAX_USERNAME + ':' + ARTIFAX_PASSWORD);
+
   const res = await fetch(endpoint, {
+    method: 'GET',
     headers: { 
-      "Authorization": `Bearer ${ARTIFAX_API_KEY}`,
-      "ApiKey": ARTIFAX_API_KEY,
       "X-API-Key": ARTIFAX_API_KEY,
+      "Authorization": basicAuth,
       "Accept": "application/json" 
     },
   });

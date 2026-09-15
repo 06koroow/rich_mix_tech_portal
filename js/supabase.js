@@ -99,5 +99,5 @@ RMTP.supabase = (function () {
     return { ok: true, data: data };
   }
 
-  return { isConfigured, init, restoreSession, signIn, signUp, signOut, currentEmail, selectAll, upsertRow, deleteRow, uploadFile, invokeFunction };
+  return { isConfigured, init, getClient: db, restoreSession, signIn, signUp, signOut, currentEmail, selectAll, upsertRow, deleteRow, uploadFile, invokeFunction };
 })();

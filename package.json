@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node server.js",
-    "start": "node server.js",
+    "dev": "npx serve -p $PORT .",
+    "start": "npx serve -p $PORT .",
     "build": "echo 'No build step required'"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "serve": "^14.2.3"
   }
 }

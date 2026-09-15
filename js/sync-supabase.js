@@ -76,7 +76,25 @@ RMTP.syncSb = (function () {
     const table = tables()[coll]; if (!table) return;
     let rows = [];
     try {
-            rows = await sb.selectAll(table);
+      if (coll === 'advancing') {
+        const dFrom = new Date();
+        dFrom.setDate(dFrom.getDate() - 14);
+        const fromDate = dFrom.toISOString().slice(0, 10);
+        
+        const dTo = new Date();
+        dTo.setDate(dTo.getDate() + 120);
+        const toDate = dTo.toISOString().slice(0, 10);
+
+        const { data, error } = await sb.getClient().from(table)
+          .select('*')
+          .gte('date', fromDate)
+          .lte('date', toDate);
+
+        if (error) throw error;
+        rows = data || [];
+      } else {
+        rows = await sb.selectAll(table);
+      }
       clearTableUnsupported(table);
     } catch (err) {
       if (isTableMissingError(err)) {

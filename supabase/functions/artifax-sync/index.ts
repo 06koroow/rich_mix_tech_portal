@@ -161,24 +161,46 @@ Deno.serve(async (req) => {
     const sb = createClient(SUPABASE_URL, SERVICE_ROLE);
     let created = 0, updated = 0, skipped = 0;
 
-    for (const inst of instances) {
-      const booking = mapInstance(inst);
-      if (!booking.space) { skipped++; continue; }   // unmapped room — skip, don't guess
+    // Filter to mapped spaces and convert to our format
+    const validBookings = instances.map(mapInstance).filter(b => {
+      if (!b.space) { skipped++; return false; }
+      return true;
+    });
 
-      // Preserve the Portal's own fields: merge booking fields onto any existing row.
-      const { data: existing } = await sb
-        .from("advancing").select("*").eq("artifaxId", booking.artifaxId).maybeSingle();
+    if (validBookings.length === 0) {
+      return json({ ok: true, from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10), created, updated, skipped });
+    }
 
-      let row: Record<string, unknown>;
+    // Batch fetch existing events to preserve Portal fields
+    const artifaxIds = validBookings.map(b => b.artifaxId);
+    
+    // We might have more than 1000 instances, so chunk the select if necessary, 
+    // but typically HORIZON_DAYS=120 won't exceed PostgREST limits for `in`.
+    const { data: existingData, error: fetchError } = await sb
+      .from("advancing")
+      .select("*")
+      .in("artifaxId", artifaxIds);
+
+    if (fetchError) throw new Error(`Batch select failed: ${fetchError.message}`);
+
+    const existingMap = new Map((existingData || []).map(r => [r.artifaxId, r]));
+    const rowsToUpsert = [];
+
+    for (const booking of validBookings) {
+      const existing = existingMap.get(booking.artifaxId);
       if (existing) {
-        row = { ...existing, ...booking, id: existing.id };   // keep id + tech fields
+        rowsToUpsert.push({ ...existing, ...booking, id: existing.id });
         updated++;
       } else {
-        row = { id: `evt-afx-${booking.artifaxId}`, ...booking };
+        rowsToUpsert.push({ id: `evt-afx-${booking.artifaxId}`, ...booking });
         created++;
       }
-      const { error } = await sb.from("advancing").upsert(row, { onConflict: "id" });
-      if (error) throw new Error(`upsert failed for ${booking.artifaxId}: ${error.message}`);
+    }
+
+    if (rowsToUpsert.length > 0) {
+      // Chunk upserts if array is large (e.g. > 500) to be safe, but usually fine up to 1000s
+      const { error: upsertError } = await sb.from("advancing").upsert(rowsToUpsert, { onConflict: "id" });
+      if (upsertError) throw new Error(`Batch upsert failed: ${upsertError.message}`);
     }
 
     return json({ ok: true, from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10), created, updated, skipped });

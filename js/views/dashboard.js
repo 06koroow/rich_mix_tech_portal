@@ -12,7 +12,7 @@ RMTP.views.dashboard = function (el) {
     { id: 'maintenance', desc: 'Log faults and track repairs across the venue.',
       stat: () => store.all('maintenance').filter((r) => r.status === 'Open').length, unit: 'open' },
     { id: 'procedures',  desc: 'Operating procedures & SOPs for the building.',
-      stat: () => store.all('procedures').reduce((n, c) => n + c.items.length, 0), unit: 'documents' },
+      stat: () => store.all('procedures').reduce((n, c) => n + (c.items ? c.items.length : 0), 0), unit: 'documents' },
     { id: 'users',       desc: 'Manage the team, roles and training sign-off.',
       stat: () => store.all('users').length, unit: 'users' },
   ].sort((a, b) => {
@@ -111,7 +111,7 @@ RMTP.views.dashboard = function (el) {
       .filter((f) => f.status === 'Open' && (f.priority === 'Urgent' || f.priority === 'High'))
       .slice(0, 4);
 
-    const compTotal = RMTP.TRAINING.reduce((n, c) => n + c.items.length, 0);
+    const compTotal = RMTP.TRAINING.reduce((n, c) => n + (c.items ? c.items.length : 0), 0);
     const mySigned = store.all('signoffs').filter((s) => s.userId === me.id).length;
     const outstanding = Math.max(0, compTotal - mySigned);
     const pending = me.admin ? RMTP.auth.pendingUsers() : [];

@@ -45,8 +45,10 @@ RMTP.router = (function () {
     const title = document.getElementById('section-title');
     if (title && nav) title.textContent = nav.label;
 
-    content.scrollTop = 0;
-    window.scrollTo(0, 0);
+    if (!RMTP._isSoftRender) {
+      content.scrollTop = 0;
+      window.scrollTo(0, 0);
+    }
   }
 
   function start() {

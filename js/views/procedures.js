@@ -30,7 +30,7 @@ RMTP.views.procedures = function (el, params) {
         (c.id === cat.id ? 'aria-current="page"' : '') + '>' +
         '<span class="text-accent">' + ui.icon(c.icon, 'w-4 h-4') + '</span>' +
         '<span class="whitespace-nowrap truncate">' + ui.esc(c.name) + '</span>' +
-        '<span class="tabular text-xs text-muted ml-auto mr-1 hidden md:inline">' + c.items.length + '</span>' +
+        '<span class="tabular text-xs text-muted ml-auto mr-1 hidden md:inline">' + (c.items ? c.items.length : 0) + '</span>' +
       '</a>' +
       (isAdmin ? (
         '<div class="flex items-center pr-1.5 opacity-80 md:opacity-0 group-hover/nav:opacity-100 transition-opacity no-print">' +
@@ -46,7 +46,7 @@ RMTP.views.procedures = function (el, params) {
   if (item) {
     content = renderItem(cat, item);
   } else {
-    const list = cat.items.length
+    const list = (cat.items ? cat.items.length : 0)
       ? cat.items.map((i, idx) => {
           const done = i.body && i.body.trim();
           return (
@@ -64,7 +64,7 @@ RMTP.views.procedures = function (el, params) {
               (isAdmin ? (
                 '<div class="flex items-center gap-1 shrink-0 opacity-80 group-hover:opacity-100">' +
                   '<button type="button" data-proc-up="' + idx + '" class="btn btn-ghost !p-1.5" title="Move Up" ' + (idx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3.5 h-3.5') + '</button>' +
-                  '<button type="button" data-proc-down="' + idx + '" class="btn btn-ghost !p-1.5" title="Move Down" ' + (idx === cat.items.length - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</button>' +
+                  '<button type="button" data-proc-down="' + idx + '" class="btn btn-ghost !p-1.5" title="Move Down" ' + (idx === (cat.items ? cat.items.length : 0) - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</button>' +
                 '</div>'
               ) : '') +
               '<a href="#/procedures/' + cat.id + '/' + i.id + '" class="text-muted group-hover:text-ink pl-1 shrink-0">' + ui.icon('chevR', 'w-4 h-4') + '</a>' +
@@ -170,7 +170,7 @@ RMTP.views.procedures = function (el, params) {
         e.preventDefault();
         e.stopPropagation();
         const idx = +btn.getAttribute('data-proc-down');
-        if (idx < cat.items.length - 1) {
+        if (idx < (cat.items ? cat.items.length : 0) - 1) {
           const temp = cat.items[idx];
           cat.items[idx] = cat.items[idx + 1];
           cat.items[idx + 1] = temp;
@@ -401,7 +401,7 @@ RMTP.views.procedures = function (el, params) {
         cat.items = cat.items.filter((x) => x.id !== item.id);   // move across tabs
         target.items.push(item);
         store.upsert('procedures', target);
-        if (cat.items.length) store.upsert('procedures', cat); else store.remove('procedures', cat.id);
+        if ((cat.items ? cat.items.length : 0)) store.upsert('procedures', cat); else store.remove('procedures', cat.id);
       } else {
         store.upsert('procedures', cat);
       }
@@ -417,7 +417,7 @@ RMTP.views.procedures = function (el, params) {
       if (!ok) return;
       cat.items = cat.items.filter((x) => x.id !== item.id);
       if (RMTP.supabase && RMTP.supabase.isConfigured() && RMTP.syncSb.deleteProcedureRow) RMTP.syncSb.deleteProcedureRow(item.id);
-      if (cat.items.length) store.upsert('procedures', cat); else store.remove('procedures', cat.id);
+      if ((cat.items ? cat.items.length : 0)) store.upsert('procedures', cat); else store.remove('procedures', cat.id);
       m.close(); ui.toast('Page deleted', 'ok');
       location.hash = '#/procedures';
       RMTP.router.render();
@@ -554,7 +554,7 @@ RMTP.views.procedures = function (el, params) {
             '<span class="text-xs font-semibold text-muted font-mono w-6">#' + (idx + 1) + '</span>' +
             '<span class="text-accent shrink-0">' + ui.icon(c.icon, 'w-4 h-4') + '</span>' +
             '<span class="text-sm font-medium text-ink truncate">' + ui.esc(c.name) + '</span>' +
-            '<span class="text-xs text-muted shrink-0">(' + c.items.length + ' docs)</span>' +
+            '<span class="text-xs text-muted shrink-0">(' + (c.items ? c.items.length : 0) + ' docs)</span>' +
           '</div>' +
           '<div class="flex items-center gap-1 shrink-0">' +
             '<button type="button" data-rc-up="' + idx + '" class="btn btn-ghost !p-1 text-xs" title="Move Up" ' + (idx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3.5 h-3.5') + '</button>' +

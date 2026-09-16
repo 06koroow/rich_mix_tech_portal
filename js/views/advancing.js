@@ -288,6 +288,7 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   function techLabel(t) {
+    if (t.isNoTech) return 'No Tech Needed';
     let name;
     if (t.isFreelancer) {
       name = (t.freelancerName || 'Freelancer').trim();
@@ -441,7 +442,7 @@ RMTP.views.advancing = function (el, params, query) {
   });
 
   el.innerHTML =
-    '<div class="view-enter">' +
+    '<div class="' + (RMTP._isSoftRender ? '' : 'view-enter') + '">' +
       ui.pageHeader('Advancing', isAdmin ? 'Events & Production Schedules' : 'Your shifts & Production Advancing',
         '<div class="inline-flex rounded-lg border border-line p-0.5 bg-panel mr-1">' +
           '<button id="adv-mode-list" class="px-2.5 py-1 text-xs rounded font-medium transition flex items-center gap-1.5 ' + (advViewMode === 'list' ? 'bg-accent text-accent-ink font-semibold shadow-xs' : 'text-muted hover:text-ink') + '">' +
@@ -818,12 +819,12 @@ RMTP.views.advancing = function (el, params, query) {
   const modeListBtn = el.querySelector('#adv-mode-list');
   if (modeListBtn) modeListBtn.addEventListener('click', () => {
     RMTP._advViewMode = 'list';
-    RMTP.router.render();
+    RMTP._isSoftRender = true; RMTP.router.render(); RMTP._isSoftRender = false;
   });
   const modeCalBtn = el.querySelector('#adv-mode-cal');
   if (modeCalBtn) modeCalBtn.addEventListener('click', () => {
     RMTP._advViewMode = 'calendar';
-    RMTP.router.render();
+    RMTP._isSoftRender = true; RMTP.router.render(); RMTP._isSoftRender = false;
   });
 
   // Quick Technician Filter Buttons
@@ -893,7 +894,9 @@ RMTP.views.advancing = function (el, params, query) {
   const filterToggleBtn = el.querySelector('#adv-filter-toggle-btn');
   if (filterToggleBtn) filterToggleBtn.addEventListener('click', () => {
     RMTP._advFiltersPanelOpen = !filtersPanelOpen;
+    RMTP._isSoftRender = true;
     RMTP.router.render();
+    RMTP._isSoftRender = false;
   });
 
   // Tab bar wiring
@@ -907,18 +910,39 @@ RMTP.views.advancing = function (el, params, query) {
     filters.space = b.getAttribute('data-space');
     RMTP.router.render();
   }));
-  const dateIn = el.querySelector('#adv-date'); if (dateIn) dateIn.addEventListener('change', () => { filters.date = dateIn.value; RMTP.router.render(); });
-  const todayBtn = el.querySelector('#adv-today'); if (todayBtn) todayBtn.addEventListener('click', () => { filters.date = getTodayString(); RMTP.router.render(); });
+  const dateIn = el.querySelector('#adv-date'); if (dateIn) dateIn.addEventListener('change', () => { filters.date = dateIn.value; RMTP._isSoftRender = true; RMTP.router.render(); RMTP._isSoftRender = false; });
+  const todayBtn = el.querySelector('#adv-today'); if (todayBtn) todayBtn.addEventListener('click', () => { filters.date = getTodayString(); RMTP._isSoftRender = true; RMTP.router.render(); RMTP._isSoftRender = false; });
   const clearBtn = el.querySelector('#adv-clear'); if (clearBtn) clearBtn.addEventListener('click', () => {
     filters.space = '';
     filters.date = '';
     RMTP._advTechFilter = (me && (me.id || me.email)) ? [(me.id || me.email)] : [];
     RMTP._advIncludeUnassigned = true;
-    RMTP.router.render();
+    RMTP._isSoftRender = true; RMTP.router.render(); RMTP._isSoftRender = false;
   });
 
   const addEv = el.querySelector('#add-event');
   if (addEv) addEv.addEventListener('click', () => openForm());
+
+  const bindSearch = (id) => {
+    const input = el.querySelector('#' + id);
+    if (input) {
+      input.addEventListener('input', (e) => {
+        RMTP._advQuickSearch = e.target.value;
+        const caret = e.target.selectionStart;
+        RMTP._isSoftRender = true;
+        RMTP.router.render();
+        RMTP._isSoftRender = false;
+        const newEl = document.getElementById(id);
+        if (newEl) {
+          newEl.focus();
+          newEl.setSelectionRange(caret, caret);
+        }
+      });
+    }
+  };
+  bindSearch('adv-quick-search-mobile');
+  bindSearch('adv-quick-search-desktop');
+
 
   RMTP.syncArtifax = async (silent = false) => {
     const afx = el.querySelector('#artifax-sync');
@@ -1408,15 +1432,51 @@ RMTP.views.advancing = function (el, params, query) {
               (ev.guestEngineer ? ui.pill('Guest Engineer', 'var(--info)') : '') +
               (hasReports ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-danger/15 text-danger border border-danger/30" title="Shift reports submitted">' + ui.icon('alert', 'w-3 h-3') + 'Reports</span>' : '') +
             '</div>' +
-            '<div class="flex items-center gap-2 sm:gap-3 text-xs text-muted flex-wrap">' +
-              (ev.date ? '<span class="flex items-center gap-1 font-medium text-ink">' + ui.icon('clock', 'w-3.5 h-3.5 text-accent') + ui.formatDate(ev.date) + (times ? ' (' + times + ')' : '') + '</span>' : '') +
-              (leadName ? '<span class="w-1 h-1 rounded-full bg-line hidden sm:inline-block"></span><span class="hidden sm:inline-block">Advancing Lead: <strong class="text-accent font-medium">' + ui.esc(leadName) + '</strong></span>' : '') +
-              '<span class="w-1 h-1 rounded-full bg-line hidden sm:inline-block"></span>' +
-              '<span>Techs: <strong class="text-ink font-normal">' + ui.esc(leadTechStr) + '</strong></span>' +
-              '<span class="w-1 h-1 rounded-full bg-line"></span>' +
-              '<span class="text-accent font-medium">' + ui.esc(scheduleSummary) + '</span>' +
-              (isCinema && checksCount ? '<span class="w-1 h-1 rounded-full bg-line"></span><span class="text-ok font-semibold">' + checksCount + '/2 checks done</span>' : '') +
-              (reports.length ? '<span class="w-1 h-1 rounded-full bg-line"></span><span class="text-ok font-semibold">' + reports.length + ' report' + (reports.length > 1 ? 's' : '') + '</span>' : '') +
+            '<div class="flex flex-wrap items-center gap-x-4 gap-y-2.5 mt-1 text-xs">' +
+              (ev.date ? 
+                '<div class="flex items-center gap-1.5 font-medium text-ink">' + 
+                  ui.icon('clock', 'w-3.5 h-3.5 text-accent') + 
+                  '<span>' + ui.formatDate(ev.date) + '</span>' + 
+                  (times ? '<span class="text-muted/50 px-0.5">•</span><span class="text-muted">' + ui.esc(times) + '</span>' : '') + 
+                '</div>' 
+              : '') +
+              
+              '<div class="flex items-center gap-1.5">' + 
+                ui.icon('wrench', 'w-3.5 h-3.5 text-muted') + 
+                '<span class="text-muted">Techs:</span>' + 
+                '<div class="flex items-center gap-1 flex-wrap">' + 
+                  (techs.length 
+                    ? techs.map(t => t === 'No Tech Needed' ? ui.pill(t, 'var(--muted)') : ui.pill(t, 'var(--info)')).join('')
+                    : ui.pill('Unassigned', 'var(--danger)')) + 
+                '</div>' +
+              '</div>' +
+              
+              (leadName ? 
+                '<div class="flex items-center gap-1.5">' + 
+                  ui.icon('bulb', 'w-3.5 h-3.5 text-muted') + 
+                  '<span class="text-muted">Lead:</span>' + 
+                  '<strong class="text-accent font-medium">' + ui.esc(leadName) + '</strong>' + 
+                '</div>' 
+              : '') +
+              
+              '<div class="flex items-center gap-1.5">' + 
+                ui.icon(isCinema ? 'screen' : 'grid', 'w-3.5 h-3.5 text-muted') + 
+                '<span class="text-muted">' + ui.esc(scheduleSummary) + '</span>' + 
+              '</div>' +
+              
+              (isCinema && checksCount ? 
+                '<div class="flex items-center gap-1.5">' + 
+                  ui.icon('check', 'w-3.5 h-3.5 text-ok') + 
+                  '<span class="text-ok font-semibold">' + checksCount + '/2 checks done</span>' + 
+                '</div>' 
+              : '') +
+              
+              (reports.length ? 
+                '<div class="flex items-center gap-1.5">' + 
+                  ui.icon('clip', 'w-3.5 h-3.5 text-ok') + 
+                  '<span class="text-ok font-semibold">' + reports.length + ' report' + (reports.length > 1 ? 's' : '') + '</span>' + 
+                '</div>' 
+              : '') +
             '</div>' +
             (prodBadges ? '<div class="flex items-center gap-1.5 flex-wrap mt-2.5 pt-2 border-t border-line/50">' + prodBadges + '</div>' : '') +
           '</div>' +
@@ -1457,9 +1517,20 @@ RMTP.views.advancing = function (el, params, query) {
        const isCinema = isScreenSpace(e.space);
        const spLabel = Array.isArray(e.space) ? e.space.join(', ') : e.space;
        return (
-         '<div class="flex flex-col sm:flex-row sm:items-center justify-between text-xs py-1.5 border-t border-line/60 first:border-0">' +
-           '<div class="font-medium text-ink flex items-center gap-2">' + ui.pill(spLabel, isCinema ? 'var(--accent)' : 'var(--info)') + ' <span class="text-muted">' + (times || 'No times') + '</span></div>' +
-           '<div class="text-muted">Techs: <span class="text-ink">' + ui.esc(techStr) + '</span></div>' +
+         '<div class="flex flex-col sm:flex-row sm:items-center justify-between text-xs py-2 border-t border-line/60 first:border-0 gap-2">' +
+           '<div class="font-medium text-ink flex items-center gap-2.5">' + 
+             ui.pill(spLabel, isCinema ? 'var(--accent)' : 'var(--info)') + 
+             (times ? '<div class="flex items-center gap-1.5 text-muted">' + ui.icon('clock', 'w-3 h-3') + '<span>' + ui.esc(times) + '</span></div>' : '') +
+           '</div>' +
+           '<div class="flex items-center gap-1.5 text-muted">' + 
+             ui.icon('wrench', 'w-3 h-3') + 
+             '<span>Techs:</span>' + 
+             '<div class="flex items-center gap-1 flex-wrap">' + 
+                (techs.length 
+                  ? techs.map(t => t === 'No Tech Needed' ? ui.pill(t, 'var(--muted)') : ui.pill(t, 'var(--info)')).join('')
+                  : ui.pill('Unassigned', 'var(--danger)')) + 
+             '</div>' +
+           '</div>' +
          '</div>'
        );
     }).join('');
@@ -1473,11 +1544,25 @@ RMTP.views.advancing = function (el, params, query) {
               '<h3 class="font-display text-base sm:text-lg font-semibold text-ink group-hover:text-accent transition-colors break-words">' + ui.esc(group.name) + '</h3>' +
               ui.pill('Multi-Room Takeover', 'var(--warning)') +
             '</div>' +
-            '<div class="flex items-center gap-2 sm:gap-3 text-xs text-muted flex-wrap mb-3">' +
-              (group.date ? '<span class="flex items-center gap-1 font-medium text-ink">' + ui.icon('clock', 'w-3.5 h-3.5 text-accent') + ui.formatDate(group.date) + '</span>' : '') +
-              '<span class="w-1 h-1 rounded-full bg-line hidden sm:inline-block"></span>' +
-              '<span>' + group.events.length + ' Spaces</span>' +
-              (reportsCount ? '<span class="w-1 h-1 rounded-full bg-line"></span><span class="text-ok font-semibold">' + reportsCount + ' report' + (reportsCount > 1 ? 's' : '') + '</span>' : '') +
+            '<div class="flex flex-wrap items-center gap-x-4 gap-y-2.5 mt-1 text-xs mb-3">' +
+              (group.date ? 
+                '<div class="flex items-center gap-1.5 font-medium text-ink">' + 
+                  ui.icon('clock', 'w-3.5 h-3.5 text-accent') + 
+                  '<span>' + ui.formatDate(group.date) + '</span>' + 
+                '</div>' 
+              : '') +
+              
+              '<div class="flex items-center gap-1.5">' + 
+                ui.icon('grid', 'w-3.5 h-3.5 text-muted') + 
+                '<strong class="text-ink font-medium">' + group.events.length + ' Spaces</strong>' + 
+              '</div>' +
+              
+              (reportsCount ? 
+                '<div class="flex items-center gap-1.5">' + 
+                  ui.icon('clip', 'w-3.5 h-3.5 text-ok') + 
+                  '<span class="text-ok font-semibold">' + reportsCount + ' report' + (reportsCount > 1 ? 's' : '') + '</span>' + 
+                '</div>' 
+              : '') +
             '</div>' +
             '<div class="bg-panel2 rounded-lg p-2.5 space-y-1 mt-2">' +
               spacesBreakdown +
@@ -3241,6 +3326,7 @@ RMTP.views.advancing = function (el, params, query) {
       userId: t.userId || '', 
       role: t.role || '',
       isFreelancer: !!t.isFreelancer,
+      isNoTech: !!t.isNoTech,
       freelancerName: t.freelancerName || '',
       startTime: t.startTime || '',
       finishTime: t.finishTime || ''
@@ -5239,6 +5325,7 @@ RMTP.views.advancing = function (el, params, query) {
           .filter((u) => u.id === t.userId || usedElsewhere.indexOf(u.id) === -1)
           .map((u) => '<option value="' + u.id + '" ' + (u.id === t.userId && !t.isFreelancer ? 'selected' : '') + '>' + ui.esc(auth.displayName(u)) + '</option>').join('');
         uOpts += '<option value="__freelancer__" ' + (t.isFreelancer ? 'selected' : '') + '>Freelancer (Custom)</option>';
+        uOpts += '<option value="__no_tech__" ' + (t.isNoTech ? 'selected' : '') + '>No Tech Needed</option>';
 
         const rOpts = '<option value="">Select role…</option>' + RMTP.SHIFT_ROLES
           .map((r) => '<option ' + (r === t.role ? 'selected' : '') + '>' + r + '</option>').join('');
@@ -5283,9 +5370,16 @@ RMTP.views.advancing = function (el, params, query) {
           const idx = +s.getAttribute('data-t-user');
           if (val === '__freelancer__') {
             techs[idx].isFreelancer = true;
+            techs[idx].isNoTech = false;
             techs[idx].userId = '';
+          } else if (val === '__no_tech__') {
+            techs[idx].isFreelancer = false;
+            techs[idx].isNoTech = true;
+            techs[idx].userId = '';
+            techs[idx].role = 'None';
           } else {
             techs[idx].isFreelancer = false;
+            techs[idx].isNoTech = false;
             techs[idx].userId = val;
           }
           wireTechs();

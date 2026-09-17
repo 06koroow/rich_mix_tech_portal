@@ -35,6 +35,8 @@ RMTP.syncSb = (function () {
     if (m && m[1]) return m[1];
     const m2 = msg.match(/Could not find the public.([^.]+) or/);
     if (m2 && m2[1]) return m2[1];
+    const m3 = msg.match(/Could not find the '([^']+)' column of/);
+    if (m3 && m3[1]) return m3[1];
     return null;
   }
 
@@ -93,17 +95,25 @@ RMTP.syncSb = (function () {
       if (sb && sb.isConfigured() && COLLS.includes(name)) {
         const table = tables()[name];
         if (!isTableUnsupported(table)) {
-           sb.upsertRow(table, record).then(result => {
-              if (!result.ok) {
+           const payload = { ...record };
+           if (unsupportedCols[table]) {
+             Object.keys(unsupportedCols[table]).forEach(col => delete payload[col]);
+           }
+           
+           sb.upsertRow(table, payload).then(result => {
+              if (result && !result.ok) {
                  if (result.error && result.error.code === '42P01') {
                     markTableUnsupported(table);
                  } else if (result.error && result.error.code === 'PGRST204') {
                     const missingCol = extractMissingColumn(result.error);
-                    if (missingCol) markColumnUnsupported(table, missingCol);
+                    if (missingCol) {
+                       markColumnUnsupported(table, missingCol);
+                       const retryPayload = { ...payload };
+                       delete retryPayload[missingCol];
+                       sb.upsertRow(table, retryPayload);
+                    }
                  }
                  console.error('[syncSb] Optimistic sync failed for ' + name, result.message || result.error);
-                 // We don't rollback the UI to avoid jarring behavior on transient errors,
-                 // but we could notify the user here.
               }
            }).catch(e => console.error(e));
         }

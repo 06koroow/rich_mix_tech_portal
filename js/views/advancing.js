@@ -1313,19 +1313,9 @@ RMTP.views.advancing = function (el, params, query) {
         const updated = Object.assign({}, targetEv, { status: newStatus });
         store.upsert('advancing', updated);
         ui.toast('Advance status updated to ' + newStatus, 'ok');
-        if (advViewMode === 'list') {
-          const card = document.querySelector('[data-event-card="' + targetEv.id + '"]');
-          if (card) {
-            const temp = document.createElement('div');
-            temp.innerHTML = renderEventCard(updated);
-            const newCard = temp.firstElementChild;
-            if (newCard) {
-              card.replaceWith(newCard);
-              return;
-            }
-          }
-        }
+        RMTP._isSoftRender = true;
         RMTP.router.render();
+        RMTP._isSoftRender = false;
       }
     });
   });
@@ -5730,19 +5720,9 @@ RMTP.views.advancing = function (el, params, query) {
       m.close();
       ui.toast(existing ? 'Event advance updated' : 'Event advance created', 'ok');
       
-      if (existing && chosenSpace !== 'Multi Room' && typeof advViewMode !== 'undefined' && advViewMode === 'list') {
-        const card = document.querySelector('[data-event-card="' + record.id + '"]');
-        if (card) {
-          const temp = document.createElement('div');
-          temp.innerHTML = renderEventCard(record);
-          const newCard = temp.firstElementChild;
-          if (newCard) {
-            card.replaceWith(newCard);
-            return;
-          }
-        }
-      }
+      RMTP._isSoftRender = true;
       RMTP.router.render();
+      RMTP._isSoftRender = false;
     });
   }
 

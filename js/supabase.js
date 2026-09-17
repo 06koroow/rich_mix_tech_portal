@@ -58,11 +58,13 @@ RMTP.supabase = (function () {
   }
   async function upsertRow(table, row) {
     const { error } = await db().from(table).upsert(row, { onConflict: 'id' });
-    if (error) throw error;
+    if (error) return { ok: false, error, message: error.message };
+    return { ok: true };
   }
   async function deleteRow(table, id) {
     const { error } = await db().from(table).delete().eq('id', id);
-    if (error) throw error;
+    if (error) return { ok: false, error, message: error.message };
+    return { ok: true };
   }
 
   /* ---- Storage (fault photos + tech specs) ---- */

@@ -5328,20 +5328,24 @@ RMTP.views.advancing = function (el, params, query) {
           rowHtml += '<input type="text" data-t-freelancer="' + i + '" class="field flex-1" placeholder="Freelancer Name" value="' + ui.esc(t.freelancerName) + '">';
         }
         
-        rowHtml += '<select data-t-role="' + i + '" class="field w-32 shrink-0">' + rOpts + '</select>' +
-            '<button type="button" data-t-remove="' + i + '" class="btn btn-danger !p-2 shrink-0" title="Remove">' + ui.icon('trash', 'w-4 h-4') + '</button>' +
+        if (!t.isNoTech) {
+          rowHtml += '<select data-t-role="' + i + '" class="field w-32 shrink-0">' + rOpts + '</select>';
+        }
+        rowHtml += '<button type="button" data-t-remove="' + i + '" class="btn btn-danger !p-2 shrink-0" title="Remove">' + ui.icon('trash', 'w-4 h-4') + '</button>' +
           '</div>';
 
-        const placeholderStart = (m.root.querySelector('#e-start') ? m.root.querySelector('#e-start').value : ev.startTime) || '';
-        const placeholderEnd = (m.root.querySelector('#e-finish') ? m.root.querySelector('#e-finish').value : ev.finishTime) || '';
-        
-        rowHtml += '<div class="flex items-center gap-2 text-xs">' +
-            '<span class="text-muted w-12">Times:</span>' +
-            '<input type="time" data-t-start="' + i + '" class="field !py-1 !px-2 flex-1" value="' + (t.startTime || '') + '" placeholder="' + placeholderStart + '">' +
-            '<span class="text-muted">to</span>' +
-            '<input type="time" data-t-end="' + i + '" class="field !py-1 !px-2 flex-1" value="' + (t.finishTime || '') + '" placeholder="' + placeholderEnd + '">' +
-            '<span class="text-muted italic text-[10px] ml-1">(Blank = event times)</span>' +
-          '</div>';
+        if (!t.isNoTech) {
+          const placeholderStart = (m.root.querySelector('#e-start') ? m.root.querySelector('#e-start').value : ev.startTime) || '';
+          const placeholderEnd = (m.root.querySelector('#e-finish') ? m.root.querySelector('#e-finish').value : ev.finishTime) || '';
+          
+          rowHtml += '<div class="flex items-center gap-2 text-xs">' +
+              '<span class="text-muted w-12">Times:</span>' +
+              '<input type="time" data-t-start="' + i + '" class="field !py-1 !px-2 flex-1" value="' + (t.startTime || '') + '" placeholder="' + placeholderStart + '">' +
+              '<span class="text-muted">to</span>' +
+              '<input type="time" data-t-end="' + i + '" class="field !py-1 !px-2 flex-1" value="' + (t.finishTime || '') + '" placeholder="' + placeholderEnd + '">' +
+              '<span class="text-muted italic text-[10px] ml-1">(Blank = event times)</span>' +
+            '</div>';
+        }
 
         rowHtml += '</div>';
         return rowHtml;
@@ -5516,8 +5520,8 @@ RMTP.views.advancing = function (el, params, query) {
       const name = m.root.querySelector('#e-name').value.trim();
       if (!name) { ui.toast('Give the event a name', 'danger'); return; }
 
-      const finalTechs = techs.filter((t) => t.userId || (t.isFreelancer && t.freelancerName.trim()));
-      if (finalTechs.some((t) => !t.role)) { ui.toast('Pick a role for each tagged technician', 'danger'); return; }
+      const finalTechs = techs.filter((t) => t.userId || (t.isFreelancer && t.freelancerName.trim()) || t.isNoTech);
+      if (finalTechs.some((t) => !t.isNoTech && !t.role)) { ui.toast('Pick a role for each tagged technician', 'danger'); return; }
 
       let finalSpec = cleared ? null : specMeta;
       if (pending) {

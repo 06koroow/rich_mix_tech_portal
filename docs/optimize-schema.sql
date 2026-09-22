@@ -48,3 +48,8 @@ ALTER TABLE public.advancing
   DROP COLUMN IF EXISTS floor_tags,
   DROP COLUMN IF EXISTS specials,
   DROP COLUMN IF EXISTS special_notes;
+
+-- 6. Add artifaxHistory column to advancing if it does not exist
+ALTER TABLE public.advancing
+  ADD COLUMN IF NOT EXISTS "artifaxHistory" jsonb default '[]'::jsonb;
+

@@ -3,7 +3,17 @@ window.RMTP = window.RMTP || {};
 RMTP.syncSb = (function () {
   const store = RMTP.store, sb = RMTP.supabase;
   const COLLS = ['advancing', 'reports', 'venues', 'users', 'signoffs', 'inventory', 'maintenance', 'procedures', 'patch_presets', 'patch_sheets', 'dmx_personalities', 'dmx_patches'];
-  const unsupportedCols = {};
+  
+  let unsupportedCols = {};
+  try {
+    const saved = localStorage.getItem('rmtp_unsupported_cols');
+    if (saved) unsupportedCols = JSON.parse(saved);
+  } catch (e) {}
+  if (!unsupportedCols.advancing) unsupportedCols.advancing = {};
+  if (unsupportedCols.advancing.artifaxHistory === undefined) {
+    unsupportedCols.advancing.artifaxHistory = true;
+  }
+
   const unsupportedTables = {};
   
   function tables() {
@@ -24,6 +34,9 @@ RMTP.syncSb = (function () {
   function markColumnUnsupported(table, col) {
     if (!unsupportedCols[table]) unsupportedCols[table] = {};
     unsupportedCols[table][col] = true;
+    try {
+      localStorage.setItem('rmtp_unsupported_cols', JSON.stringify(unsupportedCols));
+    } catch (e) {}
   }
   
   function isColumnUnsupported(table, col) { return unsupportedCols[table] && unsupportedCols[table][col]; }
@@ -53,18 +66,28 @@ RMTP.syncSb = (function () {
         dTo.setDate(dTo.getDate() + 120);
         const toDate = dTo.toISOString().slice(0, 10);
 
-        const { data, error } = await sb.getClient().from(table)
-          .select('*')
-          .gte('date', fromDate)
-          .lte('date', toDate);
+        const fetchAdv = async () => {
+          const { data, error } = await sb.getClient().from(table)
+            .select('*')
+            .gte('date', fromDate)
+            .lte('date', toDate);
+          if (error) {
+            if (sb.isClockSkewError && sb.isClockSkewError(error)) throw error;
+            throw error;
+          }
+          return data || [];
+        };
 
-        if (error) throw error;
-        rows = data || [];
+        rows = sb.withRetry ? await sb.withRetry(fetchAdv) : await fetchAdv();
       } else {
         rows = await sb.selectAll(table);
       }
       clearTableUnsupported(table);
     } catch (err) {
+      if (sb.isClockSkewError && sb.isClockSkewError(err)) {
+        console.warn(`[syncSb] Clock skew on ${coll}, retaining local data until next sync.`);
+        return;
+      }
       if (isTableMissingError(err)) {
         markTableUnsupported(table);
         console.warn('[syncSb] Table missing in Supabase: ' + table + '. Using local mock data.');
@@ -74,14 +97,27 @@ RMTP.syncSb = (function () {
       return; 
     }
     
-    rows.forEach(r => store.write(coll, store.all(coll).filter(existing => existing.id !== r.id).concat(r)));
+    rows.forEach(r => {
+      if (coll === 'advancing') {
+        const existing = store.find ? store.find(coll, r.id) : (store.get ? store.get(coll, r.id) : null);
+        if (!r.artifaxHistory || !r.artifaxHistory.length) {
+          if (r.production_package && Array.isArray(r.production_package.artifaxHistory) && r.production_package.artifaxHistory.length) {
+            r.artifaxHistory = r.production_package.artifaxHistory;
+          } else if (existing && Array.isArray(existing.artifaxHistory) && existing.artifaxHistory.length) {
+            r.artifaxHistory = existing.artifaxHistory;
+          }
+        }
+      }
+      store.write(coll, store.all(coll).filter(existing => existing.id !== r.id).concat(r));
+    });
   }
 
   async function pull() {
     if (!sb || !sb.isConfigured()) return;
     try {
-      const ps = COLLS.map(c => pullCollection(c));
-      await Promise.all(ps);
+      for (const c of COLLS) {
+        await pullCollection(c);
+      }
     } catch (err) {
       console.error('[syncSb] pull error', err);
     }
@@ -96,21 +132,40 @@ RMTP.syncSb = (function () {
         const table = tables()[name];
         if (!isTableUnsupported(table)) {
            const payload = { ...record };
+
+           // For advancing, safely mirror artifaxHistory inside production_package JSONB
+           // so that history is persisted to PostgreSQL even if the column is absent from schema
+           if (name === 'advancing' && record.artifaxHistory && Array.isArray(record.artifaxHistory)) {
+             payload.production_package = (payload.production_package && typeof payload.production_package === 'object' && !Array.isArray(payload.production_package))
+               ? { ...payload.production_package }
+               : {};
+             payload.production_package.artifaxHistory = record.artifaxHistory;
+           }
+
            if (unsupportedCols[table]) {
-             Object.keys(unsupportedCols[table]).forEach(col => delete payload[col]);
+             Object.keys(unsupportedCols[table]).forEach(col => {
+               if (unsupportedCols[table][col]) delete payload[col];
+             });
            }
            
            sb.upsertRow(table, payload).then(result => {
               if (result && !result.ok) {
                  if (result.error && result.error.code === '42P01') {
                     markTableUnsupported(table);
+                    console.warn('[syncSb] Table missing in Supabase: ' + table);
+                    return;
                  } else if (result.error && result.error.code === 'PGRST204') {
                     const missingCol = extractMissingColumn(result.error);
                     if (missingCol) {
                        markColumnUnsupported(table, missingCol);
                        const retryPayload = { ...payload };
                        delete retryPayload[missingCol];
-                       sb.upsertRow(table, retryPayload);
+                       sb.upsertRow(table, retryPayload).then(retryRes => {
+                          if (retryRes && !retryRes.ok) {
+                             console.error('[syncSb] Retry failed after stripping ' + missingCol + ' for ' + name, retryRes.message || retryRes.error);
+                          }
+                       }).catch(e => console.error(e));
+                       return;
                     }
                  }
                  console.error('[syncSb] Optimistic sync failed for ' + name, result.message || result.error);

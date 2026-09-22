@@ -50,21 +50,73 @@ RMTP.supabase = (function () {
     return (data && data.user && data.user.email) || null;
   }
 
+  /* ---- Clock skew & retry helpers ----
+     Supabase gateway opaque keys (sb_publishable_...) or auth sessions can occasionally
+     experience clock drift between the edge gateway and PostgREST (PGRST303: "JWT issued at future").
+     Briefly waiting (400-800ms) allows PostgREST clock to reach the token timestamp. */
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function isClockSkewError(err) {
+    if (!err) return false;
+    const code = err.code || (err.error && err.error.code);
+    const msg = String(err.message || (err.error && err.error.message) || '').toLowerCase();
+    return code === 'PGRST303' || msg.includes('jwt issued at future') || msg.includes('issued at future');
+  }
+
+  async function withRetry(fn, maxRetries = 3, delayMs = 600) {
+    let lastErr;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const res = await fn();
+        if (res && res.error && isClockSkewError(res.error)) {
+          if (attempt < maxRetries) {
+            await sleep(delayMs * (attempt + 1));
+            continue;
+          }
+        }
+        return res;
+      } catch (err) {
+        lastErr = err;
+        if (isClockSkewError(err) && attempt < maxRetries) {
+          await sleep(delayMs * (attempt + 1));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr;
+  }
+
   /* ---- Data (tables mirror the app's collection names) ---- */
   async function selectAll(table) {
-    const { data, error } = await db().from(table).select('*');
-    if (error) throw error;
-    return data || [];
+    return withRetry(async () => {
+      const { data, error } = await db().from(table).select('*');
+      if (error) {
+        if (isClockSkewError(error)) throw error;
+        throw error;
+      }
+      return data || [];
+    });
   }
   async function upsertRow(table, row) {
-    const { error } = await db().from(table).upsert(row, { onConflict: 'id' });
-    if (error) return { ok: false, error, message: error.message };
-    return { ok: true };
+    return withRetry(async () => {
+      const { error } = await db().from(table).upsert(row, { onConflict: 'id' });
+      if (error) {
+        if (isClockSkewError(error)) throw error;
+        return { ok: false, error, message: error.message };
+      }
+      return { ok: true };
+    });
   }
   async function deleteRow(table, id) {
-    const { error } = await db().from(table).delete().eq('id', id);
-    if (error) return { ok: false, error, message: error.message };
-    return { ok: true };
+    return withRetry(async () => {
+      const { error } = await db().from(table).delete().eq('id', id);
+      if (error) {
+        if (isClockSkewError(error)) throw error;
+        return { ok: false, error, message: error.message };
+      }
+      return { ok: true };
+    });
   }
 
   /* ---- Storage (fault photos + tech specs) ---- */
@@ -101,5 +153,5 @@ RMTP.supabase = (function () {
     return { ok: true, data: data };
   }
 
-  return { isConfigured, init, getClient: db, restoreSession, signIn, signUp, signOut, currentEmail, selectAll, upsertRow, deleteRow, uploadFile, invokeFunction };
+  return { isConfigured, init, getClient: db, restoreSession, signIn, signUp, signOut, currentEmail, selectAll, upsertRow, deleteRow, uploadFile, invokeFunction, isClockSkewError, withRetry };
 })();

@@ -103,6 +103,11 @@ RMTP.store = (function () {
      without mutating the cached array. */
   function all(name)            { return read(name, []).slice(); }
   function find(name, id)       { return read(name, []).find((r) => r.id === id); }
+  function get(name, id) {
+    if (id !== undefined) return find(name, id);
+    const val = read(name);
+    return Array.isArray(val) ? val.slice() : val;
+  }
   function upsert(name, record) {
     let rec = record;
     if (name === 'inventory' && rec && window.RMTP && RMTP.qr && RMTP.qr.ensureItemTrackers) {
@@ -124,6 +129,6 @@ RMTP.store = (function () {
   return {
     init, reset, onChange, setAdapter, clearCache,
     read, write, readRaw, writeRaw, removeRaw, rawKeys,
-    all, find, upsert, remove, uid,
+    all, find, get, upsert, remove, uid,
   };
 })();

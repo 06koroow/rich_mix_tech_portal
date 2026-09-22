@@ -89,7 +89,8 @@ create table if not exists public.advancing (
   "tech_requirements" jsonb default '{}'::jsonb,
   "techSpec" jsonb,
   "checklist" jsonb default '{}'::jsonb,
-  "artifaxId" text
+  "artifaxId" text,
+  "artifaxHistory" jsonb default '[]'::jsonb
 );
 
 create table if not exists public.reports (

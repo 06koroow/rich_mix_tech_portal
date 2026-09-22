@@ -199,7 +199,11 @@ Deno.serve(async (req) => {
         if (existing.status !== booking.status && booking.status) changes.push(`[Status Change]: Status updated to ${booking.status}`);
         if (existing.clientContact !== booking.clientContact && booking.clientContact) changes.push(`[Contact Change]: Contact updated to ${booking.clientContact}`);
 
-        const artifaxHistory = Array.isArray(existing.artifaxHistory) ? [...existing.artifaxHistory] : [];
+        const artifaxHistory = Array.isArray(existing.artifaxHistory) 
+          ? [...existing.artifaxHistory] 
+          : (existing.production_package && Array.isArray(existing.production_package.artifaxHistory)
+              ? [...existing.production_package.artifaxHistory]
+              : []);
         const lastNotes = artifaxHistory.length > 0 ? (artifaxHistory[artifaxHistory.length - 1].notes || "") : "";
         const currentNotes = booking.notes || lastNotes || "";
 
@@ -215,8 +219,14 @@ Deno.serve(async (req) => {
           });
         }
 
+        const prodPkg = (existing && typeof existing.production_package === "object" && existing.production_package !== null)
+          ? { ...existing.production_package }
+          : {};
+        prodPkg.artifaxHistory = artifaxHistory;
+
+        booking.artifaxHistory = artifaxHistory;
         const { notes, ...cleanBooking } = booking;
-        rowsToUpsert.push({ ...existing, ...cleanBooking, id: existing.id, artifaxHistory });
+        rowsToUpsert.push({ ...existing, ...cleanBooking, id: existing.id, production_package: prodPkg });
         updated++;
       } else {
         const artifaxHistory = booking.notes ? [{
@@ -224,8 +234,13 @@ Deno.serve(async (req) => {
           notes: booking.notes,
           changes: ["Initial sync from Artifax"]
         }] : [];
+        booking.artifaxHistory = artifaxHistory;
         const { notes, ...cleanBooking } = booking;
-        rowsToUpsert.push({ id: `evt-afx-${booking.artifaxId}`, ...cleanBooking, artifaxHistory });
+        rowsToUpsert.push({ 
+          id: `evt-afx-${booking.artifaxId}`, 
+          ...cleanBooking, 
+          production_package: { artifaxHistory } 
+        });
         created++;
       }
     }

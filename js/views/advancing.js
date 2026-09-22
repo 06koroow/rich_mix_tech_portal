@@ -751,7 +751,7 @@ RMTP.views.advancing = function (el, params, query) {
 
   /* ---- Filter Modal for Multiple Technicians ---- */
   function openTechMultiFilterModal() {
-    const allUsersList = (store.get('users') || []).slice();
+    const allUsersList = (store.all('users') || []).slice();
     const knownTechIds = new Set();
     allEvents.forEach((ev) => {
       RMTP.eventTechnicians(ev).forEach((t) => knownTechIds.add(t));
@@ -1670,11 +1670,15 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   function renderArtifaxHistorySection(ev, isEditMode = false) {
-    if (!ev.artifaxId && (!ev.artifaxHistory || !ev.artifaxHistory.length)) {
+    const rawHistory = (Array.isArray(ev.artifaxHistory) && ev.artifaxHistory.length > 0)
+      ? ev.artifaxHistory
+      : (ev.production_package && Array.isArray(ev.production_package.artifaxHistory) ? ev.production_package.artifaxHistory : []);
+
+    if (!ev.artifaxId && (!rawHistory || !rawHistory.length)) {
       return '';
     }
 
-    if (!ev.artifaxHistory || ev.artifaxHistory.length === 0) {
+    if (!rawHistory || rawHistory.length === 0) {
       return (
         '<div class="mb-4 p-3.5 rounded-xl bg-panel2/30 border border-line text-xs">' +
           '<div class="flex items-center gap-1.5 font-semibold text-muted uppercase tracking-wider text-[11px] mb-1">' +
@@ -1685,7 +1689,7 @@ RMTP.views.advancing = function (el, params, query) {
       );
     }
 
-    const history = ev.artifaxHistory.slice().reverse(); // newest first
+    const history = rawHistory.slice().reverse(); // newest first
     const defaultEntry = history[0];
 
     const options = history.map((entry, idx) => {
@@ -2352,8 +2356,11 @@ RMTP.views.advancing = function (el, params, query) {
     const artifaxHistorySel = m.root.querySelector('.modal-artifax-history-select');
     const artifaxNotesEl = m.root.querySelector('.modal-artifax-notes');
     const artifaxChangesEl = m.root.querySelector('.modal-artifax-changes');
-    if (artifaxHistorySel && ev.artifaxHistory && ev.artifaxHistory.length > 0) {
-      const reversedHistory = ev.artifaxHistory.slice().reverse();
+    const modalAfxHistory = (Array.isArray(ev.artifaxHistory) && ev.artifaxHistory.length > 0)
+      ? ev.artifaxHistory
+      : (ev.production_package && Array.isArray(ev.production_package.artifaxHistory) ? ev.production_package.artifaxHistory : []);
+    if (artifaxHistorySel && modalAfxHistory && modalAfxHistory.length > 0) {
+      const reversedHistory = modalAfxHistory.slice().reverse();
       artifaxHistorySel.addEventListener('change', () => {
         const idx = parseInt(artifaxHistorySel.value, 10);
         const entry = reversedHistory[idx];
@@ -4248,8 +4255,12 @@ RMTP.views.advancing = function (el, params, query) {
         const changesBox = block.querySelector('.e-artifax-changes');
         const copyBtn = block.querySelector('.btn-copy-artifax-notes');
 
-        if (sel && ev.artifaxHistory && ev.artifaxHistory.length > 0) {
-          const reversedHistory = ev.artifaxHistory.slice().reverse();
+        const editAfxHistory = (Array.isArray(ev.artifaxHistory) && ev.artifaxHistory.length > 0)
+          ? ev.artifaxHistory
+          : (ev.production_package && Array.isArray(ev.production_package.artifaxHistory) ? ev.production_package.artifaxHistory : []);
+
+        if (sel && editAfxHistory && editAfxHistory.length > 0) {
+          const reversedHistory = editAfxHistory.slice().reverse();
           sel.addEventListener('change', () => {
             const idx = parseInt(sel.value, 10);
             const entry = reversedHistory[idx];
@@ -4776,6 +4787,53 @@ RMTP.views.advancing = function (el, params, query) {
     renderChannelOutputs();
 
     /* ---- Live Schedule Builder UI Wiring ---- */
+    function parseDurationToMinutes(durStr) {
+      if (!durStr || typeof durStr !== 'string') return 0;
+      const s = durStr.trim();
+      if (!s) return 0;
+      if (s.includes(':')) {
+        const parts = s.split(':');
+        const h = parseInt(parts[0], 10) || 0;
+        const m = parseInt(parts[1], 10) || 0;
+        return h * 60 + m;
+      }
+      const hMatch = s.match(/^([\d.]+)\s*h(ours?)?$/i);
+      if (hMatch) return Math.round(parseFloat(hMatch[1]) * 60);
+      const num = parseInt(s, 10);
+      return isNaN(num) ? 0 : num;
+    }
+
+    function addMinutesToTime(timeStr, minutesToAdd) {
+      if (!timeStr || typeof timeStr !== 'string') return '';
+      const trimmed = timeStr.trim();
+      if (!trimmed.includes(':')) return '';
+      const parts = trimmed.split(':');
+      const h = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10);
+      if (isNaN(h) || isNaN(m)) return '';
+      let total = h * 60 + m + minutesToAdd;
+      total = ((total % 1440) + 1440) % 1440;
+      const nextH = Math.floor(total / 60);
+      const nextM = total % 60;
+      return String(nextH).padStart(2, '0') + ':' + String(nextM).padStart(2, '0');
+    }
+
+    function getNextScheduleTime(items) {
+      if (!Array.isArray(items) || items.length === 0) return '';
+      let cumMinutes = 0;
+      for (let i = items.length - 1; i >= 0; i--) {
+        const it = items[i];
+        if (it && it.time) {
+          const dur = (i === items.length - 1) ? parseDurationToMinutes(it.duration) : (cumMinutes + parseDurationToMinutes(it.duration));
+          return addMinutesToTime(it.time, dur);
+        }
+        if (it) {
+          cumMinutes += parseDurationToMinutes(it.duration);
+        }
+      }
+      return '';
+    }
+
     const menuBtn = m.root.querySelector('#btn-add-schedule-menu');
     const dropdown = m.root.querySelector('#schedule-dropdown');
 
@@ -4791,13 +4849,29 @@ RMTP.views.advancing = function (el, params, query) {
       btn.addEventListener('click', () => {
         const type = btn.getAttribute('data-add-type');
         dropdown.classList.add('hidden');
+
+        // Sync any active input fields to scheduleItems before computing next time
+        const container = m.root.querySelector('#schedule-items-container');
+        if (container) {
+          container.querySelectorAll('[data-sch-time]').forEach((inp) => {
+            const idx = +inp.getAttribute('data-sch-time');
+            if (scheduleItems[idx]) scheduleItems[idx].time = inp.value;
+          });
+          container.querySelectorAll('[data-sch-dur]').forEach((inp) => {
+            const idx = +inp.getAttribute('data-sch-dur');
+            if (scheduleItems[idx]) scheduleItems[idx].duration = inp.value;
+          });
+        }
+
+        const nextTime = getNextScheduleTime(scheduleItems);
+
         if (type === 'act') {
           const actCount = scheduleItems.filter((it) => it.type === 'act').length + 1;
           scheduleItems.push({
             type: 'act',
             label: 'Act ' + actCount,
             customName: '',
-            time: '',
+            time: nextTime,
             duration: '00:30',
             techReqType: 'none',
             techNotes: '',
@@ -4810,7 +4884,7 @@ RMTP.views.advancing = function (el, params, query) {
             type: 'changeover',
             label: 'Changeover',
             customName: '',
-            time: '',
+            time: nextTime,
             duration: '00:15',
             techReqType: 'none'
           });
@@ -4819,7 +4893,7 @@ RMTP.views.advancing = function (el, params, query) {
             type: 'other',
             label: 'Other',
             customName: '',
-            time: '',
+            time: nextTime,
             duration: '00:30',
             techReqType: 'none',
             techNotes: '',
@@ -4880,12 +4954,10 @@ RMTP.views.advancing = function (el, params, query) {
                 '<input data-sch-name="' + idx + '" class="field !py-1 !px-2 text-xs" value="' + ui.esc(item.customName || '') + '" ' +
                   'placeholder="' + (isAct ? 'Artist / Act Name (e.g. Main Band)' : (isChangeover ? 'Notes (optional)' : 'Item Name / Detail')) + '" />' +
               '</div>' +
-              (!isChangeover ? (
-                '<div class="flex items-center gap-1.5">' +
-                  '<span class="text-[11px] text-muted whitespace-nowrap shrink-0">Stage:</span>' +
-                  '<input data-sch-time="' + idx + '" type="time" class="field !py-1 !px-2 font-mono text-xs flex-1" value="' + ui.esc(item.time || '') + '" />' +
-                '</div>'
-              ) : '<div class="text-xs text-muted flex items-center italic">— No stage time —</div>') +
+              '<div class="flex items-center gap-1.5">' +
+                '<span class="text-[11px] text-muted whitespace-nowrap shrink-0">' + (isAct ? 'Stage:' : 'Time:') + '</span>' +
+                '<input data-sch-time="' + idx + '" type="time" class="field !py-1 !px-2 font-mono text-xs flex-1" value="' + ui.esc(item.time || '') + '" />' +
+              '</div>' +
               '<div class="flex items-center gap-1.5">' +
                 '<span class="text-[11px] text-muted whitespace-nowrap shrink-0">Duration:</span>' +
                 '<input data-sch-dur="' + idx + '" type="text" pattern="[0-9]{2}:[0-9]{2}" class="field !py-1 !px-2 font-mono text-xs flex-1" value="' + ui.esc(item.duration || '') + '" placeholder="00:30" title="Format: HH:MM (e.g. 00:30 for 30 mins)" />' +
@@ -5062,10 +5134,14 @@ RMTP.views.advancing = function (el, params, query) {
         inp.addEventListener('input', () => { scheduleItems[+inp.getAttribute('data-sch-name')].customName = inp.value; });
       });
       container.querySelectorAll('[data-sch-time]').forEach((inp) => {
-        inp.addEventListener('change', () => { scheduleItems[+inp.getAttribute('data-sch-time')].time = inp.value; });
+        const update = () => { scheduleItems[+inp.getAttribute('data-sch-time')].time = inp.value; };
+        inp.addEventListener('input', update);
+        inp.addEventListener('change', update);
       });
       container.querySelectorAll('[data-sch-dur]').forEach((inp) => {
-        inp.addEventListener('input', () => { scheduleItems[+inp.getAttribute('data-sch-dur')].duration = inp.value; });
+        const update = () => { scheduleItems[+inp.getAttribute('data-sch-dur')].duration = inp.value; };
+        inp.addEventListener('input', update);
+        inp.addEventListener('change', update);
       });
       container.querySelectorAll('[data-sch-up]').forEach((btn) => {
         btn.addEventListener('click', () => {

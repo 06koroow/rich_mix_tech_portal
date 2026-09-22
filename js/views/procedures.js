@@ -16,7 +16,7 @@ RMTP.views.procedures = function (el, params) {
   const activeCatId = params[0] || cats[0].id;
   const cat = cats.find((c) => c.id === activeCatId) || cats[0];
   const itemId = params[1];
-  const item = itemId ? cat.items.find((i) => i.id === itemId) : null;
+  const item = itemId && cat.items ? cat.items.find((i) => i.id === itemId) : null;
 
   const me = RMTP.auth.current();
   const isAdmin = !!(me && me.admin);
@@ -46,7 +46,7 @@ RMTP.views.procedures = function (el, params) {
   if (item) {
     content = renderItem(cat, item);
   } else {
-    const list = (cat.items ? cat.items.length : 0)
+    const list = (cat.items && cat.items.length > 0)
       ? cat.items.map((i, idx) => {
           const done = i.body && i.body.trim();
           return (
@@ -64,7 +64,7 @@ RMTP.views.procedures = function (el, params) {
               (isAdmin ? (
                 '<div class="flex items-center gap-1 shrink-0 opacity-80 group-hover:opacity-100">' +
                   '<button type="button" data-proc-up="' + idx + '" class="btn btn-ghost !p-1.5" title="Move Up" ' + (idx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3.5 h-3.5') + '</button>' +
-                  '<button type="button" data-proc-down="' + idx + '" class="btn btn-ghost !p-1.5" title="Move Down" ' + (idx === (cat.items ? cat.items.length : 0) - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</button>' +
+                  '<button type="button" data-proc-down="' + idx + '" class="btn btn-ghost !p-1.5" title="Move Down" ' + (idx === ((cat.items ? cat.items.length : 0) - 1) ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</button>' +
                 '</div>'
               ) : '') +
               '<a href="#/procedures/' + cat.id + '/' + i.id + '" class="text-muted group-hover:text-ink pl-1 shrink-0">' + ui.icon('chevR', 'w-4 h-4') + '</a>' +
@@ -170,7 +170,7 @@ RMTP.views.procedures = function (el, params) {
         e.preventDefault();
         e.stopPropagation();
         const idx = +btn.getAttribute('data-proc-down');
-        if (idx < (cat.items ? cat.items.length : 0) - 1) {
+        if (idx < (cat.items ? cat.items.length : 0) - 1 && cat.items) {
           const temp = cat.items[idx];
           cat.items[idx] = cat.items[idx + 1];
           cat.items[idx + 1] = temp;
@@ -398,7 +398,7 @@ RMTP.views.procedures = function (el, params) {
       item.updated = new Date().toISOString();
       const target = resolveCategory(catName);
       if (target.id !== cat.id) {
-        cat.items = cat.items.filter((x) => x.id !== item.id);   // move across tabs
+        cat.items = (cat.items || []).filter((x) => x.id !== item.id);   // move across tabs
         target.items.push(item);
         store.upsert('procedures', target);
         if ((cat.items ? cat.items.length : 0)) store.upsert('procedures', cat); else store.remove('procedures', cat.id);
@@ -415,7 +415,7 @@ RMTP.views.procedures = function (el, params) {
       const ok = await ui.confirm('Delete \u201c' + item.title + '\u201d? This removes the page for everyone.',
         { title: 'Delete procedure', confirmLabel: 'Delete', danger: true });
       if (!ok) return;
-      cat.items = cat.items.filter((x) => x.id !== item.id);
+      cat.items = (cat.items || []).filter((x) => x.id !== item.id);
       if (RMTP.supabase && RMTP.supabase.isConfigured() && RMTP.syncSb.deleteProcedureRow) RMTP.syncSb.deleteProcedureRow(item.id);
       if ((cat.items ? cat.items.length : 0)) store.upsert('procedures', cat); else store.remove('procedures', cat.id);
       m.close(); ui.toast('Page deleted', 'ok');
@@ -443,6 +443,7 @@ RMTP.views.procedures = function (el, params) {
       const title = m.root.querySelector('#proc-title').value.trim();
       if (!title) { ui.toast('Give it a title first', 'danger'); return; }
       const id = store.uid('proc');
+      if (!cat.items) cat.items = [];
       cat.items.push({ id, title, updated: '', body: '' });
       store.upsert('procedures', cat);
       m.close(); ui.toast('Procedure added', 'ok');
@@ -455,7 +456,7 @@ RMTP.views.procedures = function (el, params) {
       ui.toast('Only Admins can edit tabs.', 'danger');
       return;
     }
-    let itemsCopy = cat.items.slice();
+    let itemsCopy = (cat.items || []).slice();
 
     function renderTabItems() {
       const container = m.root.querySelector('#tab-proc-list');

@@ -40,16 +40,20 @@ RMTP.views.advancing = function (el, params, query) {
     }
   }
 
-  if (!RMTP._artifaxLegacyMigratedV2) {
+  if (!RMTP._artifaxLegacyMigratedV3) {
     let migrated = false;
     let count = 0;
     const events = store.all('advancing');
     events.forEach(ev => {
+      let changed = false;
+      let newTechInfo = ev.techInfo;
+      let history = Array.isArray(ev.artifaxHistory) ? ev.artifaxHistory.slice() : [];
+
+      // 1. Legacy string notes split
       if (ev.techInfo && typeof ev.techInfo === 'string' && ev.techInfo.includes('--- ') && ev.techInfo.includes(' Updates ---')) {
         const parts = ev.techInfo.split(/--- (.*?) Updates ---(?:\r?\n|$)/);
         if (parts.length > 1) {
-          const newTechInfo = parts[0].trim();
-          const history = ev.artifaxHistory || [];
+          newTechInfo = parts[0].trim();
           for (let i = 1; i < parts.length; i += 2) {
              history.push({
                 date: parts[i],
@@ -57,15 +61,41 @@ RMTP.views.advancing = function (el, params, query) {
                 changes: ['Imported from legacy notes']
              });
           }
-          store.upsert('advancing', { ...ev, techInfo: newTechInfo, artifaxHistory: history });
-          migrated = true;
-          count++;
+          changed = true;
         }
       }
+
+      // 2. Self-healing: fill empty revision notes from previous non-empty revision
+      if (history.length > 1) {
+        for (let i = 1; i < history.length; i++) {
+          if ((!history[i].notes || !history[i].notes.trim()) && history[i-1].notes && history[i-1].notes.trim()) {
+            history[i].notes = history[i-1].notes;
+            changed = true;
+          }
+        }
+      }
+
+      // 3. If Artifax event has techInfo with brackets/layout info but empty history, seed initial history
+      if (ev.artifaxId && (!history || history.length === 0) && newTechInfo && typeof newTechInfo === 'string' && newTechInfo.trim()) {
+        history = [{
+          date: ev.date || new Date().toISOString(),
+          notes: newTechInfo.trim(),
+          changes: ['Initial sync from Artifax']
+        }];
+        changed = true;
+      }
+
+      if (changed) {
+        store.upsert('advancing', { ...ev, techInfo: newTechInfo, artifaxHistory: history });
+        migrated = true;
+        count++;
+      }
     });
-    RMTP._artifaxLegacyMigratedV2 = true;
-    console.log('[Artifax Migration V2] Checked ' + events.length + ' events. Migrated: ' + count);
-    if (migrated && RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
+    RMTP._artifaxLegacyMigratedV3 = true;
+    if (migrated) {
+      console.log('[Artifax Migration V3] Repaired/migrated ' + count + ' events.');
+      if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
+    }
   }
 
   const me = auth.current();
@@ -1078,27 +1108,62 @@ RMTP.views.advancing = function (el, params, query) {
            }
         }
         
-        // Check for Custom Form Room Layout Notes
-        let techInfoNotes = "";
+        // Check for Custom Forms and General Notes
+        let techInfoNotesParts = [];
+        
+        // 1. General arrangement or event notes / description
+        const generalNotes = String(r.notes || r.description || r.event_notes || r.arrangement_notes || r.comments || r.internal_notes || '').trim();
+        if (generalNotes) {
+          techInfoNotesParts.push(generalNotes);
+        }
+        
+        // 2. Custom forms: check for technical, layout, staging, production, cinema, event details
         if (Array.isArray(r.custom_forms)) {
           for (const form of r.custom_forms) {
-            if (form.custom_form_name === "Room Layout" || form.custom_form_name === "Event Details") {
-              if (Array.isArray(form.custom_form_sections)) {
-                for (const section of form.custom_form_sections) {
-                  if (Array.isArray(section.custom_form_elements)) {
-                    for (const el of section.custom_form_elements) {
-                      const val = el.custom_form_data_value;
-                      if (val && typeof val === 'string' && val.trim().length > 0) {
-                        techInfoNotes += `[${el.custom_form_element_name}]: ${val.trim()}\n`;
-                      }
+            const formName = String(form.custom_form_name || '').trim();
+            const lowerForm = formName.toLowerCase();
+            
+            // Exclude non-tech / financial / administrative / marketing forms
+            if (/finance|billing|invoice|payment|contract|legal|gdpr|marketing|box\s*office|ticketing/i.test(lowerForm)) {
+              continue;
+            }
+            
+            // Include forms that are technical, layout, production, screening, event details, or general
+            const isRelevant = /layout|setup|set-up|detail|tech|production|stage|staging|sound|audio|lighting|lx|av|screen|cinema|dcp|projection|format|schedule|spec|crew|artist|rider/i.test(lowerForm) || !lowerForm;
+            
+            if (isRelevant && Array.isArray(form.custom_form_sections)) {
+              for (const section of form.custom_form_sections) {
+                if (Array.isArray(section.custom_form_elements)) {
+                  for (const el of section.custom_form_elements) {
+                    const elName = String(el.custom_form_element_name || el.element_name || el.name || '').trim();
+                    if (!elName) continue;
+                    
+                    // Value can be in custom_form_data_text, custom_form_data_value, value, data_value, etc.
+                    let rawVal = el.custom_form_data_text !== undefined && el.custom_form_data_text !== null && el.custom_form_data_text !== ''
+                      ? el.custom_form_data_text
+                      : (el.custom_form_data_value !== undefined && el.custom_form_data_value !== null ? el.custom_form_data_value : (el.value ?? ''));
+                      
+                    if (rawVal === true) rawVal = 'Yes';
+                    if (Array.isArray(rawVal)) rawVal = rawVal.join(', ');
+                    
+                    let strVal = String(rawVal ?? '').trim();
+                    if (!strVal) continue;
+                    
+                    // Filter out non-informative noise values that cause "too much info" clutter
+                    const lowerVal = strVal.toLowerCase();
+                    if (lowerVal === 'no' || lowerVal === 'none' || lowerVal === 'n/a' || lowerVal === 'na' || lowerVal === 'false' || lowerVal === '0' || lowerVal === 'not required' || lowerVal === 'unspecified') {
+                      continue;
                     }
+                    
+                    techInfoNotesParts.push(`[${elName}]: ${strVal}`);
                   }
                 }
               }
             }
           }
         }
-        techInfoNotes = techInfoNotes.trim();
+        
+        let techInfoNotes = techInfoNotesParts.join('\n').trim();
 
         const cancelled = /cancel/i.test(eventStatus) || /cancel/i.test(salesStatus);
 
@@ -1127,22 +1192,32 @@ RMTP.views.advancing = function (el, params, query) {
           
           // Smart update for tech notes so we don't wipe out user notes, but append new Artifax data
           let newNotes = [];
-          if (existing.startTime !== booking.startTime) newNotes.push(`[Time Change]: Start time updated to ${booking.startTime}`);
-          if (existing.finishTime !== booking.finishTime) newNotes.push(`[Time Change]: Finish time updated to ${booking.finishTime}`);
-          if (existing.space !== booking.space) newNotes.push(`[Space Change]: Moved to ${booking.space}`);
+          if (existing.date !== booking.date && booking.date) newNotes.push(`[Date Change]: Date moved to ${booking.date}`);
+          if (existing.startTime !== booking.startTime && booking.startTime) newNotes.push(`[Time Change]: Start time updated to ${booking.startTime}`);
+          if (existing.finishTime !== booking.finishTime && booking.finishTime) newNotes.push(`[Time Change]: Finish time updated to ${booking.finishTime}`);
+          if (existing.space !== booking.space && booking.space) newNotes.push(`[Space Change]: Moved to ${booking.space}`);
+          if (existing.name !== booking.name && booking.name) newNotes.push(`[Title Change]: Renamed to ${booking.name}`);
+          if (existing.status !== booking.status && booking.status) newNotes.push(`[Status Change]: Status updated to ${booking.status}`);
+          if (existing.clientContact !== booking.clientContact && booking.clientContact) newNotes.push(`[Contact Change]: Contact updated to ${booking.clientContact}`);
           
-          row.artifaxHistory = existing.artifaxHistory || [];
-          const lastArtifaxNotes = row.artifaxHistory.length > 0 ? row.artifaxHistory[row.artifaxHistory.length - 1].notes : "";
+          row.artifaxHistory = Array.isArray(existing.artifaxHistory) ? existing.artifaxHistory.slice() : [];
+          const lastArtifaxNotes = row.artifaxHistory.length > 0 ? (row.artifaxHistory[row.artifaxHistory.length - 1].notes || "") : "";
           
           if (techInfoNotes && techInfoNotes !== lastArtifaxNotes) {
-             newNotes.push(`[Artifax Layout Notes Updated]`);
+             newNotes.push(`[Artifax Notes Updated]`);
           }
           
           if (newNotes.length > 0) {
              row.artifaxHistory.push({
                  date: new Date().toISOString(),
-                 notes: techInfoNotes,
+                 notes: techInfoNotes || lastArtifaxNotes || '',
                  changes: newNotes
+             });
+          } else if (row.artifaxHistory.length === 0 && (techInfoNotes || lastArtifaxNotes)) {
+             row.artifaxHistory.push({
+                 date: new Date().toISOString(),
+                 notes: techInfoNotes || lastArtifaxNotes || '',
+                 changes: ["Initial sync from Artifax"]
              });
           }
           
@@ -1558,6 +1633,117 @@ RMTP.views.advancing = function (el, params, query) {
               spacesBreakdown +
             '</div>' +
           '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  /* ---- Artifax History Formatting & UI Component ---- */
+  function formatArtifaxChangeBadges(changes) {
+    if (!changes || !changes.length) {
+      return '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-panel2 text-muted border border-line">Synced from Artifax</span>';
+    }
+    return changes.map(c => {
+      let colorClass = 'bg-accent/15 text-accent border-accent/20';
+      let iconName = 'refresh';
+      if (/time/i.test(c)) {
+        colorClass = 'bg-warning/15 text-warning border-warning/25';
+        iconName = 'clock';
+      } else if (/space|room/i.test(c)) {
+        colorClass = 'bg-info/15 text-info border-info/25';
+        iconName = 'mapPin';
+      } else if (/date/i.test(c)) {
+        colorClass = 'bg-danger/15 text-danger border-danger/25';
+        iconName = 'calendar';
+      } else if (/note|layout/i.test(c)) {
+        colorClass = 'bg-ok/15 text-ok border-ok/25';
+        iconName = 'file';
+      } else if (/title|rename/i.test(c)) {
+        colorClass = 'bg-accent/15 text-accent border-accent/25';
+        iconName = 'pen';
+      }
+      return '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold ' + colorClass + ' border">' +
+        ui.icon(iconName, 'w-3 h-3') +
+        ui.esc(c) +
+      '</span>';
+    }).join('');
+  }
+
+  function renderArtifaxHistorySection(ev, isEditMode = false) {
+    if (!ev.artifaxId && (!ev.artifaxHistory || !ev.artifaxHistory.length)) {
+      return '';
+    }
+
+    if (!ev.artifaxHistory || ev.artifaxHistory.length === 0) {
+      return (
+        '<div class="mb-4 p-3.5 rounded-xl bg-panel2/30 border border-line text-xs">' +
+          '<div class="flex items-center gap-1.5 font-semibold text-muted uppercase tracking-wider text-[11px] mb-1">' +
+            ui.icon('refresh', 'w-3.5 h-3.5') + '<span>Artifax Version History</span>' +
+          '</div>' +
+          '<p class="text-xs text-muted italic">No update history pulled from Artifax yet. Click "Sync Artifax" in the top bar to fetch the latest details.</p>' +
+        '</div>'
+      );
+    }
+
+    const history = ev.artifaxHistory.slice().reverse(); // newest first
+    const defaultEntry = history[0];
+
+    const options = history.map((entry, idx) => {
+      const dateLabel = new Date(entry.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+      const firstChange = entry.changes && entry.changes.length ? entry.changes[0] : 'Synced';
+      const label = dateLabel + ' \u2014 ' + (firstChange.length > 30 ? firstChange.substring(0, 30) + '\u2026' : firstChange);
+      return '<option value="' + idx + '">' + ui.esc(label) + '</option>';
+    }).join('');
+
+    const defaultChangesHtml = formatArtifaxChangeBadges(defaultEntry.changes);
+    const defaultNotesText = defaultEntry.notes || 'No technical or layout notes recorded in this revision.';
+
+    const copyBtnHtml = isEditMode
+      ? '<button type="button" class="btn-copy-artifax-notes text-[11px] text-accent hover:underline font-semibold flex items-center gap-1 cursor-pointer ml-auto">' +
+          ui.icon('copy', 'w-3 h-3') + '<span>Copy into Tech Notes</span>' +
+        '</button>'
+      : '';
+
+    const selectClass = isEditMode ? 'e-artifax-history-select' : 'modal-artifax-history-select';
+    const notesClass = isEditMode ? 'e-artifax-notes' : 'modal-artifax-notes';
+    const changesClass = isEditMode ? 'e-artifax-changes' : 'modal-artifax-changes';
+
+    return (
+      '<div class="mb-4 p-3.5 rounded-xl bg-panel2/30 border border-line text-xs artifax-history-block">' +
+        '<div class="flex items-center justify-between mb-2.5 gap-2 flex-wrap">' +
+          '<div class="flex items-center gap-1.5">' +
+            ui.icon('refresh', 'w-3.5 h-3.5 text-accent') +
+            '<span class="text-xs font-semibold text-accent uppercase tracking-wider">Artifax Updates & History</span>' +
+            '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-accent/15 text-accent font-mono font-bold">' + history.length + ' rev' + (history.length > 1 ? 's' : '') + '</span>' +
+          '</div>' +
+          '<div class="flex items-center gap-1.5">' +
+            '<label class="text-[11px] text-muted font-medium">Revision:</label>' +
+            '<select class="' + selectClass + ' field !py-1 !text-xs !bg-panel w-auto min-w-[170px] max-w-[240px]">' +
+              options +
+            '</select>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="mb-2">' +
+          '<div class="text-[10px] font-bold uppercase tracking-wider text-muted mb-1">Changes In This Revision</div>' +
+          '<div class="' + changesClass + ' flex flex-wrap gap-1.5">' +
+            defaultChangesHtml +
+          '</div>' +
+        '</div>' +
+
+        '<div>' +
+          '<div class="flex items-center justify-between mb-1">' +
+            '<span class="text-[10px] font-bold uppercase tracking-wider text-muted">Technical & Layout Notes</span>' +
+            copyBtnHtml +
+          '</div>' +
+          (isEditMode ?
+            '<textarea class="' + notesClass + ' field !text-xs !text-ink/90 font-mono bg-panel/70 border border-line" rows="4" readonly>' + ui.esc(defaultNotesText) + '</textarea>' +
+            '<div class="text-[10px] text-muted text-right mt-1">Read-only version history. Sync Artifax to check for updates.</div>'
+          :
+            '<div class="' + notesClass + ' p-2.5 rounded-lg bg-panel border border-line/80 font-mono text-[11px] text-ink/90 whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto select-text">' +
+              ui.esc(defaultNotesText) +
+            '</div>'
+          ) +
         '</div>' +
       '</div>'
     );
@@ -2051,34 +2237,7 @@ RMTP.views.advancing = function (el, params, query) {
         ) : '') +
 
         // Artifax Updates History
-        (ev.artifaxHistory && ev.artifaxHistory.length > 0 ? (
-          (() => {
-            const history = ev.artifaxHistory.slice().reverse(); // newest first
-            const defaultEntry = history[0];
-            const options = history.map((entry, idx) => {
-               const dateLabel = new Date(entry.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
-               const changesLabel = entry.changes && entry.changes.length ? entry.changes.join(', ').substring(0, 30) + (entry.changes.join(', ').length > 30 ? '...' : '') : 'Updated';
-               return '<option value="' + idx + '">' + dateLabel + ' - ' + changesLabel + '</option>';
-            }).join('');
-            
-            return (
-              '<div class="p-3.5 rounded-xl bg-panel2/30 border border-line text-xs">' +
-                '<div class="flex items-center justify-between mb-2 gap-2">' +
-                   '<span class="eyebrow block">Artifax Updates</span>' +
-                   '<select id="modal-artifax-history" class="field !py-1 !text-xs !bg-panel w-auto min-w-[150px] max-w-[200px]">' +
-                      options +
-                   '</select>' +
-                '</div>' +
-                '<p id="modal-artifax-notes" class="text-ink/80 whitespace-pre-wrap leading-relaxed">' + ui.esc(defaultEntry.notes || 'No technical notes provided.') + '</p>' +
-              '</div>'
-            );
-          })()
-        ) : (ev.artifaxId ? 
-            '<div class="p-3.5 rounded-xl bg-panel2/30 border border-line text-xs">' +
-              '<span class="eyebrow block mb-1">Artifax Updates</span>' +
-              '<p class="text-muted italic">No update history pulled from Artifax.</p>' +
-            '</div>'
-        : '')) +
+        renderArtifaxHistorySection(ev, false) +
 
         // Technical Notes
         (ev.techInfo ? (
@@ -2190,14 +2349,21 @@ RMTP.views.advancing = function (el, params, query) {
     const specBtn = m.root.querySelector('#modal-open-spec');
     if (specBtn) specBtn.addEventListener('click', () => files.open(ev.techSpec));
 
-    const artifaxHistorySel = m.root.querySelector('#modal-artifax-history');
-    const artifaxNotesEl = m.root.querySelector('#modal-artifax-notes');
-    if (artifaxHistorySel && artifaxNotesEl && ev.artifaxHistory) {
+    const artifaxHistorySel = m.root.querySelector('.modal-artifax-history-select');
+    const artifaxNotesEl = m.root.querySelector('.modal-artifax-notes');
+    const artifaxChangesEl = m.root.querySelector('.modal-artifax-changes');
+    if (artifaxHistorySel && ev.artifaxHistory && ev.artifaxHistory.length > 0) {
       const reversedHistory = ev.artifaxHistory.slice().reverse();
       artifaxHistorySel.addEventListener('change', () => {
         const idx = parseInt(artifaxHistorySel.value, 10);
-        if (reversedHistory[idx]) {
-          artifaxNotesEl.textContent = reversedHistory[idx].notes || 'No technical notes provided.';
+        const entry = reversedHistory[idx];
+        if (entry) {
+          if (artifaxNotesEl) {
+            artifaxNotesEl.textContent = entry.notes || 'No technical or layout notes recorded in this revision.';
+          }
+          if (artifaxChangesEl) {
+            artifaxChangesEl.innerHTML = formatArtifaxChangeBadges(entry.changes);
+          }
         }
       });
     }
@@ -2385,9 +2551,18 @@ RMTP.views.advancing = function (el, params, query) {
         merged.startTime = src.startTime || '';
         merged.finishTime = src.finishTime || '';
         merged.artifaxId = src.artifaxId || '';
+        if (src.artifaxHistory && src.artifaxHistory.length) {
+          merged.artifaxHistory = JSON.parse(JSON.stringify(src.artifaxHistory));
+        }
         merged.category = src.category || '';
         merged.clientContact = src.clientContact || '';
         merged.status = src.status || '';
+      } else {
+        if (!merged.artifaxHistory || !merged.artifaxHistory.length) {
+          if (src.artifaxHistory && src.artifaxHistory.length) {
+            merged.artifaxHistory = JSON.parse(JSON.stringify(src.artifaxHistory));
+          }
+        }
       }
 
       if (getVal('tech') === 'source') {
@@ -3416,35 +3591,7 @@ RMTP.views.advancing = function (el, params, query) {
     const prodInitial = getProductionPackage(ev);
     let floorTags = prodInitial.floor_tags ? prodInitial.floor_tags.slice() : [];
 
-    let artifaxHistoryHtml = '';
-    if (ev.artifaxHistory && ev.artifaxHistory.length > 0) {
-      const history = ev.artifaxHistory.slice().reverse(); // newest first
-      const options = history.map((entry, idx) => {
-         const dateLabel = new Date(entry.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
-         const changesLabel = entry.changes && entry.changes.length ? entry.changes.join(', ').substring(0, 30) + (entry.changes.join(', ').length > 30 ? '...' : '') : 'Updated';
-         return '<option value="' + idx + '">' + dateLabel + ' - ' + changesLabel + '</option>';
-      }).join('');
-      
-      artifaxHistoryHtml = (
-        '<div class="mb-4 p-3.5 rounded-xl bg-panel2/30 border border-line">' +
-          '<div class="flex items-center justify-between mb-2 gap-2">' +
-             '<span class="text-xs font-semibold text-muted uppercase tracking-wider block">Artifax Version History</span>' +
-             '<select class="e-artifax-history-select field !py-1 !text-xs !bg-panel w-auto min-w-[150px] max-w-[200px]">' +
-                options +
-             '</select>' +
-          '</div>' +
-          '<textarea class="e-artifax-notes field !text-xs !text-ink/80 bg-transparent border-0" rows="3" readonly>' + ui.esc(history[0].notes || 'No technical notes provided.') + '</textarea>' +
-          '<div class="text-[10px] text-muted text-right mt-1">Read-only. Sync Artifax to update.</div>' +
-        '</div>'
-      );
-    } else if (ev.artifaxId) {
-      artifaxHistoryHtml = (
-        '<div class="mb-4 p-3.5 rounded-xl bg-panel2/30 border border-line">' +
-          '<span class="text-xs font-semibold text-muted uppercase tracking-wider block mb-1">Artifax Version History</span>' +
-          '<p class="text-xs text-muted italic">No update history pulled from Artifax yet.</p>' +
-        '</div>'
-      );
-    }
+    const artifaxHistoryHtml = renderArtifaxHistorySection(ev, true);
 
     const m = ui.modal({
       title: existing ? 'Edit Technical Advance' : 'Create Technical Advance',
@@ -4094,16 +4241,47 @@ RMTP.views.advancing = function (el, params, query) {
       if (isScreen && cEmail && lEmail && !cEmail.value) cEmail.value = lEmail.value;
       if (!isScreen && cEmail && lEmail && !lEmail.value) lEmail.value = cEmail.value;
       
-      const historySelects = m.root.querySelectorAll('.e-artifax-history-select');
-      historySelects.forEach((sel) => {
-        sel.addEventListener('change', (e) => {
-          const idx = parseInt(e.target.value, 10);
-          const history = ev.artifaxHistory.slice().reverse();
-          const targetArea = e.target.closest('div.mb-4').querySelector('.e-artifax-notes');
-          if (targetArea && history[idx]) {
-            targetArea.value = history[idx].notes || 'No technical notes provided.';
-          }
-        });
+      const historyBlocks = m.root.querySelectorAll('.artifax-history-block');
+      historyBlocks.forEach((block) => {
+        const sel = block.querySelector('.e-artifax-history-select');
+        const notesArea = block.querySelector('.e-artifax-notes');
+        const changesBox = block.querySelector('.e-artifax-changes');
+        const copyBtn = block.querySelector('.btn-copy-artifax-notes');
+
+        if (sel && ev.artifaxHistory && ev.artifaxHistory.length > 0) {
+          const reversedHistory = ev.artifaxHistory.slice().reverse();
+          sel.addEventListener('change', () => {
+            const idx = parseInt(sel.value, 10);
+            const entry = reversedHistory[idx];
+            if (entry) {
+              if (notesArea) {
+                notesArea.value = entry.notes || 'No technical or layout notes recorded in this revision.';
+              }
+              if (changesBox) {
+                changesBox.innerHTML = formatArtifaxChangeBadges(entry.changes);
+              }
+            }
+          });
+        }
+
+        if (copyBtn) {
+          copyBtn.addEventListener('click', () => {
+            const currentNotes = notesArea ? notesArea.value : '';
+            if (!currentNotes || currentNotes === 'No technical or layout notes recorded in this revision.') {
+              ui.toast('No notes in this Artifax revision to copy', 'warning');
+              return;
+            }
+            const infoField = m.root.querySelector('#e-info') || m.root.querySelector('#e-cinema-info');
+            if (infoField) {
+              if (infoField.value && infoField.value.trim()) {
+                infoField.value = infoField.value.trim() + '\n\n' + currentNotes;
+              } else {
+                infoField.value = currentNotes;
+              }
+              ui.toast('Copied Artifax notes into Technical Notes', 'ok');
+            }
+          });
+        }
       });
 
       updateSectionBannerPills();

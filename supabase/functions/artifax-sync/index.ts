@@ -146,6 +146,7 @@ function mapInstance(i: ArtifaxInstance) {
     finishTime: hhmm(end),
     clientContact: i.contact || "",
     status: cancelled ? "Cancelled" : "Confirmed",
+    notes: i.notes || "",
     // NB: techUserId / techInfo / techSpec / guestEngineer are NOT set here —
     // they belong to the Portal and are preserved below.
   };
@@ -189,10 +190,42 @@ Deno.serve(async (req) => {
     for (const booking of validBookings) {
       const existing = existingMap.get(booking.artifaxId);
       if (existing) {
-        rowsToUpsert.push({ ...existing, ...booking, id: existing.id });
+        const changes: string[] = [];
+        if (existing.date !== booking.date && booking.date) changes.push(`[Date Change]: Date moved to ${booking.date}`);
+        if (existing.startTime !== booking.startTime && booking.startTime) changes.push(`[Time Change]: Start time updated to ${booking.startTime}`);
+        if (existing.finishTime !== booking.finishTime && booking.finishTime) changes.push(`[Time Change]: Finish time updated to ${booking.finishTime}`);
+        if (existing.space !== booking.space && booking.space) changes.push(`[Space Change]: Moved to ${booking.space}`);
+        if (existing.name !== booking.name && booking.name) changes.push(`[Title Change]: Renamed to ${booking.name}`);
+        if (existing.status !== booking.status && booking.status) changes.push(`[Status Change]: Status updated to ${booking.status}`);
+        if (existing.clientContact !== booking.clientContact && booking.clientContact) changes.push(`[Contact Change]: Contact updated to ${booking.clientContact}`);
+
+        const artifaxHistory = Array.isArray(existing.artifaxHistory) ? [...existing.artifaxHistory] : [];
+        const lastNotes = artifaxHistory.length > 0 ? (artifaxHistory[artifaxHistory.length - 1].notes || "") : "";
+        const currentNotes = booking.notes || lastNotes || "";
+
+        if (booking.notes && booking.notes !== lastNotes) {
+          changes.push(`[Artifax Notes Updated]`);
+        }
+
+        if (changes.length > 0) {
+          artifaxHistory.push({
+            date: new Date().toISOString(),
+            notes: currentNotes,
+            changes
+          });
+        }
+
+        const { notes, ...cleanBooking } = booking;
+        rowsToUpsert.push({ ...existing, ...cleanBooking, id: existing.id, artifaxHistory });
         updated++;
       } else {
-        rowsToUpsert.push({ id: `evt-afx-${booking.artifaxId}`, ...booking });
+        const artifaxHistory = booking.notes ? [{
+          date: new Date().toISOString(),
+          notes: booking.notes,
+          changes: ["Initial sync from Artifax"]
+        }] : [];
+        const { notes, ...cleanBooking } = booking;
+        rowsToUpsert.push({ id: `evt-afx-${booking.artifaxId}`, ...cleanBooking, artifaxHistory });
         created++;
       }
     }
@@ -203,7 +236,7 @@ Deno.serve(async (req) => {
       if (upsertError) throw new Error(`Batch upsert failed: ${upsertError.message}`);
     }
 
-    return json({ ok: true, from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10), created, updated, skipped });
+    return json({ ok: true, from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10), created, updated, skipped, instances: validBookings });
   } catch (e) {
     return json({ ok: false, error: String((e as Error).message ?? e) }, 500);
   }

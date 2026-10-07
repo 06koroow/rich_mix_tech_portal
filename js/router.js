@@ -27,6 +27,9 @@ RMTP.router = (function () {
     const content = document.getElementById('content');
     if (!content) return;
 
+    RMTP._previousView = RMTP._currentView || null;
+    RMTP._currentView = id;
+
     content.innerHTML = '';
     try {
       RMTP.views[id](content, params, query);

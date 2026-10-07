@@ -73,6 +73,15 @@ RMTP.auth = (function () {
   // a trainer by an admin (never auto-admin).
   const AUTO_ADMIN_POSITIONS = ['Technical Manager', 'Senior Tech'];
   function isAutoAdminPosition(position) { return AUTO_ADMIN_POSITIONS.indexOf(position) > -1; }
+  function isTechManager(u) {
+    const user = u || current();
+    if (!user) return false;
+    const pos = String(user.position || '').trim().toLowerCase();
+    const role = String(user.role || '').trim().toLowerCase();
+    return pos === 'technical manager' || pos === 'tech manager' ||
+           pos.includes('technical manager') || pos.includes('tech manager') ||
+           role === 'tech_manager' || role === 'technical_manager';
+  }
   function rolesForPosition(position, existingTrainer) {
     if (isAutoAdminPosition(position)) return { admin: true, trainer: true };
     return { admin: false, trainer: !!existingTrainer };
@@ -273,5 +282,6 @@ RMTP.auth = (function () {
     current, currentId, setCurrent, can,
     login, signUp, signOut, signInEmail, showLogin, ensureSession,
     pendingUsers, approveUser, rejectUser, refreshShell,
+    isTechManager,
   };
 })();

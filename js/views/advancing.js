@@ -114,10 +114,26 @@ RMTP.views.advancing = function (el, params, query) {
   let advViewMode = (RMTP._advViewMode = RMTP._advViewMode || 'list');
   let calDate = (RMTP._advCalDate = RMTP._advCalDate || new Date());
 
-  // Technician filter state: array of user IDs/emails, or 'all'
-  // Default to currently signed-in user on initial session load
-  if (RMTP._advTechFilter === undefined) {
-    RMTP._advTechFilter = (me && (me.id || me.email)) ? [(me.id || me.email)] : [];
+  const currentUserId = me ? (me.id || me.email) : null;
+  const isManager = !!((auth.isTechManager && auth.isTechManager(me)) ||
+    (me && (/technical manager|tech manager/i.test(me.position || '') || /tech.*manager/i.test(me.role || ''))));
+
+  // Determine if navigating fresh into Advancing from another view or after user switch
+  const isFreshViewEntry = RMTP._lastAdvancingUser !== currentUserId || (RMTP._previousView && RMTP._previousView !== 'advancing');
+  if (isFreshViewEntry) {
+    RMTP._lastAdvancingUser = currentUserId;
+    RMTP._advTechFilterManuallySet = false;
+  }
+
+  // Technician filter state: array of user IDs/emails, or empty array = 'All Team shifts'
+  // Tech managers automatically filter to 'All Team shifts' ([])
+  // Other technicians default to their own shifts ([currentUserId])
+  if (RMTP._advTechFilter === undefined || (isFreshViewEntry && !RMTP._advTechFilterManuallySet) || (isManager && !RMTP._advTechFilterManuallySet)) {
+    if (isManager) {
+      RMTP._advTechFilter = []; // Automatically filter to All Team shifts
+    } else {
+      RMTP._advTechFilter = currentUserId ? [currentUserId] : [];
+    }
   }
   let selectedTechs = RMTP._advTechFilter; // Array of ids/emails, or empty array = all
   let includeUnassigned = (RMTP._advIncludeUnassigned !== undefined ? RMTP._advIncludeUnassigned : true);
@@ -561,7 +577,7 @@ RMTP.views.advancing = function (el, params, query) {
 
     let crewPillText = '';
     if (isAll) {
-      crewPillText = 'All Team';
+      crewPillText = 'All Team Shifts';
     } else if (isOnlyMe) {
       crewPillText = 'Only Me (' + (me ? auth.displayName(me) : 'You') + ')';
     } else {
@@ -595,7 +611,7 @@ RMTP.views.advancing = function (el, params, query) {
             '</button>' +
             '<button id="tf-all-team" class="px-2.5 py-1 text-xs rounded-lg border transition font-medium ' +
               (isAll ? 'bg-accent text-accent-ink border-accent font-semibold shadow-xs' : 'bg-panel border-line text-ink hover:border-accent') + '">' +
-              'All Team' +
+              'All Team Shifts' +
             '</button>' +
             '<button id="tf-custom-modal" class="px-2.5 py-1 text-xs rounded-lg border bg-panel border-line text-ink hover:border-accent transition flex items-center gap-1 font-medium">' +
               ui.icon('filter', 'w-3 h-3') + '<span>' + ui.esc(crewPillText) + '</span>' +
@@ -827,6 +843,7 @@ RMTP.views.advancing = function (el, params, query) {
         selected.push(cb.value);
       });
       RMTP._advTechFilter = selected;
+      RMTP._advTechFilterManuallySet = selected.length > 0;
       m.close();
       RMTP.router.render();
     });
@@ -862,6 +879,7 @@ RMTP.views.advancing = function (el, params, query) {
   if (onlyMeBtn) onlyMeBtn.addEventListener('click', () => {
     if (me) {
       RMTP._advTechFilter = [me.id || me.email];
+      RMTP._advTechFilterManuallySet = true;
       RMTP.router.render();
     } else {
       ui.toast('Sign in to filter by your shifts', 'info');
@@ -871,6 +889,7 @@ RMTP.views.advancing = function (el, params, query) {
   const allTeamBtn = el.querySelector('#tf-all-team');
   if (allTeamBtn) allTeamBtn.addEventListener('click', () => {
     RMTP._advTechFilter = [];
+    RMTP._advTechFilterManuallySet = false;
     RMTP.router.render();
   });
 
@@ -945,7 +964,8 @@ RMTP.views.advancing = function (el, params, query) {
   const clearBtn = el.querySelector('#adv-clear'); if (clearBtn) clearBtn.addEventListener('click', () => {
     filters.space = '';
     filters.date = '';
-    RMTP._advTechFilter = (me && (me.id || me.email)) ? [(me.id || me.email)] : [];
+    RMTP._advTechFilter = isManager ? [] : (currentUserId ? [currentUserId] : []);
+    RMTP._advTechFilterManuallySet = false;
     RMTP._advIncludeUnassigned = true;
     RMTP._isSoftRender = true; RMTP.router.render(); RMTP._isSoftRender = false;
   });
@@ -1409,6 +1429,14 @@ RMTP.views.advancing = function (el, params, query) {
       };
       if (card) card.addEventListener('click', openPop);
 
+      const editGrpBtn = q('[data-edit-group="' + item.groupId + '|' + item.date + '"]');
+      if (editGrpBtn) {
+        editGrpBtn.addEventListener('click', (evt) => {
+          evt.stopPropagation();
+          openForm(item.events[0], item, 0);
+        });
+      }
+
       const bulkCb = q('[data-bulk-select-group="' + item.groupId + '|' + item.date + '"]');
       if (bulkCb) bulkCb.addEventListener('change', (evt) => {
         if (evt.target.checked) {
@@ -1746,6 +1774,7 @@ RMTP.views.advancing = function (el, params, query) {
             '<div class="flex items-center gap-2 flex-wrap mb-1.5">' +
               '<h3 class="font-display text-base sm:text-lg font-semibold text-ink group-hover:text-accent transition-colors break-words">' + ui.esc(group.name) + '</h3>' +
               ui.pill('Multi-Room Takeover', 'var(--warning)') +
+              (canManageEvents ? '<button type="button" data-edit-group="' + group.groupId + '|' + group.date + '" class="btn btn-ghost !py-1 !px-2.5 text-xs text-accent hover:bg-accent/10 ml-auto flex items-center gap-1.5 font-semibold border border-accent/20 bg-accent/5 rounded-lg" title="Edit All Spaces in Multi-Room Event">' + ui.icon('pen', 'w-3.5 h-3.5') + '<span>Edit Spaces</span></button>' : '') +
             '</div>' +
             '<div class="flex flex-wrap items-center gap-x-4 gap-y-2.5 mt-1 text-xs mb-3">' +
               (group.date ? 
@@ -2558,7 +2587,7 @@ RMTP.views.advancing = function (el, params, query) {
     if (manageReportsBtn) manageReportsBtn.addEventListener('click', () => { m.close(); openReports(ev); });
 
     const editBtn = m.root.querySelector('#modal-edit-btn');
-    if (editBtn) editBtn.addEventListener('click', () => { m.close(); openForm(ev); });
+    if (editBtn) editBtn.addEventListener('click', () => { m.close(); openForm(ev, group, activeIndex); });
 
     const mergeBtn = m.root.querySelector('#modal-merge-btn');
     if (mergeBtn) mergeBtn.addEventListener('click', () => { m.close(); openMergeModal(ev); });
@@ -3700,54 +3729,194 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   /* ---- Event form (Live vs Cinema Space Routing) ---- */
-  function openForm(existing) {
-    const ev = existing || {};
+  function openForm(existing, group = null, initialSpaceIndex = 0) {
+    function findEventGroup(e, grp) {
+      if (grp && Array.isArray(grp.events) && grp.events.length > 1) {
+        return grp;
+      }
+      if (!e) return null;
+
+      // Handle multi-room array space inside single record
+      if (Array.isArray(e.space) && e.space.length > 1) {
+        const subEvs = e.space.map((sp, idx) => Object.assign({}, e, {
+          id: idx === 0 ? e.id : (e.id + '__space_' + idx),
+          space: sp,
+          _subIndex: idx
+        }));
+        return {
+          isGroup: true,
+          groupId: e.groupId || ('multi-' + e.id),
+          date: e.date,
+          name: e.name,
+          events: subEvs
+        };
+      }
+
+      // Check siblings in store sharing groupId, artifaxId, or matching (name, date)
+      const all = store.all('advancing').filter(x => !x.deleted);
+      let matches = [];
+      if (e.groupId) {
+        matches = all.filter(x => x.groupId === e.groupId);
+      } else if (e.artifaxId && e.name && e.name !== 'Untitled') {
+        matches = all.filter(x => x.artifaxId === e.artifaxId || (x.name && x.name.toLowerCase().trim() === e.name.toLowerCase().trim() && x.date === e.date));
+      } else if (e.name && e.name.trim() && e.name !== 'Untitled' && e.date) {
+        matches = all.filter(x => x.name && x.name.toLowerCase().trim() === e.name.toLowerCase().trim() && x.date === e.date);
+      }
+
+      const uniqueBySpace = [];
+      const seen = new Set();
+      matches.forEach(m => {
+        const sp = Array.isArray(m.space) ? m.space[0] : m.space;
+        if (sp && !seen.has(sp)) {
+          seen.add(sp);
+          uniqueBySpace.push(m);
+        }
+      });
+
+      if (uniqueBySpace.length > 1) {
+        const spaceOrder = {
+          'The Stage': 1, 'The Studio': 2, 'The Mix': 3, 
+          'Screen One': 4, 'Screen Two': 5, 'Screen Three': 6
+        };
+        uniqueBySpace.sort((a, b) => {
+          const sa = a.space || '';
+          const sb = b.space || '';
+          const wa = spaceOrder[sa] || 99;
+          const wb = spaceOrder[sb] || 99;
+          return wa !== wb ? wa - wb : sa.localeCompare(sb);
+        });
+        return {
+          isGroup: true,
+          groupId: e.groupId || ('implicit-' + (e.name || '').toLowerCase().trim().replace(/[^a-z0-9]/g, '-') + '-' + e.date),
+          date: e.date,
+          name: e.name,
+          events: uniqueBySpace
+        };
+      }
+      return null;
+    }
+
+    function createDraftFromEvent(e) {
+      const tList = RMTP.eventTechnicians(e).map((t) => ({ 
+        userId: t.userId || '', 
+        role: t.role || '',
+        isFreelancer: !!t.isFreelancer,
+        isNoTech: !!t.isNoTech,
+        freelancerName: t.freelancerName || '',
+        startTime: t.startTime || '',
+        finishTime: t.finishTime || ''
+      }));
+      const sItems = (Array.isArray(e.schedule_items) ? e.schedule_items : (Array.isArray(e.scheduleItems) ? e.scheduleItems : []))
+        .map((it) => {
+          const item = Object.assign({}, it);
+          if (!item.techReqType) {
+            if (item.channelInputs && item.channelInputs.length) item.techReqType = 'channels';
+            else if (item.techFile) item.techReqType = 'file';
+            else if (item.techNotes && item.techNotes.trim()) item.techReqType = 'text';
+            else item.techReqType = 'none';
+          }
+          if (!Array.isArray(item.channelInputs)) item.channelInputs = [];
+          if (!Array.isArray(item.channelOutputs)) item.channelOutputs = [];
+          if (typeof item.techNotes !== 'string') item.techNotes = '';
+          return item;
+        });
+      const eqBookings = (Array.isArray(e.equipment_bookings) ? e.equipment_bookings : (Array.isArray(e.equipmentBookings) ? e.equipmentBookings : []))
+        .map((b) => Object.assign({}, b, {
+          id: b.id || store.uid('bkg'),
+          qty: b.qty || 1,
+          override: !!b.override,
+          overrideReason: b.overrideReason || ''
+        }));
+      const tr = e.tech_requirements || e.techRequirements || {};
+      const chIn = (tr.channel_list && Array.isArray(tr.channel_list.inputs)) ? JSON.parse(JSON.stringify(tr.channel_list.inputs)) : [];
+      const chOut = (tr.channel_list && Array.isArray(tr.channel_list.outputs)) ? JSON.parse(JSON.stringify(tr.channel_list.outputs)) : [];
+      const lm = Array.isArray(e.linked_maintenance_ids || e.linkedMaintenanceIds) ? (e.linked_maintenance_ids || e.linkedMaintenanceIds).slice() : (e._preselectedFaultId ? [e._preselectedFaultId] : []);
+      const prod = getProductionPackage(e);
+
+      return {
+        id: e.id,
+        groupId: e.groupId || null,
+        isDirty: false,
+        rawEvent: e,
+        space: Array.isArray(e.space) ? e.space[0] : (e.space || ''),
+        name: e.name || '',
+        status: e.status || 'Advancing',
+        category: e.category || '',
+        responsibleLead: RMTP.getAdvancingLeadId(e) || '',
+        date: e.date || '',
+        clientContact: e.clientContact || '',
+        startTime: e.startTime || '',
+        finishTime: e.finishTime || '',
+        load_in: e.load_in || e.loadIn || '',
+        soundcheck: e.soundcheck || '',
+        doors: e.doors || '',
+        off_stage: e.off_stage || e.offStage || '',
+        curfew: e.curfew || '',
+        load_out: e.load_out || e.loadOut || '',
+        screening_starts: e.screening_starts_time || e.screeningStartsTime || '',
+        film_duration: e.film_duration || e.filmDuration || '',
+        media_type: e.media_type || e.mediaType || '',
+        dcp_received: (e.dcp_received !== undefined ? e.dcp_received : e.dcpReceived) || false,
+        checks_completed: (e.checks_completed !== undefined ? e.checks_completed : e.checksCompleted) || false,
+        intermission: !!e.intermission,
+        qa: !!e.qa,
+        dcp_tester_user_id: e.dcp_tester_user_id || e.dcpTesterUserId || '',
+        dcp_test_datetime: e.dcp_test_datetime || e.dcpTestDatetime || '',
+        gen_dcp_shift: !!e.dcp_test_event_id,
+        dcp_test_event_id: e.dcp_test_event_id || null,
+        techInfo: e.techInfo || '',
+        guestEngineer: !!e.guestEngineer,
+        email_recipients: Array.isArray(e.email_recipients || e.emailRecipients) ? (e.email_recipients || e.emailRecipients).join(', ') : (e.email_recipients || e.emailRecipients || ''),
+        specMeta: e.techSpec || null,
+        pending: null,
+        cleared: false,
+        lighting_notes: prod.lighting_notes || '',
+        floor_package: prod.floor_package || '',
+        floor_tags: prod.floor_tags ? prod.floor_tags.slice() : [],
+        specials: Object.assign({}, prod.specials),
+        special_notes: prod.special_notes || '',
+        techs: tList,
+        scheduleItems: sItems,
+        channelInputs: chIn,
+        channelOutputs: chOut,
+        linkedMaintIds: lm,
+        equipmentBookings: eqBookings,
+        checklist: e.checklist || null
+      };
+    }
+
+    let activeGroup = findEventGroup(existing, group);
+    let spaceDrafts = [];
+    let activeSpaceIndex = 0;
+
+    if (activeGroup && Array.isArray(activeGroup.events) && activeGroup.events.length > 1) {
+      spaceDrafts = activeGroup.events.map(createDraftFromEvent);
+      if (typeof initialSpaceIndex === 'number' && initialSpaceIndex >= 0 && initialSpaceIndex < spaceDrafts.length) {
+        activeSpaceIndex = initialSpaceIndex;
+      } else if (existing && existing.space) {
+        const found = spaceDrafts.findIndex(d => d.space === (Array.isArray(existing.space) ? existing.space[0] : existing.space));
+        activeSpaceIndex = found !== -1 ? found : 0;
+      }
+    } else {
+      spaceDrafts = [createDraftFromEvent(existing || {})];
+      activeSpaceIndex = 0;
+    }
+
+    let ev = spaceDrafts[activeSpaceIndex].rawEvent || existing || {};
     const opt = (arr, val) => arr.map((v) => '<option ' + (v === val ? 'selected' : '') + '>' + v + '</option>').join('');
     const blankOpt = (arr, val, blank) => '<option value="" ' + (!val ? 'selected' : '') + '>' + blank + '</option>' +
       arr.map((v) => '<option ' + (v === val ? 'selected' : '') + '>' + v + '</option>').join('');
 
-    let techs = RMTP.eventTechnicians(ev).map((t) => ({ 
-      userId: t.userId || '', 
-      role: t.role || '',
-      isFreelancer: !!t.isFreelancer,
-      isNoTech: !!t.isNoTech,
-      freelancerName: t.freelancerName || '',
-      startTime: t.startTime || '',
-      finishTime: t.finishTime || ''
-    }));
-
-    // Dynamic schedule items for Live spaces: [{ type, label, customName, time, duration, techReqType, techNotes, techFile, channelInputs, channelOutputs }]
-    let scheduleItems = (Array.isArray(ev.schedule_items) ? ev.schedule_items : (Array.isArray(ev.scheduleItems) ? ev.scheduleItems : []))
-      .map((it) => {
-        const item = Object.assign({}, it);
-        if (!item.techReqType) {
-          if (item.channelInputs && item.channelInputs.length) item.techReqType = 'channels';
-          else if (item.techFile) item.techReqType = 'file';
-          else if (item.techNotes && item.techNotes.trim()) item.techReqType = 'text';
-          else item.techReqType = 'none';
-        }
-        if (!Array.isArray(item.channelInputs)) item.channelInputs = [];
-        if (!Array.isArray(item.channelOutputs)) item.channelOutputs = [];
-        if (typeof item.techNotes !== 'string') item.techNotes = '';
-        return item;
-      });
-
-    const originalSpec = ev.techSpec || null;
+    let techs = JSON.parse(JSON.stringify(spaceDrafts[activeSpaceIndex].techs || []));
+    let scheduleItems = JSON.parse(JSON.stringify(spaceDrafts[activeSpaceIndex].scheduleItems || []));
+    const originalSpec = spaceDrafts[activeSpaceIndex].specMeta || null;
     let specMeta = originalSpec;
     let pending = null;
     let cleared = false;
+    let equipmentBookings = JSON.parse(JSON.stringify(spaceDrafts[activeSpaceIndex].equipmentBookings || []));
+    let renderEquipmentBookingsUI = null;
 
-    let equipmentBookings = (Array.isArray(ev.equipment_bookings)
-      ? ev.equipment_bookings
-      : (Array.isArray(ev.equipmentBookings) ? ev.equipmentBookings : []))
-      .map((b) => Object.assign({}, b, {
-        id: b.id || store.uid('bkg'),
-        qty: b.qty || 1,
-        override: !!b.override,
-        overrideReason: b.overrideReason || ''
-      }));
-
-    const initialSpace = ev.space || '';
+    const initialSpace = spaceDrafts[activeSpaceIndex].space || ev.space || '';
     const hasSpaceInitial = Boolean(initialSpace);
     const isScreenInitial = hasSpaceInitial && isScreenSpace(initialSpace);
     const isLiveInitial = hasSpaceInitial && !isScreenInitial;
@@ -3774,18 +3943,12 @@ RMTP.views.advancing = function (el, params, query) {
     const OUTPUT_TYPE_PRESETS = ['IEM', 'Wedge', 'Record Matrix', 'Stream Feed', 'Lobby / Foyer', 'Delay', 'Other'];
 
     let techReqs = ev.tech_requirements || ev.techRequirements || {};
-    let channelInputs = (techReqs.channel_list && Array.isArray(techReqs.channel_list.inputs))
-      ? JSON.parse(JSON.stringify(techReqs.channel_list.inputs))
-      : [];
-    let channelOutputs = (techReqs.channel_list && Array.isArray(techReqs.channel_list.outputs))
-      ? JSON.parse(JSON.stringify(techReqs.channel_list.outputs))
-      : [];
-    let linkedMaintIds = Array.isArray(ev.linked_maintenance_ids || ev.linkedMaintenanceIds)
-      ? (ev.linked_maintenance_ids || ev.linkedMaintenanceIds).slice()
-      : (ev._preselectedFaultId ? [ev._preselectedFaultId] : []);
+    let channelInputs = JSON.parse(JSON.stringify(spaceDrafts[activeSpaceIndex].channelInputs || []));
+    let channelOutputs = JSON.parse(JSON.stringify(spaceDrafts[activeSpaceIndex].channelOutputs || []));
+    let linkedMaintIds = (spaceDrafts[activeSpaceIndex].linkedMaintIds || []).slice();
 
     let patchOptions = [];
-    const venue = store.all('venues').find(vv => vv.name === ev.space);
+    const venue = store.all('venues').find(vv => vv.name === (spaceDrafts[activeSpaceIndex].space || ev.space));
     if (venue && venue.audio) {
       if (venue.audio.localInputChannels) {
         for(let i=1; i<=venue.audio.localInputChannels; i++) patchOptions.push('Local ' + i);
@@ -3804,7 +3967,7 @@ RMTP.views.advancing = function (el, params, query) {
       return pos === 'Technical Manager' || pos === 'Senior Tech' || (auth.AUTO_ADMIN_POSITIONS && auth.AUTO_ADMIN_POSITIONS.includes(pos)) || u.admin;
     });
     const eligibleLeads = leadCandidates.length ? leadCandidates : allUsers;
-    const currentLeadId = RMTP.getAdvancingLeadId(ev) || '';
+    const currentLeadId = spaceDrafts[activeSpaceIndex].responsibleLead || RMTP.getAdvancingLeadId(ev) || '';
 
     const leadOptionsHtml = (selectedId) =>
       '<option value="">Select responsible lead\u2026</option>' +
@@ -3818,15 +3981,30 @@ RMTP.views.advancing = function (el, params, query) {
     const openFaults = allMaintenance.filter((f) => f.status !== 'Resolved' || linkedMaintIds.indexOf(f.id) !== -1);
 
     const prodInitial = getProductionPackage(ev);
-    let floorTags = prodInitial.floor_tags ? prodInitial.floor_tags.slice() : [];
+    let floorTags = (spaceDrafts[activeSpaceIndex].floor_tags || prodInitial.floor_tags || []).slice();
 
     const artifaxHistoryHtml = renderArtifaxHistorySection(ev, true);
 
     const m = ui.modal({
-      title: existing ? 'Edit Technical Advance' : 'Create Technical Advance',
-      size: 'md:max-w-3xl',
+      title: existing ? (spaceDrafts.length > 1 ? 'Edit Multi-Room Technical Advance' : 'Edit Technical Advance') : 'Create Technical Advance',
+      size: 'md:max-w-4xl',
       body:
         '<div class="grid gap-4">' +
+          /* ================= MULTI-ROOM SPACE TABS BAR ================= */
+          '<div id="editor-space-tabs-bar" class="p-3 bg-panel2/60 border border-line rounded-xl ' + (spaceDrafts.length > 1 ? '' : 'hidden') + '">' +
+            '<div class="flex items-center justify-between gap-2 flex-wrap mb-2">' +
+              '<div class="flex items-center gap-1.5">' +
+                '<span class="text-[11px] font-bold text-accent uppercase tracking-wider flex items-center gap-1.5">' +
+                  ui.icon('grid', 'w-3.5 h-3.5') + '<span>Multi-Room Event Spaces</span>' +
+                '</span>' +
+                '<span class="text-[10px] text-muted font-medium hidden sm:inline">\u00b7 Tab between spaces to configure technical riders</span>' +
+              '</div>' +
+              '<button type="button" id="btn-add-space-to-event" class="btn btn-ghost !py-1 !px-2.5 text-xs text-accent font-semibold flex items-center gap-1 shrink-0 border border-line/60 bg-panel hover:bg-panel2 cursor-pointer">' +
+                ui.icon('plus', 'w-3.5 h-3.5') + '<span>Add Space</span>' +
+              '</button>' +
+            '</div>' +
+            '<div class="flex items-center gap-1.5 overflow-x-auto hide-scrollbar pb-0.5" id="space-tabs-container"></div>' +
+          '</div>' +
           /* ================= CORE EVENT INFO (ALWAYS VISIBLE AT TOP) ================= */
           '<div class="panel p-4 bg-panel border border-line rounded-xl grid gap-4 shadow-xs">' +
             '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
@@ -4377,8 +4555,22 @@ RMTP.views.advancing = function (el, params, query) {
           '</div>' +
         '</div>',
       footer:
-        '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
-        '<button class="btn btn-primary" data-save data-primary>' + (existing ? 'Save changes' : 'Add event') + '</button>',
+        '<div class="flex items-center justify-between w-full gap-2 flex-wrap">' +
+          '<div class="flex items-center gap-2">' +
+            '<button type="button" id="btn-remove-active-space" class="' + (spaceDrafts.length > 1 ? '' : 'hidden') + ' btn btn-ghost !py-1.5 !px-2.5 text-xs text-danger hover:bg-danger/10 flex items-center gap-1 cursor-pointer border border-danger/30 rounded-lg">' +
+              ui.icon('trash', 'w-3.5 h-3.5') + '<span>Remove Space</span>' +
+            '</button>' +
+          '</div>' +
+          '<div class="flex items-center gap-2">' +
+            '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
+            (spaceDrafts.length > 1 ? (
+              '<button type="button" class="btn btn-secondary text-xs font-semibold" id="btn-save-current-space">Save Current Space</button>' +
+              '<button type="button" class="btn btn-primary text-xs font-semibold" id="btn-save-all-spaces" data-primary>Save All Spaces (' + spaceDrafts.length + ')</button>'
+            ) : (
+              '<button class="btn btn-primary" data-save data-primary>' + (existing ? 'Save changes' : 'Add event') + '</button>'
+            )) +
+          '</div>' +
+        '</div>',
     });
 
     // Section Banners & Accordion Controls
@@ -4948,7 +5140,7 @@ RMTP.views.advancing = function (el, params, query) {
         });
       }
 
-      function renderEquipmentBookingsUI() {
+      renderEquipmentBookingsUI = function () {
         ['#allocated-kit-list', '#cinema-allocated-kit-list'].forEach((listSel) => {
           const listEl = m.root.querySelector(listSel);
           if (!listEl) return;
@@ -6497,47 +6689,173 @@ RMTP.views.advancing = function (el, params, query) {
     });
 
     m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
-    m.root.querySelector('[data-save]').addEventListener('click', () => {
-      const name = m.root.querySelector('#e-name').value.trim();
-      if (!name) { ui.toast('Give the event a name', 'danger'); return; }
 
-      // Validate equipment allocations for double-booking conflict and manual override
-      for (const b of equipmentBookings) {
-        const c = RMTP.equipmentBookings ? RMTP.equipmentBookings.checkConflict(b, ev.id, b.id) : { hasConflict: false };
-        if (c.hasConflict && !b.override) {
-          ui.toast('Cannot save event: conflict on "' + (b.itemName || 'equipment') + '". Please override with explanation or remove allocation.', 'danger');
-          const sec4 = m.root.querySelector('#sec-4-content');
-          if (sec4 && sec4.classList.contains('hidden')) {
-            const btn4 = m.root.querySelector('[data-section-toggle="sec-4-content"]');
-            if (btn4) btn4.click();
-          }
-          return;
+    function scrapeCurrentFormToDraft(idx) {
+      if (idx < 0 || idx >= spaceDrafts.length) return;
+      const draft = spaceDrafts[idx];
+      const qVal = (id) => { const el = m.root.querySelector(id); return el ? el.value : ''; };
+      const qChk = (id) => { const el = m.root.querySelector(id); return el ? el.checked : false; };
+
+      const curSpace = (spaceSelect && spaceSelect.value) ? spaceSelect.value.trim() : draft.space;
+      const isScreen = isScreenSpace(curSpace);
+
+      draft.name = qVal('#e-name').trim() || draft.name;
+      draft.status = qVal('#e-status') || draft.status;
+      draft.category = qVal('#e-category') || draft.category;
+      draft.responsibleLead = qVal('#e-responsible-lead') || draft.responsibleLead;
+      draft.date = qVal('#e-date') || draft.date;
+      draft.space = curSpace;
+      draft.startTime = qVal('#e-start');
+      draft.finishTime = qVal('#e-finish');
+
+      draft.load_in = qVal('#e-load-in');
+      draft.soundcheck = qVal('#e-sc');
+      draft.doors = qVal('#e-doors');
+      draft.off_stage = qVal('#e-off-stage');
+      draft.curfew = qVal('#e-curfew');
+      draft.load_out = qVal('#e-load-out');
+
+      draft.screening_starts = qVal('#e-screening-starts');
+      draft.film_duration = qVal('#e-film-duration');
+      draft.media_type = qVal('#e-media-type');
+      draft.dcp_received = qChk('#e-dcp');
+      draft.checks_completed = qChk('#e-checks');
+      draft.intermission = qChk('#e-intermission');
+      draft.qa = qChk('#e-qa');
+      draft.dcp_tester_user_id = qVal('#e-dcp-tester');
+      draft.dcp_test_datetime = qVal('#e-dcp-test-datetime');
+      draft.gen_dcp_shift = qChk('#e-gen-dcp-shift');
+
+      draft.clientContact = (isScreen && m.root.querySelector('#e-cinema-contact') ? qVal('#e-cinema-contact') : qVal('#e-contact')).trim();
+      draft.techInfo = (isScreen && m.root.querySelector('#e-cinema-info') ? qVal('#e-cinema-info') : qVal('#e-info')).trim();
+      draft.guestEngineer = isScreen && m.root.querySelector('#e-cinema-guest') ? qChk('#e-cinema-guest') : qChk('#e-guest');
+      draft.email_recipients = (isScreen && m.root.querySelector('#e-cinema-email-recipients') ? qVal('#e-cinema-email-recipients') : qVal('#e-email-recipients')).trim();
+
+      draft.lighting_notes = qVal('#e-lighting-notes');
+      draft.floor_package = qVal('#e-floor-package');
+      draft.special_notes = qVal('#e-special-notes');
+      draft.floor_tags = floorTags ? floorTags.slice() : [];
+      draft.specials = {
+        hazer: qChk('#e-spec-hazer'),
+        lasers: qChk('#e-spec-lasers'),
+        heavy_power: qChk('#e-spec-power'),
+        video: qChk('#e-spec-video'),
+        pyro: qChk('#e-spec-pyro')
+      };
+
+      draft.techs = JSON.parse(JSON.stringify(techs));
+      draft.scheduleItems = JSON.parse(JSON.stringify(scheduleItems));
+      draft.channelInputs = JSON.parse(JSON.stringify(channelInputs));
+      draft.channelOutputs = JSON.parse(JSON.stringify(channelOutputs));
+      draft.linkedMaintIds = linkedMaintIds.slice();
+      draft.equipmentBookings = JSON.parse(JSON.stringify(equipmentBookings));
+      draft.specMeta = specMeta;
+      draft.pending = pending;
+      draft.cleared = cleared;
+
+      draft.isDirty = true;
+    }
+
+    function syncSharedFieldsAcrossDrafts(sourceDraft) {
+      spaceDrafts.forEach((d) => {
+        d.name = sourceDraft.name;
+        d.date = sourceDraft.date;
+        d.clientContact = sourceDraft.clientContact;
+        d.status = sourceDraft.status;
+        d.category = sourceDraft.category;
+        d.responsibleLead = sourceDraft.responsibleLead;
+      });
+    }
+
+    function loadDraftIntoForm(targetDraft) {
+      ev = targetDraft.rawEvent || ev;
+      const setVal = (id, val) => { const el = m.root.querySelector(id); if (el) el.value = val || ''; };
+      const setChk = (id, chk) => { const el = m.root.querySelector(id); if (el) el.checked = !!chk; };
+
+      setVal('#e-name', targetDraft.name);
+      setVal('#e-status', targetDraft.status);
+      setVal('#e-category', targetDraft.category);
+      setVal('#e-responsible-lead', targetDraft.responsibleLead);
+      setVal('#e-date', targetDraft.date);
+      setVal('#e-space', targetDraft.space);
+      setVal('#e-start', targetDraft.startTime);
+      setVal('#e-finish', targetDraft.finishTime);
+
+      setVal('#e-load-in', targetDraft.load_in);
+      setVal('#e-sc', targetDraft.soundcheck);
+      setVal('#e-doors', targetDraft.doors);
+      setVal('#e-off-stage', targetDraft.off_stage);
+      setVal('#e-curfew', targetDraft.curfew);
+      setVal('#e-load-out', targetDraft.load_out);
+
+      setVal('#e-screening-starts', targetDraft.screening_starts);
+      setVal('#e-film-duration', targetDraft.film_duration);
+      setVal('#e-media-type', targetDraft.media_type);
+      setChk('#e-dcp', targetDraft.dcp_received);
+      setChk('#e-checks', targetDraft.checks_completed);
+      setChk('#e-intermission', targetDraft.intermission);
+      setChk('#e-qa', targetDraft.qa);
+      setVal('#e-dcp-tester', targetDraft.dcp_tester_user_id);
+      setVal('#e-dcp-test-datetime', targetDraft.dcp_test_datetime);
+      setChk('#e-gen-dcp-shift', targetDraft.gen_dcp_shift);
+
+      setVal('#e-contact', targetDraft.clientContact);
+      setVal('#e-cinema-contact', targetDraft.clientContact);
+      setVal('#e-info', targetDraft.techInfo);
+      setVal('#e-cinema-info', targetDraft.techInfo);
+      setChk('#e-guest', targetDraft.guestEngineer);
+      setChk('#e-cinema-guest', targetDraft.guestEngineer);
+      setVal('#e-email-recipients', targetDraft.email_recipients);
+      setVal('#e-cinema-email-recipients', targetDraft.email_recipients);
+
+      setVal('#e-lighting-notes', targetDraft.lighting_notes);
+      setVal('#e-floor-package', targetDraft.floor_package);
+      setVal('#e-special-notes', targetDraft.special_notes);
+      floorTags = targetDraft.floor_tags ? targetDraft.floor_tags.slice() : [];
+      const sp = targetDraft.specials || {};
+      setChk('#e-spec-hazer', sp.hazer);
+      setChk('#e-spec-lasers', sp.lasers);
+      setChk('#e-spec-power', sp.heavy_power);
+      setChk('#e-spec-video', sp.video);
+      setChk('#e-spec-pyro', sp.pyro);
+
+      techs = JSON.parse(JSON.stringify(targetDraft.techs || []));
+      scheduleItems = JSON.parse(JSON.stringify(targetDraft.scheduleItems || []));
+      channelInputs = JSON.parse(JSON.stringify(targetDraft.channelInputs || []));
+      channelOutputs = JSON.parse(JSON.stringify(targetDraft.channelOutputs || []));
+      linkedMaintIds = (targetDraft.linkedMaintIds || []).slice();
+      equipmentBookings = JSON.parse(JSON.stringify(targetDraft.equipmentBookings || []));
+      specMeta = targetDraft.specMeta || null;
+      pending = targetDraft.pending || null;
+      cleared = targetDraft.cleared || false;
+
+      wireTechs();
+      renderScheduleBuilder();
+      renderChannelInputs();
+      renderChannelOutputs();
+      renderMaintenancePicker();
+      if (typeof renderEquipmentBookingsUI === 'function') renderEquipmentBookingsUI();
+      wireSpec();
+      wireFloorTags();
+      updateProductionSpecialsIndicator();
+      updateSpaceWorkflow();
+      updateSectionBannerPills();
+    }
+
+    function buildRecordFromDraft(draft) {
+      let finalSpec = draft.specMeta;
+      if (draft.pending) {
+        try {
+          finalSpec = files.persist(draft.pending);
+        } catch (e) {
+          ui.toast('Couldn\u2019t store PDF', 'danger');
         }
-        if (c.hasConflict && b.override && (!b.overrideReason || !b.overrideReason.trim())) {
-          ui.toast('Please provide an explanation for overriding double-booking of "' + (b.itemName || 'kit') + '"', 'danger');
-          const sec4 = m.root.querySelector('#sec-4-content');
-          if (sec4 && sec4.classList.contains('hidden')) {
-            const btn4 = m.root.querySelector('[data-section-toggle="sec-4-content"]');
-            if (btn4) btn4.click();
-          }
-          return;
-        }
+      } else if (draft.cleared && draft.specMeta) {
+        files.remove(draft.specMeta);
+        finalSpec = null;
       }
 
-      const finalTechs = techs.filter((t) => t.userId || (t.isFreelancer && t.freelancerName.trim()) || t.isNoTech);
-      if (finalTechs.some((t) => !t.isNoTech && !t.role)) { ui.toast('Pick a role for each tagged technician', 'danger'); return; }
-
-      let finalSpec = cleared ? null : specMeta;
-      if (pending) {
-        try { finalSpec = files.persist(pending); }
-        catch (e) { ui.toast('Couldn\u2019t store file — storage may be full', 'danger'); return; }
-        if (originalSpec) files.remove(originalSpec);
-      } else if (cleared && originalSpec) {
-        files.remove(originalSpec);
-      }
-
-      // Persist any pending per-act rider files
-      const processedScheduleItems = scheduleItems.map((it) => {
+      const processedScheduleItems = (draft.scheduleItems || []).map((it) => {
         const itemCopy = Object.assign({}, it);
         if (itemCopy.pendingFile) {
           try {
@@ -6555,102 +6873,81 @@ RMTP.views.advancing = function (el, params, query) {
         return itemCopy;
       });
 
-      const chosenSpace = m.root.querySelector('#e-space').value;
-      const isScreen = isScreenSpace(chosenSpace);
-      const responsibleLead = m.root.querySelector('#e-responsible-lead') ? m.root.querySelector('#e-responsible-lead').value.trim() : (ev.responsible_for_advancing || ev.responsible_for_advancing_user_id || '');
-      const dcpTesterId = isScreen && m.root.querySelector('#e-dcp-tester') ? m.root.querySelector('#e-dcp-tester').value : (ev.dcp_tester_user_id || ev.dcpTesterUserId || '');
-      const dcpTestDatetime = isScreen && m.root.querySelector('#e-dcp-test-datetime') ? m.root.querySelector('#e-dcp-test-datetime').value : (ev.dcp_test_datetime || ev.dcpTestDatetime || '');
+      const isScreen = isScreenSpace(draft.space);
+      const finalTechs = (draft.techs || []).map((t) => {
+        if (t.isNoTech) return { role: 'None', isNoTech: true, userId: '' };
+        if (t.isFreelancer) return { role: t.role || 'General', isFreelancer: true, freelancerName: (t.freelancerName || '').trim(), startTime: t.startTime || '', finishTime: t.finishTime || '' };
+        return { userId: t.userId || '', role: t.role || 'General', startTime: t.startTime || '', finishTime: t.finishTime || '' };
+      });
 
-      const lightingNotes = m.root.querySelector('#e-lighting-notes') ? m.root.querySelector('#e-lighting-notes').value.trim() : (prodInitial.lighting_notes || '');
-      const floorPackage = m.root.querySelector('#e-floor-package') ? m.root.querySelector('#e-floor-package').value.trim() : (prodInitial.floor_package || '');
-      const specialNotes = m.root.querySelector('#e-special-notes') ? m.root.querySelector('#e-special-notes').value.trim() : (prodInitial.special_notes || '');
-      const specialsObj = {
-        hazer: m.root.querySelector('#e-spec-hazer') ? m.root.querySelector('#e-spec-hazer').checked : (prodInitial.specials.hazer || false),
-        lasers: m.root.querySelector('#e-spec-lasers') ? m.root.querySelector('#e-spec-lasers').checked : (prodInitial.specials.lasers || false),
-        heavy_power: m.root.querySelector('#e-spec-power') ? m.root.querySelector('#e-spec-power').checked : (prodInitial.specials.heavy_power || false),
-        video: m.root.querySelector('#e-spec-video') ? m.root.querySelector('#e-spec-video').checked : (prodInitial.specials.video || false),
-        pyro: m.root.querySelector('#e-spec-pyro') ? m.root.querySelector('#e-spec-pyro').checked : (prodInitial.specials.pyro || false),
-      };
-
-      const record = Object.assign({}, ev, {
-        id: ev.id || store.uid('evt'),
-        name: name,
-        category: m.root.querySelector('#e-category').value,
-        space: chosenSpace,
-        date: m.root.querySelector('#e-date').value,
-        status: m.root.querySelector('#e-status').value,
-        responsible_for_advancing: responsibleLead,
-        responsible_for_advancing_user_id: responsibleLead,
-        startTime: m.root.querySelector('#e-start').value,
-        finishTime: m.root.querySelector('#e-finish').value,
+      const raw = draft.rawEvent || {};
+      const record = Object.assign({}, raw, {
+        id: draft.id || raw.id || store.uid('evt'),
+        groupId: draft.groupId || raw.groupId || null,
+        name: (draft.name || '').trim(),
+        category: draft.category || raw.category || '',
+        space: draft.space,
+        date: draft.date || '',
+        status: draft.status || 'Advancing',
+        responsible_for_advancing: draft.responsibleLead || '',
+        responsible_for_advancing_user_id: draft.responsibleLead || '',
+        startTime: draft.startTime || '',
+        finishTime: draft.finishTime || '',
 
         // Live space timings
-        load_in: !isScreen && m.root.querySelector('#e-load-in') ? m.root.querySelector('#e-load-in').value : (ev.load_in || ev.loadIn || ''),
-        soundcheck: !isScreen && m.root.querySelector('#e-sc') ? m.root.querySelector('#e-sc').value : (ev.soundcheck || ''),
-        doors: !isScreen && m.root.querySelector('#e-doors') ? m.root.querySelector('#e-doors').value : (ev.doors || ''),
-        off_stage: !isScreen && m.root.querySelector('#e-off-stage') ? m.root.querySelector('#e-off-stage').value : (ev.off_stage || ev.offStage || ''),
-        curfew: !isScreen && m.root.querySelector('#e-curfew') ? m.root.querySelector('#e-curfew').value : (ev.curfew || ''),
-        load_out: !isScreen && m.root.querySelector('#e-load-out') ? m.root.querySelector('#e-load-out').value : (ev.load_out || ev.loadOut || ''),
-        schedule_items: !isScreen ? processedScheduleItems : (ev.schedule_items || ev.scheduleItems || []),
+        load_in: !isScreen ? (draft.load_in || '') : '',
+        soundcheck: !isScreen ? (draft.soundcheck || '') : '',
+        doors: !isScreen ? (draft.doors || '') : '',
+        off_stage: !isScreen ? (draft.off_stage || '') : '',
+        curfew: !isScreen ? (draft.curfew || '') : '',
+        load_out: !isScreen ? (draft.load_out || '') : '',
+        schedule_items: !isScreen ? processedScheduleItems : (raw.schedule_items || []),
 
         // Cinema space timings & checks
-        screening_starts_time: isScreen && m.root.querySelector('#e-screening-starts') ? m.root.querySelector('#e-screening-starts').value : (ev.screening_starts_time || ev.screeningStartsTime || ''),
-        film_duration: isScreen && m.root.querySelector('#e-film-duration') ? m.root.querySelector('#e-film-duration').value.trim() : (ev.film_duration || ev.filmDuration || ''),
-        media_type: isScreen && m.root.querySelector('#e-media-type') ? m.root.querySelector('#e-media-type').value : (ev.media_type || ev.mediaType || ''),
-        dcp_received: isScreen && m.root.querySelector('#e-dcp') ? m.root.querySelector('#e-dcp').checked : (ev.dcp_received !== undefined ? !!ev.dcp_received : !!ev.dcpReceived),
-        checks_completed: isScreen && m.root.querySelector('#e-checks') ? m.root.querySelector('#e-checks').checked : (ev.checks_completed !== undefined ? !!ev.checks_completed : !!ev.checksCompleted),
-        intermission: isScreen && m.root.querySelector('#e-intermission') ? m.root.querySelector('#e-intermission').checked : !!ev.intermission,
-        qa: isScreen && m.root.querySelector('#e-qa') ? m.root.querySelector('#e-qa').checked : !!ev.qa,
-        dcp_tester_user_id: dcpTesterId,
-        dcp_test_datetime: dcpTestDatetime,
+        screening_starts_time: isScreen ? (draft.screening_starts || '') : '',
+        film_duration: isScreen ? (draft.film_duration || '').trim() : '',
+        media_type: isScreen ? (draft.media_type || '') : '',
+        dcp_received: isScreen ? !!draft.dcp_received : false,
+        checks_completed: isScreen ? !!draft.checks_completed : false,
+        intermission: isScreen ? !!draft.intermission : false,
+        qa: isScreen ? !!draft.qa : false,
+        dcp_tester_user_id: isScreen ? (draft.dcp_tester_user_id || '') : '',
+        dcp_test_datetime: isScreen ? (draft.dcp_test_datetime || '') : '',
 
         // Lighting & Production Package
         production_package: {
-          lighting_notes: lightingNotes,
-          floor_package: floorPackage,
-          floor_tags: floorTags,
-          specials: specialsObj,
-          special_notes: specialNotes,
+          lighting_notes: draft.lighting_notes || '',
+          floor_package: draft.floor_package || '',
+          floor_tags: draft.floor_tags || [],
+          specials: draft.specials || {},
+          special_notes: draft.special_notes || ''
         },
 
         tech_requirements: {
           channel_list: {
-            inputs: channelInputs,
-            outputs: channelOutputs
+            inputs: draft.channelInputs || [],
+            outputs: draft.channelOutputs || []
           }
         },
-        linked_maintenance_ids: linkedMaintIds,
-        equipment_bookings: equipmentBookings,
-        equipmentBookings: equipmentBookings,
+        linked_maintenance_ids: draft.linkedMaintIds || [],
+        equipment_bookings: draft.equipmentBookings || [],
+        equipmentBookings: draft.equipmentBookings || [],
 
         technicians: finalTechs,
-        clientContact: (isScreen && m.root.querySelector('#e-cinema-contact')
-          ? m.root.querySelector('#e-cinema-contact').value
-          : (m.root.querySelector('#e-contact') ? m.root.querySelector('#e-contact').value : (ev.clientContact || ''))
-        ).trim(),
-        guestEngineer: isScreen && m.root.querySelector('#e-cinema-guest')
-          ? m.root.querySelector('#e-cinema-guest').checked
-          : (m.root.querySelector('#e-guest') ? m.root.querySelector('#e-guest').checked : (ev.guestEngineer || false)),
-        techInfo: (isScreen && m.root.querySelector('#e-cinema-info')
-          ? m.root.querySelector('#e-cinema-info').value
-          : (m.root.querySelector('#e-info') ? m.root.querySelector('#e-info').value : (ev.techInfo || ''))
-        ).trim(),
-        email_recipients: (isScreen && m.root.querySelector('#e-cinema-email-recipients')
-          ? m.root.querySelector('#e-cinema-email-recipients').value
-          : (m.root.querySelector('#e-email-recipients') ? m.root.querySelector('#e-email-recipients').value : (ev.email_recipients || ev.emailRecipients || ''))
-        ).trim(),
+        clientContact: (draft.clientContact || '').trim(),
+        guestEngineer: !!draft.guestEngineer,
+        techInfo: (draft.techInfo || '').trim(),
+        email_recipients: (draft.email_recipients || '').trim(),
         techSpec: finalSpec,
-        checklist: ev.checklist || { techSpecSent: false, inputListReceived: false, stagePlot: false, schedule: false, backline: false, hospitality: false, parkingAccess: false },
+        checklist: raw.checklist || { techSpecSent: false, inputListReceived: false, stagePlot: false, schedule: false, backline: false, hospitality: false, parkingAccess: false }
       });
 
-      // Automated DCP Test Shift generation
-      const genDcpCheck = m.root.querySelector('#e-gen-dcp-shift');
-      const shouldGenDcp = isScreen && genDcpCheck && genDcpCheck.checked && (dcpTestDatetime || record.date);
-
-      let linkedDcpId = ev.dcp_test_event_id || null;
+      // Automated DCP Test Shift generation if requested
+      const shouldGenDcp = isScreen && draft.gen_dcp_shift && (draft.dcp_test_datetime || record.date);
+      let linkedDcpId = draft.dcp_test_event_id || raw.dcp_test_event_id || null;
       if (shouldGenDcp) {
-        const dcpDate = dcpTestDatetime ? dcpTestDatetime.slice(0, 10) : record.date;
-        const dcpTime = (dcpTestDatetime && dcpTestDatetime.length >= 16) ? dcpTestDatetime.slice(11, 16) : '10:00';
+        const dcpDate = draft.dcp_test_datetime ? draft.dcp_test_datetime.slice(0, 10) : record.date;
+        const dcpTime = (draft.dcp_test_datetime && draft.dcp_test_datetime.length >= 16) ? draft.dcp_test_datetime.slice(11, 16) : '10:00';
         let finishTime = '11:00';
         if (dcpTime && dcpTime.indexOf(':') > -1) {
           const [hh, mm] = dcpTime.split(':').map(Number);
@@ -6660,16 +6957,16 @@ RMTP.views.advancing = function (el, params, query) {
 
         const dcpShift = {
           id: linkedDcpId || store.uid('evt'),
-          name: 'DCP Test: ' + name,
+          name: 'DCP Test: ' + record.name,
           category: 'Cinema',
-          space: chosenSpace,
+          space: draft.space,
           date: dcpDate,
           startTime: dcpTime,
           finishTime: finishTime,
           status: 'Confirmed',
-          technicians: dcpTesterId ? [{ userId: dcpTesterId, role: 'Cinema' }] : [],
+          technicians: draft.dcp_tester_user_id ? [{ userId: draft.dcp_tester_user_id, role: 'Cinema' }] : [],
           dcp_parent_event_id: record.id,
-          techInfo: 'Automated DCP Test Shift for screening: ' + name + (dcpTestDatetime ? ' scheduled at ' + dcpTestDatetime : ''),
+          techInfo: 'Automated DCP Test Shift for screening: ' + record.name + (draft.dcp_test_datetime ? ' scheduled at ' + draft.dcp_test_datetime : ''),
           checklist: { techSpecSent: false, inputListReceived: false, stagePlot: false, schedule: false, backline: false, hospitality: false, parkingAccess: false },
           dcp_received: true,
           checks_completed: false
@@ -6679,17 +6976,10 @@ RMTP.views.advancing = function (el, params, query) {
       }
       record.dcp_test_event_id = linkedDcpId;
 
-      if (chosenSpace === 'Multi Room' || Array.isArray(record.space)) {
-        const checkedSpaces = Array.from(m.root.querySelectorAll('input[name="e-multi-spaces"]:checked')).map(cb => cb.value);
-        if (checkedSpaces.length === 0) {
-          ui.toast('Please select at least one space for Multi Room', 'danger');
-          return;
-        }
-        record.space = checkedSpaces;
-      }
-      store.upsert('advancing', record);
+      return { record, processedScheduleItems };
+    }
 
-      // Bi-directional Sync: Keep linked Patch Sheet updated with Advancing schedule artists
+    function syncPatchSheetForRecord(record, processedScheduleItems) {
       if (RMTP.presets && typeof RMTP.presets.getAllPatchSheets === 'function' && typeof RMTP.presets.savePatchSheet === 'function') {
         try {
           const allSheets = RMTP.presets.getAllPatchSheets();
@@ -6726,14 +7016,276 @@ RMTP.views.advancing = function (el, params, query) {
           console.warn('Error syncing schedule acts to patch sheet:', e);
         }
       }
+    }
+
+    function updateFooterSaveButtons() {
+      const saveAllBtn = m.root.querySelector('#btn-save-all-spaces');
+      const saveCurBtn = m.root.querySelector('#btn-save-current-space');
+      const removeSpaceBtn = m.root.querySelector('#btn-remove-active-space');
+      const tabsBar = m.root.querySelector('#editor-space-tabs-bar');
+
+      if (tabsBar) {
+        tabsBar.classList.toggle('hidden', spaceDrafts.length <= 1);
+      }
+      if (saveAllBtn) {
+        saveAllBtn.textContent = 'Save All Spaces (' + spaceDrafts.length + ')';
+      }
+      if (saveCurBtn && spaceDrafts[activeSpaceIndex]) {
+        saveCurBtn.textContent = 'Save ' + (spaceDrafts[activeSpaceIndex].space || 'Current Space');
+      }
+      if (removeSpaceBtn) {
+        removeSpaceBtn.classList.toggle('hidden', spaceDrafts.length <= 1);
+      }
+    }
+
+    function renderSpaceTabs() {
+      const container = m.root.querySelector('#space-tabs-container');
+      if (!container) return;
+
+      container.innerHTML = spaceDrafts.map((d, idx) => {
+        const isActive = idx === activeSpaceIndex;
+        const isCinema = isScreenSpace(d.space);
+        return (
+          '<button type="button" data-space-tab="' + idx + '" class="px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer ' +
+            (isActive
+              ? 'bg-accent text-accent-ink border-accent shadow-2xs ring-2 ring-accent/30'
+              : 'bg-panel border-line text-muted hover:text-ink hover:border-line/80') + '">' +
+            ui.icon(isCinema ? 'film' : 'pin', 'w-3.5 h-3.5 ' + (isActive ? 'text-accent-ink' : 'text-accent')) +
+            '<span>' + ui.esc(d.space || ('Space ' + (idx + 1))) + '</span>' +
+            (d.isDirty ? '<span class="w-1.5 h-1.5 rounded-full bg-accent ring-1 ring-white/60 animate-pulse ml-0.5" title="Unsaved edits in this space"></span>' : '') +
+          '</button>'
+        );
+      }).join('');
+
+      container.querySelectorAll('[data-space-tab]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const targetIdx = +btn.getAttribute('data-space-tab');
+          if (targetIdx === activeSpaceIndex) return;
+
+          scrapeCurrentFormToDraft(activeSpaceIndex);
+          syncSharedFieldsAcrossDrafts(spaceDrafts[activeSpaceIndex]);
+          activeSpaceIndex = targetIdx;
+          loadDraftIntoForm(spaceDrafts[activeSpaceIndex]);
+          renderSpaceTabs();
+        });
+      });
+
+      updateFooterSaveButtons();
+    }
+
+    async function saveCurrentSpace() {
+      scrapeCurrentFormToDraft(activeSpaceIndex);
+      syncSharedFieldsAcrossDrafts(spaceDrafts[activeSpaceIndex]);
+
+      const draft = spaceDrafts[activeSpaceIndex];
+      if (!draft.name) {
+        ui.toast('Give the event a name', 'danger');
+        m.root.querySelector('#e-name')?.focus();
+        return;
+      }
+      if (!draft.space) {
+        ui.toast('Select a space for this event', 'danger');
+        m.root.querySelector('#e-space')?.focus();
+        return;
+      }
+
+      // Check equipment conflict
+      for (const b of draft.equipmentBookings || []) {
+        const c = RMTP.equipmentBookings ? RMTP.equipmentBookings.checkConflict(b, draft.id, b.id) : { hasConflict: false };
+        if (c.hasConflict && !b.override) {
+          ui.toast('Cannot save event: conflict on "' + (b.itemName || 'equipment') + '". Please override with explanation or remove allocation.', 'danger');
+          const sec4 = m.root.querySelector('#sec-4-content');
+          if (sec4 && sec4.classList.contains('hidden')) {
+            const btn4 = m.root.querySelector('[data-section-toggle="sec-4-content"]');
+            if (btn4) btn4.click();
+          }
+          return;
+        }
+      }
+
+      const sharedGroupId = (activeGroup && activeGroup.groupId) ||
+        draft.groupId ||
+        (spaceDrafts.length > 1 ? ('grp-' + store.uid('evt')) : null);
+      if (sharedGroupId) {
+        draft.groupId = sharedGroupId;
+        spaceDrafts.forEach(d => { if (!d.groupId) d.groupId = sharedGroupId; });
+      }
+
+      const { record, processedScheduleItems } = buildRecordFromDraft(draft);
+      store.upsert('advancing', record);
+      syncPatchSheetForRecord(record, processedScheduleItems);
+
+      draft.isDirty = false;
+      if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
+
+      ui.toast('Saved ' + (draft.space || 'current space'), 'ok');
+      renderSpaceTabs();
+    }
+
+    async function saveAllSpaces() {
+      scrapeCurrentFormToDraft(activeSpaceIndex);
+      syncSharedFieldsAcrossDrafts(spaceDrafts[activeSpaceIndex]);
+
+      const mainName = spaceDrafts[0].name;
+      if (!mainName) {
+        ui.toast('Give the event a name', 'danger');
+        m.root.querySelector('#e-name')?.focus();
+        return;
+      }
+      const mainDate = spaceDrafts[0].date;
+      if (!mainDate) {
+        ui.toast('Event date is required', 'danger');
+        m.root.querySelector('#e-date')?.focus();
+        return;
+      }
+
+      // Validate equipment allocations for each draft
+      for (let i = 0; i < spaceDrafts.length; i++) {
+        const d = spaceDrafts[i];
+        for (const b of d.equipmentBookings || []) {
+          const c = RMTP.equipmentBookings ? RMTP.equipmentBookings.checkConflict(b, d.id, b.id) : { hasConflict: false };
+          if (c.hasConflict && !b.override) {
+            ui.toast('Cannot save: conflict on "' + (b.itemName || 'equipment') + '" in ' + (d.space || 'space') + '. Please override or remove.', 'danger');
+            if (i !== activeSpaceIndex) {
+              activeSpaceIndex = i;
+              loadDraftIntoForm(spaceDrafts[activeSpaceIndex]);
+              renderSpaceTabs();
+            }
+            return;
+          }
+        }
+      }
+
+      const sharedGroupId = (activeGroup && activeGroup.groupId) ||
+        spaceDrafts.find(d => d.groupId)?.groupId ||
+        (spaceDrafts.length > 1 ? ('grp-' + store.uid('evt')) : null);
+
+      for (let i = 0; i < spaceDrafts.length; i++) {
+        const draft = spaceDrafts[i];
+        if (sharedGroupId) draft.groupId = sharedGroupId;
+        const { record, processedScheduleItems } = buildRecordFromDraft(draft);
+        store.upsert('advancing', record);
+        syncPatchSheetForRecord(record, processedScheduleItems);
+      }
+
+      if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
 
       m.close();
-      ui.toast(existing ? 'Event advance updated' : 'Event advance created', 'ok');
-      
+      ui.toast(spaceDrafts.length > 1 ? ('Saved all ' + spaceDrafts.length + ' spaces for ' + mainName) : (existing ? 'Event advance updated' : 'Event advance created'), 'ok');
       RMTP._isSoftRender = true;
       RMTP.router.render();
       RMTP._isSoftRender = false;
-    });
+    }
+
+    // Space dropdown change sync to current tab
+    if (spaceSelect) {
+      spaceSelect.addEventListener('change', () => {
+        const val = spaceSelect.value;
+        if (val && val !== 'Multi Room' && spaceDrafts[activeSpaceIndex]) {
+          spaceDrafts[activeSpaceIndex].space = val;
+          spaceDrafts[activeSpaceIndex].isDirty = true;
+          renderSpaceTabs();
+        }
+      });
+    }
+
+    // Add Space button handler
+    const addSpaceBtn = m.root.querySelector('#btn-add-space-to-event');
+    if (addSpaceBtn) {
+      addSpaceBtn.addEventListener('click', () => {
+        scrapeCurrentFormToDraft(activeSpaceIndex);
+        syncSharedFieldsAcrossDrafts(spaceDrafts[activeSpaceIndex]);
+
+        const existingSpaces = new Set(spaceDrafts.map(d => d.space));
+        const available = RMTP.SPACES.filter(s => !existingSpaces.has(s));
+
+        if (!available.length) {
+          ui.toast('All venue spaces are already included in this event', 'info');
+          return;
+        }
+
+        const pickerHtml = '<div class="grid gap-3">' +
+          '<p class="text-xs text-muted">Select an additional venue room to advance alongside this event:</p>' +
+          '<div class="grid grid-cols-2 gap-2 mt-1">' +
+            available.map(sp => '<button type="button" data-pick-new-space="' + ui.esc(sp) + '" class="btn btn-ghost text-xs p-3 border border-line bg-panel2/60 hover:bg-panel2 hover:border-accent text-ink font-semibold flex items-center gap-2 rounded-lg cursor-pointer">' +
+              ui.icon(isScreenSpace(sp) ? 'film' : 'pin', 'w-3.5 h-3.5 text-accent') + '<span>' + ui.esc(sp) + '</span></button>').join('') +
+          '</div>' +
+        '</div>';
+
+        const pModal = ui.modal({
+          title: 'Add Room to ' + (spaceDrafts[0].name || 'Event'),
+          size: 'max-w-md',
+          body: pickerHtml,
+          footer: '<button class="btn btn-ghost" data-close>Cancel</button>'
+        });
+
+        pModal.root.querySelectorAll('[data-pick-new-space]').forEach(b => {
+          b.addEventListener('click', () => {
+            const sp = b.getAttribute('data-pick-new-space');
+            pModal.close();
+
+            const src = spaceDrafts[activeSpaceIndex];
+            const newRecord = {
+              id: store.uid('evt'),
+              name: src.name,
+              date: src.date,
+              status: src.status,
+              category: isScreenSpace(sp) ? 'Cinema' : (src.category || 'Live Music'),
+              space: sp,
+              startTime: src.startTime,
+              finishTime: src.finishTime,
+              clientContact: src.clientContact,
+              responsible_for_advancing: src.responsibleLead,
+              groupId: (activeGroup && activeGroup.groupId) || src.groupId || ('grp-' + store.uid('evt'))
+            };
+
+            const newDraft = createDraftFromEvent(newRecord);
+            newDraft.isDirty = true;
+            spaceDrafts.push(newDraft);
+            activeSpaceIndex = spaceDrafts.length - 1;
+
+            loadDraftIntoForm(spaceDrafts[activeSpaceIndex]);
+            renderSpaceTabs();
+            ui.toast('Added ' + sp + ' to event tabs', 'ok');
+          });
+        });
+      });
+    }
+
+    // Remove Space button handler
+    const removeSpaceBtn = m.root.querySelector('#btn-remove-active-space');
+    if (removeSpaceBtn) {
+      removeSpaceBtn.addEventListener('click', async () => {
+        if (spaceDrafts.length <= 1) return;
+        const curSpaceName = spaceDrafts[activeSpaceIndex].space || 'this space';
+        const ok = await ui.confirm('Remove ' + curSpaceName + ' from this multi-room event run?', { title: 'Remove Space', danger: true, confirmLabel: 'Remove' });
+        if (!ok) return;
+
+        const removedDraft = spaceDrafts[activeSpaceIndex];
+        if (removedDraft.rawEvent && removedDraft.rawEvent.id) {
+          store.upsert('advancing', Object.assign({}, removedDraft.rawEvent, { deleted: true }));
+        }
+
+        spaceDrafts.splice(activeSpaceIndex, 1);
+        activeSpaceIndex = Math.max(0, activeSpaceIndex - 1);
+        loadDraftIntoForm(spaceDrafts[activeSpaceIndex]);
+        renderSpaceTabs();
+        ui.toast('Removed ' + curSpaceName, 'ok');
+      });
+    }
+
+    // Wire Save buttons
+    const btnSaveAll = m.root.querySelector('#btn-save-all-spaces');
+    if (btnSaveAll) btnSaveAll.addEventListener('click', saveAllSpaces);
+
+    const btnSaveCur = m.root.querySelector('#btn-save-current-space');
+    if (btnSaveCur) btnSaveCur.addEventListener('click', saveCurrentSpace);
+
+    const btnDataSave = m.root.querySelector('[data-save]');
+    if (btnDataSave) btnDataSave.addEventListener('click', saveAllSpaces);
+
+    // Initial render of space tabs
+    renderSpaceTabs();
   }
 
   async function del(ev) {

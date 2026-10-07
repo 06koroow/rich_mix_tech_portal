@@ -122,6 +122,40 @@ create table if not exists public.patch_presets (
   "updatedAt" bigint
 );
 
+create table if not exists public.availability (
+  "id" text primary key,
+  "userId" text,
+  "userName" text default '',
+  "date" text default '',
+  "type" text default 'available',
+  "dayPart" text default 'all_day',
+  "startTime" text default '',
+  "finishTime" text default '',
+  "notes" text default '',
+  "updatedAt" text default ''
+);
+
+create table if not exists public.bookings (
+  "id" text primary key,
+  "eventId" text default '',
+  "eventName" text default '',
+  "space" text default '',
+  "date" text default '',
+  "startTime" text default '',
+  "finishTime" text default '',
+  "userId" text default '',
+  "userName" text default '',
+  "role" text default 'Sound',
+  "status" text default 'pencil',
+  "rate" text default '',
+  "notes" text default '',
+  "penciledAt" text default null,
+  "confirmedAt" text default null,
+  "cancelledAt" text default null,
+  "cancellationReason" text default '',
+  "updatedAt" text default ''
+);
+
 -- ---------- Migrations for already-live databases ----------
 -- Safe to re-run. Only needed once per environment; adds new columns to tables created in earlier versions.
 
@@ -495,6 +529,15 @@ create table if not exists public.dmx_patches (
 
 alter table public.advancing add column if not exists "dmx_fixtures" jsonb default '[]'::jsonb;
 alter table public.patch_sheets add column if not exists "dmx_fixtures" jsonb default '[]'::jsonb;
+
+alter table public.availability enable row level security;
+alter table public.bookings enable row level security;
+
+drop policy if exists rw_all_availability on public.availability;
+create policy rw_all_availability on public.availability for all to authenticated, anon using (true) with check (true);
+
+drop policy if exists rw_all_bookings on public.bookings;
+create policy rw_all_bookings on public.bookings for all to authenticated, anon using (true) with check (true);
 
 alter table public.dmx_personalities enable row level security;
 alter table public.dmx_patches enable row level security;

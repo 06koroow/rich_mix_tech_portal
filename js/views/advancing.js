@@ -6482,40 +6482,80 @@ RMTP.views.advancing = function (el, params, query) {
 
     // Tech crew builder
     function techAreaHtml() {
+      const eventDate = (m.root.querySelector('#e-date') ? m.root.querySelector('#e-date').value : ev.date) || '';
+      const allAvails = store.all('availability') || [];
+      const allBookings = store.all('bookings') || [];
+
       const rows = techs.map((t, i) => {
         const usedElsewhere = techs.filter((x, j) => j !== i).map((x) => x.userId);
         let uOpts = '<option value="">Select technician…</option>' + allUsers
           .filter((u) => u.id === t.userId || usedElsewhere.indexOf(u.id) === -1)
-          .map((u) => '<option value="' + u.id + '" ' + (u.id === t.userId && !t.isFreelancer ? 'selected' : '') + '>' + ui.esc(auth.displayName(u)) + '</option>').join('');
+          .map((u) => '<option value="' + u.id + '" ' + (u.id === t.userId && !t.isFreelancer ? 'selected' : '') + '>' + ui.esc(auth.displayName(u)) + ' (' + ui.esc(u.position || 'Tech') + ')</option>').join('');
         uOpts += '<option value="__freelancer__" ' + (t.isFreelancer ? 'selected' : '') + '>Freelancer (Custom)</option>';
         uOpts += '<option value="__no_tech__" ' + (t.isNoTech ? 'selected' : '') + '>No Tech Needed</option>';
 
         const rOpts = '<option value="">Select role…</option>' + RMTP.SHIFT_ROLES
           .map((r) => '<option ' + (r === t.role ? 'selected' : '') + '>' + r + '</option>').join('');
+
+        // Live availability check
+        let availTagHtml = '';
+        if (t.userId && eventDate) {
+          const avail = allAvails.find((a) => a.userId === t.userId && a.date === eventDate);
+          const otherBookings = allBookings.filter((b) => b.userId === t.userId && b.date === eventDate && b.eventId !== ev.id && b.status !== 'cancelled');
+
+          if (otherBookings.length > 0) {
+            availTagHtml = '<span class="text-[10px] font-semibold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30 flex items-center gap-1">' +
+              ui.icon('alert', 'w-3 h-3') + '<span>Already Booked on ' + ui.esc(otherBookings[0].space || 'Other Space') + '</span></span>';
+          } else if (avail) {
+            if (avail.type === 'available') {
+              let dpLabel = 'All Day';
+              if (avail.dayPart === 'morning') dpLabel = 'Morning (08:00–13:00)';
+              else if (avail.dayPart === 'afternoon') dpLabel = 'Afternoon (13:00–18:00)';
+              else if (avail.dayPart === 'evening') dpLabel = 'Evening (18:00–23:30)';
+              else if (avail.dayPart === 'custom') dpLabel = (avail.startTime || '') + '–' + (avail.finishTime || '');
+
+              availTagHtml = '<span class="text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30 flex items-center gap-1">' +
+                ui.icon('check', 'w-3 h-3') + '<span>Available · ' + ui.esc(dpLabel) + '</span></span>';
+            } else {
+              availTagHtml = '<span class="text-[10px] font-semibold text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/30 flex items-center gap-1">' +
+                ui.icon('x', 'w-3 h-3') + '<span>Unavailable' + (avail.notes ? ' (' + ui.esc(avail.notes) + ')' : '') + '</span></span>';
+            }
+          } else {
+            availTagHtml = '<span class="text-[10px] text-muted italic">No availability logged for this date</span>';
+          }
+        }
           
-        let rowHtml = '<div class="flex flex-col gap-2 p-2 border border-line rounded-lg bg-panel2/50">' +
-          '<div class="flex items-center gap-2">' +
-            '<select data-t-user="' + i + '" class="field flex-1">' + uOpts + '</select>';
+        let rowHtml = '<div class="flex flex-col gap-2 p-2.5 border border-line rounded-lg bg-panel2/50">' +
+          '<div class="flex items-center gap-2 flex-wrap sm:flex-nowrap">' +
+            '<select data-t-user="' + i + '" class="field flex-1 font-medium">' + uOpts + '</select>';
             
         if (t.isFreelancer) {
           rowHtml += '<input type="text" data-t-freelancer="' + i + '" class="field flex-1" placeholder="Freelancer Name" value="' + ui.esc(t.freelancerName) + '">';
         }
         
         if (!t.isNoTech) {
-          rowHtml += '<select data-t-role="' + i + '" class="field w-32 shrink-0">' + rOpts + '</select>';
+          rowHtml += '<select data-t-role="' + i + '" class="field w-28 shrink-0">' + rOpts + '</select>' +
+            '<select data-t-status="' + i + '" class="field w-32 shrink-0 font-semibold">' +
+              '<option value="confirmed" ' + (t.bookingStatus !== 'pencil' ? 'selected' : '') + '>Confirmed</option>' +
+              '<option value="pencil" ' + (t.bookingStatus === 'pencil' ? 'selected' : '') + '>Pencil Hold</option>' +
+            '</select>';
         }
         rowHtml += '<button type="button" data-t-remove="' + i + '" class="btn btn-danger !p-2 shrink-0" title="Remove">' + ui.icon('trash', 'w-4 h-4') + '</button>' +
           '</div>';
+
+        if (availTagHtml) {
+          rowHtml += '<div class="flex items-center gap-2 pt-0.5">' + availTagHtml + '</div>';
+        }
 
         if (!t.isNoTech) {
           const placeholderStart = (m.root.querySelector('#e-start') ? m.root.querySelector('#e-start').value : ev.startTime) || '';
           const placeholderEnd = (m.root.querySelector('#e-finish') ? m.root.querySelector('#e-finish').value : ev.finishTime) || '';
           
-          rowHtml += '<div class="flex items-center gap-2 text-xs">' +
-              '<span class="text-muted w-12">Times:</span>' +
-              '<input type="time" data-t-start="' + i + '" class="field !py-1 !px-2 flex-1" value="' + (t.startTime || '') + '" placeholder="' + placeholderStart + '">' +
+          rowHtml += '<div class="flex items-center gap-2 text-xs pt-1 border-t border-line/40">' +
+              '<span class="text-muted w-12 font-medium">Shift:</span>' +
+              '<input type="time" data-t-start="' + i + '" class="field !py-1 !px-2 flex-1 font-mono" value="' + (t.startTime || '') + '" placeholder="' + placeholderStart + '">' +
               '<span class="text-muted">to</span>' +
-              '<input type="time" data-t-end="' + i + '" class="field !py-1 !px-2 flex-1" value="' + (t.finishTime || '') + '" placeholder="' + placeholderEnd + '">' +
+              '<input type="time" data-t-end="' + i + '" class="field !py-1 !px-2 flex-1 font-mono" value="' + (t.finishTime || '') + '" placeholder="' + placeholderEnd + '">' +
               '<span class="text-muted italic text-[10px] ml-1">(Blank = event times)</span>' +
             '</div>';
         }
@@ -6523,7 +6563,7 @@ RMTP.views.advancing = function (el, params, query) {
         rowHtml += '</div>';
         return rowHtml;
       }).join('');
-      return (rows ? '<div class="grid gap-2 mb-2">' + rows + '</div>' : '<p class="text-xs text-muted mb-2">No technicians tagged yet.</p>') +
+      return (rows ? '<div class="grid gap-2.5 mb-2">' + rows + '</div>' : '<p class="text-xs text-muted mb-2">No technicians tagged yet.</p>') +
         '<button type="button" data-t-add class="btn btn-ghost">' + ui.icon('plus', 'w-4 h-4') + 'Add technician / freelancer</button>';
     }
 
@@ -6539,6 +6579,7 @@ RMTP.views.advancing = function (el, params, query) {
             techs[idx].isFreelancer = true;
             techs[idx].isNoTech = false;
             techs[idx].userId = '';
+            techs[idx].bookingStatus = 'pencil';
           } else if (val === '__no_tech__') {
             techs[idx].isFreelancer = false;
             techs[idx].isNoTech = true;
@@ -6548,6 +6589,7 @@ RMTP.views.advancing = function (el, params, query) {
             techs[idx].isFreelancer = false;
             techs[idx].isNoTech = false;
             techs[idx].userId = val;
+            if (!techs[idx].bookingStatus) techs[idx].bookingStatus = 'confirmed';
           }
           wireTechs();
         }));
@@ -6556,6 +6598,9 @@ RMTP.views.advancing = function (el, params, query) {
         }));
         area.querySelectorAll('[data-t-role]').forEach((s) => s.addEventListener('change', () => {
           techs[+s.getAttribute('data-t-role')].role = s.value;
+        }));
+        area.querySelectorAll('[data-t-status]').forEach((s) => s.addEventListener('change', () => {
+          techs[+s.getAttribute('data-t-status')].bookingStatus = s.value;
         }));
         area.querySelectorAll('[data-t-start]').forEach((s) => s.addEventListener('change', () => {
           techs[+s.getAttribute('data-t-start')].startTime = s.value;
@@ -6567,7 +6612,7 @@ RMTP.views.advancing = function (el, params, query) {
           techs.splice(+btn.getAttribute('data-t-remove'), 1); wireTechs();
         }));
         const addBtn = area.querySelector('[data-t-add]');
-        if (addBtn) addBtn.addEventListener('click', () => { techs.push({ userId: '', role: '', isFreelancer: false, freelancerName: '', startTime: '', finishTime: '' }); wireTechs(); });
+        if (addBtn) addBtn.addEventListener('click', () => { techs.push({ userId: '', role: '', isFreelancer: false, freelancerName: '', startTime: '', finishTime: '', bookingStatus: 'confirmed' }); wireTechs(); });
       });
       updateSectionBannerPills();
     }
@@ -6876,8 +6921,8 @@ RMTP.views.advancing = function (el, params, query) {
       const isScreen = isScreenSpace(draft.space);
       const finalTechs = (draft.techs || []).map((t) => {
         if (t.isNoTech) return { role: 'None', isNoTech: true, userId: '' };
-        if (t.isFreelancer) return { role: t.role || 'General', isFreelancer: true, freelancerName: (t.freelancerName || '').trim(), startTime: t.startTime || '', finishTime: t.finishTime || '' };
-        return { userId: t.userId || '', role: t.role || 'General', startTime: t.startTime || '', finishTime: t.finishTime || '' };
+        if (t.isFreelancer) return { role: t.role || 'General', isFreelancer: true, freelancerName: (t.freelancerName || '').trim(), startTime: t.startTime || '', finishTime: t.finishTime || '', bookingStatus: t.bookingStatus || 'pencil' };
+        return { userId: t.userId || '', role: t.role || 'General', startTime: t.startTime || '', finishTime: t.finishTime || '', bookingStatus: t.bookingStatus || 'confirmed' };
       });
 
       const raw = draft.rawEvent || {};
@@ -7018,6 +7063,49 @@ RMTP.views.advancing = function (el, params, query) {
       }
     }
 
+    function syncShiftBookingsForEvent(record) {
+      if (!record || !record.id) return;
+      try {
+        const allB = store.all('bookings') || [];
+        const evTechs = record.technicians || [];
+        const assignedUserIds = new Set();
+
+        evTechs.forEach((t) => {
+          if (!t.userId) return;
+          assignedUserIds.add(t.userId);
+          const techUser = store.find('users', t.userId);
+          const techName = techUser ? auth.displayName(techUser) : (t.freelancerName || 'Technician');
+          const existingB = allB.find((b) => b.eventId === record.id && b.userId === t.userId);
+          const bRecord = {
+            id: existingB ? existingB.id : store.uid('book'),
+            eventId: record.id,
+            eventName: record.name,
+            space: Array.isArray(record.space) ? record.space[0] : (record.space || 'Venue'),
+            date: record.date,
+            startTime: t.startTime || record.startTime || '17:00',
+            finishTime: t.finishTime || record.finishTime || '23:30',
+            userId: t.userId,
+            userName: techName,
+            role: t.role || 'Sound',
+            status: t.bookingStatus || (existingB ? existingB.status : 'confirmed'),
+            rate: t.rate || (existingB ? existingB.rate : ''),
+            notes: existingB ? existingB.notes : '',
+            updatedAt: new Date().toISOString()
+          };
+          if (bRecord.status === 'confirmed' && !bRecord.confirmedAt) bRecord.confirmedAt = new Date().toISOString();
+          if (bRecord.status === 'pencil' && !bRecord.penciledAt) bRecord.penciledAt = new Date().toISOString();
+          store.upsert('bookings', bRecord);
+        });
+
+        // Clean up bookings for users removed from this event
+        allB.filter((b) => b.eventId === record.id && !assignedUserIds.has(b.userId)).forEach((b) => {
+          store.remove('bookings', b.id);
+        });
+      } catch (e) {
+        console.warn('Error syncing shift bookings:', e);
+      }
+    }
+
     function updateFooterSaveButtons() {
       const saveAllBtn = m.root.querySelector('#btn-save-all-spaces');
       const saveCurBtn = m.root.querySelector('#btn-save-current-space');
@@ -7114,6 +7202,7 @@ RMTP.views.advancing = function (el, params, query) {
       const { record, processedScheduleItems } = buildRecordFromDraft(draft);
       store.upsert('advancing', record);
       syncPatchSheetForRecord(record, processedScheduleItems);
+      syncShiftBookingsForEvent(record);
 
       draft.isDirty = false;
       if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
@@ -7166,6 +7255,7 @@ RMTP.views.advancing = function (el, params, query) {
         const { record, processedScheduleItems } = buildRecordFromDraft(draft);
         store.upsert('advancing', record);
         syncPatchSheetForRecord(record, processedScheduleItems);
+        syncShiftBookingsForEvent(record);
       }
 
       if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();

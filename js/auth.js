@@ -82,6 +82,10 @@ RMTP.auth = (function () {
            pos.includes('technical manager') || pos.includes('tech manager') ||
            role === 'tech_manager' || role === 'technical_manager';
   }
+  function isAdmin(u) {
+    const user = u || current();
+    return !!(user && user.admin);
+  }
   function rolesForPosition(position, existingTrainer) {
     if (isAutoAdminPosition(position)) return { admin: true, trainer: true };
     return { admin: false, trainer: !!existingTrainer };
@@ -282,6 +286,6 @@ RMTP.auth = (function () {
     current, currentId, setCurrent, can,
     login, signUp, signOut, signInEmail, showLogin, ensureSession,
     pendingUsers, approveUser, rejectUser, refreshShell,
-    isTechManager,
+    isTechManager, isAdmin,
   };
 })();

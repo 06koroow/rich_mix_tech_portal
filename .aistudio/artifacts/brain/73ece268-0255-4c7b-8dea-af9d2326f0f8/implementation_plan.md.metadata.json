@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan for seamless multi-space event editing in the Advancing module. Adds interactive space tabs directly within the event edit modal, in-memory state preservation across tabs, shared metadata synchronization (title, date, client contact), and dual-save controls (Save All Spaces & Save Current Space).",
-  "updatedAt": "2026-10-07T11:41:49.926824070Z",
+  "summary": "Implementation plan for the Freelancer Availability, Booking & Rota System in the Rich Mix Tech Portal. Introduces a comprehensive availability submission flow for technicians with day-part blocks and custom timing, seamless shift assignment in Advancing with live availability badges, a dedicated multi-week Rota Scheduling Board, and a complete shift status lifecycle (Pencil, Confirmed, Declined, Cancelled).",
+  "updatedAt": "2026-10-07T12:39:22.758032173Z",
   "requestFeedback": true,
   "userFacing": true
 }

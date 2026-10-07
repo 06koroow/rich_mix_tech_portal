@@ -20,6 +20,7 @@ RMTP.meta = {
 RMTP.nav = [
   { id: 'dashboard',   label: 'Dashboard',   icon: 'grid'  },
   { id: 'advancing',   label: 'Advancing',   icon: 'clip'  },
+  { id: 'rota',        label: 'Rota & Shifts', icon: 'calendar' },
   { id: 'presets',     label: 'Patch & Preset Manager', icon: 'sliders' },
   { id: 'venues',      label: 'Venues & Spaces', icon: 'mapPin' },
   { id: 'maintenance', label: 'Maintenance', icon: 'wrench'},
@@ -49,6 +50,14 @@ RMTP.slug = function (s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g,
    distinct from a user's job title (position). An event can carry
    several technicians, each with their own role for that shift. */
 RMTP.SHIFT_ROLES = ['Sound', 'Lighting', 'Cinema', 'AV', 'Support'];
+RMTP.BOOKING_STATUSES = ['pencil', 'confirmed', 'declined', 'cancelled'];
+RMTP.DAY_PARTS = [
+  { id: 'all_day', label: 'All Day', start: '08:00', end: '23:30' },
+  { id: 'morning', label: 'Morning', start: '08:00', end: '13:00' },
+  { id: 'afternoon', label: 'Afternoon', start: '13:00', end: '18:00' },
+  { id: 'evening', label: 'Evening', start: '18:00', end: '23:30' },
+  { id: 'custom', label: 'Custom Hours', start: '', end: '' }
+];
 
 /* Normalises an event's tagged crew, falling back to the legacy
    single `techUserId` field so events saved before multi-tagging

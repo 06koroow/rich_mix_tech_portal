@@ -1,32 +1,42 @@
-# Multi-Space Event Tabbed Editing
+# Freelancer Availability, Booking & Rota Management System
 
-A seamless workflow for technical managers and technicians to navigate, edit, and coordinate multi-room events across spaces within a single edit session without losing state or backing out of the editor.
+A unified scheduling and booking system for Rich Mix, enabling technicians and freelancers to log their availability across day-part blocks or custom hours, and empowering technical managers to rota, pencil, confirm, and manage venue shifts directly within Advancing and a dedicated master Rota board.
+
+---
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> The following product behaviors have been confirmed through user feedback and will govern the implementation:
-
-- **Confirmed Decision 1 (Tab State Preservation)**: Form input state will be auto-preserved in memory when switching between space tabs. Technicians can freely move back and forth between rooms without losing in-progress edits or being prompted with modal blockers.
-- **Confirmed Decision 2 (Cross-Space Field Sync)**: Universal event details—specifically Event Name, Date, and Artist/Client Contact—will automatically synchronize across all room tabs in the event group to maintain consistency.
-- **Confirmed Decision 3 (Dual Save Strategy)**: The editing window will feature a primary **"Save All Spaces"** action alongside a secondary **"Save Current Space"** option, allowing technicians to either commit the entire multi-room run or lock in one room individually.
+> The following architectural decisions were synthesized and aligned based on your Phase 1 requirements:
+> - **Availability Granularity**: Techs can quickly set Day-Part blocks (Morning, Afternoon, Evening, All Day) by default, with an expandable "From/Till" custom timing option for granular hourly availability.
+> - **Booking Workflows**: Fully integrated in both the Advancing event shift assignment modal (with inline availability checks) and a dedicated interactive **Rota & Scheduling Board** with day/week/month views.
+> - **Booking Status Lifecycle**: Four persistent states across all assignments: `Pencil` (provisional hold), `Confirmed` (firm booking), `Declined` (technician unavailable/rejected), and `Cancelled` (venue-side cancellation with audit note).
+> - **Backend Persistence**: Full local cache integration in `RMTP.store` with automatic optimistic synchronization via `RMTP.syncSb` across `availability` and `bookings` collections.
 
 ---
 
 ## 1. Overview & Core Concept
 
 ### What It Does
-When an event spans multiple venue spaces (such as The Stage, The Studio, The Mix, or Cinema screens), technicians can currently view tabs for each room in the detail pop-up, but clicking "Edit" previously forced them into editing a single space in isolation. 
+1. **Technician Availability Submission Portal ("My Availability & Shifts")**:
+   - Technicians and freelancers can select any date or multi-date range and mark their status: Available (All Day, Morning, Afternoon, Evening, or custom From/Till hours) or Unavailable.
+   - Provides quick multi-day batch selection (e.g., "Available all Fridays & Saturdays next month").
+   - Lets freelancers view their upcoming penciled and confirmed venue shifts in one personal timeline.
+2. **Integrated Advancing Shift Booking**:
+   - When managers add or edit technicians on an event shift in `advancing.js`, the technician picker dynamically displays live availability indicators (e.g. `Available · Full Day`, `Available · 17:00-23:30`, `Unavailable`, `Already Booked on Screen One`).
+   - Managers can pencil or confirm the shift immediately upon assignment.
+3. **Master Rota & Scheduling Board (`#/rota`)**:
+   - A dedicated venue-wide visual rota matrix displaying dates, spaces, and assigned technicians.
+   - Shows unfilled shift gaps, pending pencils, and confirmed bookings across all rooms (The Stage, The Studio, The Mix, Cinema screens).
+   - Quick status transitions with 1-click status pills (`Pencil` → `Confirmed`, `Cancel`, `Reassign`).
+   - Filterable by space, role (Sound, Lighting, Cinema, AV, Support), technician position, and booking status.
 
-This enhancement embeds interactive **Space Tabs** directly into the event editor header. Technicians can click any space tab to switch the active editing context, adjust space-specific live set pieces, equipment bookings, lighting fixtures, and tech crew allocations, and save all spaces simultaneously without ever exiting the modal.
-
-### Target Audience & Persona
-- **Technical Managers & Senior Techs**: Setting up complex venue-wide takeovers and festivals across multiple rooms simultaneously.
-- **Duty Technicians & Production Crew**: Quick-advancing schedules, rider updates, and channel patch changes across rooms during production shifts.
+### Target Audience & Personas
+- **Technical Manager & Senior Techs**: Need a single birds-eye dashboard to identify roster gaps, view which freelancers are free on show nights, pencil technicians, and lock in rotas without cross-referencing external spreadsheets or messages.
+- **Duty Technicians & Freelancers**: Need a frictionless, mobile-friendly interface to log their upcoming availability in seconds and check when they are penciled or confirmed for work.
 
 ### Key Value
-- **Zero Friction**: Eliminates 4 to 6 repetitive steps (save, close, scroll list, locate sibling room, open modal, click edit).
-- **Reduced Human Error**: Guarantees date and title coherence across sibling room records while isolating room-specific technical riders.
+Eliminates double-booking, manual email back-and-forths, and fragmented spreadsheets by bringing the entire technician procurement lifecycle into the Rich Mix Tech Portal with backend persistence.
 
 ---
 
@@ -34,145 +44,180 @@ This enhancement embeds interactive **Space Tabs** directly into the event edito
 
 ### Key User Flows
 
+#### Flow 1: Freelancer Logs Availability
+1. Technician navigates to **"My Availability"** (accessible via sidebar nav or their profile card on Dashboard).
+2. A responsive calendar grid highlights upcoming weeks.
+3. The technician clicks a day (or drags across a date range) and selects:
+   - **Quick Day-Part**: `All Day` (08:00 - 23:30), `Morning` (08:00 - 13:00), `Afternoon` (13:00 - 18:00), `Evening` (18:00 - 23:30).
+   - **Custom From/Till**: Toggle switch opens clean time inputs (e.g., `From: 16:30` `Till: 23:00`).
+   - **Optional Note**: e.g., "Available for sound or lighting".
+4. Submits with 1 click; saved instantly to `RMTP.store` and synced to backend.
+
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                        EVENT EDITING WINDOW                            │
+│  My Availability & Roster                                  [+ Add Bulk]│
 ├────────────────────────────────────────────────────────────────────────┤
-│ Title: Summer Jazz Festival 2026                 [x] Close             │
-│                                                                        │
-│ ┌────────────────────────────────────────────────────────────────────┐ │
-│ │  [ The Stage ]*     [ The Studio ]       [ The Mix ]    [+ Add]    │ │ <-- Interactive Space Tabs
-│ └────────────────────────────────────────────────────────────────────┘ │
-│                                                                        │
-│  ┌─ Shared Event Details (Synced Across Spaces) ─────────────────────┐ │
-│  │ Name: [Summer Jazz Festival 2026]     Date: [2026-10-15]          │ │
-│  │ Client: [Blue Note Records / Sarah]   Category: [Live Music]      │ │
-│  └───────────────────────────────────────────────────────────────────┘ │
-│                                                                        │
-│  ┌─ Room-Specific Technical Advancing (Active: The Stage) ───────────┐ │
-│  │ Times: In [14:00]  Soundcheck [17:00]  Doors [19:30]  Curfew [23] │ │
-│  │ Assigned Crew: [Alex M. (Lead) ×]  [Jordan T. (Audio) ×]          │ │
-│  │ Live Set Pieces & Channels: 3 Acts, 24-ch Midas Patch             │ │
-│  │ Production Specials: Hazer [ON]  Heavy Power [ON]                 │ │
-│  │ Equipment Bookings: 4x d&b M4, 2x Shure Axient                    │ │
-│  └───────────────────────────────────────────────────────────────────┘ │
-│                                                                        │
-│ [Delete Space]          [Cancel]   [Save Current Space]  [Save All Spaces]
+│  Mon 12 Oct       Tue 13 Oct       Wed 14 Oct       Thu 15 Oct         │
+│  [Available]      [Available]      [Unavailable]    [Custom]           │
+│  Full Day         Evening (18:00+) Personal         16:30 - 23:30      │
+│  ────────────────────────────────────────────────────────────────────  │
+│  Shifts:          Shifts:          Shifts:          Shifts:            │
+│  The Stage (17:00) None            None             The Mix (18:00)    │
+│  Confirmed        -                -                Pencil             │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-1. **Opening Edit Window**:
-   - From grouped cards, clicking "Edit" opens the modal with the first space tab active.
-   - From the detail modal (`openEventModal`), clicking "Edit" opens the modal with the exact space tab that was currently active in the detail view.
-   - For standalone events with multi-room arrays, space tabs are synthesized automatically.
-2. **Switching Space Tabs**:
-   - Clicking a sibling space tab (e.g. `The Studio`) immediately harvests the form inputs for `The Stage` into the in-memory cache.
-   - The UI reconfigures seamlessly: updates space dropdown, switches live schedule vs. cinema DCP inputs depending on space type, repopulates room-specific equipment bookings, crew assignments, and lighting fixtures.
-   - Shared fields (Name, Date, Client) carry over into the new tab automatically.
-   - A subtle dot indicator (`*`) marks any space tab that has modified unsaved drafts.
-3. **Saving**:
-   - Clicking **"Save All Spaces"** writes all dirty space records to `RMTP.store` and syncs with Supabase, showing a success toast (`"Saved 3 spaces for Summer Jazz Festival 2026"`).
-   - Clicking **"Save Current Space"** commits only the active room's draft, keeping the modal open with confirmation.
+#### Flow 2: Manager Books Shifts in Advancing
+1. Manager opens an event edit modal in Advancing.
+2. In the "Assigned Crew & Freelancers" section, clicking **"+ Add Technician"** opens the crew selector.
+3. Next to each candidate's name, the interface shows their live availability on this show's date and times:
+   - `Alex Morgan · Duty Tech · Available (All Day)`
+   - `Danny Cole · Freelancer · Available (Evening 18:00+)`
+   - `Sam Okafor · Duty Tech · Unavailable`
+4. The manager selects a candidate and chooses their booking status:
+   - **Pencil** (Provisional hold) or **Confirmed**.
+5. Saving the event creates or updates the persistent shift booking record.
 
-### Visual Styling & Theme
-- **Tab Bar Design**: Uses the established dark panel aesthetic (`bg-panel2/80 border-b border-line`). Active tab features a clean contrast accent border (`border-b-2 border-accent text-accent font-semibold`) with subtle unboxed metadata counters.
-- **Unsaved Dirty Indicator**: A clean 6px accent dot adjacent to the room title rather than obtrusive alert badges.
-- **Typography & Proportions**: Monospace tabular numerals for timings and channel counts; full desktop width constraint (`max-w-4xl`) with smooth flex-wrap support for tablet/mobile.
+#### Flow 3: Master Rota Board (`#/rota`)
+1. Manager clicks **Rota** in the main navigation.
+2. The view defaults to the current week with day columns and venue space swimlanes.
+3. Every card clearly reflects:
+   - Event Title & Venue Space
+   - Shift Role (e.g., Sound Lead, Cinema Tech)
+   - Technician Name & Contact
+   - Status Badge: `Pencil` (Amber dashed border), `Confirmed` (Emerald solid border), `Declined` (Rose border), `Cancelled` (Muted line-through).
+4. Direct actions on each card:
+   - Quick button to switch `Pencil` to `Confirmed`.
+   - Reassign / Replace with another available freelancer.
+   - Cancel shift (prompts for cancellation note, only venue managers can perform).
+
+### Visual Identity & Theme
+- **Aesthetic Direction**: High-density, utilitarian broadcast & venue production tool adhering to Rich Mix Tech Portal's dark industrial aesthetic.
+- **Color Discipline (60-30-10)**:
+  - 60% neutral canvas (`bg-[#0e1217]` dark slate background).
+  - 30% structural surfaces (`bg-[#161b22]` cards, 1px subtle hairline borders `border-white/10`).
+  - 10% high-intent semantic accents:
+    - `Confirmed`: Emerald (`text-emerald-400 bg-emerald-500/10 border-emerald-500/20`)
+    - `Pencil`: Amber (`text-amber-400 bg-amber-500/10 border-amber-500/30 border-dashed`)
+    - `Declined`: Crimson (`text-rose-400 bg-rose-500/10 border-rose-500/20`)
+    - `Cancelled`: Muted slate (`text-muted border-line line-through opacity-70`)
+- **Zero-Pill Discipline**:
+  - Metadata rendered as unboxed typography (`The Stage · Sound · 17:00 - 23:00`).
+  - Status indicators use clean border highlights and status dots with explicit accompanying text labels, never neon pill bubbles.
+- **Tabular Figures**:
+  - All shift hours, times, and day counts use `font-mono tabular-nums`.
 
 ---
 
 ## 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1: In-Memory Draft Store per Space (`draftsBySpace`)**
-  - *Chosen Approach*: Keep uncommitted space forms in an in-memory dictionary indexed by room ID or space name.
-  - *Why*: Fast client-side tab switching without touching persistent storage or generating partial ghost records before the user confirms.
-  - *Alternatives Considered*: Direct continuous auto-saving to IndexedDB/Supabase on every tab switch was rejected because discarding or canceling would leave half-updated states.
+### Decision 1: Dedicated Rota Board + Integrated Advancing
+- **Chosen Approach**: Build a new top-level view `#/rota` for birds-eye multi-space scheduling AND enrich Advancing's existing technician assignment roster.
+- **Why**: Advancing is where show details and tech specs are advanced; the Rota board is where weekly staffing budgets and team balance are evaluated. Having both means managers never have to navigate away to verify coverage.
+- **Alternative Considered**: Building only an isolated Rota page without linking Advancing crew fields. Rejected because it would cause data drift between show advances and rota bookings.
 
-- **Decision 2: Automatic Sibling Detection**
-  - *Chosen Approach*: `openForm` automatically scans for sibling records sharing the same `groupId` or matching `(name, date)` in `store.all('advancing')`, even if opened from search or calendar view.
-  - *Why*: Ensures multi-space events always present tabs regardless of how the user navigated into the editor.
+### Decision 2: Day-Part Blocks with Optional From/Till
+- **Chosen Approach**: Preset day-parts (Morning, Afternoon, Evening, All Day) for 1-click entry, with an accordion toggle for exact From/Till hours.
+- **Why**: 80% of venue shifts align with standard venue periods (Get-in/Soundcheck vs Show/Late), but special matinees or festivals require precise hours. This provides rapid entry without sacrificing flexibility.
 
-- **Decision 3: Cinema vs. Live Space Context Switching**
-  - *Chosen Approach*: Fully re-execute room workflow rendering (`updateSpaceWorkflow`) upon tab change so if Space 1 is a live theater and Space 2 is Screen One, the cinema DCP workflow, film duration, and projection checklists switch cleanly without DOM artifacts.
+### Decision 3: Venue-Only Cancellation Authority
+- **Chosen Approach**: Only venue managers (Technical Manager, Senior Tech, Admins) can mark a shift as `Cancelled`. Freelancers can accept or decline offers (`Declined`), but cancellation of booked slots is controlled by the venue.
+- **Why**: Prevents freelancers from silently erasing booked shifts while allowing clear tracking of cancelled sessions with cancellation reasons.
 
 ---
 
 ## 4. Technical Architecture & Data Strategy
 
-### Architecture & Component Diagram
+### System Architecture Diagram
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        RMTP Advancing Module                           │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │
-           ┌────────────────────────┴────────────────────────┐
-           ▼                                                 ▼
-   [renderGroupedCard]                              [openEventModal]
-           │                                                 │
-           └────────────────────────┬────────────────────────┘
-                                    ▼
-                             openForm(ev, group, activeIndex)
-                                    │
-    ┌───────────────────────────────┴───────────────────────────────┐
-    ▼                                                               ▼
-[detectEventSiblings]                                      [initDraftsBySpace]
-Discovers sibling records                                  Populates memory cache
-for same groupId / (name, date)                            for all linked rooms
-    │                                                               │
-    └───────────────────────────────┬───────────────────────────────┘
-                                    ▼
-                         [renderSpaceTabBar]
-                         Interactive room tabs
-                         with dirty state tracking
-                                    │
-         ┌──────────────────────────┴──────────────────────────┐
-         ▼                                                     ▼
-[switchSpaceTab(targetIdx)]                         [commitAllSpaces(drafts)]
-- Scrape current form -> active draft               - Validate all drafts
-- Sync shared fields (name, date, client)           - Upsert each room to store
-- Hydrate form with target draft                    - Trigger Supabase sync
-- Re-run updateSpaceWorkflow()                      - Toast & refresh router
+┌──────────────────────────────────────────────────────────────────────────┐
+│                             Rich Mix UI                                 │
+├───────────────────────────────┬──────────────────────────────────────────┤
+│        Technician View        │             Manager View                 │
+│   • My Availability Calendar  │   • Master Rota Board (`#/rota`)         │
+│   • Day-Part & From/Till Form │   • Advancing Shift Assignment Roster    │
+│   • My Penciled/Confirmed Log │   • Crew Availability Checker & Booking  │
+└───────────────┬───────────────┴────────────────────┬─────────────────────┘
+                │                                    │
+                ▼                                    ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                   RMTP Shared Store & State Layer                        │
+│   • `store.all('availability')`   — Tech free/busy slots & day parts     │
+│   • `store.all('bookings')`       — Event shift bookings & status        │
+│   • `store.all('advancing')`      — Core show dates, spaces & requirements│
+└──────────────────────────────────┬───────────────────────────────────────┘
+                                   │
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                 Persistence & Backend Sync Layer                         │
+│   • LocalStorage Cache (Immediate offline-first read/write)             │
+│   • `RMTP.syncSb` (Optimistic sync to Supabase `availability`/`bookings`)│
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Data Model & State Mapping
+### Data Models & Schemas
 
-1. **State Shape in `openForm`**:
-   ```javascript
-   const multiSpaceContext = {
-     isMulti: true,
-     groupId: '...',
-     spaces: ['The Stage', 'The Studio', 'The Mix'],
-     activeIndex: 0,
-     drafts: [
-       { id: 'evt-1', space: 'The Stage', name: '...', isDirty: false, ... },
-       { id: 'evt-2', space: 'The Studio', name: '...', isDirty: false, ... }
-     ]
-   };
-   ```
-2. **Form Scraping & Hydration**:
-   - `scrapeCurrentFormState()` extracts: timings, assigned crew, schedule items, channel lists, DMX fixtures, equipment bookings, production packages, notes, and attachments.
-   - `hydrateFormState(draft)` populates all form inputs, resets custom dropdowns, and triggers workflow updates.
-   - `syncSharedFields()` updates `name`, `date`, `clientContact`, and `status` across all drafts whenever changed.
-3. **Save Handlers**:
-   - `Save All Spaces`: Iterates over all drafts, assigns shared `groupId` and synced attributes, upserts each record into `advancing`, drains sync queue, closes modal, and refreshes the view.
-   - `Save Current Space`: Upserts only the active draft, marks it clean (`isDirty = false`), and displays inline toast.
+#### 1. `availability` Collection
+```typescript
+interface AvailabilityRecord {
+  id: string;                    // 'avail-xxx'
+  userId: string;                // user id (e.g., 'user-3')
+  userName: string;              // Cached display name
+  date: string;                  // 'YYYY-MM-DD'
+  type: 'available' | 'unavailable';
+  dayPart: 'all_day' | 'morning' | 'afternoon' | 'evening' | 'custom';
+  startTime?: string;            // '16:30' (if custom or day-part bounds)
+  finishTime?: string;           // '23:30'
+  notes?: string;                // Optional technician note
+  updatedAt: string;             // ISO timestamp
+}
+```
+
+#### 2. `bookings` Collection
+```typescript
+interface ShiftBookingRecord {
+  id: string;                    // 'book-xxx'
+  eventId: string;               // linked advancing event id
+  eventName: string;             // Cached event title
+  space: string;                 // e.g. 'The Stage'
+  date: string;                  // 'YYYY-MM-DD'
+  startTime: string;             // '17:00'
+  finishTime: string;            // '23:30'
+  userId: string;                // assigned user id
+  userName: string;              // technician name
+  role: string;                  // 'Sound' | 'Lighting' | 'Cinema' | 'AV' | 'Support'
+  status: 'pencil' | 'confirmed' | 'declined' | 'cancelled';
+  penciledAt?: string;           // ISO timestamp
+  confirmedAt?: string;          // ISO timestamp
+  cancelledAt?: string;          // ISO timestamp
+  cancellationReason?: string;   // Venue manager audit note
+  notes?: string;                // Shift instructions
+  rate?: string;                 // Optional agreed freelancer shift rate
+}
+```
+
+### Navigation & Views Plan
+1. **New Top-Level Navigation Item**:
+   - `Rota & Shifts` (id: `rota`, icon: `calendar` or `users`) in `RMTP.nav` inside `js/config.js`.
+2. **New View Module**:
+   - `js/views/rota.js`: Implements the Master Rota Scheduling Board, weekly grid view, shift status toggles, and modal for creating/editing shift bookings.
+3. **Availability Tab / Modal**:
+   - Integrated tab in `#/rota` for **"My Availability"** (or accessible from the profile/dashboard), allowing technicians to enter their free/busy calendar.
+4. **Advancing View Integration (`js/views/advancing.js`)**:
+   - Enhances the existing technician selector with live availability tooltips/badges and booking status dropdown (`Pencil` vs `Confirmed`).
+5. **Sync & Backend Support (`js/sync-supabase.js`)**:
+   - Register `availability` and `bookings` in `COLLS` for seamless multi-device persistence.
+6. **Starter Seed Data (`data/seed.js`)**:
+   - Realistic availability records and sample bookings for the demo dataset to ensure zero-state polish.
 
 ---
 
-## 5. Verification Plan
+## Next Steps
 
-1. **Multi-Space Tab Navigation**:
-   - Open a multi-room event with 3 spaces.
-   - Switch between Space 1, Space 2, Space 3. Verify each space displays its correct crew, timings, and technical riders.
-2. **State Preservation**:
-   - Edit notes and crew in Space 1. Switch to Space 2. Make an edit in Space 2.
-   - Switch back to Space 1; verify all inputs remain intact.
-3. **Shared Field Synchronization**:
-   - Change event title in Space 1. Switch to Space 2; verify the title has automatically synced.
-4. **Save All Spaces**:
-   - Click "Save All Spaces"; verify all modified spaces update in the store and reflect on the calendar/dashboard.
-5. **Single-Space Events**:
-   - Open a regular single-space event; verify standard editing functions normally without unnecessary multi-space overhead.
-6. **Codebase Lint & Compilation**:
-   - Run Node syntax checks and applet verification tools.
+Once this implementation plan is approved:
+1. Register `rota` in `RMTP.nav` (`js/config.js`) and wire backend sync in `js/sync-supabase.js`.
+2. Implement `js/views/rota.js` containing both the Manager Master Rota and the Technician Availability Submission interface.
+3. Connect the availability lookup engine to `js/views/advancing.js` shift assignments.
+4. Add seed availability and bookings in `data/seed.js`.
+5. Verify build, styling, and cross-view synchronization.

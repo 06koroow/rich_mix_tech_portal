@@ -2,7 +2,7 @@
 window.RMTP = window.RMTP || {};
 RMTP.syncSb = (function () {
   const store = RMTP.store, sb = RMTP.supabase;
-  const COLLS = ['advancing', 'reports', 'venues', 'users', 'signoffs', 'inventory', 'maintenance', 'procedures', 'patch_presets', 'patch_sheets', 'dmx_personalities', 'dmx_patches'];
+  const COLLS = ['advancing', 'reports', 'venues', 'users', 'signoffs', 'inventory', 'maintenance', 'procedures', 'patch_presets', 'patch_sheets', 'dmx_personalities', 'dmx_patches', 'availability', 'bookings'];
   
   let unsupportedCols = {};
   try {
@@ -14,7 +14,11 @@ RMTP.syncSb = (function () {
     unsupportedCols.advancing.artifaxHistory = true;
   }
 
-  const unsupportedTables = {};
+  let unsupportedTables = {};
+  try {
+    const savedT = localStorage.getItem('rmtp_unsupported_tables');
+    if (savedT) unsupportedTables = JSON.parse(savedT);
+  } catch (e) {}
   
   function tables() {
     return {
@@ -22,14 +26,37 @@ RMTP.syncSb = (function () {
       users: 'users', signoffs: 'signoffs', inventory: 'inventory',
       maintenance: 'maintenance', procedures: 'procedures',
       patch_presets: 'patch_presets', patch_sheets: 'patch_sheets',
-      dmx_personalities: 'dmx_personalities', dmx_patches: 'dmx_patches'
+      dmx_personalities: 'dmx_personalities', dmx_patches: 'dmx_patches',
+      availability: 'availability', bookings: 'bookings'
     };
   }
 
-  function isTableMissingError(err) { return err && err.code === '42P01'; }
+  function isTableMissingError(err) {
+    if (!err) return false;
+    const code = err.code || (err.error && err.error.code);
+    const msg = String(err.message || (err.error && err.error.message) || err.details || err.hint || '');
+    let fullStr = '';
+    try { fullStr = typeof err === 'object' ? JSON.stringify(err) : String(err); } catch (e) { fullStr = msg; }
+    if (code === '42P01' || code === 'PGRST205' || code === 'PGRST200') return true;
+    if (/Could not find the table/i.test(msg) || /relation .* does not exist/i.test(msg) || /in the schema cache/i.test(msg)) return true;
+    if (/Could not find the table/i.test(fullStr) || /schema cache/i.test(fullStr) || /PGRST205/i.test(fullStr) || /42P01/i.test(fullStr)) return true;
+    return false;
+  }
   function isTableUnsupported(table) { return !!unsupportedTables[table]; }
-  function markTableUnsupported(table) { unsupportedTables[table] = true; }
-  function clearTableUnsupported(table) { unsupportedTables[table] = false; }
+  function markTableUnsupported(table) {
+    unsupportedTables[table] = true;
+    try {
+      localStorage.setItem('rmtp_unsupported_tables', JSON.stringify(unsupportedTables));
+    } catch (e) {}
+  }
+  function clearTableUnsupported(table) {
+    if (unsupportedTables[table]) {
+      delete unsupportedTables[table];
+      try {
+        localStorage.setItem('rmtp_unsupported_tables', JSON.stringify(unsupportedTables));
+      } catch (e) {}
+    }
+  }
   
   function markColumnUnsupported(table, col) {
     if (!unsupportedCols[table]) unsupportedCols[table] = {};
@@ -55,6 +82,7 @@ RMTP.syncSb = (function () {
 
   async function pullCollection(coll) {
     const table = tables()[coll]; if (!table) return;
+    if (isTableUnsupported(table)) return;
     let rows = [];
     try {
       if (coll === 'advancing') {
@@ -150,11 +178,11 @@ RMTP.syncSb = (function () {
            
            sb.upsertRow(table, payload).then(result => {
               if (result && !result.ok) {
-                 if (result.error && result.error.code === '42P01') {
+                 if (result.error && isTableMissingError(result.error)) {
                     markTableUnsupported(table);
-                    console.warn('[syncSb] Table missing in Supabase: ' + table);
+                    console.warn('[syncSb] Table missing in Supabase: ' + table + '. Using local cache.');
                     return;
-                 } else if (result.error && result.error.code === 'PGRST204') {
+                 } else if (result.error && (result.error.code === 'PGRST204' || result.error.code === '42703')) {
                     const missingCol = extractMissingColumn(result.error);
                     if (missingCol) {
                        markColumnUnsupported(table, missingCol);
@@ -162,13 +190,17 @@ RMTP.syncSb = (function () {
                        delete retryPayload[missingCol];
                        sb.upsertRow(table, retryPayload).then(retryRes => {
                           if (retryRes && !retryRes.ok) {
-                             console.error('[syncSb] Retry failed after stripping ' + missingCol + ' for ' + name, retryRes.message || retryRes.error);
+                             if (retryRes.error && isTableMissingError(retryRes.error)) {
+                                markTableUnsupported(table);
+                             } else {
+                                console.warn('[syncSb] Retry failed after stripping ' + missingCol + ' for ' + name, retryRes.message || retryRes.error);
+                             }
                           }
                        }).catch(e => console.error(e));
                        return;
                     }
                  }
-                 console.error('[syncSb] Optimistic sync failed for ' + name, result.message || result.error);
+                 console.warn('[syncSb] Optimistic sync skipped for ' + name, result.message || result.error);
               }
            }).catch(e => console.error(e));
         }
@@ -182,7 +214,14 @@ RMTP.syncSb = (function () {
         const table = tables()[name];
         if (!isTableUnsupported(table)) {
            sb.deleteRow(table, id).then(result => {
-              if (!result.ok) console.error('[syncSb] Optimistic delete failed for ' + name, result.message);
+              if (result && !result.ok) {
+                 if (result.error && isTableMissingError(result.error)) {
+                    markTableUnsupported(table);
+                    console.warn('[syncSb] Table missing in Supabase: ' + table + '. Using local cache.');
+                 } else {
+                    console.warn('[syncSb] Optimistic delete skipped for ' + name, result.message);
+                 }
+              }
            }).catch(e => console.error(e));
         }
       }

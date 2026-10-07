@@ -262,6 +262,8 @@ RMTP.seed = {
     { id: 'user-2', firstName: 'Priya', lastName: 'Shah',   email: 'priya@richmix.local', password: 'h977ad04b', status: 'active', position: 'Senior Tech',       discipline: 'Lighting', admin: true,  trainer: true  },
     { id: 'user-3', firstName: 'Sam',   lastName: 'Okafor', email: 'sam@richmix.local',   password: 'h977ad04b', status: 'active', position: 'Duty Tech',         discipline: 'Sound',    admin: false, trainer: false },
     { id: 'user-4', firstName: 'Danny', lastName: 'Cole',   email: 'danny@richmix.local', password: 'h977ad04b', status: 'active', position: 'Duty Tech',         discipline: 'Cinema',   admin: false, trainer: true  },
+    { id: 'user-5', firstName: 'Maya',  lastName: 'Lin',    email: 'maya@richmix.local',  password: 'h977ad04b', status: 'active', position: 'Freelancer',        discipline: 'Sound',    admin: false, trainer: false },
+    { id: 'user-6', firstName: 'Jordan',lastName: 'Reed',   email: 'jordan@richmix.local',password: 'h977ad04b', status: 'active', position: 'Freelancer',        discipline: 'Lighting', admin: false, trainer: false },
   ],
   signoffs: [],
 
@@ -361,4 +363,202 @@ RMTP.seed = {
 
   /* ---- End-of-shift reports (keyed by eventId; see views/advancing.js) ---- */
   reports: [],
+
+  /* ---- Technician & Freelancer Availability ----
+     type: 'available' | 'unavailable'
+     dayPart: 'all_day' | 'morning' | 'afternoon' | 'evening' | 'custom'
+     startTime / finishTime: optional or derived from dayPart */
+  availability: [
+    {
+      id: 'avail-1',
+      userId: 'user-3',
+      userName: 'Sam Okafor',
+      date: RMTP._seedDates.today,
+      type: 'available',
+      dayPart: 'all_day',
+      startTime: '08:00',
+      finishTime: '23:30',
+      notes: 'Available all day for live sound or stage patch',
+      updatedAt: new Date().toISOString()
+    },
+    {
+      id: 'avail-2',
+      userId: 'user-4',
+      userName: 'Danny Cole',
+      date: RMTP._seedDates.today,
+      type: 'available',
+      dayPart: 'evening',
+      startTime: '18:00',
+      finishTime: '23:30',
+      notes: 'Available for cinema or AV shift',
+      updatedAt: new Date().toISOString()
+    },
+    {
+      id: 'avail-3',
+      userId: 'user-5',
+      userName: 'Maya Lin',
+      date: RMTP._seedDates.today,
+      type: 'available',
+      dayPart: 'custom',
+      startTime: '16:00',
+      finishTime: '23:00',
+      notes: 'Freelance FOH / monitors — available from 16:00',
+      updatedAt: new Date().toISOString()
+    },
+    {
+      id: 'avail-4',
+      userId: 'user-6',
+      userName: 'Jordan Reed',
+      date: RMTP._seedDates.today,
+      type: 'unavailable',
+      dayPart: 'all_day',
+      startTime: '08:00',
+      finishTime: '23:30',
+      notes: 'On tour elsewhere',
+      updatedAt: new Date().toISOString()
+    },
+    {
+      id: 'avail-5',
+      userId: 'user-5',
+      userName: 'Maya Lin',
+      date: RMTP._seedDates.tomorrow,
+      type: 'available',
+      dayPart: 'all_day',
+      startTime: '08:00',
+      finishTime: '23:30',
+      notes: 'Free all day',
+      updatedAt: new Date().toISOString()
+    },
+    {
+      id: 'avail-6',
+      userId: 'user-6',
+      userName: 'Jordan Reed',
+      date: RMTP._seedDates.tomorrow,
+      type: 'available',
+      dayPart: 'evening',
+      startTime: '17:30',
+      finishTime: '23:30',
+      notes: 'Free for lighting busking',
+      updatedAt: new Date().toISOString()
+    },
+    {
+      id: 'avail-7',
+      userId: 'user-5',
+      userName: 'Maya Lin',
+      date: RMTP._seedDates.plus3,
+      type: 'available',
+      dayPart: 'evening',
+      startTime: '17:00',
+      finishTime: '00:00',
+      notes: 'Free for evening event',
+      updatedAt: new Date().toISOString()
+    },
+    {
+      id: 'avail-8',
+      userId: 'user-6',
+      userName: 'Jordan Reed',
+      date: RMTP._seedDates.plus3,
+      type: 'available',
+      dayPart: 'all_day',
+      startTime: '08:00',
+      finishTime: '23:30',
+      notes: 'Available all weekend',
+      updatedAt: new Date().toISOString()
+    }
+  ],
+
+  /* ---- Shift Bookings & Rota Roster ----
+     status: 'pencil' | 'confirmed' | 'declined' | 'cancelled' */
+  bookings: [
+    {
+      id: 'book-1',
+      eventId: 'evt-1',
+      eventName: 'Kokoroko — live',
+      space: 'The Stage',
+      date: RMTP._seedDates.today,
+      startTime: '15:00',
+      finishTime: '00:00',
+      userId: 'user-3',
+      userName: 'Sam Okafor',
+      role: 'Sound',
+      status: 'confirmed',
+      confirmedAt: new Date().toISOString(),
+      notes: 'FOH & patch assist with visiting tour engineer'
+    },
+    {
+      id: 'book-2',
+      eventId: 'evt-1',
+      eventName: 'Kokoroko — live',
+      space: 'The Stage',
+      date: RMTP._seedDates.today,
+      startTime: '16:00',
+      finishTime: '00:00',
+      userId: 'user-2',
+      userName: 'Priya Shah',
+      role: 'Lighting',
+      status: 'confirmed',
+      confirmedAt: new Date().toISOString(),
+      notes: 'House LD & touring rig support'
+    },
+    {
+      id: 'book-3',
+      eventId: 'evt-2',
+      eventName: 'Private hire — product launch',
+      space: 'The Studio',
+      date: RMTP._seedDates.today,
+      startTime: '16:00',
+      finishTime: '22:45',
+      userId: 'user-4',
+      userName: 'Danny Cole',
+      role: 'AV',
+      status: 'confirmed',
+      confirmedAt: new Date().toISOString(),
+      notes: 'Presenter laptop & confidence monitors'
+    },
+    {
+      id: 'book-4',
+      eventId: 'evt-3',
+      eventName: 'Short film premiere',
+      space: 'Screen One',
+      date: RMTP._seedDates.tomorrow,
+      startTime: '19:00',
+      finishTime: '22:30',
+      userId: 'user-3',
+      userName: 'Sam Okafor',
+      role: 'Projection',
+      status: 'confirmed',
+      confirmedAt: new Date().toISOString(),
+      notes: 'DCP ingest verification & Q&A mics'
+    },
+    {
+      id: 'book-5',
+      eventId: 'evt-4',
+      eventName: 'Wedding reception',
+      space: 'The Mix',
+      date: RMTP._seedDates.plus3,
+      startTime: '16:30',
+      finishTime: '00:30',
+      userId: 'user-5',
+      userName: 'Maya Lin',
+      role: 'Sound',
+      status: 'pencil',
+      penciledAt: new Date().toISOString(),
+      notes: 'Penciled for acoustic duo + evening DJ transition. Rate £240.'
+    },
+    {
+      id: 'book-6',
+      eventId: 'evt-4',
+      eventName: 'Wedding reception',
+      space: 'The Mix',
+      date: RMTP._seedDates.plus3,
+      startTime: '16:30',
+      finishTime: '00:30',
+      userId: 'user-6',
+      userName: 'Jordan Reed',
+      role: 'Lighting',
+      status: 'pencil',
+      penciledAt: new Date().toISOString(),
+      notes: 'Penciled for mood lighting & room wash. Rate £220.'
+    }
+  ],
 };

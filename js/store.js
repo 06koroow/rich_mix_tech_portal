@@ -84,7 +84,45 @@ RMTP.store = (function () {
       }
     });
     if (adapter.get(key('maintenance')) === null) {
-      write('maintenance', []);
+      write('maintenance', [
+        {
+          id: 'fault-demo-1',
+          taskType: 'consumables',
+          equipment: 'Consumables Order: Haze Fluid, Black Gaffa Tape & 9V Batteries',
+          category: 'Consumables',
+          priority: 'High',
+          status: 'Open',
+          space: 'The Stage',
+          reportedBy: 'Sam Okafor',
+          assignedTechId: 'user-2',
+          assignedTechName: 'Priya Shah',
+          description: 'Hazer fluid critically low before the weekend live events. Also restocking 50mm black gaffa tape and wireless mic transmitter batteries.',
+          consumableItems: [
+            { name: 'Look Solutions Unique Haze Fluid (5L)', qty: '2 \u00d7 5L', notes: 'Stage left and right hazers' },
+            { name: 'Advance AT200 Black Gaffa Tape (50mm)', qty: '6 rolls', notes: 'Main stage pit box restock' },
+            { name: 'Procell Constant 9V Batteries (Box of 10)', qty: '1 box', notes: 'For wireless mic beltpacks' },
+            { name: 'Procell AA Industrial Alkaline (Box of 24)', qty: '1 box', notes: 'In-ear monitor packs' }
+          ],
+          createdAt: Date.now() - 3600000 * 6
+        },
+        {
+          id: 'fault-demo-2',
+          taskType: 'fault',
+          equipment: 'Soundcraft Vi1 \u2014 Channel 12 crackling on phantom power',
+          category: 'Sound',
+          priority: 'Medium',
+          status: 'Open',
+          space: 'The Stage',
+          reportedBy: 'Danny Cole',
+          assignedTechId: 'user-3',
+          assignedTechName: 'Sam Okafor',
+          itemId: 'inv-mix-001',
+          itemTag: 'MIX-001',
+          itemName: 'Soundcraft Vi1 Digital Console',
+          description: 'Intermittent crackle when 48V phantom is active on channel 12. Preamp board needs inspection during next maintenance window.',
+          createdAt: Date.now() - 3600000 * 24
+        }
+      ]);
     }
   }
 

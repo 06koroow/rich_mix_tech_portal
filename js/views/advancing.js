@@ -1281,6 +1281,122 @@ RMTP.views.advancing = function (el, params, query) {
     initialBtnDel.addEventListener('click', handleBulkDelete);
   }
 
+  function openShiftTicketsModal(ev) {
+    const allFaults = store.all('maintenance');
+    let currentLinked = Array.isArray(ev.linked_maintenance_ids)
+      ? ev.linked_maintenance_ids.slice()
+      : (Array.isArray(ev.linkedMaintenanceIds) ? ev.linkedMaintenanceIds.slice() : []);
+
+    const availableTickets = allFaults.filter((f) => f.status !== 'Resolved' || currentLinked.includes(f.id));
+    let filterText = '';
+
+    const m = ui.modal({
+      title: 'Tag Maintenance Tickets \u2014 ' + ev.name,
+      size: 'md:max-w-xl',
+      body:
+        '<div class="grid gap-3">' +
+          '<div class="flex items-center justify-between gap-2 pb-2 border-b border-line flex-wrap">' +
+            '<div>' +
+              '<div class="text-xs font-bold text-ink uppercase tracking-wider">Shift Maintenance & Consumables Scope</div>' +
+              '<div class="text-[11px] text-muted">Tag faults and consumables orders to address during this shift</div>' +
+            '</div>' +
+            '<span id="stm-count" class="text-xs font-semibold px-2 py-0.5 rounded bg-warning/15 text-warning font-mono">' +
+              currentLinked.length + ' Tagged' +
+            '</span>' +
+          '</div>' +
+          '<input id="stm-search" class="field text-xs !py-1.5" placeholder="Search by equipment name, consumables order, space, or tagged tech..." />' +
+          '<div id="stm-list" class="grid gap-2 max-h-64 overflow-y-auto pr-1"></div>' +
+        '</div>',
+      footer:
+        '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
+        '<button class="btn btn-primary" data-save data-primary>' + ui.icon('check', 'w-4 h-4') + 'Save Tagged Tickets</button>',
+    });
+
+    const listEl = m.root.querySelector('#stm-list');
+    const countEl = m.root.querySelector('#stm-count');
+    const searchInp = m.root.querySelector('#stm-search');
+
+    function renderModalTickets() {
+      if (!listEl) return;
+      const q = filterText.toLowerCase().trim();
+      const filtered = availableTickets.filter((f) => {
+        if (!q) return true;
+        const eq = (f.equipment || '').toLowerCase();
+        const desc = (f.description || '').toLowerCase();
+        const sp = (f.space || '').toLowerCase();
+        const tech = (f.assignedTechName || '').toLowerCase();
+        const items = Array.isArray(f.consumableItems) ? f.consumableItems.map((ci) => ci.name).join(' ').toLowerCase() : '';
+        return eq.includes(q) || desc.includes(q) || sp.includes(q) || tech.includes(q) || items.includes(q);
+      });
+
+      if (countEl) countEl.textContent = currentLinked.length + ' Tagged';
+
+      if (!filtered.length) {
+        listEl.innerHTML = '<div class="text-xs text-muted italic p-3 text-center bg-panel2/50 rounded-lg">No maintenance tickets matching filter.</div>';
+        return;
+      }
+
+      listEl.innerHTML = filtered.map((f) => {
+        const checked = currentLinked.includes(f.id);
+        const isCons = f.taskType === 'consumables' || f.category === 'Consumables';
+        return (
+          '<label class="flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-colors text-xs ' +
+            (checked ? 'bg-accent/10 border-accent/40' : 'bg-panel border-line hover:border-accent/30') + '">' +
+            '<input type="checkbox" data-stm-id="' + f.id + '" class="w-4 h-4 mt-0.5 rounded accent-[var(--accent)] shrink-0 cursor-pointer" ' + (checked ? 'checked' : '') + ' />' +
+            '<div class="min-w-0 flex-1">' +
+              '<div class="flex items-center justify-between gap-2">' +
+                '<div class="flex items-center gap-1.5 truncate">' +
+                  (isCons
+                    ? '<span class="px-1.5 py-0.2 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1 shrink-0">' + ui.icon('cart', 'w-3 h-3') + 'Consumables</span>'
+                    : '<span class="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1 shrink-0">' + ui.icon('tool', 'w-3 h-3') + 'Fault</span>') +
+                  '<span class="font-semibold text-ink truncate">' + ui.esc(f.equipment || 'Task') + '</span>' +
+                '</div>' +
+                ui.pill(f.priority || 'Medium', f.priority === 'Urgent' ? 'var(--danger)' : (f.priority === 'High' ? 'var(--warning)' : 'var(--muted)')) +
+              '</div>' +
+              '<div class="text-[11px] text-muted mt-0.5">' +
+                ui.esc(f.space || f.location || 'Venue') +
+                (f.assignedTechName ? ' \u00b7 Tagged: <strong class="text-accent">' + ui.esc(f.assignedTechName) + '</strong>' : '') +
+              '</div>' +
+            '</div>' +
+          '</label>'
+        );
+      }).join('');
+
+      listEl.querySelectorAll('[data-stm-id]').forEach((cb) => {
+        cb.addEventListener('change', (e) => {
+          const tid = cb.getAttribute('data-stm-id');
+          if (e.target.checked) {
+            if (!currentLinked.includes(tid)) currentLinked.push(tid);
+          } else {
+            currentLinked = currentLinked.filter((id) => id !== tid);
+          }
+          renderModalTickets();
+        });
+      });
+    }
+
+    renderModalTickets();
+
+    if (searchInp) {
+      searchInp.addEventListener('input', (e) => {
+        filterText = e.target.value;
+        renderModalTickets();
+      });
+    }
+
+    m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
+    m.root.querySelector('[data-save]').addEventListener('click', () => {
+      const updated = Object.assign({}, ev, {
+        linked_maintenance_ids: currentLinked.slice(),
+        linkedMaintenanceIds: currentLinked.slice()
+      });
+      store.upsert('advancing', updated);
+      m.close();
+      ui.toast('Updated maintenance scope for ' + ev.name + ' (' + currentLinked.length + ' ticket' + (currentLinked.length === 1 ? '' : 's') + ')', 'ok');
+      RMTP.router.render();
+    });
+  }
+
   // Card interactive listeners
   finalShown.forEach((item) => {
     const q = (sel) => el.querySelector(sel);
@@ -1318,6 +1434,9 @@ RMTP.views.advancing = function (el, params, query) {
 
       const openBtn = q('[data-open-modal="' + ev.id + '"]');
       if (openBtn) openBtn.addEventListener('click', (evt) => { evt.stopPropagation(); openEventModal(ev); });
+
+      const addMaintBtn = q('[data-add-maint-tickets="' + ev.id + '"]');
+      if (addMaintBtn) addMaintBtn.addEventListener('click', (evt) => { evt.stopPropagation(); openShiftTicketsModal(ev); });
 
       const eBtn = q('[data-edit="' + ev.id + '"]'); if (eBtn) eBtn.addEventListener('click', (evt) => { evt.stopPropagation(); openForm(ev); });
       const dBtn = q('[data-del="' + ev.id + '"]'); if (dBtn) dBtn.addEventListener('click', (evt) => { evt.stopPropagation(); del(ev); });
@@ -1408,17 +1527,25 @@ RMTP.views.advancing = function (el, params, query) {
       }, 50);
     }
   }
-  if (query && query.action === 'schedule-maintenance') {
+  if (query && (query.action === 'schedule-maintenance' || query.action === 'new-maintenance-shift')) {
     setTimeout(() => {
       const faultId = query.faultId;
       const fault = faultId ? store.find('maintenance', faultId) : null;
       openForm({
         name: fault ? 'Maintenance: ' + (fault.equipment || fault.space || 'Repair') : 'Maintenance Shift',
-        category: 'Maintenance',
-        space: fault ? fault.space : 'Screen One',
+        category: 'Maintenance Shift',
+        space: fault ? (fault.space || 'The Stage') : 'The Stage',
         date: getTodayString(),
+        startTime: '10:00',
+        finishTime: '14:00',
         linked_maintenance_ids: faultId ? [faultId] : []
       });
+    }, 50);
+  }
+  if (query && query.openEvent) {
+    setTimeout(() => {
+      const target = store.find('advancing', query.openEvent);
+      if (target) openEventModal(target);
     }, 50);
   }
 
@@ -1483,6 +1610,11 @@ RMTP.views.advancing = function (el, params, query) {
         '<input type="checkbox" data-bulk-select="' + ev.id + '" class="w-4 h-4 rounded accent-[var(--danger)] cursor-pointer" ' + (selectedForBulkDelete.has(ev.id) ? 'checked' : '') + ' />' +
       '</div>' : '';
 
+    const bkgCount = (Array.isArray(ev.equipment_bookings) ? ev.equipment_bookings : (Array.isArray(ev.equipmentBookings) ? ev.equipmentBookings : [])).length;
+    const bkgPill = bkgCount ? ('<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-accent/15 text-accent border border-accent/30" title="' + bkgCount + ' shared equipment item' + (bkgCount === 1 ? '' : 's') + ' booked">' + ui.icon('box', 'w-3 h-3 text-accent') + bkgCount + ' Kit</span>') : '';
+    const maintCount = (Array.isArray(ev.linked_maintenance_ids) ? ev.linked_maintenance_ids : (Array.isArray(ev.linkedMaintenanceIds) ? ev.linkedMaintenanceIds : [])).length;
+    const maintPill = maintCount ? ('<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-warning/15 text-warning border border-warning/30" title="' + maintCount + ' maintenance tasks linked to this shift">' + ui.icon('tool', 'w-3 h-3 text-warning') + maintCount + ' Task' + (maintCount === 1 ? '' : 's') + '</span>') : '';
+
     return (
       '<div data-event-card="' + ev.id + '" class="panel w-full p-4 sm:p-5 transition-all hover:border-accent hover:shadow-lg cursor-pointer group select-none relative flex flex-col justify-between gap-3 ' + (bulkDeleteMode && selectedForBulkDelete.has(ev.id) ? 'border-danger bg-danger/5' : '') + '">' +
         '<div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3 w-full">' +
@@ -1493,7 +1625,9 @@ RMTP.views.advancing = function (el, params, query) {
               statusControl +
               ui.pill(Array.isArray(ev.space) ? ev.space.join(', ') : ev.space, isCinema ? 'var(--accent)' : 'var(--info)') +
               (leadName ? ui.pill('Lead: ' + leadName, 'var(--accent)') : '') +
-              (ev.category ? ui.pill(ev.category, 'var(--muted)') : '') +
+              (ev.category ? ui.pill(ev.category, (ev.category === 'Maintenance' || ev.category === 'Maintenance Shift') ? 'var(--warning)' : 'var(--muted)') : '') +
+              bkgPill +
+              maintPill +
               (ev.guestEngineer ? ui.pill('Guest Engineer', 'var(--info)') : '') +
               (hasReports ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-danger/15 text-danger border border-danger/30" title="Shift reports submitted">' + ui.icon('alert', 'w-3 h-3') + 'Reports</span>' : '') +
             '</div>' +
@@ -1550,6 +1684,10 @@ RMTP.views.advancing = function (el, params, query) {
             (ev.deleted ? 
               '<button data-reinstate="' + ev.id + '" class="btn btn-ok !py-1.5 !px-3 text-xs font-semibold flex items-center gap-1.5 rounded-lg flex-1 sm:flex-initial justify-center">' + ui.icon('refresh', 'w-4 h-4') + '<span>Reinstate Event</span></button>' 
             :
+              ((ev.category === 'Maintenance Shift' || ev.category === 'Maintenance') ?
+                '<button type="button" data-add-maint-tickets="' + ev.id + '" class="btn btn-secondary !py-1.5 !px-3 text-xs font-semibold text-warning flex items-center gap-1.5 hover:bg-warning/10 rounded-lg flex-1 sm:flex-initial justify-center" title="Add maintenance tickets or consumable orders to this shift">' +
+                  ui.icon('tool', 'w-3.5 h-3.5 text-warning') + '<span>+ Add Tickets</span>' +
+                '</button>' : '') +
               '<button data-open-modal="' + ev.id + '" class="btn btn-ghost !py-1.5 !px-3 text-xs font-semibold text-accent flex items-center gap-1.5 hover:bg-accent/10 rounded-lg flex-1 sm:flex-initial justify-center">' +
                 ui.icon('eye', 'w-4 h-4') + '<span>View Advance</span>' +
               '</button>' +
@@ -3405,6 +3543,41 @@ RMTP.views.advancing = function (el, params, query) {
     const shiftLabel = (ev.date ? ui.formatDate(ev.date) : 'No date set') + (times ? ' \u00b7 ' + times : '');
     const defaultRecs = getReportRecipients(ev);
 
+    const linkedMaintIds = Array.isArray(ev.linked_maintenance_ids)
+      ? ev.linked_maintenance_ids
+      : (Array.isArray(ev.linkedMaintenanceIds) ? ev.linkedMaintenanceIds : []);
+    const linkedFaults = linkedMaintIds.map((id) => store.find('maintenance', id)).filter(Boolean);
+
+    const maintTasksSection = linkedFaults.length ? (
+      '<div class="panel bg-panel p-3.5 rounded-xl border border-warning/40 grid gap-3 shadow-xs">' +
+        '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
+          '<div class="flex items-center gap-1.5">' +
+            '<span class="p-1 rounded bg-warning/15 text-warning">' + ui.icon('tool', 'w-4 h-4') + '</span>' +
+            '<span class="text-xs font-bold text-ink uppercase tracking-wider">Tagged Maintenance Tasks (' + linkedFaults.length + ')</span>' +
+          '</div>' +
+          '<span class="text-[11px] text-muted">Update ticket statuses & notes</span>' +
+        '</div>' +
+        '<div class="grid gap-2.5 max-h-56 overflow-y-auto pr-1">' +
+          linkedFaults.map((f) => (
+            '<div class="p-2.5 rounded-lg bg-panel2/60 border border-line text-xs grid gap-2">' +
+              '<div class="flex items-center justify-between gap-2">' +
+                '<div class="font-semibold text-ink truncate">' + ui.esc(f.equipment || f.title || 'Fault') + '</div>' +
+                '<div class="flex items-center gap-2 shrink-0">' +
+                  '<span class="text-[11px] text-muted">' + ui.esc(f.space || 'Venue') + '</span>' +
+                  '<select class="field !py-1 !px-2 text-xs !w-auto font-medium" data-rep-fault-status="' + f.id + '">' +
+                    '<option value="Open" ' + (f.status === 'Open' ? 'selected' : '') + '>Open</option>' +
+                    '<option value="In progress" ' + (f.status === 'In progress' || f.status === 'In Progress' ? 'selected' : '') + '>In Progress</option>' +
+                    '<option value="Resolved" ' + (f.status === 'Resolved' ? 'selected' : '') + '>Resolved</option>' +
+                  '</select>' +
+                '</div>' +
+              '</div>' +
+              '<input class="field text-xs bg-panel text-ink" data-rep-fault-note="' + f.id + '" placeholder="Resolution / work notes for this ticket..." value="' + ui.esc(f.resolution || '') + '" />' +
+            '</div>'
+          )).join('') +
+        '</div>' +
+      '</div>'
+    ) : '';
+
     const m = ui.modal({
       title: (existing ? 'Edit' : 'End-of-shift') + ' report \u2014 ' + ev.name,
       size: 'md:max-w-xl',
@@ -3414,6 +3587,7 @@ RMTP.views.advancing = function (el, params, query) {
           fld('Crew / shift', '<input id="r-crew" class="field" value="' + ui.esc(r.crew || '') + '" placeholder="e.g. Show, Get-out, Night Shift" />') +
           fld('How did the shift go? (Summary)', '<textarea id="r-summary" class="field" rows="3" placeholder="Overview of the event / night\u2026">' + ui.esc(r.summary || '') + '</textarea>') +
           fld('Issues / equipment faults', '<textarea id="r-issues" class="field" rows="2" placeholder="Anything that broke, glitches, or equipment needing repair\u2026">' + ui.esc(r.issues || '') + '</textarea>') +
+          maintTasksSection +
           fld('Handover / follow-up actions', '<textarea id="r-follow" class="field" rows="2" placeholder="Tasks or notes for the next shift or Technical Management\u2026">' + ui.esc(r.followUp || '') + '</textarea>') +
           '<div class="panel bg-panel2/50 p-3 rounded-lg border border-line">' +
             '<div class="flex items-center justify-between mb-2">' +
@@ -3467,6 +3641,44 @@ RMTP.views.advancing = function (el, params, query) {
         ? Object.assign({}, r, base, { updatedAt: now, updatedBy: auth.displayName(meNow) })
         : Object.assign(base, { authorId: meNow ? meNow.id : null, author: auth.displayName(meNow) || 'Technician', submittedAt: now, updatedAt: now });
       store.upsert('reports', record);
+
+      // Persist any updates to tagged maintenance tickets
+      linkedFaults.forEach((f) => {
+        const statusSel = m.root.querySelector('[data-rep-fault-status="' + f.id + '"]');
+        const noteInp = m.root.querySelector('[data-rep-fault-note="' + f.id + '"]');
+        if (!statusSel) return;
+        const newStatus = statusSel.value;
+        const newNote = noteInp ? noteInp.value.trim() : '';
+        if (newStatus !== f.status || (newNote && newNote !== (f.resolution || ''))) {
+          const updatedFault = Object.assign({}, f, {
+            status: newStatus,
+            resolution: newNote || f.resolution || '',
+            updatedAt: Date.now()
+          });
+          if (newStatus === 'Resolved') {
+            updatedFault.resolvedAt = new Date().toISOString();
+            updatedFault.resolvedBy = auth.displayName(meNow) || 'Technician';
+            if (f.itemId) {
+              const item = store.find('inventory', f.itemId);
+              if (item && (item.condition === 'Damaged' || item.condition === 'Poor' || item.location === 'SERVICE' || item.status === 'service')) {
+                store.upsert('inventory', Object.assign({}, item, {
+                  condition: 'Good',
+                  status: 'in',
+                  location: f.space || item.homeLocation || item.location || 'Central Store',
+                  movements: (item.movements || []).concat({
+                    from: 'SERVICE',
+                    to: f.space || item.homeLocation || item.location || 'Central Store',
+                    at: new Date().toISOString(),
+                    by: auth.displayName(meNow) || 'Technician',
+                    note: 'Restored to circulation via shift report: ' + (newNote || 'Fault resolved')
+                  })
+                }));
+              }
+            }
+          }
+          store.upsert('maintenance', updatedFault);
+        }
+      });
 
       m.close();
       RMTP.router.render();
@@ -3524,6 +3736,16 @@ RMTP.views.advancing = function (el, params, query) {
     let specMeta = originalSpec;
     let pending = null;
     let cleared = false;
+
+    let equipmentBookings = (Array.isArray(ev.equipment_bookings)
+      ? ev.equipment_bookings
+      : (Array.isArray(ev.equipmentBookings) ? ev.equipmentBookings : []))
+      .map((b) => Object.assign({}, b, {
+        id: b.id || store.uid('bkg'),
+        qty: b.qty || 1,
+        override: !!b.override,
+        overrideReason: b.overrideReason || ''
+      }));
 
     const initialSpace = ev.space || '';
     const hasSpaceInitial = Boolean(initialSpace);
@@ -3728,7 +3950,7 @@ RMTP.views.advancing = function (el, params, query) {
             '</div>' +
 
             /* Cinema Linked Maintenance Tasks */
-            '<div id="section-cinema-maintenance" class="' + (ev.category === 'Maintenance' || linkedMaintIds.length ? '' : 'hidden') + ' p-4 rounded-xl bg-panel border border-warning/30 grid gap-3 shadow-xs">' +
+            '<div id="section-cinema-maintenance" class="' + (ev.category === 'Maintenance' || ev.category === 'Maintenance Shift' || linkedMaintIds.length ? '' : 'hidden') + ' p-4 rounded-xl bg-panel border border-warning/30 grid gap-3 shadow-xs">' +
               '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
                 '<div class="flex items-center gap-1.5">' +
                   ui.icon('tool', 'w-4 h-4 text-warning') +
@@ -3737,6 +3959,21 @@ RMTP.views.advancing = function (el, params, query) {
                 '<span class="text-[11px] text-muted">Assigned tasks will be tracked against this shift</span>' +
               '</div>' +
               '<div id="cinema-maintenance-picker" class="grid gap-2 max-h-52 overflow-y-auto pr-1"></div>' +
+            '</div>' +
+
+            /* Cinema Shared Equipment Booking */
+            '<div id="section-cinema-equipment" class="p-4 rounded-xl bg-panel border border-line grid gap-3 shadow-xs">' +
+              '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
+                '<div class="flex items-center gap-1.5">' +
+                  ui.icon('box', 'w-4 h-4 text-accent') +
+                  '<span class="text-xs font-semibold text-accent">Shared Equipment & Kit Bookings</span>' +
+                '</div>' +
+                '<button type="button" id="btn-cinema-add-kit" class="btn btn-secondary !py-1 !px-2.5 text-xs flex items-center gap-1 font-semibold">' +
+                  ui.icon('plus', 'w-3 h-3 text-accent') +
+                  '<span>Book Kit</span>' +
+                '</button>' +
+              '</div>' +
+              '<div id="cinema-allocated-kit-list" class="grid gap-2"></div>' +
             '</div>' +
 
             /* Cinema Crew, Details, Tech Spec */
@@ -4017,14 +4254,14 @@ RMTP.views.advancing = function (el, params, query) {
               '</div>' +
             '</div>' +
 
-            /* ================= SECTION FOUR: EVERYTHING ELSE ================= */
+            /* ================= SECTION FOUR: SHARED EQUIPMENT & KIT BOOKING ================= */
             '<div class="rounded-xl border border-line bg-panel overflow-hidden shadow-xs">' +
               '<button type="button" data-section-toggle="sec-4-content" class="w-full p-3.5 bg-panel hover:bg-panel2/60 transition-colors flex items-center justify-between text-left gap-3 select-none cursor-pointer">' +
                 '<div class="flex items-center gap-3 min-w-0">' +
                   '<span class="px-2 py-1 rounded-md bg-accent/15 text-accent text-xs font-bold font-mono">04</span>' +
                   '<div class="min-w-0">' +
-                    '<div class="text-xs font-bold text-ink uppercase tracking-wider">Section 4: Everything Else</div>' +
-                    '<div class="text-[11px] text-muted truncate">Linked Maintenance Tasks & Event Shift Report Email Overrides</div>' +
+                    '<div class="text-xs font-bold text-ink uppercase tracking-wider">Section 4: Shared Equipment & Kit Booking</div>' +
+                    '<div class="text-[11px] text-muted truncate">Allocate shared inventory items with schedule conflict detection</div>' +
                   '</div>' +
                 '</div>' +
                 '<div class="flex items-center gap-2 shrink-0">' +
@@ -4034,8 +4271,92 @@ RMTP.views.advancing = function (el, params, query) {
               '</button>' +
 
               '<div id="sec-4-content" class="hidden p-4 pt-3 border-t border-line/60 bg-panel2/30 grid gap-4">' +
+                '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
+                  '<div>' +
+                    '<div class="text-xs font-semibold text-ink">Allocated Shared Equipment</div>' +
+                    '<div class="text-[11px] text-muted">Book microphones, wireless systems, cameras, speakers, projectors & accessories to this event.</div>' +
+                  '</div>' +
+                  '<button type="button" id="btn-add-kit" class="btn btn-secondary !py-1.5 !px-3 text-xs flex items-center gap-1.5 shrink-0 font-semibold">' +
+                    ui.icon('plus', 'w-3.5 h-3.5 text-accent') +
+                    '<span>Allocate Equipment</span>' +
+                  '</button>' +
+                '</div>' +
+
+                /* Add Kit Allocation Inline Drawer */
+                '<div id="kit-allocation-drawer" class="hidden panel p-3.5 bg-panel border border-accent/40 rounded-xl grid gap-3 shadow-xs">' +
+                  '<div class="flex items-center justify-between pb-2 border-b border-line">' +
+                    '<div class="flex items-center gap-1.5 text-xs font-bold text-ink uppercase tracking-wider">' +
+                      ui.icon('box', 'w-4 h-4 text-accent') +
+                      '<span>Allocate Shared Kit to Event</span>' +
+                    '</div>' +
+                    '<button type="button" id="btn-close-kit-drawer" class="btn btn-ghost !p-1 text-muted hover:text-ink">' + ui.icon('close', 'w-3.5 h-3.5') + '</button>' +
+                  '</div>' +
+
+                  '<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">' +
+                    '<div class="sm:col-span-2">' +
+                      '<label class="block text-[11px] font-semibold text-muted mb-1">Select Inventory Item <span class="text-danger">*</span></label>' +
+                      '<select id="kit-select-item" class="field text-xs"></select>' +
+                    '</div>' +
+                    '<div>' +
+                      '<label class="block text-[11px] font-semibold text-muted mb-1">Quantity</label>' +
+                      '<input type="number" id="kit-input-qty" class="field text-xs tabular font-mono" min="1" max="99" value="1" />' +
+                    '</div>' +
+                    '<div>' +
+                      '<label class="block text-[11px] font-semibold text-muted mb-1">Booking Date</label>' +
+                      '<input type="date" id="kit-input-date" class="field text-xs font-mono" />' +
+                    '</div>' +
+                  '</div>' +
+
+                  '<div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">' +
+                    '<div>' +
+                      '<label class="block text-[11px] font-semibold text-muted mb-1">Start Time (Load-in / Use)</label>' +
+                      '<input type="text" id="kit-input-start" class="field text-xs font-mono" placeholder="HH:MM" />' +
+                    '</div>' +
+                    '<div>' +
+                      '<label class="block text-[11px] font-semibold text-muted mb-1">Finish Time (Load-out / Release)</label>' +
+                      '<input type="text" id="kit-input-finish" class="field text-xs font-mono" placeholder="HH:MM" />' +
+                    '</div>' +
+                  '</div>' +
+
+                  /* Item details preview: status, available qty, home venue location */
+                  '<div id="kit-item-preview" class="hidden text-xs p-2.5 rounded-lg bg-panel2/70 border border-line flex flex-wrap items-center justify-between gap-2"></div>' +
+
+                  /* Conflict banner & override fields */
+                  '<div id="kit-conflict-container" class="hidden"></div>' +
+
+                  '<div class="flex items-center justify-end gap-2 pt-2 border-t border-line/60">' +
+                    '<button type="button" id="btn-cancel-kit-alloc" class="btn btn-ghost !py-1.5 !px-3 text-xs">Cancel</button>' +
+                    '<button type="button" id="btn-confirm-kit-alloc" class="btn btn-primary !py-1.5 !px-3.5 text-xs flex items-center gap-1.5 font-semibold">' +
+                      ui.icon('check', 'w-3.5 h-3.5') +
+                      '<span>Confirm Allocation</span>' +
+                    '</button>' +
+                  '</div>' +
+                '</div>' +
+
+                /* List of booked kit */
+                '<div id="allocated-kit-list" class="grid gap-2"></div>' +
+              '</div>' +
+            '</div>' +
+
+            /* ================= SECTION FIVE: EVERYTHING ELSE ================= */
+            '<div class="rounded-xl border border-line bg-panel overflow-hidden shadow-xs">' +
+              '<button type="button" data-section-toggle="sec-5-content" class="w-full p-3.5 bg-panel hover:bg-panel2/60 transition-colors flex items-center justify-between text-left gap-3 select-none cursor-pointer">' +
+                '<div class="flex items-center gap-3 min-w-0">' +
+                  '<span class="px-2 py-1 rounded-md bg-accent/15 text-accent text-xs font-bold font-mono">05</span>' +
+                  '<div class="min-w-0">' +
+                    '<div class="text-xs font-bold text-ink uppercase tracking-wider">Section 5: Everything Else</div>' +
+                    '<div class="text-[11px] text-muted truncate">Linked Maintenance Tasks & Event Shift Report Email Overrides</div>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="flex items-center gap-2 shrink-0">' +
+                  '<span id="sec-5-pill" class="text-[11px] font-semibold px-2 py-0.5 rounded bg-panel2 border border-line text-muted hidden sm:inline-block"></span>' +
+                  '<span data-section-chevron="sec-5-content" class="transition-transform duration-200 text-muted">' + ui.icon('arrowD', 'w-4 h-4') + '</span>' +
+                '</div>' +
+              '</button>' +
+
+              '<div id="sec-5-content" class="hidden p-4 pt-3 border-t border-line/60 bg-panel2/30 grid gap-4">' +
                 /* Linked Maintenance Tasks */
-                '<div id="section-maintenance-advancing" class="' + (ev.category === 'Maintenance' || linkedMaintIds.length ? '' : 'hidden') + ' p-4 rounded-xl bg-panel border border-warning/30 grid gap-3 shadow-xs">' +
+                '<div id="section-maintenance-advancing" class="' + (ev.category === 'Maintenance' || ev.category === 'Maintenance Shift' || linkedMaintIds.length ? '' : 'hidden') + ' p-4 rounded-xl bg-panel border border-warning/30 grid gap-3 shadow-xs">' +
                   '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
                     '<div class="flex items-center gap-1.5">' +
                       ui.icon('tool', 'w-4 h-4 text-warning') +
@@ -4105,15 +4426,36 @@ RMTP.views.advancing = function (el, params, query) {
           (parts.length ? 'bg-accent/10 border-accent/30 text-accent font-medium' : 'bg-panel2 border-line text-muted');
       }
 
-      // Sec 4 Pill
+      // Sec 4 Pill (Equipment Allocation)
       const sec4Pill = m.root.querySelector('#sec-4-pill');
       if (sec4Pill) {
+        const count = equipmentBookings.length;
+        let conflictCount = 0;
+        equipmentBookings.forEach((b) => {
+          const c = RMTP.equipmentBookings ? RMTP.equipmentBookings.checkConflict(b, ev.id, b.id) : { hasConflict: false };
+          if (c.hasConflict && !b.override) conflictCount++;
+        });
+        if (conflictCount > 0) {
+          sec4Pill.textContent = conflictCount + ' Conflict' + (conflictCount === 1 ? '' : 's');
+          sec4Pill.className = 'text-[11px] font-semibold px-2 py-0.5 rounded border hidden sm:inline-block bg-danger/10 border-danger/40 text-danger font-medium';
+        } else if (count > 0) {
+          sec4Pill.textContent = count + ' Kit Allocated';
+          sec4Pill.className = 'text-[11px] font-semibold px-2 py-0.5 rounded border hidden sm:inline-block bg-accent/10 border-accent/30 text-accent font-medium';
+        } else {
+          sec4Pill.textContent = 'No Kit Booked';
+          sec4Pill.className = 'text-[11px] font-semibold px-2 py-0.5 rounded border hidden sm:inline-block bg-panel2 border-line text-muted';
+        }
+      }
+
+      // Sec 5 Pill (Maintenance Tasks & Settings)
+      const sec5Pill = m.root.querySelector('#sec-5-pill');
+      if (sec5Pill) {
         const parts = [];
         if (linkedMaintIds.length) parts.push(linkedMaintIds.length + ' Fault' + (linkedMaintIds.length === 1 ? '' : 's'));
         const emailVal = m.root.querySelector('#e-email-recipients')?.value.trim();
         if (emailVal) parts.push('Email Override');
-        sec4Pill.textContent = parts.length ? parts.join(' \u00b7 ') : 'Default Settings';
-        sec4Pill.className = 'text-[11px] font-semibold px-2 py-0.5 rounded border hidden sm:inline-block ' +
+        sec5Pill.textContent = parts.length ? parts.join(' \u00b7 ') : 'Default Settings';
+        sec5Pill.className = 'text-[11px] font-semibold px-2 py-0.5 rounded border hidden sm:inline-block ' +
           (parts.length ? 'bg-accent/10 border-accent/30 text-accent font-medium' : 'bg-panel2 border-line text-muted');
       }
     }
@@ -4144,6 +4486,7 @@ RMTP.views.advancing = function (el, params, query) {
             m.root.querySelector('#sec-2-content'),
             m.root.querySelector('#sec-3-content'),
             m.root.querySelector('#sec-4-content'),
+            m.root.querySelector('#sec-5-content'),
           ].filter(Boolean);
 
           const anyHidden = bodies.some((b) => b.classList.contains('hidden'));
@@ -4169,6 +4512,7 @@ RMTP.views.advancing = function (el, params, query) {
         m.root.querySelector('#sec-2-content'),
         m.root.querySelector('#sec-3-content'),
         m.root.querySelector('#sec-4-content'),
+        m.root.querySelector('#sec-5-content'),
       ].filter(Boolean);
       const anyHidden = bodies.some((b) => b.classList.contains('hidden'));
       toggleAllBtn.innerHTML = anyHidden ? '<span>Expand All</span>' : '<span>Collapse All</span>';
@@ -4301,7 +4645,7 @@ RMTP.views.advancing = function (el, params, query) {
 
     if (categorySelect) {
       categorySelect.addEventListener('change', () => {
-        const isMaint = categorySelect.value === 'Maintenance';
+        const isMaint = categorySelect.value === 'Maintenance' || categorySelect.value === 'Maintenance Shift';
         if (maintSection) maintSection.classList.toggle('hidden', !isMaint && !linkedMaintIds.length);
         if (cinemaMaintSection) cinemaMaintSection.classList.toggle('hidden', !isMaint && !linkedMaintIds.length);
         if (categorySelect.value === 'Cinema' && !spaceSelect.value) {
@@ -4322,15 +4666,29 @@ RMTP.views.advancing = function (el, params, query) {
         }
         picker.innerHTML = openFaults.map((f) => {
           const isChecked = linkedMaintIds.indexOf(f.id) !== -1;
+          const isCons = f.taskType === 'consumables' || f.category === 'Consumables';
           return (
-            '<label class="flex items-start gap-2.5 p-2.5 rounded-lg bg-panel border border-line cursor-pointer hover:border-accent/50 text-xs">' +
+            '<label class="flex items-start gap-2.5 p-2.5 rounded-lg bg-panel border border-line cursor-pointer hover:border-accent/50 text-xs transition-colors ' + (isChecked ? 'border-accent/40 bg-accent/5' : '') + '">' +
               '<input type="checkbox" data-maint-id="' + f.id + '" class="w-4 h-4 mt-0.5 rounded border-line accent-[var(--accent)] shrink-0 cursor-pointer" ' + (isChecked ? 'checked' : '') + ' />' +
               '<div class="min-w-0 flex-1">' +
                 '<div class="flex items-center justify-between gap-2">' +
-                  '<span class="font-medium text-ink">' + ui.esc(f.title || f.equipment || 'Fault') + '</span>' +
+                  '<div class="flex items-center gap-1.5 truncate">' +
+                    (isCons
+                      ? '<span class="px-1.5 py-0.2 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1 shrink-0">' + ui.icon('cart', 'w-3 h-3') + 'Consumables</span>'
+                      : '<span class="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1 shrink-0">' + ui.icon('tool', 'w-3 h-3') + 'Fault</span>') +
+                    '<span class="font-medium text-ink truncate">' + ui.esc(f.title || f.equipment || 'Task') + '</span>' +
+                  '</div>' +
                   ui.pill(f.status || 'Reported', f.status === 'Resolved' ? 'var(--ok)' : (f.status === 'In Progress' ? 'var(--info)' : 'var(--warning)')) +
                 '</div>' +
-                '<div class="text-muted text-[11px] mt-0.5">' + ui.esc(f.space || f.location || 'Venue') + (f.description ? ' \u00b7 ' + ui.esc(f.description) : '') + '</div>' +
+                '<div class="text-muted text-[11px] mt-0.5">' +
+                  ui.esc(f.space || f.location || 'Venue') +
+                  (f.assignedTechName ? ' \u00b7 Tagged: <strong class="text-accent">' + ui.esc(f.assignedTechName) + '</strong>' : '') +
+                  (f.description ? ' \u00b7 ' + ui.esc(f.description) : '') +
+                '</div>' +
+                (isCons && Array.isArray(f.consumableItems) && f.consumableItems.length ?
+                  '<div class="text-[11px] text-purple-200 mt-1 font-mono truncate">' +
+                    f.consumableItems.map((ci) => ui.esc(ci.qty ? ci.qty + ' ' + ci.name : ci.name)).join(', ') +
+                  '</div>' : '') +
               '</div>' +
             '</label>'
           );
@@ -4353,6 +4711,375 @@ RMTP.views.advancing = function (el, params, query) {
       });
     }
     renderMaintenancePicker();
+
+    // Shared Equipment & Kit Booking UI wiring
+    function setupEquipmentBookings() {
+      const kitDrawer = m.root.querySelector('#kit-allocation-drawer');
+      const kitSelectItem = m.root.querySelector('#kit-select-item');
+      const kitInputQty = m.root.querySelector('#kit-input-qty');
+      const kitInputDate = m.root.querySelector('#kit-input-date');
+      const kitInputStart = m.root.querySelector('#kit-input-start');
+      const kitInputFinish = m.root.querySelector('#kit-input-finish');
+      const kitItemPreview = m.root.querySelector('#kit-item-preview');
+      const kitConflictContainer = m.root.querySelector('#kit-conflict-container');
+      const btnAddKit = m.root.querySelector('#btn-add-kit');
+      const btnCinemaAddKit = m.root.querySelector('#btn-cinema-add-kit');
+      const btnCloseKitDrawer = m.root.querySelector('#btn-close-kit-drawer');
+      const btnCancelKitAlloc = m.root.querySelector('#btn-cancel-kit-alloc');
+      const btnConfirmKitAlloc = m.root.querySelector('#btn-confirm-kit-alloc');
+
+      function populateInventorySelect() {
+        if (!kitSelectItem) return;
+        const all = RMTP.store.all('inventory') || [];
+        all.sort((a, b) => {
+          const c = (a.category || '').localeCompare(b.category || '');
+          return c !== 0 ? c : (a.name || '').localeCompare(b.name || '');
+        });
+        kitSelectItem.innerHTML = '<option value="">-- Choose item from shared inventory --</option>' +
+          all.map((it) => {
+            const loc = it.homeLocation || it.location || 'Store';
+            const cond = it.status === 'service' ? 'Out of Service' : (it.condition || 'Good');
+            return '<option value="' + it.id + '">' + ui.esc(it.name) + ' (' + ui.esc(it.tag) + ') \u2014 ' + ui.esc(loc) + ' \u00b7 Qty: ' + (it.qty || 1) + ' \u00b7 ' + ui.esc(cond) + '</option>';
+          }).join('');
+      }
+
+      function openKitDrawer() {
+        if (!kitDrawer) return;
+        populateInventorySelect();
+        kitDrawer.classList.remove('hidden');
+        if (kitInputDate) kitInputDate.value = m.root.querySelector('#e-date')?.value || ev.date || new Date().toISOString().slice(0, 10);
+        if (kitInputStart) {
+          kitInputStart.value = m.root.querySelector('#e-load-in')?.value ||
+            m.root.querySelector('#e-screening-starts')?.value ||
+            m.root.querySelector('#e-start')?.value || ev.load_in || ev.startTime || '09:00';
+        }
+        if (kitInputFinish) {
+          kitInputFinish.value = m.root.querySelector('#e-load-out')?.value ||
+            m.root.querySelector('#e-curfew')?.value ||
+            m.root.querySelector('#e-finish')?.value || ev.load_out || ev.finishTime || '23:00';
+        }
+        checkDrawerConflict();
+      }
+
+      function closeKitDrawer() {
+        if (!kitDrawer) return;
+        kitDrawer.classList.add('hidden');
+        if (kitSelectItem) kitSelectItem.value = '';
+        if (kitItemPreview) {
+          kitItemPreview.classList.add('hidden');
+          kitItemPreview.innerHTML = '';
+        }
+        if (kitConflictContainer) {
+          kitConflictContainer.classList.add('hidden');
+          kitConflictContainer.innerHTML = '';
+        }
+      }
+
+      function checkDrawerConflict() {
+        if (!kitConflictContainer) return;
+        const itemId = kitSelectItem ? kitSelectItem.value : '';
+        if (!itemId) {
+          kitConflictContainer.classList.add('hidden');
+          kitConflictContainer.innerHTML = '';
+          return;
+        }
+        const item = RMTP.store.find('inventory', itemId);
+        if (!item) return;
+
+        const dateVal = kitInputDate ? kitInputDate.value : '';
+        const startVal = kitInputStart ? kitInputStart.value.trim() : '09:00';
+        const finishVal = kitInputFinish ? kitInputFinish.value.trim() : '23:00';
+
+        const conflict = RMTP.equipmentBookings ? RMTP.equipmentBookings.checkConflict({
+          itemId: item.id,
+          itemTag: item.tag,
+          itemName: item.name,
+          date: dateVal,
+          startTime: startVal,
+          finishTime: finishVal
+        }, ev.id) : { hasConflict: false };
+
+        if (conflict.hasConflict) {
+          kitConflictContainer.classList.remove('hidden');
+          kitConflictContainer.innerHTML =
+            '<div class="panel p-3 bg-amber-500/10 border border-amber-500/40 rounded-lg text-xs text-amber-200 grid gap-2">' +
+              '<div class="flex items-start gap-2">' +
+                '<span class="text-amber-400 shrink-0 mt-0.5">' + ui.icon('alert', 'w-4 h-4') + '</span>' +
+                '<div>' +
+                  '<div class="font-bold text-amber-300">Schedule Conflict Detected</div>' +
+                  '<div class="text-[11px] text-amber-100 mt-0.5">' + ui.esc(conflict.conflictMessage) + '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="pt-2 border-t border-amber-500/20 grid gap-2">' +
+                '<label class="flex items-center gap-2 cursor-pointer font-semibold text-amber-200">' +
+                  '<input type="checkbox" id="kit-drawer-override-cb" class="w-4 h-4 rounded accent-amber-500" />' +
+                  '<span>Manual Double-Booking Override</span>' +
+                '</label>' +
+                '<div id="kit-drawer-override-wrap" class="hidden">' +
+                  '<label class="block text-[11px] font-semibold text-amber-300 mb-1">' +
+                    'Explain how this kit will be shared or moved between spaces <span class="text-danger">*</span>' +
+                  '</label>' +
+                  '<input id="kit-drawer-override-reason" class="field text-xs bg-panel text-ink" placeholder="e.g. Soundcheck finishes at 16:00, will move kit to Screen 1 before 18:00 screening" />' +
+                '</div>' +
+              '</div>' +
+            '</div>';
+
+          const ovrCb = kitConflictContainer.querySelector('#kit-drawer-override-cb');
+          const reasonWrap = kitConflictContainer.querySelector('#kit-drawer-override-wrap');
+          if (ovrCb && reasonWrap) {
+            ovrCb.addEventListener('change', (e) => {
+              reasonWrap.classList.toggle('hidden', !e.target.checked);
+            });
+          }
+        } else {
+          kitConflictContainer.classList.add('hidden');
+          kitConflictContainer.innerHTML = '';
+        }
+      }
+
+      if (btnAddKit) btnAddKit.addEventListener('click', openKitDrawer);
+      if (btnCinemaAddKit) {
+        btnCinemaAddKit.addEventListener('click', () => {
+          openKitDrawer();
+          const sec4 = m.root.querySelector('#sec-4-content');
+          if (sec4 && sec4.classList.contains('hidden')) {
+            const btn4 = m.root.querySelector('[data-section-toggle="sec-4-content"]');
+            if (btn4) btn4.click();
+          }
+        });
+      }
+      if (btnCloseKitDrawer) btnCloseKitDrawer.addEventListener('click', closeKitDrawer);
+      if (btnCancelKitAlloc) btnCancelKitAlloc.addEventListener('click', closeKitDrawer);
+
+      if (kitSelectItem) {
+        kitSelectItem.addEventListener('change', () => {
+          const id = kitSelectItem.value;
+          const it = id ? RMTP.store.find('inventory', id) : null;
+          if (it && kitItemPreview) {
+            kitItemPreview.classList.remove('hidden');
+            const isHold = it.status === 'service' || it.condition === 'Damaged' || it.condition === 'Poor';
+            kitItemPreview.innerHTML =
+              '<div class="flex items-center gap-2">' +
+                '<span class="font-bold text-ink">' + ui.esc(it.name) + '</span>' +
+                '<span class="font-mono text-accent tabular">(' + ui.esc(it.tag) + ')</span>' +
+                '<span class="text-muted">\u00b7 ' + ui.esc(it.category || 'Kit') + '</span>' +
+              '</div>' +
+              '<div class="flex items-center gap-2">' +
+                '<span class="text-muted">Home Venue: <strong class="text-ink">' + ui.esc(it.homeLocation || it.location || 'Central Store') + '</strong></span>' +
+                '<span class="text-muted">\u00b7 Available Qty: <strong class="text-ink">' + (it.qty || 1) + '</strong></span>' +
+                (isHold
+                  ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-danger/20 text-danger border border-danger/30">' + ui.esc(it.condition || 'Service') + '</span>'
+                  : '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-ok/20 text-ok border border-ok/30">In Service (' + ui.esc(it.condition || 'Good') + ')</span>') +
+              '</div>';
+          } else if (kitItemPreview) {
+            kitItemPreview.classList.add('hidden');
+            kitItemPreview.innerHTML = '';
+          }
+          checkDrawerConflict();
+        });
+      }
+
+      [kitInputDate, kitInputStart, kitInputFinish].forEach((inp) => {
+        if (inp) inp.addEventListener('input', checkDrawerConflict);
+      });
+
+      if (btnConfirmKitAlloc) {
+        btnConfirmKitAlloc.addEventListener('click', () => {
+          const itemId = kitSelectItem ? kitSelectItem.value : '';
+          if (!itemId) {
+            ui.toast('Select an inventory item to allocate', 'danger');
+            return;
+          }
+          const item = RMTP.store.find('inventory', itemId);
+          if (!item) return;
+
+          const dateVal = kitInputDate ? kitInputDate.value : '';
+          const startVal = kitInputStart ? kitInputStart.value.trim() : '09:00';
+          const finishVal = kitInputFinish ? kitInputFinish.value.trim() : '23:00';
+          const qtyVal = kitInputQty ? Math.max(1, parseInt(kitInputQty.value, 10) || 1) : 1;
+
+          const conflict = RMTP.equipmentBookings ? RMTP.equipmentBookings.checkConflict({
+            itemId: item.id,
+            itemTag: item.tag,
+            itemName: item.name,
+            date: dateVal,
+            startTime: startVal,
+            finishTime: finishVal
+          }, ev.id) : { hasConflict: false };
+
+          let isOverride = false;
+          let overrideReason = '';
+
+          if (conflict.hasConflict) {
+            const ovrCb = kitConflictContainer ? kitConflictContainer.querySelector('#kit-drawer-override-cb') : null;
+            const reasonInp = kitConflictContainer ? kitConflictContainer.querySelector('#kit-drawer-override-reason') : null;
+            if (!ovrCb || !ovrCb.checked) {
+              ui.toast('Conflict detected: ' + conflict.conflictMessage + '. Please check Manual Override with an explanation.', 'danger');
+              return;
+            }
+            if (!reasonInp || !reasonInp.value.trim()) {
+              ui.toast('Please explain how this kit will be shared or moved between spaces', 'danger');
+              if (reasonInp) reasonInp.focus();
+              return;
+            }
+            isOverride = true;
+            overrideReason = reasonInp.value.trim();
+          }
+
+          equipmentBookings.push({
+            id: RMTP.store.uid('bkg'),
+            itemId: item.id,
+            itemTag: item.tag,
+            itemName: item.name,
+            itemCategory: item.category,
+            itemLocation: item.homeLocation || item.location || 'Store',
+            qty: qtyVal,
+            date: dateVal,
+            startTime: startVal,
+            finishTime: finishVal,
+            override: isOverride,
+            overrideReason: overrideReason
+          });
+
+          closeKitDrawer();
+          renderEquipmentBookingsUI();
+          updateSectionBannerPills();
+          ui.toast('Allocated ' + qtyVal + ' \u00d7 ' + item.name + ' to event', 'ok');
+        });
+      }
+
+      function renderEquipmentBookingsUI() {
+        ['#allocated-kit-list', '#cinema-allocated-kit-list'].forEach((listSel) => {
+          const listEl = m.root.querySelector(listSel);
+          if (!listEl) return;
+          if (!equipmentBookings.length) {
+            listEl.innerHTML = '<div class="text-xs text-muted italic p-3 rounded-lg bg-panel border border-line text-center">No shared equipment allocated to this event. Click "+ Allocate Equipment" to book shared microphones, DI boxes, backline, DJ gear, or projectors.</div>';
+            return;
+          }
+
+          listEl.innerHTML = equipmentBookings.map((b) => {
+            const conflict = RMTP.equipmentBookings ? RMTP.equipmentBookings.checkConflict(b, ev.id, b.id) : { hasConflict: false };
+            return (
+              '<div class="panel p-3 bg-panel border rounded-xl grid gap-2 shadow-2xs ' +
+                (conflict.hasConflict && !b.override ? 'border-amber-500/60 bg-amber-500/5' : 'border-line') + '">' +
+                '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+                  '<div class="flex items-center gap-2 min-w-0">' +
+                    '<span class="p-1 rounded bg-accent/15 text-accent shrink-0">' + ui.icon('box', 'w-3.5 h-3.5') + '</span>' +
+                    '<span class="font-semibold text-ink text-xs truncate">' + ui.esc(b.itemName || 'Kit') + '</span>' +
+                    (b.itemTag ? '<span class="tabular font-mono text-[11px] text-accent font-semibold shrink-0">' + ui.esc(b.itemTag) + '</span>' : '') +
+                    '<span class="text-[11px] text-muted truncate">\u00b7 Home: ' + ui.esc(b.itemLocation || 'Store') + '</span>' +
+                  '</div>' +
+                  '<div class="flex items-center gap-1.5 shrink-0">' +
+                    '<span class="px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-panel2 border border-line text-ink">' + (b.qty || 1) + ' \u00d7 unit' + ((b.qty || 1) > 1 ? 's' : '') + '</span>' +
+                    (conflict.hasConflict
+                      ? (b.override
+                        ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">Override Approved</span>'
+                        : '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-danger/20 text-danger border border-danger/40">Conflict Flagged</span>')
+                      : '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-ok/20 text-ok border border-ok/40">Available</span>') +
+                    '<button type="button" data-remove-bkg="' + b.id + '" class="btn btn-ghost !p-1 text-danger hover:bg-danger/10" title="Remove allocation">' + ui.icon('trash', 'w-3.5 h-3.5') + '</button>' +
+                  '</div>' +
+                '</div>' +
+
+                '<div class="flex items-center justify-between gap-2 flex-wrap text-xs text-muted pt-1 border-t border-line/60">' +
+                  '<div class="flex items-center gap-1.5 font-mono text-[11px] text-ink">' +
+                    ui.icon('clock', 'w-3 h-3 text-muted') +
+                    '<span>' + (b.date ? ui.formatDate(b.date) : 'Event Date') + ' \u00b7 ' + ui.esc(b.startTime || '09:00') + ' \u2013 ' + ui.esc(b.finishTime || '23:00') + '</span>' +
+                  '</div>' +
+                  (b.itemCategory ? '<div class="text-[11px] text-muted">' + ui.esc(b.itemCategory) + '</div>' : '') +
+                '</div>' +
+
+                (conflict.hasConflict ? (
+                  '<div class="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 grid gap-2">' +
+                    '<div class="flex items-start gap-1.5">' +
+                      '<span class="text-amber-400 mt-0.5 shrink-0">' + ui.icon('alert', 'w-3.5 h-3.5') + '</span>' +
+                      '<div class="text-[11px] font-medium">' + ui.esc(conflict.conflictMessage) + '</div>' +
+                    '</div>' +
+                    (b.override ? (
+                      '<div class="text-[11px] text-amber-300 font-mono italic pl-5">' +
+                        'Override note: "' + ui.esc(b.overrideReason || '') + '"' +
+                      '</div>' +
+                      '<div class="pl-5">' +
+                        '<button type="button" data-edit-bkg-override="' + b.id + '" class="text-[11px] text-amber-300 underline hover:text-amber-100">Change override note</button>' +
+                      '</div>'
+                    ) : (
+                      '<div class="pt-1.5 border-t border-amber-500/20 grid gap-1.5">' +
+                        '<label class="flex items-center gap-1.5 text-[11px] text-amber-300 cursor-pointer font-semibold">' +
+                          '<input type="checkbox" data-list-override-cb="' + b.id + '" class="w-3.5 h-3.5 rounded accent-amber-500" />' +
+                          '<span>Manual Double-Booking Override</span>' +
+                        '</label>' +
+                        '<div id="list-override-reason-wrap-' + b.id + '" class="hidden">' +
+                          '<label class="block text-[10px] text-amber-300 font-semibold mb-1">Explain how kit will be shared between spaces <span class="text-danger">*</span></label>' +
+                          '<div class="flex items-center gap-1.5">' +
+                            '<input data-list-override-input="' + b.id + '" class="field text-xs bg-panel text-ink flex-1" placeholder="e.g. Soundcheck finishes early, will transfer rack to Screen 1" />' +
+                            '<button type="button" data-save-list-override="' + b.id + '" class="btn btn-primary !py-1 !px-2.5 text-xs shrink-0 font-semibold">Confirm Override</button>' +
+                          '</div>' +
+                        '</div>' +
+                      '</div>'
+                    )) +
+                  '</div>'
+                ) : '') +
+              '</div>'
+            );
+          }).join('');
+
+          // Wire remove buttons
+          listEl.querySelectorAll('[data-remove-bkg]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              const bid = btn.getAttribute('data-remove-bkg');
+              equipmentBookings = equipmentBookings.filter((x) => x.id !== bid);
+              renderEquipmentBookingsUI();
+              updateSectionBannerPills();
+            });
+          });
+
+          // Wire list override checkboxes
+          listEl.querySelectorAll('[data-list-override-cb]').forEach((cb) => {
+            cb.addEventListener('change', (e) => {
+              const bid = cb.getAttribute('data-list-override-cb');
+              const wrap = listEl.querySelector('#list-override-reason-wrap-' + bid);
+              if (wrap) wrap.classList.toggle('hidden', !e.target.checked);
+            });
+          });
+
+          // Wire list save override button
+          listEl.querySelectorAll('[data-save-list-override]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              const bid = btn.getAttribute('data-save-list-override');
+              const inp = listEl.querySelector('[data-list-override-input="' + bid + '"]');
+              const reason = inp ? inp.value.trim() : '';
+              if (!reason) {
+                ui.toast('Please enter an explanation of how kit will be shared', 'danger');
+                return;
+              }
+              const b = equipmentBookings.find((x) => x.id === bid);
+              if (b) {
+                b.override = true;
+                b.overrideReason = reason;
+                renderEquipmentBookingsUI();
+                updateSectionBannerPills();
+                ui.toast('Override recorded for ' + (b.itemName || 'kit'), 'ok');
+              }
+            });
+          });
+
+          // Wire change override note button
+          listEl.querySelectorAll('[data-edit-bkg-override]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              const bid = btn.getAttribute('data-edit-bkg-override');
+              const b = equipmentBookings.find((x) => x.id === bid);
+              if (b) {
+                b.override = false;
+                renderEquipmentBookingsUI();
+                updateSectionBannerPills();
+              }
+            });
+          });
+        });
+      }
+
+      renderEquipmentBookingsUI();
+    }
+    setupEquipmentBookings();
 
     // Channel List Builder: Inputs
     function renderChannelInputs() {
@@ -5774,6 +6501,29 @@ RMTP.views.advancing = function (el, params, query) {
       const name = m.root.querySelector('#e-name').value.trim();
       if (!name) { ui.toast('Give the event a name', 'danger'); return; }
 
+      // Validate equipment allocations for double-booking conflict and manual override
+      for (const b of equipmentBookings) {
+        const c = RMTP.equipmentBookings ? RMTP.equipmentBookings.checkConflict(b, ev.id, b.id) : { hasConflict: false };
+        if (c.hasConflict && !b.override) {
+          ui.toast('Cannot save event: conflict on "' + (b.itemName || 'equipment') + '". Please override with explanation or remove allocation.', 'danger');
+          const sec4 = m.root.querySelector('#sec-4-content');
+          if (sec4 && sec4.classList.contains('hidden')) {
+            const btn4 = m.root.querySelector('[data-section-toggle="sec-4-content"]');
+            if (btn4) btn4.click();
+          }
+          return;
+        }
+        if (c.hasConflict && b.override && (!b.overrideReason || !b.overrideReason.trim())) {
+          ui.toast('Please provide an explanation for overriding double-booking of "' + (b.itemName || 'kit') + '"', 'danger');
+          const sec4 = m.root.querySelector('#sec-4-content');
+          if (sec4 && sec4.classList.contains('hidden')) {
+            const btn4 = m.root.querySelector('[data-section-toggle="sec-4-content"]');
+            if (btn4) btn4.click();
+          }
+          return;
+        }
+      }
+
       const finalTechs = techs.filter((t) => t.userId || (t.isFreelancer && t.freelancerName.trim()) || t.isNoTech);
       if (finalTechs.some((t) => !t.isNoTech && !t.role)) { ui.toast('Pick a role for each tagged technician', 'danger'); return; }
 
@@ -5870,6 +6620,8 @@ RMTP.views.advancing = function (el, params, query) {
           }
         },
         linked_maintenance_ids: linkedMaintIds,
+        equipment_bookings: equipmentBookings,
+        equipmentBookings: equipmentBookings,
 
         technicians: finalTechs,
         clientContact: (isScreen && m.root.querySelector('#e-cinema-contact')

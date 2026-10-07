@@ -105,9 +105,26 @@ RMTP.views.inventory = function (el, params, query) {
     });
     if (found.length) return found;
 
-    // 7. Match name (case-insensitive)
+    // 7. Match name (exact case-insensitive)
     found = all.filter((r) => String(r.name || '').trim().toLowerCase() === q);
     if (found.length) return found;
+
+    // 8. Match name (partial equipment name substring)
+    found = all.filter((r) => {
+      const nm = String(r.name || '').trim().toLowerCase();
+      return nm && (nm.includes(q) || q.includes(nm));
+    });
+    if (found.length) return found;
+
+    // 9. Match multi-word equipment search
+    const words = q.split(/\s+/).filter(Boolean);
+    if (words.length > 1) {
+      found = all.filter((r) => {
+        const hay = (String(r.name || '') + ' ' + String(r.tag || '') + ' ' + String(r.category || '')).toLowerCase();
+        return words.every((w) => hay.includes(w));
+      });
+      if (found.length) return found;
+    }
 
     return [];
   }
@@ -749,12 +766,17 @@ RMTP.views.inventory = function (el, params, query) {
             }
           }
 
+          const grpBookings = (window.RMTP && RMTP.equipmentBookings) ? RMTP.equipmentBookings.getBookingsForItem(grp.primaryItem || grp.items[0]) : [];
+          const todayStr = new Date().toISOString().slice(0, 10);
+          const upcomingCount = grpBookings.filter((b) => !b.date || b.date >= todayStr).length;
+
           return '<div class="flex items-center gap-3 px-4 py-3 ' + (isSelected ? 'bg-panel2/60' : '') + '">' +
             (canMove && selectMode ? '<input type="checkbox" data-check-grp="' + grp.id + '" class="w-4 h-4 rounded border-line accent-[var(--accent)] shrink-0 cursor-pointer" ' + (isSelected ? 'checked' : '') + ' />' : '') +
             '<button data-open-grp="' + grp.id + '" class="min-w-0 flex-1 text-left group">' +
               '<span class="flex flex-wrap items-center gap-1.5">' +
                 '<span class="font-medium group-hover:text-accent transition-colors ' + (svc ? 'line-through text-muted' : '') + '">' + ui.esc(grp.name) + '</span>' +
                 tagChipsHtml +
+                (upcomingCount ? '<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent border border-accent/30 font-mono" title="' + upcomingCount + ' upcoming event booking' + (upcomingCount > 1 ? 's' : '') + '">' + ui.icon('calendar', 'w-3 h-3') + upcomingCount + ' Booked</span>' : '') +
                 (svc ? ui.pill('In service', 'var(--danger)') : '') +
                 (flagged ? ui.pill('Flagged', 'var(--danger)') : '') +
                 (stat ? ui.pill('Fixed', 'var(--muted)') : '') +
@@ -929,30 +951,169 @@ RMTP.views.inventory = function (el, params, query) {
           '</div>').join('') + '</div>'
       : '<p class="text-sm text-muted">No movements logged yet.</p>';
 
+    const allBookings = (window.RMTP && RMTP.equipmentBookings) ? RMTP.equipmentBookings.getBookingsForItem(fresh) : [];
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const upcomingBookings = allBookings.filter((b) => !b.date || b.date >= todayIso);
+    const pastBookings = allBookings.filter((b) => b.date && b.date < todayIso);
+    let currentScheduleFilter = upcomingBookings.length ? 'upcoming' : 'all';
+
     const m = ui.modal({
       title: fresh.name + (totalQty > 1 ? ' (' + totalQty + ' \u00d7)' : ''),
-      size: 'md:max-w-lg',
+      size: 'md:max-w-2xl',
       body:
-        (stat ? '<div class="panel p-3 mb-4 text-sm" style="border-color:color-mix(in srgb,var(--muted) 40%,var(--line))">' +
-          ui.icon('pin', 'w-4 h-4 inline mr-1') + 'Fixed installation \u2014 part of the room, can\u2019t be signed out or moved.</div>' : '') +
-        (svc ? '<div class="panel p-3 mb-4 text-sm" style="background:color-mix(in srgb,var(--danger) 10%,transparent);border-color:color-mix(in srgb,var(--danger) 40%,var(--line));color:var(--danger)">' +
-          ui.icon('alert', 'w-4 h-4 inline mr-1') + 'Currently in SERVICE / maintenance.</div>' : '') +
-        (flagged && !svc && !openFaults.length ? '<div class="panel p-3 mb-4 text-sm" style="border-color:color-mix(in srgb,var(--danger) 40%,var(--line));color:var(--danger)">' +
-          ui.icon('alert', 'w-4 h-4 inline mr-1') + 'Flagged (' + ui.esc(flagReason(fresh)) + ').' + (stat ? '' : ' Can only be moved to a Store.') + '</div>' : '') +
-        displacementBanner +
-        faultsBlock +
-        '<dl class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 mb-5">' + info + '</dl>' +
-        unitsListBlock +
-        (fresh.notes ? '<p class="text-sm text-ink/80 mb-5 panel p-3 bg-panel2/40">' + ui.esc(fresh.notes) + '</p>' : '') +
-        '<p class="eyebrow mb-2">Movement history</p>' + history,
+        '<div class="flex items-center gap-2 mb-4 p-1 bg-panel2/80 rounded-lg border border-line">' +
+          '<button type="button" id="tab-btn-overview" class="flex-1 py-1.5 px-3 text-xs font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 bg-accent text-accent-ink shadow-xs cursor-pointer">' +
+            ui.icon('box', 'w-3.5 h-3.5') + '<span>Overview & Units</span>' +
+          '</button>' +
+          '<button type="button" id="tab-btn-schedule" class="flex-1 py-1.5 px-3 text-xs font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 text-muted hover:text-ink cursor-pointer">' +
+            ui.icon('calendar', 'w-3.5 h-3.5') + '<span>Schedule & Booking Log</span>' +
+            '<span class="px-1.5 py-0.2 rounded-full text-[10px] font-mono ' + (allBookings.length ? 'bg-accent/20 text-accent font-bold' : 'bg-line text-muted') + '">' + allBookings.length + '</span>' +
+          '</button>' +
+        '</div>' +
+
+        '<div id="tab-overview-content" class="grid gap-0">' +
+          (stat ? '<div class="panel p-3 mb-4 text-sm" style="border-color:color-mix(in srgb,var(--muted) 40%,var(--line))">' +
+            ui.icon('pin', 'w-4 h-4 inline mr-1') + 'Fixed installation \u2014 part of the room, can\u2019t be signed out or moved.</div>' : '') +
+          (svc ? '<div class="panel p-3 mb-4 text-sm" style="background:color-mix(in srgb,var(--danger) 10%,transparent);border-color:color-mix(in srgb,var(--danger) 40%,var(--line));color:var(--danger)">' +
+            ui.icon('alert', 'w-4 h-4 inline mr-1') + 'Currently in SERVICE / maintenance.</div>' : '') +
+          (flagged && !svc && !openFaults.length ? '<div class="panel p-3 mb-4 text-sm" style="border-color:color-mix(in srgb,var(--danger) 40%,var(--line));color:var(--danger)">' +
+            ui.icon('alert', 'w-4 h-4 inline mr-1') + 'Flagged (' + ui.esc(flagReason(fresh)) + ').' + (stat ? '' : ' Can only be moved to a Store.') + '</div>' : '') +
+          displacementBanner +
+          faultsBlock +
+          '<dl class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 mb-5">' + info + '</dl>' +
+          unitsListBlock +
+          (fresh.notes ? '<p class="text-sm text-ink/80 mb-5 panel p-3 bg-panel2/40">' + ui.esc(fresh.notes) + '</p>' : '') +
+          '<p class="eyebrow mb-2">Movement history</p>' + history +
+        '</div>' +
+
+        '<div id="tab-schedule-content" class="hidden grid gap-3">' +
+          '<div class="flex items-center justify-between gap-2 flex-wrap pb-2 border-b border-line">' +
+            '<div class="flex items-center gap-1.5">' +
+              '<button type="button" data-sch-f="upcoming" class="px-2.5 py-1 rounded text-xs font-medium border ' + (currentScheduleFilter === 'upcoming' ? 'bg-accent/15 border-accent text-accent font-semibold' : 'border-line text-muted hover:text-ink') + '">Upcoming (' + upcomingBookings.length + ')</button>' +
+              '<button type="button" data-sch-f="past" class="px-2.5 py-1 rounded text-xs font-medium border ' + (currentScheduleFilter === 'past' ? 'bg-accent/15 border-accent text-accent font-semibold' : 'border-line text-muted hover:text-ink') + '">Past Logs (' + pastBookings.length + ')</button>' +
+              '<button type="button" data-sch-f="all" class="px-2.5 py-1 rounded text-xs font-medium border ' + (currentScheduleFilter === 'all' ? 'bg-accent/15 border-accent text-accent font-semibold' : 'border-line text-muted hover:text-ink') + '">All (' + allBookings.length + ')</button>' +
+            '</div>' +
+            '<button type="button" id="btn-quick-allocate" class="btn btn-secondary !py-1 !px-2.5 text-xs flex items-center gap-1 font-semibold">' +
+              ui.icon('plus', 'w-3.5 h-3.5 text-accent') + '<span>Book to Event</span>' +
+            '</button>' +
+          '</div>' +
+          '<div id="sch-bookings-list" class="grid gap-2.5 max-h-[50vh] overflow-y-auto pr-1"></div>' +
+        '</div>',
       footer:
         (canMove && !stat ? '<button data-move class="btn btn-ghost mr-auto">' + ui.icon('pin', 'w-4 h-4') + 'Move</button>' : '') +
+        '<button data-tab-sch-toggle class="btn btn-ghost" title="Toggle Schedule View">' + ui.icon('calendar', 'w-4 h-4') + 'Schedule</button>' +
         '<button data-qr-view class="btn btn-ghost" title="View individual tracker QR codes">' + ui.icon('qr', 'w-4 h-4') + 'QR Codes</button>' +
         (canMove && !stat ? '<button data-sign class="btn ' + (isOut ? 'btn-ghost' : 'btn-primary') + '">' + ui.icon(isOut ? 'check' : 'arrowR', 'w-4 h-4') + (isOut ? 'Sign in' : 'Sign out') + '</button>' : '') +
         '<button data-fault class="btn btn-ghost" title="Report fault for this kit">' + ui.icon('wrench', 'w-4 h-4') + 'Fault / Service</button>' +
         (canManage ? '<button data-edit class="btn btn-ghost">' + ui.icon('pen', 'w-4 h-4') + 'Edit</button>' : '') +
         (canManage ? '<button data-del class="btn btn-danger">' + ui.icon('trash', 'w-4 h-4') + 'Delete</button>' : ''),
     });
+
+    const tabOverviewBtn = m.root.querySelector('#tab-btn-overview');
+    const tabScheduleBtn = m.root.querySelector('#tab-btn-schedule');
+    const tabOverviewContent = m.root.querySelector('#tab-overview-content');
+    const tabScheduleContent = m.root.querySelector('#tab-schedule-content');
+    const schListEl = m.root.querySelector('#sch-bookings-list');
+
+    function setTab(tab) {
+      if (tab === 'overview') {
+        tabOverviewBtn.className = 'flex-1 py-1.5 px-3 text-xs font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 bg-accent text-accent-ink shadow-xs cursor-pointer';
+        tabScheduleBtn.className = 'flex-1 py-1.5 px-3 text-xs font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 text-muted hover:text-ink cursor-pointer';
+        tabOverviewContent.classList.remove('hidden');
+        tabScheduleContent.classList.add('hidden');
+      } else {
+        tabScheduleBtn.className = 'flex-1 py-1.5 px-3 text-xs font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 bg-accent text-accent-ink shadow-xs cursor-pointer';
+        tabOverviewBtn.className = 'flex-1 py-1.5 px-3 text-xs font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 text-muted hover:text-ink cursor-pointer';
+        tabOverviewContent.classList.add('hidden');
+        tabScheduleContent.classList.remove('hidden');
+        renderScheduleTab();
+      }
+    }
+
+    if (tabOverviewBtn) tabOverviewBtn.addEventListener('click', () => setTab('overview'));
+    if (tabScheduleBtn) tabScheduleBtn.addEventListener('click', () => setTab('schedule'));
+    const schToggleFooter = m.root.querySelector('[data-tab-sch-toggle]');
+    if (schToggleFooter) schToggleFooter.addEventListener('click', () => {
+      const isOverview = !tabOverviewContent.classList.contains('hidden');
+      setTab(isOverview ? 'schedule' : 'overview');
+    });
+
+    function renderScheduleTab() {
+      if (!schListEl) return;
+      const filtered = currentScheduleFilter === 'upcoming'
+        ? upcomingBookings
+        : (currentScheduleFilter === 'past' ? pastBookings : allBookings);
+
+      m.root.querySelectorAll('[data-sch-f]').forEach((btn) => {
+        const f = btn.getAttribute('data-sch-f');
+        btn.className = 'px-2.5 py-1 rounded text-xs font-medium border cursor-pointer ' +
+          (currentScheduleFilter === f ? 'bg-accent/15 border-accent text-accent font-semibold' : 'border-line text-muted hover:text-ink');
+      });
+
+      if (!filtered.length) {
+        schListEl.innerHTML = ui.empty('calendar', 'No bookings found', currentScheduleFilter === 'upcoming' ? 'No upcoming event bookings for this kit.' : 'No booking logs found for this filter.');
+        return;
+      }
+
+      schListEl.innerHTML = filtered.map((b) => {
+        const isUpcoming = !b.date || b.date >= todayIso;
+        return (
+          '<div class="panel p-3.5 bg-panel border border-line rounded-xl grid gap-2.5 shadow-2xs">' +
+            '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+              '<div class="flex items-center gap-2">' +
+                '<span class="p-1 rounded bg-accent/15 text-accent">' + ui.icon('calendar', 'w-3.5 h-3.5') + '</span>' +
+                '<span class="font-semibold text-ink text-xs">' + (b.date ? ui.formatDate(b.date) : 'Unscheduled date') + '</span>' +
+                '<span class="font-mono text-muted text-xs">\u00b7 ' + ui.esc(b.startTime) + ' \u2013 ' + ui.esc(b.finishTime) + '</span>' +
+              '</div>' +
+              '<div class="flex items-center gap-1.5">' +
+                '<span class="px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-panel2 border border-line text-ink">' + b.qty + ' \u00d7 unit' + (b.qty > 1 ? 's' : '') + '</span>' +
+                ui.pill(isUpcoming ? 'Upcoming' : 'Past', isUpcoming ? 'var(--accent)' : 'var(--muted)') +
+              '</div>' +
+            '</div>' +
+            '<div class="flex items-center justify-between gap-2 flex-wrap text-xs pt-1 border-t border-line/60">' +
+              '<div class="flex items-center gap-2 min-w-0">' +
+                '<span class="text-muted shrink-0">Event:</span>' +
+                '<a href="#/advancing?openEvent=' + encodeURIComponent(b.eventId) + '" class="font-semibold text-accent hover:underline flex items-center gap-1 truncate">' +
+                  ui.esc(b.eventName) + ' ' + ui.icon('arrowR', 'w-3 h-3') +
+                '</a>' +
+              '</div>' +
+              '<div class="flex items-center gap-1.5 text-muted shrink-0">' +
+                ui.icon('pin', 'w-3.5 h-3.5 text-accent') +
+                '<span class="text-ink font-medium">' + ui.esc(b.space) + '</span>' +
+              '</div>' +
+            '</div>' +
+            (b.override ? (
+              '<div class="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-start gap-2 mt-0.5">' +
+                '<span class="text-amber-400 mt-0.5 shrink-0">' + ui.icon('alert', 'w-3.5 h-3.5') + '</span>' +
+                '<div>' +
+                  '<div class="font-bold text-amber-300 text-[11px] uppercase tracking-wider">Manual Double-Booking Override</div>' +
+                  '<div class="mt-0.5 text-amber-100 font-mono text-[11px] italic">"' + ui.esc(b.overrideReason || 'Approved for shared venue use') + '"</div>' +
+                '</div>' +
+              '</div>'
+            ) : '') +
+          '</div>'
+        );
+      }).join('');
+    }
+
+    m.root.querySelectorAll('[data-sch-f]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        currentScheduleFilter = btn.getAttribute('data-sch-f');
+        renderScheduleTab();
+      });
+    });
+
+    const quickAllocBtn = m.root.querySelector('#btn-quick-allocate');
+    if (quickAllocBtn) {
+      quickAllocBtn.addEventListener('click', () => {
+        openQuickAllocateModal(fresh, totalQty, () => {
+          m.close();
+          const refreshed = findGroupedItems(fresh);
+          if (refreshed.length) openDetail(refreshed[0]);
+        });
+      });
+    }
+
     const back = () => {
       const refreshed = findGroupedItems(fresh);
       if (refreshed.length) openDetail(refreshed[0]);
@@ -992,6 +1153,199 @@ RMTP.views.inventory = function (el, params, query) {
           openForm(sub);
         }
       });
+    });
+  }
+
+  /* ---- Quick Allocate Modal to book kit to an advancing event ---- */
+  function openQuickAllocateModal(item, maxQty, onComplete) {
+    const today = new Date().toISOString().slice(0, 10);
+    const events = store.all('advancing').filter((e) => !e.deleted && (!e.date || e.date >= today)).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+    if (!events.length) {
+      ui.toast('No upcoming events found in Advancing to book kit to.', 'danger');
+      return;
+    }
+
+    const eventOptionsHtml = events.map((e) =>
+      '<option value="' + e.id + '">' + ui.esc(e.name) + ' \u00b7 ' + (e.date ? ui.formatDate(e.date) : 'No date') + ' (' + ui.esc(Array.isArray(e.space) ? e.space.join(', ') : e.space) + ')</option>'
+    ).join('');
+
+    const initialEvent = events[0];
+    const initialStart = initialEvent.load_in || initialEvent.loadIn || initialEvent.startTime || '09:00';
+    const initialFinish = initialEvent.load_out || initialEvent.loadOut || initialEvent.curfew || initialEvent.finishTime || '23:00';
+
+    const qm = ui.modal({
+      title: 'Allocate ' + ui.esc(item.name) + ' to Event',
+      size: 'md:max-w-lg',
+      body:
+        '<div class="grid gap-3.5">' +
+          '<div class="panel p-3 bg-panel2/50 border border-line text-xs">' +
+            '<div class="font-semibold text-ink">' + ui.esc(item.name) + (item.tag ? ' <span class="font-mono text-accent">#' + ui.esc(item.tag) + '</span>' : '') + '</div>' +
+            '<div class="text-muted mt-0.5">Home Location: <strong class="text-ink">' + ui.esc(getHomeLocation(item) || 'Store') + '</strong> \u00b7 ' + maxQty + ' total available</div>' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-xs font-semibold mb-1 uppercase tracking-wider">Select Event</label>' +
+            '<select id="qa-event" class="field text-xs">' + eventOptionsHtml + '</select>' +
+          '</div>' +
+          '<div class="grid grid-cols-2 gap-3">' +
+            '<div>' +
+              '<label class="block text-xs font-semibold mb-1 uppercase tracking-wider">Quantity</label>' +
+              '<input id="qa-qty" type="number" min="1" max="' + maxQty + '" value="1" class="field tabular" />' +
+            '</div>' +
+            '<div>' +
+              '<label class="block text-xs font-semibold mb-1 uppercase tracking-wider">Booking Date</label>' +
+              '<input id="qa-date" type="date" class="field font-mono" value="' + (initialEvent.date || today) + '" />' +
+            '</div>' +
+          '</div>' +
+          '<div class="grid grid-cols-2 gap-3">' +
+            '<div>' +
+              '<label class="block text-xs font-semibold mb-1 uppercase tracking-wider">Start Time</label>' +
+              '<input id="qa-start" type="time" class="field font-mono" value="' + initialStart + '" />' +
+            '</div>' +
+            '<div>' +
+              '<label class="block text-xs font-semibold mb-1 uppercase tracking-wider">Finish Time</label>' +
+              '<input id="qa-finish" type="time" class="field font-mono" value="' + initialFinish + '" />' +
+            '</div>' +
+          '</div>' +
+          '<div id="qa-conflict-wrap" class="hidden"></div>' +
+        '</div>',
+      footer:
+        '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
+        '<button class="btn btn-primary" data-save data-primary>' + ui.icon('check', 'w-4 h-4') + 'Confirm Allocation</button>',
+    });
+
+    const eventSel = qm.root.querySelector('#qa-event');
+    const dateInp = qm.root.querySelector('#qa-date');
+    const startInp = qm.root.querySelector('#qa-start');
+    const finishInp = qm.root.querySelector('#qa-finish');
+    const conflictWrap = qm.root.querySelector('#qa-conflict-wrap');
+
+    function checkConflict() {
+      const evId = eventSel.value;
+      const targetEv = store.find('advancing', evId);
+      const bDate = dateInp.value;
+      const bStart = startInp.value;
+      const bFinish = finishInp.value;
+
+      const conflict = RMTP.equipmentBookings ? RMTP.equipmentBookings.checkConflict({
+        itemId: item.id,
+        itemTag: item.tag,
+        itemName: item.name,
+        date: bDate,
+        startTime: bStart,
+        finishTime: bFinish
+      }, evId) : { hasConflict: false };
+
+      if (conflict.hasConflict) {
+        conflictWrap.className = 'panel p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-200 grid gap-2';
+        conflictWrap.innerHTML =
+          '<div class="flex items-start gap-2">' +
+            '<span class="text-amber-400 shrink-0 mt-0.5">' + ui.icon('alert', 'w-4 h-4') + '</span>' +
+            '<div>' +
+              '<div class="font-bold text-amber-300">Schedule Conflict Detected</div>' +
+              '<div class="text-[11px] text-amber-100 mt-0.5">' + ui.esc(conflict.conflictMessage) + '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="pt-2 border-t border-amber-500/20">' +
+            '<label class="flex items-center gap-2 cursor-pointer font-semibold text-amber-200">' +
+              '<input type="checkbox" id="qa-override" class="w-4 h-4 rounded accent-amber-500" />' +
+              '<span>Manual Double-Booking Override</span>' +
+            '</label>' +
+            '<div id="qa-override-reason-wrap" class="hidden mt-2">' +
+              '<label class="block text-[11px] font-semibold text-amber-300 mb-1">Explain how kit will be shared between spaces <span class="text-danger">*</span></label>' +
+              '<input id="qa-override-reason" class="field text-xs bg-panel text-ink" placeholder="e.g. Soundcheck finishes at 16:00, will move rack to Screen 1 before 18:00 screening" />' +
+            '</div>' +
+          '</div>';
+
+        const ovrCb = conflictWrap.querySelector('#qa-override');
+        const reasonWrap = conflictWrap.querySelector('#qa-override-reason-wrap');
+        if (ovrCb && reasonWrap) {
+          ovrCb.addEventListener('change', (e) => {
+            reasonWrap.className = e.target.checked ? 'mt-2 grid gap-1' : 'hidden';
+          });
+        }
+      } else {
+        conflictWrap.className = 'hidden';
+        conflictWrap.innerHTML = '';
+      }
+    }
+
+    eventSel.addEventListener('change', () => {
+      const selected = store.find('advancing', eventSel.value);
+      if (selected) {
+        if (selected.date) dateInp.value = selected.date;
+        startInp.value = selected.load_in || selected.loadIn || selected.startTime || '09:00';
+        finishInp.value = selected.load_out || selected.loadOut || selected.curfew || selected.finishTime || '23:00';
+      }
+      checkConflict();
+    });
+
+    [dateInp, startInp, finishInp].forEach((inp) => inp.addEventListener('input', checkConflict));
+    checkConflict();
+
+    qm.root.querySelector('[data-cancel]').addEventListener('click', qm.close);
+    qm.root.querySelector('[data-save]').addEventListener('click', () => {
+      const targetEv = store.find('advancing', eventSel.value);
+      if (!targetEv) return;
+
+      const qty = Math.max(1, Math.min(parseInt(qm.root.querySelector('#qa-qty').value, 10) || 1, maxQty));
+      const bDate = dateInp.value;
+      const bStart = startInp.value;
+      const bFinish = finishInp.value;
+
+      const conflict = RMTP.equipmentBookings ? RMTP.equipmentBookings.checkConflict({
+        itemId: item.id,
+        itemTag: item.tag,
+        itemName: item.name,
+        date: bDate,
+        startTime: bStart,
+        finishTime: bFinish
+      }, targetEv.id) : { hasConflict: false };
+
+      let isOverride = false;
+      let overrideReason = '';
+
+      if (conflict.hasConflict) {
+        const ovrCb = qm.root.querySelector('#qa-override');
+        const rInp = qm.root.querySelector('#qa-override-reason');
+        if (!ovrCb || !ovrCb.checked) {
+          ui.toast('Cannot allocate: unresolved conflict. Please check override to proceed.', 'danger');
+          return;
+        }
+        if (!rInp || !rInp.value.trim()) {
+          ui.toast('Please explain how this kit will be shared or moved between spaces.', 'danger');
+          return;
+        }
+        isOverride = true;
+        overrideReason = rInp.value.trim();
+      }
+
+      const existingBookings = Array.isArray(targetEv.equipment_bookings)
+        ? targetEv.equipment_bookings.slice()
+        : (Array.isArray(targetEv.equipmentBookings) ? targetEv.equipmentBookings.slice() : []);
+
+      existingBookings.push({
+        id: store.uid('bk'),
+        itemId: item.id,
+        itemName: item.name,
+        itemTag: item.tag || '',
+        category: item.category || '',
+        homeLocation: getHomeLocation(item) || '',
+        qty: qty,
+        date: bDate,
+        startTime: bStart,
+        finishTime: bFinish,
+        override: isOverride,
+        overrideReason: overrideReason
+      });
+
+      store.upsert('advancing', Object.assign({}, targetEv, {
+        equipment_bookings: existingBookings
+      }));
+
+      qm.close();
+      ui.toast('Allocated ' + qty + ' \u00d7 ' + item.name + ' to ' + targetEv.name, 'ok');
+      if (onComplete) onComplete();
     });
   }
 

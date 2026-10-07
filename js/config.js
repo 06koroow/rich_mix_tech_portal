@@ -39,7 +39,7 @@ RMTP.views = {};
 RMTP.SPACES = ['The Stage', 'The Studio', 'The Mix', 'Screen One', 'Screen Two', 'Screen Three'];
 RMTP.STORES = ['Store', 'Cable store', 'PA rack', 'RF case', 'Stage store', 'Workshop'];
 RMTP.LOCATIONS = RMTP.SPACES.concat(RMTP.STORES);
-RMTP.EVENT_CATEGORIES = ['Cinema', 'Programme', 'Private Hires', 'DCP Test', 'Maintenance'];
+RMTP.EVENT_CATEGORIES = ['Cinema', 'Programme', 'Private Hires', 'DCP Test', 'Maintenance', 'Maintenance Shift'];
 RMTP.MEDIA_TYPES = ['DCP', 'Laptop via HDMI', 'Blu-Ray', 'HDMI (Other)'];
 RMTP.isSpace = function (loc) { return RMTP.SPACES.indexOf(loc) > -1; };
 RMTP.slug = function (s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); };
@@ -108,3 +108,146 @@ RMTP.recentMovements = function (limit) {
   out.sort((a, b) => (b.at || '').localeCompare(a.at || ''));
   return limit ? out.slice(0, limit) : out;
 };
+
+/* ---- Per-event equipment booking & conflict resolution helpers ---- */
+RMTP.equipmentBookings = {
+  toMinutes: function (t) {
+    if (!t || typeof t !== 'string' || !t.includes(':')) return null;
+    const parts = t.split(':').map(Number);
+    return (parts[0] || 0) * 60 + (parts[1] || 0);
+  },
+
+  timesOverlap: function (s1Raw, e1Raw, s2Raw, e2Raw) {
+    const s1 = RMTP.equipmentBookings.toMinutes(s1Raw) ?? 0;
+    let e1 = RMTP.equipmentBookings.toMinutes(e1Raw) ?? 1439;
+    if (e1 <= s1) e1 += 1440; // overnight shift
+
+    const s2 = RMTP.equipmentBookings.toMinutes(s2Raw) ?? 0;
+    let e2 = RMTP.equipmentBookings.toMinutes(e2Raw) ?? 1439;
+    if (e2 <= s2) e2 += 1440; // overnight shift
+
+    return s1 < e2 && e1 > s2;
+  },
+
+  checkConflict: function (booking, excludeEventId, excludeBookingId) {
+    const store = RMTP.store;
+    if (!booking) return { hasConflict: false };
+    const itemId = booking.itemId;
+    const itemTag = (booking.itemTag || '').trim().toLowerCase();
+    const itemName = (booking.itemName || '').trim().toLowerCase();
+    const date = booking.date || '';
+    const s1 = booking.startTime || '00:00';
+    const e1 = booking.finishTime || '23:59';
+
+    // 1. Check maintenance / service status
+    if (itemId) {
+      const fault = store.all('maintenance').find((f) => f.status !== 'Resolved' && f.itemId === itemId);
+      const item = store.find('inventory', itemId);
+      const isDamaged = item && (item.condition === 'Damaged' || item.condition === 'Out of service' || item.status === 'service' || item.location === 'SERVICE');
+      if (fault || isDamaged) {
+        return {
+          hasConflict: true,
+          type: 'maintenance',
+          faultTitle: fault ? (fault.equipment || fault.description || 'Active Fault') : 'In SERVICE / Damaged',
+          space: fault ? (fault.space || 'Workshop') : (item ? item.location : 'SERVICE'),
+          status: fault ? fault.status : 'Out of service',
+          date: date,
+          startTime: 'All Day',
+          finishTime: 'All Day',
+          conflictMessage: 'Kit is under maintenance/service hold (' + (fault ? (fault.equipment || fault.description) : 'In SERVICE') + ')'
+        };
+      }
+    }
+
+    // 2. Check other advancing events on the same date
+    if (!date) return { hasConflict: false };
+    const allAdv = store.all('advancing').filter((e) => !e.deleted && e.id !== excludeEventId);
+    for (const otherEv of allAdv) {
+      const otherDate = otherEv.date || '';
+      if (otherDate !== date) continue;
+
+      const otherBookings = Array.isArray(otherEv.equipment_bookings)
+        ? otherEv.equipment_bookings
+        : (Array.isArray(otherEv.equipmentBookings) ? otherEv.equipmentBookings : []);
+
+      for (const ob of otherBookings) {
+        if (excludeBookingId && ob.id === excludeBookingId) continue;
+        const matches = (ob.itemId && itemId && ob.itemId === itemId) ||
+          (ob.itemTag && itemTag && ob.itemTag.trim().toLowerCase() === itemTag) ||
+          (ob.itemName && itemName && ob.itemName.trim().toLowerCase() === itemName);
+        if (!matches) continue;
+
+        const s2 = ob.startTime || otherEv.startTime || '00:00';
+        const e2 = ob.finishTime || otherEv.finishTime || '23:59';
+
+        if (RMTP.equipmentBookings.timesOverlap(s1, e1, s2, e2)) {
+          const otherSpace = Array.isArray(otherEv.space) ? otherEv.space.join(', ') : (otherEv.space || 'Venue Space');
+          return {
+            hasConflict: true,
+            type: 'event',
+            eventName: otherEv.name,
+            space: otherSpace,
+            date: otherDate,
+            startTime: s2,
+            finishTime: e2,
+            qty: ob.qty || 1,
+            existingOverride: !!ob.override,
+            existingOverrideReason: ob.overrideReason || '',
+            conflictMessage: 'Already allocated to "' + otherEv.name + '" in ' + otherSpace + ' (' + s2 + ' \u2013 ' + e2 + ')'
+          };
+        }
+      }
+    }
+    return { hasConflict: false };
+  },
+
+  getBookingsForItem: function (itemOrId) {
+    const store = RMTP.store;
+    if (!itemOrId) return [];
+    const id = typeof itemOrId === 'object' ? itemOrId.id : itemOrId;
+    const targetItem = store.find('inventory', id) || (typeof itemOrId === 'object' ? itemOrId : null);
+    const itemTag = targetItem ? String(targetItem.tag || '').trim().toLowerCase() : '';
+    const itemName = targetItem ? String(targetItem.name || '').trim().toLowerCase() : '';
+
+    const allAdv = store.all('advancing').filter((e) => !e.deleted);
+    const bookings = [];
+
+    allAdv.forEach((ev) => {
+      const list = Array.isArray(ev.equipment_bookings)
+        ? ev.equipment_bookings
+        : (Array.isArray(ev.equipmentBookings) ? ev.equipmentBookings : []);
+
+      list.forEach((b) => {
+        const matches = (b.itemId && b.itemId === id) ||
+          (b.itemTag && itemTag && b.itemTag.trim().toLowerCase() === itemTag) ||
+          (b.itemName && itemName && b.itemName.trim().toLowerCase() === itemName);
+
+        if (matches) {
+          bookings.push({
+            booking: b,
+            event: ev,
+            id: b.id || (ev.id + '-' + (b.itemId || id)),
+            eventId: ev.id,
+            eventName: ev.name,
+            space: Array.isArray(ev.space) ? ev.space.join(', ') : (ev.space || 'Venue Space'),
+            date: b.date || ev.date || '',
+            startTime: b.startTime || ev.startTime || '09:00',
+            finishTime: b.finishTime || ev.finishTime || '23:00',
+            qty: b.qty || 1,
+            override: !!b.override,
+            overrideReason: b.overrideReason || '',
+            status: ev.status || 'Confirmed'
+          });
+        }
+      });
+    });
+
+    bookings.sort((a, b) => {
+      const d = (a.date || '').localeCompare(b.date || '');
+      return d !== 0 ? d : (a.startTime || '').localeCompare(b.startTime || '');
+    });
+
+    return bookings;
+  }
+};
+

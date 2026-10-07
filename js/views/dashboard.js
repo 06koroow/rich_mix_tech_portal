@@ -96,19 +96,32 @@ RMTP.views.dashboard = function (el) {
         return timeA.localeCompare(timeB);
       });
 
+    // Role checks
+    const isTechLead = !!(me && (me.admin || me.position === 'Technical Manager' || me.position === 'Senior Tech'));
+
+    // Consumables Orders (prominently tracked for Tech Manager & Senior Tech)
+    const pendingConsumables = store.all('maintenance')
+      .filter((f) => (f.taskType === 'consumables' || f.category === 'Consumables') && f.status !== 'Resolved')
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+    // Faults and Orders specifically tagged to current user
+    const myTaggedTasks = store.all('maintenance')
+      .filter((f) => f.status !== 'Resolved' && (f.assignedTechId === me.id || (f.assignedTechName && f.assignedTechName === auth.displayName(me))))
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
     // Scheduled Maintenance Shifts
     const myMaintenanceShifts = allAdv
       .filter((e) => {
-        const isMaint = e.category === 'Maintenance' || (Array.isArray(e.linked_maintenance_ids) && e.linked_maintenance_ids.length > 0);
+        const isMaint = e.category === 'Maintenance' || e.category === 'Maintenance Shift' || (Array.isArray(e.linked_maintenance_ids) && e.linked_maintenance_ids.length > 0);
         const matchesUser = me.admin ? true : RMTP.eventAssignedTo(e, me.id);
         const notPast = !e.date || String(e.date).slice(0, 10) >= today;
         return isMaint && matchesUser && e.status !== 'Complete' && notPast;
       })
       .sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
 
-    // High priority / open maintenance faults
+    // High priority / open equipment faults (excluding consumables which have their dedicated card)
     const openFaults = store.all('maintenance')
-      .filter((f) => f.status === 'Open' && (f.priority === 'Urgent' || f.priority === 'High'))
+      .filter((f) => f.status === 'Open' && f.taskType !== 'consumables' && f.category !== 'Consumables' && (f.priority === 'Urgent' || f.priority === 'High'))
       .slice(0, 4);
 
     const compTotal = RMTP.TRAINING.reduce((n, c) => n + (c.items ? c.items.length : 0), 0);
@@ -175,6 +188,104 @@ RMTP.views.dashboard = function (el) {
             '</div>'
           );
         }).join('') + '</div></div>');
+    }
+
+    if (myTaggedTasks.length) {
+      sections.push('<div>' +
+        '<div class="flex items-center justify-between gap-2 mb-2">' +
+          '<div class="flex items-center gap-2">' +
+            ui.icon('user', 'w-4 h-4 text-accent') +
+            '<p class="eyebrow text-accent font-semibold">Assigned to You (Faults & Orders) \u00b7 ' + myTaggedTasks.length + '</p>' +
+          '</div>' +
+          '<a href="#/maintenance" class="text-[11px] text-accent hover:underline">View in Maintenance \u2192</a>' +
+        '</div>' +
+        '<div class="grid gap-2">' + myTaggedTasks.map((t) => {
+          const isCons = t.taskType === 'consumables' || t.category === 'Consumables';
+          return (
+            '<div class="p-2.5 rounded-lg bg-panel2/60 border border-line flex items-center justify-between gap-2 hover:border-accent transition-colors">' +
+              '<div class="min-w-0 flex-1">' +
+                '<div class="flex items-center gap-1.5 flex-wrap">' +
+                  (isCons
+                    ? '<span class="px-1.5 py-0.2 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1 shrink-0">' + ui.icon('cart', 'w-3 h-3') + 'Consumables</span>'
+                    : '<span class="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1 shrink-0">' + ui.icon('tool', 'w-3 h-3') + 'Fault</span>') +
+                  '<span class="font-medium text-xs text-ink truncate">' + ui.esc(t.equipment) + '</span>' +
+                  ui.pill(t.priority || 'Medium', t.priority === 'Urgent' ? 'var(--danger)' : (t.priority === 'High' ? 'var(--warning)' : 'var(--muted)')) +
+                '</div>' +
+                '<div class="text-[11px] text-muted mt-0.5">' +
+                  ui.esc(t.space || 'Venue') + ' \u00b7 Status: <strong class="text-ink">' + ui.esc(t.status || 'Open') + '</strong>' +
+                '</div>' +
+              '</div>' +
+              '<a href="#/maintenance" class="btn btn-ghost !py-1 !px-2 text-xs text-accent shrink-0">Open \u2192</a>' +
+            '</div>'
+          );
+        }).join('') + '</div></div>');
+    }
+
+    if (isTechLead || pendingConsumables.length > 0) {
+      sections.push('<div>' +
+        '<div class="flex items-center justify-between gap-2 mb-2.5 flex-wrap">' +
+          '<div class="flex items-center gap-2">' +
+            '<span class="p-1 rounded bg-purple-500/15 text-purple-400">' + ui.icon('cart', 'w-4 h-4') + '</span>' +
+            '<div>' +
+              '<p class="eyebrow text-ink font-semibold">Consumables & Supplies to Order \u00b7 ' + pendingConsumables.length + '</p>' +
+              '<p class="text-[11px] text-muted">Tech Manager & Senior Tech purchasing queue</p>' +
+            '</div>' +
+          '</div>' +
+          '<div class="flex items-center gap-2">' +
+            '<button type="button" id="dash-new-consumables" class="btn btn-secondary !py-1 !px-2.5 text-xs text-accent flex items-center gap-1">' +
+              ui.icon('plus', 'w-3 h-3') + '<span>Order Consumables</span>' +
+            '</button>' +
+            '<a href="#/maintenance/consumables" class="text-[11px] text-accent hover:underline">All Orders \u2192</a>' +
+          '</div>' +
+        '</div>' +
+        (pendingConsumables.length
+          ? '<div class="grid gap-2">' + pendingConsumables.map((c) => {
+              const prioCol = c.priority === 'Urgent' ? 'bg-danger/20 text-danger border-danger/40' : (c.priority === 'High' ? 'bg-warning/20 text-warning border-warning/40' : 'bg-muted/20 text-muted border-line');
+              const itemsList = Array.isArray(c.consumableItems) ? c.consumableItems : [];
+              return (
+                '<div class="p-3 rounded-xl bg-panel2/60 border border-line flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-purple-400/50 transition-colors">' +
+                  '<div class="min-w-0 flex-1">' +
+                    '<div class="flex items-center gap-2 flex-wrap mb-1">' +
+                      '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">' +
+                        ui.icon('cart', 'w-3 h-3') + 'Order' +
+                      '</span>' +
+                      '<span class="font-semibold text-sm text-ink">' + ui.esc(c.equipment) + '</span>' +
+                      '<span class="px-1.5 py-0.2 rounded text-[10px] font-semibold border ' + prioCol + '">' + ui.esc(c.priority || 'Medium') + '</span>' +
+                      (c.status === 'In progress'
+                        ? '<span class="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-info/20 text-info border border-info/30">Order Placed</span>'
+                        : '<span class="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-warning/20 text-warning border border-warning/30">Needs Ordering</span>') +
+                    '</div>' +
+                    '<div class="flex items-center gap-2 text-xs text-muted flex-wrap">' +
+                      '<span>' + ui.esc(c.space || 'Venue') + '</span>' +
+                      (c.reportedBy ? '<span>\u00b7 Requested by <strong>' + ui.esc(c.reportedBy) + '</strong></span>' : '') +
+                      (c.assignedTechName ? '<span>\u00b7 Tagged: <strong class="text-accent">' + ui.esc(c.assignedTechName) + '</strong></span>' : '') +
+                    '</div>' +
+                    (itemsList.length ?
+                      '<div class="flex flex-wrap gap-1 mt-2">' +
+                        itemsList.map((it) =>
+                          '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-panel border border-line text-ink">' +
+                            '<span class="w-1.5 h-1.5 rounded-full bg-purple-400"></span>' +
+                            '<span>' + ui.esc(it.name) + '</span>' +
+                            (it.qty ? '<span class="font-mono text-purple-300 font-bold">(' + ui.esc(it.qty) + ')</span>' : '') +
+                          '</span>'
+                        ).join('') +
+                      '</div>' : '') +
+                  '</div>' +
+                  '<div class="flex items-center gap-1.5 shrink-0 self-end sm:self-center">' +
+                    (c.status === 'Open'
+                      ? '<button type="button" data-dash-order="' + c.id + '" class="btn btn-secondary !py-1 !px-2.5 text-xs text-info hover:bg-info/10">Mark Ordered</button>'
+                      : '<button type="button" data-dash-receive="' + c.id + '" class="btn btn-primary !py-1 !px-2.5 text-xs">Mark Received</button>') +
+                    '<button type="button" data-dash-add-shift="' + c.id + '" class="btn btn-ghost !py-1 !px-2 text-xs text-accent" title="Add to Maintenance Shift">Add to Shift</button>' +
+                    '<a href="#/maintenance" class="btn btn-ghost !py-1 !px-2 text-xs">Details</a>' +
+                  '</div>' +
+                '</div>'
+              );
+            }).join('') + '</div>'
+          : '<div class="p-3 rounded-xl bg-panel2/40 border border-dashed border-line text-xs text-muted flex items-center justify-between">' +
+              '<span>All venue consumables are stocked. Need haze fluid, gaffa tape, or batteries?</span>' +
+              '<button type="button" id="dash-new-consumables-empty" class="btn btn-secondary !py-1 !px-2.5 text-xs text-accent">Order Consumables</button>' +
+            '</div>') +
+      '</div>');
     }
 
     if (myMaintenanceShifts.length) {
@@ -372,6 +483,53 @@ RMTP.views.dashboard = function (el) {
         store.upsert('advancing', updated);
         ui.toast('DCP test marked as completed', 'ok');
         RMTP.router.render();
+      }
+    });
+  });
+
+  // Consumables actions
+  const newConsBtn = el.querySelector('#dash-new-consumables') || el.querySelector('#dash-new-consumables-empty');
+  if (newConsBtn) {
+    newConsBtn.addEventListener('click', () => {
+      if (RMTP.maintenance && RMTP.maintenance.openForm) {
+        RMTP.maintenance.openForm(null, null, null, 'consumables');
+      } else {
+        location.hash = '#/maintenance?action=order-consumables';
+      }
+    });
+  }
+
+  el.querySelectorAll('[data-dash-order]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-dash-order');
+      const item = store.find('maintenance', id);
+      if (item) {
+        store.upsert('maintenance', Object.assign({}, item, { status: 'In progress' }));
+        ui.toast('Marked order as placed', 'ok');
+        RMTP.router.render();
+      }
+    });
+  });
+
+  el.querySelectorAll('[data-dash-receive]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-dash-receive');
+      const item = store.find('maintenance', id);
+      if (item) {
+        store.upsert('maintenance', Object.assign({}, item, { status: 'Resolved' }));
+        ui.toast('Marked consumables as delivered and stocked', 'ok');
+        RMTP.router.render();
+      }
+    });
+  });
+
+  el.querySelectorAll('[data-dash-add-shift]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-dash-add-shift');
+      if (RMTP.maintenance && RMTP.maintenance.openAddToShiftModal) {
+        RMTP.maintenance.openAddToShiftModal([id]);
+      } else {
+        location.hash = '#/maintenance';
       }
     });
   });

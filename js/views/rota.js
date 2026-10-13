@@ -27,14 +27,23 @@ RMTP.views.rota = (function () {
     RMTP._rotaState = RMTP._rotaState || {
       tab: 'board', // 'board' | 'my_avail' | 'team_matrix' | 'list'
       weekOffset: 0, // 0 = current week, +1 next week, etc.
-      availMonth: new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0'),
+      boardView: 'week', // 'week' | 'day' | 'agenda'
+      density: 'compact', // 'compact' | 'detailed'
+      selectedDay: '',
+      mobileDayFilter: 'all',
+      unfilledOnly: false,
       spaceFilter: '',
       roleFilter: '',
       statusFilter: '',
       techFilter: '',
+      availMonth: new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0'),
       selectedUserForAvail: me ? me.id : 'user-3',
     };
     const state = RMTP._rotaState;
+    if (state.density === undefined) state.density = 'compact';
+    if (state.boardView === undefined) state.boardView = 'week';
+    if (!state.selectedDay) state.selectedDay = formatDate(new Date());
+    if (state.mobileDayFilter === undefined) state.mobileDayFilter = 'all';
     if (me && !state.selectedUserForAvail) state.selectedUserForAvail = me.id;
 
     // Helpers
@@ -160,6 +169,73 @@ RMTP.views.rota = (function () {
       };
     }
 
+    // Space Color Styling & Identifiers
+    function getSpaceColor(spaceName) {
+      const s = String(spaceName || '').toLowerCase();
+      if (s.includes('stage')) {
+        return {
+          bar: 'border-l-amber-500',
+          tag: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
+          dot: 'bg-amber-400',
+          short: 'Stage',
+        };
+      }
+      if (s.includes('studio')) {
+        return {
+          bar: 'border-l-sky-500',
+          tag: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+          dot: 'bg-sky-400',
+          short: 'Studio',
+        };
+      }
+      if (s.includes('mix')) {
+        return {
+          bar: 'border-l-purple-500',
+          tag: 'bg-purple-500/15 text-purple-300 border-purple-500/30',
+          dot: 'bg-purple-400',
+          short: 'The Mix',
+        };
+      }
+      if (s.includes('screen one') || s.includes('screen 1')) {
+        return {
+          bar: 'border-l-emerald-500',
+          tag: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+          dot: 'bg-emerald-400',
+          short: 'Screen 1',
+        };
+      }
+      if (s.includes('screen two') || s.includes('screen 2')) {
+        return {
+          bar: 'border-l-teal-500',
+          tag: 'bg-teal-500/15 text-teal-300 border-teal-500/30',
+          dot: 'bg-teal-400',
+          short: 'Screen 2',
+        };
+      }
+      if (s.includes('screen three') || s.includes('screen 3')) {
+        return {
+          bar: 'border-l-cyan-500',
+          tag: 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30',
+          dot: 'bg-cyan-400',
+          short: 'Screen 3',
+        };
+      }
+      if (s.includes('street')) {
+        return {
+          bar: 'border-l-rose-500',
+          tag: 'bg-rose-500/15 text-rose-300 border-rose-500/30',
+          dot: 'bg-rose-400',
+          short: 'Streetside',
+        };
+      }
+      return {
+        bar: 'border-l-zinc-500',
+        tag: 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30',
+        dot: 'bg-zinc-400',
+        short: spaceName || 'Venue',
+      };
+    }
+
     // Status UI Badge
     function renderStatusPill(status, note) {
       const s = String(status || 'pencil').toLowerCase();
@@ -190,22 +266,68 @@ RMTP.views.rota = (function () {
       );
     }
 
+    function getStatusMeta(status, isUnfilled) {
+      if (isUnfilled) {
+        return {
+          label: 'Unfilled Gap',
+          dot: 'bg-rose-400 animate-pulse',
+          textCls: 'text-rose-400 font-semibold',
+          borderCls: 'border-rose-500/40 bg-rose-500/5',
+          icon: 'alert',
+        };
+      }
+      const s = String(status || 'pencil').toLowerCase();
+      if (s === 'confirmed') {
+        return {
+          label: 'Confirmed',
+          dot: 'bg-emerald-400',
+          textCls: 'text-emerald-400 font-medium',
+          borderCls: 'border-line hover:border-emerald-500/50',
+          icon: 'check',
+        };
+      }
+      if (s === 'pencil') {
+        return {
+          label: 'Pencil Hold',
+          dot: 'bg-amber-400',
+          textCls: 'text-amber-400 font-medium',
+          borderCls: 'border-amber-500/30 hover:border-amber-500/60',
+          icon: 'pen',
+        };
+      }
+      if (s === 'declined') {
+        return {
+          label: 'Declined',
+          dot: 'bg-rose-400',
+          textCls: 'text-rose-400 font-medium',
+          borderCls: 'border-rose-500/30',
+          icon: 'alert',
+        };
+      }
+      if (s === 'cancelled') {
+        return {
+          label: 'Cancelled',
+          dot: 'bg-muted',
+          textCls: 'text-muted line-through',
+          borderCls: 'border-line opacity-60',
+          icon: 'x',
+        };
+      }
+      return {
+        label: s,
+        dot: 'bg-muted',
+        textCls: 'text-muted',
+        borderCls: 'border-line',
+        icon: 'clock',
+      };
+    }
+
     // --- Main Layout ---
     const allUsers = getAllUsers();
     const allBookings = getAllBookings();
     const weekDays = getWeekDays(state.weekOffset);
     const startWeekStr = weekDays[0].date;
     const endWeekStr = weekDays[6].date;
-
-    // Filtered bookings for week
-    const weekBookings = allBookings.filter((b) => {
-      if (b.date < startWeekStr || b.date > endWeekStr) return false;
-      if (state.spaceFilter && b.space !== state.spaceFilter) return false;
-      if (state.roleFilter && b.role !== state.roleFilter) return false;
-      if (state.statusFilter && b.status !== state.statusFilter) return false;
-      if (state.techFilter && b.userId !== state.techFilter) return false;
-      return true;
-    });
 
     // Counts for metrics banner
     const totalWeekBookings = allBookings.filter((b) => b.date >= startWeekStr && b.date <= endWeekStr);
@@ -222,21 +344,235 @@ RMTP.views.rota = (function () {
       return assigned.length === 0 && evTechs.length === 0;
     });
 
+    // Map storing active schedule items for fast click routing
+    const allScheduleItemsMap = new Map();
+
+    // Unified helper: builds all shifts & advancing events for any date
+    function getDaySchedule(dateStr) {
+      const bookings = allBookings.filter((b) => b.date === dateStr);
+      const advEvents = getAllEvents().filter((e) => e.date === dateStr);
+
+      const items = [];
+      const eventIdsWithBookings = new Set();
+
+      bookings.forEach((b) => {
+        if (state.spaceFilter && b.space !== state.spaceFilter) return;
+        if (state.roleFilter && b.role !== state.roleFilter) return;
+        if (state.statusFilter && b.status !== state.statusFilter) return;
+        if (state.techFilter && b.userId !== state.techFilter) return;
+        if (state.unfilledOnly) return;
+
+        if (b.eventId) eventIdsWithBookings.add(b.eventId);
+        const techObj = allUsers.find((u) => u.id === b.userId);
+        const item = {
+          key: 'b_' + b.id,
+          type: 'booking',
+          id: b.id,
+          booking: b,
+          eventId: b.eventId,
+          eventName: b.eventName || 'Venue Shift',
+          space: b.space || 'Venue',
+          date: b.date,
+          startTime: b.startTime || '17:00',
+          finishTime: b.finishTime || '23:30',
+          userId: b.userId,
+          userName: b.userName || (techObj ? auth.displayName(techObj) : 'Unassigned Tech'),
+          role: b.role || 'Tech',
+          status: b.status || 'pencil',
+          rate: b.rate,
+          notes: b.notes,
+          isUnfilled: false,
+        };
+        items.push(item);
+        allScheduleItemsMap.set(item.key, item);
+      });
+
+      advEvents.forEach((ev) => {
+        const spaceVal = Array.isArray(ev.space) ? ev.space[0] : (ev.space || 'Venue');
+        if (state.spaceFilter && spaceVal !== state.spaceFilter) return;
+
+        // If event already has bookings for this date, those bookings are rendered
+        if (eventIdsWithBookings.has(ev.id)) return;
+
+        const evTechs = RMTP.eventTechnicians(ev);
+        if (evTechs && evTechs.length > 0) {
+          if (state.unfilledOnly) return;
+          evTechs.forEach((t, idx) => {
+            if (state.techFilter && t.userId !== state.techFilter) return;
+            if (state.roleFilter && t.role !== state.roleFilter) return;
+            if (state.statusFilter && (t.bookingStatus || 'confirmed') !== state.statusFilter) return;
+
+            const techObj = allUsers.find((u) => u.id === t.userId);
+            const tName = t.freelancerName || (techObj ? auth.displayName(techObj) : (t.userId ? 'Tech' : 'Unassigned'));
+
+            const item = {
+              key: 'evtech_' + ev.id + '_' + idx,
+              type: 'adv_tech',
+              eventId: ev.id,
+              advEvent: ev,
+              eventName: ev.name,
+              space: spaceVal,
+              date: ev.date,
+              startTime: t.startTime || ev.startTime || '18:00',
+              finishTime: t.finishTime || ev.finishTime || '23:00',
+              userId: t.userId,
+              userName: tName,
+              role: t.role || 'Tech',
+              status: t.bookingStatus || 'confirmed',
+              notes: ev.notes || '',
+              isUnfilled: false,
+            };
+            items.push(item);
+            allScheduleItemsMap.set(item.key, item);
+          });
+        } else {
+          // Unfilled advancing event
+          if (state.roleFilter) return;
+          if (state.techFilter) return;
+          if (state.statusFilter && state.statusFilter !== 'unfilled') return;
+
+          const item = {
+            key: 'unfilled_' + ev.id,
+            type: 'unfilled',
+            eventId: ev.id,
+            advEvent: ev,
+            eventName: ev.name,
+            space: spaceVal,
+            date: ev.date,
+            startTime: ev.startTime || '18:00',
+            finishTime: ev.finishTime || '23:00',
+            userId: '',
+            userName: 'Unassigned',
+            role: 'Tech',
+            status: 'unfilled',
+            notes: ev.notes || '',
+            isUnfilled: true,
+          };
+          items.push(item);
+          allScheduleItemsMap.set(item.key, item);
+        }
+      });
+
+      items.sort((a, b) => (a.startTime || '00:00').localeCompare(b.startTime || '00:00'));
+      return items;
+    }
+
+    // Card Renderer: Glanceable, Compact, Clean & Free of UI Clutter
+    function renderCardHtml(item) {
+      const spaceCls = getSpaceColor(item.space);
+      const statusMeta = getStatusMeta(item.status, item.isUnfilled);
+      const isCompact = state.density === 'compact';
+
+      if (isCompact) {
+        return `
+          <div data-schedule-item="${item.key}" class="p-2 rounded-lg border border-l-[3.5px] ${spaceCls.bar} ${item.isUnfilled ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400' : 'border-line bg-panel2/80 hover:bg-panel2 hover:border-line/90'} transition shadow-2xs cursor-pointer group select-none flex flex-col justify-between gap-1 text-left relative">
+            <!-- Line 1: Space short tag, Time & Status -->
+            <div class="flex items-center justify-between gap-1 text-[10px]">
+              <span class="font-bold px-1.5 py-0.2 rounded border uppercase tracking-wider text-[9px] ${spaceCls.tag} shrink-0" title="${ui.esc(item.space)}">
+                ${ui.esc(spaceCls.short)}
+              </span>
+              <div class="flex items-center gap-1.5 shrink-0 ml-auto">
+                <span class="font-mono tabular-nums text-muted font-semibold text-[10px]">${item.startTime}–${item.finishTime}</span>
+                <span class="w-1.5 h-1.5 rounded-full ${statusMeta.dot} shrink-0" title="${statusMeta.label}"></span>
+              </div>
+            </div>
+
+            <!-- Line 2: Event Name (unclipped, clean wrapping) -->
+            <div class="text-xs font-bold text-ink leading-snug break-words" title="${ui.esc(item.eventName)}">
+              ${ui.esc(item.eventName)}
+            </div>
+
+            <!-- Line 3: Tech & Role or Unfilled Call to Action -->
+            ${item.isUnfilled ? `
+              <div class="pt-1 border-t border-line/40">
+                <button type="button" data-assign-shift="${item.key}" class="w-full px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 border border-amber-500/30 flex items-center justify-center gap-1 transition">
+                  ${ui.icon('plus', 'w-3 h-3 text-amber-400')}
+                  <span>Assign Freelancer</span>
+                </button>
+              </div>
+            ` : `
+              <div class="flex items-center justify-between text-[11px] pt-1 border-t border-line/40 gap-1">
+                <span class="truncate font-medium text-ink/90 flex items-center gap-1" title="${ui.esc(item.userName)}">
+                  <span class="truncate">${ui.esc(item.userName)}</span>
+                </span>
+                <div class="flex items-center gap-1 shrink-0">
+                  ${item.role ? `<span class="text-[9px] font-mono font-semibold px-1 py-0.2 rounded bg-panel border border-line text-muted">${ui.esc(item.role)}</span>` : ''}
+                  ${item.type === 'booking' ? `
+                    <button type="button" data-quick-toggle-status="${item.id}" class="p-0.5 rounded text-muted hover:text-ink hover:bg-panel transition opacity-0 group-hover:opacity-100" title="Click to toggle Confirmed / Pencil">
+                      ${ui.icon(item.status === 'confirmed' ? 'check' : 'pen', 'w-2.5 h-2.5')}
+                    </button>
+                  ` : ''}
+                </div>
+              </div>
+            `}
+          </div>
+        `;
+      }
+
+      // Detailed Mode
+      return `
+        <div data-schedule-item="${item.key}" class="p-2.5 rounded-xl border border-l-[4px] ${spaceCls.bar} ${item.isUnfilled ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400' : 'border-line bg-panel2/80 hover:bg-panel2 hover:border-line/90'} transition shadow-2xs cursor-pointer group select-none space-y-2 text-left relative">
+          <div class="flex items-start justify-between gap-1.5">
+            <div class="min-w-0">
+              <span class="font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider text-[9px] ${spaceCls.tag} inline-block mb-1">${ui.esc(item.space)}</span>
+              <div class="text-xs font-bold text-ink leading-snug break-words" title="${ui.esc(item.eventName)}">${ui.esc(item.eventName)}</div>
+            </div>
+            <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${item.isUnfilled ? 'border-amber-500/30 bg-amber-500/10 text-amber-400' : 'border-line bg-panel text-ink'} shrink-0">
+              <span class="w-1.5 h-1.5 rounded-full ${statusMeta.dot}"></span>
+              <span>${statusMeta.label}</span>
+            </span>
+          </div>
+
+          <div class="flex items-center justify-between text-[11px] text-muted pt-1 border-t border-line/40">
+            <span class="font-mono tabular-nums text-ink font-semibold">${item.startTime} – ${item.finishTime}</span>
+            ${item.role ? `<span class="px-1.5 py-0.2 rounded bg-panel text-[10px] font-semibold border border-line text-ink">${ui.esc(item.role)}</span>` : ''}
+          </div>
+
+          <div class="flex items-center justify-between gap-2 text-xs pt-1">
+            <div class="flex items-center gap-1.5 min-w-0">
+              <span class="w-5 h-5 rounded-full bg-accent/20 text-accent text-[10px] font-bold flex items-center justify-center shrink-0">
+                ${(item.userName[0] || 'T').toUpperCase()}
+              </span>
+              <span class="text-xs font-medium text-ink truncate ${item.isUnfilled ? 'text-amber-400 font-semibold' : ''}">
+                ${item.isUnfilled ? '+ Assign Freelancer' : ui.esc(item.userName)}
+              </span>
+            </div>
+            ${item.rate ? `<span class="text-[10px] font-mono text-muted tabular-nums">${ui.esc(item.rate)}</span>` : ''}
+          </div>
+
+          ${item.notes ? `
+            <div class="text-[10px] text-muted italic bg-panel px-2 py-1 rounded border border-line/60 break-words">
+              ${ui.esc(item.notes)}
+            </div>
+          ` : ''}
+
+          ${item.isUnfilled ? `
+            <div class="pt-1">
+              <button type="button" data-assign-shift="${item.key}" class="w-full py-1 px-2 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 border border-amber-500/30 flex items-center justify-center gap-1 transition">
+                ${ui.icon('plus', 'w-3.5 h-3.5')}
+                <span>Assign Freelancer to Shift</span>
+              </button>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }
+
     let html = `
-      <div class="space-y-5 animate-fadeIn">
+      <div class="space-y-3.5 animate-fadeIn">
         <!-- Page Header -->
-        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-line">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2.5 border-b border-line">
           <div>
             <div class="flex items-center gap-2.5">
-              <span class="p-2 rounded-xl bg-accent/15 text-accent border border-accent/20">
+              <span class="p-2 rounded-xl bg-accent/15 text-accent border border-accent/20 shrink-0">
                 ${ui.icon('calendar', 'w-5 h-5')}
               </span>
               <div>
-                <h1 class="text-xl font-bold tracking-tight text-ink flex items-center gap-2">
-                  Freelancer Rota & Scheduling
+                <h1 class="text-lg sm:text-xl font-bold tracking-tight text-ink flex items-center gap-2">
+                  Freelancer Rota & Shift Scheduling
                 </h1>
-                <p class="text-xs text-muted mt-0.5">
-                  Live availability, shift bookings, pencils and master venue rotas across Rich Mix
+                <p class="text-xs text-muted">
+                  Live availability, shift bookings, pencils and master room rotas across Rich Mix
                 </p>
               </div>
             </div>
@@ -250,50 +586,44 @@ RMTP.views.rota = (function () {
               ${ui.icon('calendar', 'w-4 h-4')}
               <span>Bulk Period</span>
             </button>
-            <button id="btn-add-booking" class="btn btn-primary text-xs flex-1 sm:flex-initial justify-center">
+            <button id="btn-add-booking" class="btn btn-primary text-xs flex-1 sm:flex-initial justify-center shadow-sm font-semibold">
               ${ui.icon('plus', 'w-4 h-4')}
               <span>+ Book Shift</span>
             </button>
           </div>
         </div>
 
-        <!-- Metrics Banner -->
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
-          <div class="p-3 rounded-xl bg-panel border border-line flex items-center justify-between">
-            <div>
-              <div class="text-[11px] font-semibold uppercase tracking-wider text-muted">Weekly Shifts</div>
-              <div class="text-lg font-bold font-mono text-ink mt-0.5">${totalWeekBookings.length}</div>
-            </div>
-            <div class="p-2 rounded-lg bg-panel2 border border-line text-muted">
-              ${ui.icon('calendar', 'w-4 h-4')}
-            </div>
+        <!-- Sleek Metrics & Quick Filter Strip -->
+        <div class="px-3.5 py-2 rounded-xl bg-panel border border-line flex flex-wrap items-center justify-between gap-2.5 text-xs">
+          <div class="flex items-center gap-2.5 flex-wrap">
+            <span class="font-semibold text-ink flex items-center gap-1.5">
+              ${ui.icon('calendar', 'w-4 h-4 text-accent')}
+              <span>Week Total:</span>
+              <span class="font-mono font-bold text-accent">${totalWeekBookings.length} shifts</span>
+            </span>
+            <span class="text-line hidden sm:inline">|</span>
+            <button id="strip-confirmed" class="flex items-center gap-1.5 px-2 py-0.5 rounded transition cursor-pointer ${state.statusFilter === 'confirmed' ? 'bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/40' : 'text-muted hover:text-emerald-400'}">
+              <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+              <span>${confirmedCount} Confirmed</span>
+            </button>
+            <button id="strip-pencil" class="flex items-center gap-1.5 px-2 py-0.5 rounded transition cursor-pointer ${state.statusFilter === 'pencil' ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : 'text-muted hover:text-amber-400'}">
+              <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+              <span>${pencilCount} Pencil Hold</span>
+            </button>
+            ${unfilledEvents.length > 0 ? `
+              <button id="strip-unfilled" class="flex items-center gap-1.5 px-2 py-0.5 rounded border transition cursor-pointer ${state.unfilledOnly ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 font-bold' : 'bg-rose-500/10 text-rose-400 border-rose-500/30'}">
+                <span class="w-2 h-2 rounded-full bg-rose-400 animate-pulse"></span>
+                <span>${unfilledEvents.length} Unfilled Gap${unfilledEvents.length > 1 ? 's' : ''}</span>
+              </button>
+            ` : ''}
+            <span class="text-line hidden sm:inline">|</span>
+            <span class="text-muted flex items-center gap-1">
+              ${ui.icon('users', 'w-3.5 h-3.5')}
+              <span>${activeFreelancers} Active Techs</span>
+            </span>
           </div>
-          <div class="p-3 rounded-xl bg-panel border border-line flex items-center justify-between">
-            <div>
-              <div class="text-[11px] font-semibold uppercase tracking-wider text-emerald-400">Confirmed</div>
-              <div class="text-lg font-bold font-mono text-emerald-400 mt-0.5">${confirmedCount}</div>
-            </div>
-            <div class="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
-              ${ui.icon('check', 'w-4 h-4')}
-            </div>
-          </div>
-          <div class="p-3 rounded-xl bg-panel border border-line flex items-center justify-between">
-            <div>
-              <div class="text-[11px] font-semibold uppercase tracking-wider text-amber-400">Penciled Holds</div>
-              <div class="text-lg font-bold font-mono text-amber-400 mt-0.5">${pencilCount}</div>
-            </div>
-            <div class="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400">
-              ${ui.icon('pen', 'w-4 h-4')}
-            </div>
-          </div>
-          <div class="p-3 rounded-xl bg-panel border border-line flex items-center justify-between">
-            <div>
-              <div class="text-[11px] font-semibold uppercase tracking-wider text-ink/80">Active Techs</div>
-              <div class="text-lg font-bold font-mono text-ink mt-0.5">${activeFreelancers}</div>
-            </div>
-            <div class="p-2 rounded-lg bg-panel2 border border-line text-muted">
-              ${ui.icon('users', 'w-4 h-4')}
-            </div>
+          <div class="text-[11px] text-muted font-mono hidden md:block">
+            Click any shift to edit · Click + to schedule on that date
           </div>
         </div>
 
@@ -302,6 +632,7 @@ RMTP.views.rota = (function () {
           <button data-tab="board" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'board' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
             ${ui.icon('grid', 'w-3.5 h-3.5')}
             <span>Master Rota Board</span>
+            <span class="text-[10px] opacity-75 font-mono">(${totalWeekBookings.length})</span>
           </button>
           <button data-tab="my_avail" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'my_avail' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
             ${ui.icon('user', 'w-3.5 h-3.5')}
@@ -338,207 +669,384 @@ RMTP.views.rota = (function () {
     // TAB 1: MASTER ROTA BOARD
     // ------------------------------------------------------------------------
     function renderBoardTab() {
+      allScheduleItemsMap.clear();
+
       const startD = parseDate(startWeekStr).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
       const endD = parseDate(endWeekStr).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 
+      // Gather schedule for each day
+      const daysData = weekDays.map((d) => ({
+        ...d,
+        items: getDaySchedule(d.date),
+      }));
+
+      const hasActiveFilters = !!(state.spaceFilter || state.roleFilter || state.statusFilter || state.techFilter || state.unfilledOnly);
+
       let out = `
-        <div class="space-y-4">
-          <!-- Week Navigator & Filter Bar -->
-          <div class="p-3 rounded-xl bg-panel border border-line flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-            <!-- Week Jumpers -->
-            <div class="flex items-center gap-2">
-              <button id="week-prev" class="btn btn-ghost !p-2" title="Previous Week">
-                ${ui.icon('chevL', 'w-4 h-4')}
-              </button>
-              <button id="week-today" class="btn btn-ghost text-xs ${state.weekOffset === 0 ? 'bg-panel2 border border-line font-bold' : ''}">
-                This Week
-              </button>
-              <button id="week-next" class="btn btn-ghost !p-2" title="Next Week">
-                ${ui.icon('chevR', 'w-4 h-4')}
-              </button>
-              <span class="text-xs font-semibold text-ink px-2 font-mono tabular-nums">
-                ${startD} – ${endD}
-              </span>
+        <div class="space-y-3">
+          <!-- Unified Master Rota Toolbar -->
+          <div class="p-3 rounded-xl bg-panel border border-line space-y-2.5">
+            <!-- Tier 1: Week Navigator + View Modes + Density Toggle -->
+            <div class="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
+              <!-- Left: Week Jumpers -->
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <div class="flex items-center gap-1">
+                  <button id="week-prev" class="btn btn-ghost !p-1.5" title="Previous Week">
+                    ${ui.icon('chevL', 'w-4 h-4')}
+                  </button>
+                  <button id="week-today" class="btn btn-ghost text-xs ${state.weekOffset === 0 ? 'bg-panel2 border border-line font-bold text-accent' : ''}">
+                    This Week
+                  </button>
+                  <button id="week-next" class="btn btn-ghost !p-1.5" title="Next Week">
+                    ${ui.icon('chevR', 'w-4 h-4')}
+                  </button>
+                </div>
+                <span class="text-xs font-bold text-ink px-1.5 font-mono tabular-nums whitespace-nowrap">
+                  ${startD} – ${endD}
+                </span>
+              </div>
+
+              <!-- Middle: Board View Switcher (Week 7D vs Day Swimlanes vs Agenda) -->
+              <div class="flex items-center gap-1 p-1 bg-panel2/80 rounded-lg border border-line self-start md:self-auto">
+                <button id="view-mode-week" class="px-2.5 py-1 text-xs font-semibold rounded-md transition ${state.boardView === 'week' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}">
+                  Week Grid (7D)
+                </button>
+                <button id="view-mode-day" class="px-2.5 py-1 text-xs font-semibold rounded-md transition ${state.boardView === 'day' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}">
+                  Day by Room
+                </button>
+                <button id="view-mode-agenda" class="px-2.5 py-1 text-xs font-semibold rounded-md transition ${state.boardView === 'agenda' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}">
+                  Timeline Agenda
+                </button>
+              </div>
+
+              <!-- Right: Density Switcher -->
+              <div class="flex items-center gap-1 p-1 bg-panel2/60 rounded-lg border border-line self-start md:self-auto">
+                <button id="density-compact" class="px-2 py-0.5 text-[11px] font-semibold rounded transition ${state.density === 'compact' ? 'bg-panel text-ink shadow-2xs' : 'text-muted hover:text-ink'}" title="Glanceable high-density view">
+                  Glanceable
+                </button>
+                <button id="density-detailed" class="px-2 py-0.5 text-[11px] font-semibold rounded transition ${state.density === 'detailed' ? 'bg-panel text-ink shadow-2xs' : 'text-muted hover:text-ink'}" title="Detailed expanded view with notes">
+                  Detailed
+                </button>
+              </div>
             </div>
 
-            <!-- Filter Controls -->
-            <div class="flex items-center gap-2 flex-wrap">
-              <select id="flt-space" class="field !py-1 text-xs">
-                <option value="">All Spaces</option>
-                ${RMTP.SPACES.map((s) => `<option value="${ui.esc(s)}" ${state.spaceFilter === s ? 'selected' : ''}>${ui.esc(s)}</option>`).join('')}
-              </select>
+            <!-- Tier 2: Filter Strip (Dropdowns & Quick Status Chips) -->
+            <div class="pt-2 border-t border-line/60 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div class="flex items-center gap-2 flex-wrap">
+                <!-- Space Filter Dropdown -->
+                <select id="flt-space" class="field !py-1 text-xs max-w-[135px]">
+                  <option value="">All Spaces</option>
+                  ${RMTP.SPACES.map((s) => `<option value="${ui.esc(s)}" ${state.spaceFilter === s ? 'selected' : ''}>${ui.esc(s)}</option>`).join('')}
+                </select>
 
-              <select id="flt-role" class="field !py-1 text-xs">
-                <option value="">All Roles</option>
-                ${RMTP.SHIFT_ROLES.map((r) => `<option value="${r}" ${state.roleFilter === r ? 'selected' : ''}>${r}</option>`).join('')}
-              </select>
+                <!-- Role Filter Dropdown -->
+                <select id="flt-role" class="field !py-1 text-xs max-w-[115px]">
+                  <option value="">All Roles</option>
+                  ${RMTP.SHIFT_ROLES.map((r) => `<option value="${r}" ${state.roleFilter === r ? 'selected' : ''}>${r}</option>`).join('')}
+                </select>
 
-              <select id="flt-status" class="field !py-1 text-xs">
-                <option value="">All Statuses</option>
-                <option value="confirmed" ${state.statusFilter === 'confirmed' ? 'selected' : ''}>Confirmed</option>
-                <option value="pencil" ${state.statusFilter === 'pencil' ? 'selected' : ''}>Pencil</option>
-                <option value="declined" ${state.statusFilter === 'declined' ? 'selected' : ''}>Declined</option>
-                <option value="cancelled" ${state.statusFilter === 'cancelled' ? 'selected' : ''}>Cancelled</option>
-              </select>
+                <!-- Technician Filter Dropdown -->
+                <select id="flt-tech" class="field !py-1 text-xs max-w-[140px]">
+                  <option value="">All Technicians</option>
+                  ${allUsers.map((u) => `<option value="${u.id}" ${state.techFilter === u.id ? 'selected' : ''}>${ui.esc(auth.displayName(u))}</option>`).join('')}
+                </select>
 
-              <select id="flt-tech" class="field !py-1 text-xs">
-                <option value="">All Technicians</option>
-                ${allUsers.map((u) => `<option value="${u.id}" ${state.techFilter === u.id ? 'selected' : ''}>${ui.esc(auth.displayName(u))}</option>`).join('')}
-              </select>
+                <!-- Quick Status Chips -->
+                <div class="hidden sm:flex items-center gap-1 pl-1 border-l border-line/60">
+                  <button data-quick-filter="" class="px-2 py-0.5 text-[11px] font-semibold rounded border transition ${!state.statusFilter && !state.unfilledOnly ? 'bg-accent/15 text-accent border-accent/40 font-bold' : 'bg-panel border-line text-muted hover:text-ink'}">
+                    All
+                  </button>
+                  <button data-quick-filter="unfilled" class="px-2 py-0.5 text-[11px] font-semibold rounded border transition flex items-center gap-1 ${state.unfilledOnly ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 font-bold' : 'bg-panel border-line text-muted hover:text-rose-400'}">
+                    <span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+                    <span>Unfilled</span>
+                  </button>
+                  <button data-quick-filter="confirmed" class="px-2 py-0.5 text-[11px] font-semibold rounded border transition flex items-center gap-1 ${state.statusFilter === 'confirmed' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-bold' : 'bg-panel border-line text-muted hover:text-emerald-400'}">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                    <span>Confirmed</span>
+                  </button>
+                  <button data-quick-filter="pencil" class="px-2 py-0.5 text-[11px] font-semibold rounded border transition flex items-center gap-1 ${state.statusFilter === 'pencil' ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 font-bold' : 'bg-panel border-line text-muted hover:text-amber-400'}">
+                    <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                    <span>Pencil</span>
+                  </button>
+                </div>
+              </div>
 
-              ${(state.spaceFilter || state.roleFilter || state.statusFilter || state.techFilter) ? `
-                <button id="flt-clear" class="btn btn-ghost text-xs !py-1 text-danger">Clear</button>
+              ${hasActiveFilters ? `
+                <button id="flt-clear" class="btn btn-ghost text-xs !py-0.5 !px-2 text-danger font-semibold flex items-center gap-1">
+                  ${ui.icon('x', 'w-3 h-3')}
+                  <span>Clear Filters</span>
+                </button>
               ` : ''}
             </div>
           </div>
-
-          <!-- Unfilled Coverage Gaps Alert (if any) -->
-          ${unfilledEvents.length > 0 ? `
-            <div class="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3 text-xs">
-              <div class="flex items-center gap-2 text-amber-400">
-                ${ui.icon('alert', 'w-4 h-4 shrink-0')}
-                <span><strong>Coverage Gap:</strong> ${unfilledEvents.length} advancing event(s) this week have no technicians assigned yet.</span>
-              </div>
-              <div class="flex items-center gap-2">
-                ${unfilledEvents.map((e) => `
-                  <button data-quick-fill="${e.id}" class="px-2 py-0.5 rounded bg-panel border border-amber-500/40 text-[11px] text-ink hover:text-amber-400">
-                    + Fill: ${ui.esc(e.name)}
-                  </button>
-                `).slice(0, 2).join('')}
-              </div>
-            </div>
-          ` : ''}
-
-          <!-- 7-Day Matrix Columns -->
-          <div class="grid grid-cols-1 md:grid-cols-7 gap-2.5 items-start">
       `;
 
-      weekDays.forEach((day) => {
-        const dayBookings = weekBookings.filter((b) => b.date === day.date);
-        const dayAdvEvents = weekEvents.filter((e) => e.date === day.date);
-
+      // ----------------------------------------------------------------------
+      // SUB-VIEW 1: WEEK GRID (7 DAYS SIDE-BY-SIDE)
+      // ----------------------------------------------------------------------
+      if (state.boardView === 'week') {
+        // Mobile Day Switcher Bar (phone/small screens only)
         out += `
-          <div class="rounded-xl border ${day.isToday ? 'border-accent/50 bg-panel2/40' : 'border-line bg-panel'} p-2.5 flex flex-col gap-2 min-h-[90px] md:min-h-[360px]">
-            <!-- Day Column Header -->
-            <div class="flex items-center justify-between pb-2 border-b border-line/60">
-              <div>
-                <span class="text-xs font-bold uppercase tracking-wider ${day.isToday ? 'text-accent' : 'text-muted'}">${day.dayName}</span>
-                <span class="text-xs font-mono font-semibold text-ink ml-1">${day.dayNum} ${day.monthName}</span>
-              </div>
-              <button data-quick-add-date="${day.date}" class="p-1 rounded text-muted hover:text-accent hover:bg-panel2 transition" title="Add shift on ${day.date}">
-                ${ui.icon('plus', 'w-3.5 h-3.5')}
+          <div class="flex items-center gap-1.5 overflow-x-auto pb-1 md:hidden scrollbar-hide -mx-4 px-4">
+            <button data-mob-day="all" class="shrink-0 px-2.5 py-1 text-xs font-semibold rounded-lg border transition ${state.mobileDayFilter === 'all' ? 'bg-accent text-accent-ink border-accent' : 'bg-panel border-line text-muted'}">
+              All 7 Days
+            </button>
+            ${daysData.map((d) => `
+              <button data-mob-day="${d.date}" class="shrink-0 px-2.5 py-1 text-xs font-semibold rounded-lg border transition flex items-center gap-1.5 ${state.mobileDayFilter === d.date ? 'bg-accent text-accent-ink border-accent' : (d.isToday ? 'bg-accent/10 border-accent/40 text-accent font-bold' : 'bg-panel border-line text-muted')}">
+                <span>${d.dayName} ${d.dayNum}</span>
+                ${d.items.length > 0 ? `<span class="w-1.5 h-1.5 rounded-full ${d.items.some(i => i.isUnfilled) ? 'bg-rose-400' : 'bg-accent'}"></span>` : ''}
               </button>
-            </div>
-
-            <!-- Shifts List for Day -->
-            <div class="space-y-2 flex-1">
+            `).join('')}
+          </div>
         `;
 
-        if (dayBookings.length === 0 && dayAdvEvents.length === 0) {
+        out += `
+          <!-- 7-Day Matrix Columns with Desktop Horizontal Safety & Scroll Containment -->
+          <div class="overflow-x-auto scrollbar-hide pb-2">
+            <div class="grid grid-cols-1 md:grid-cols-7 gap-2.5 items-start min-w-full md:min-w-[1050px]">
+        `;
+
+        daysData.forEach((day) => {
+          // If on mobile and a specific day is selected, hide other days
+          const isHiddenOnMobile = state.mobileDayFilter !== 'all' && state.mobileDayFilter !== day.date;
+          const unfilledCount = day.items.filter((i) => i.isUnfilled).length;
+
           out += `
-            <div class="p-4 text-center text-[11px] text-muted italic">
-              No shifts scheduled
+            <div class="rounded-xl border ${day.isToday ? 'border-accent/60 bg-panel2/40 ring-1 ring-accent/30' : 'border-line bg-panel'} p-2.5 flex flex-col gap-2 min-h-[140px] md:min-h-[460px] ${isHiddenOnMobile ? 'hidden md:flex' : ''}">
+              <!-- Day Column Header (Pinned for Glanceability) -->
+              <div class="sticky top-0 bg-panel z-10 flex items-center justify-between pb-2 border-b border-line/60">
+                <button data-jump-day="${day.date}" class="text-left group cursor-pointer" title="Zoom into Day Room Swimlanes">
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-xs font-bold uppercase tracking-wider ${day.isToday ? 'text-accent' : 'text-ink group-hover:text-accent transition'}">${day.dayName}</span>
+                    <span class="text-xs font-mono font-semibold ${day.isToday ? 'text-accent font-bold' : 'text-muted'}">${day.dayNum} ${day.monthName}</span>
+                  </div>
+                  <div class="text-[10px] text-muted flex items-center gap-1 mt-0.5">
+                    <span class="px-1.5 py-0.2 rounded bg-panel2 border border-line/70 font-mono font-semibold text-ink">${day.items.length} shift${day.items.length === 1 ? '' : 's'}</span>
+                    ${unfilledCount > 0 ? `<span class="text-rose-400 font-bold">· ${unfilledCount} unfilled</span>` : ''}
+                  </div>
+                </button>
+                <div class="flex items-center gap-1">
+                  <button data-jump-day="${day.date}" class="p-1 rounded text-muted hover:text-accent hover:bg-panel2 transition" title="View Day Swimlanes">
+                    ${ui.icon('grid', 'w-3 h-3')}
+                  </button>
+                  <button data-quick-add-date="${day.date}" class="p-1 rounded text-muted hover:text-accent hover:bg-panel2 transition" title="Add shift on ${day.date}">
+                    ${ui.icon('plus', 'w-3.5 h-3.5')}
+                  </button>
+                </div>
+              </div>
+
+              <!-- Shifts List for Day (Scroll-Safe so busy days never break the screen alignment) -->
+              <div class="space-y-1.5 flex-1 max-h-[580px] overflow-y-auto pr-1 scrollbar-thin">
+          `;
+
+          if (day.items.length === 0) {
+            out += `
+              <div class="py-10 px-2 text-center text-[11px] text-muted/60 italic rounded-lg border border-dashed border-line/40 flex flex-col items-center justify-center gap-1.5">
+                <span>No shifts scheduled</span>
+                <button data-quick-add-date="${day.date}" class="text-[10px] font-semibold text-accent hover:underline">
+                  + Add Shift
+                </button>
+              </div>
+            `;
+          } else {
+            day.items.forEach((item) => {
+              out += renderCardHtml(item);
+            });
+          }
+
+          out += `
+              </div>
             </div>
           `;
-        } else {
-          // Render Bookings
-          dayBookings.forEach((b) => {
-            const techObj = allUsers.find((u) => u.id === b.userId);
-            const techName = b.userName || (techObj ? auth.displayName(techObj) : 'Unknown Tech');
-            const conflictStatus = getTechLiveStatus(b.userId, b.date);
+        });
+
+        out += `
+            </div>
+          </div>
+        `;
+      }
+
+      // ----------------------------------------------------------------------
+      // SUB-VIEW 2: DAY VIEW (ROOM-BY-ROOM SWIMLANES ACROSS SPACES)
+      // ----------------------------------------------------------------------
+      else if (state.boardView === 'day') {
+        const selDayStr = state.selectedDay || weekDays[0].date;
+        const selDayObj = parseDate(selDayStr);
+        const selDayFormatted = selDayObj.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+        const daySchedule = getDaySchedule(selDayStr);
+
+        // Calculate previous and next day
+        const prevDayObj = new Date(selDayObj);
+        prevDayObj.setDate(prevDayObj.getDate() - 1);
+        const prevDayStr = formatDate(prevDayObj);
+
+        const nextDayObj = new Date(selDayObj);
+        nextDayObj.setDate(nextDayObj.getDate() + 1);
+        const nextDayStr = formatDate(nextDayObj);
+
+        // Gather all venue spaces to show as columns
+        const activeSpaces = Array.from(new Set([...RMTP.SPACES, ...daySchedule.map(i => i.space)])).filter(Boolean);
+
+        out += `
+          <!-- Day Navigator Bar -->
+          <div class="p-3 rounded-xl bg-panel border border-line flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div class="flex items-center gap-2 flex-wrap">
+              <button data-set-day="${prevDayStr}" class="btn btn-ghost !p-2" title="Previous Day">
+                ${ui.icon('chevL', 'w-4 h-4')}
+              </button>
+              <button data-set-day="${formatDate(new Date())}" class="btn btn-ghost text-xs">
+                Today
+              </button>
+              <button data-set-day="${nextDayStr}" class="btn btn-ghost !p-2" title="Next Day">
+                ${ui.icon('chevR', 'w-4 h-4')}
+              </button>
+              <span class="text-sm font-bold text-ink px-2">
+                ${selDayFormatted}
+              </span>
+              <span class="text-xs text-muted font-mono font-semibold px-2 py-0.5 rounded bg-panel2 border border-line">${daySchedule.length} total shifts across venue</span>
+            </div>
+
+            <!-- Week Day Quick Selector Strip -->
+            <div class="flex items-center gap-1 overflow-x-auto scrollbar-hide pb-0.5">
+              ${weekDays.map((d) => {
+                const dayCount = getDaySchedule(d.date).length;
+                return `
+                  <button data-set-day="${d.date}" class="px-2.5 py-1 text-[11px] font-semibold rounded-lg border transition flex items-center gap-1.5 ${d.date === selDayStr ? 'bg-accent text-accent-ink border-accent font-bold' : (d.isToday ? 'bg-panel2 text-accent border-accent/40' : 'bg-panel border-line text-muted hover:text-ink')}">
+                    <span>${d.dayName} ${d.dayNum}</span>
+                    ${dayCount > 0 ? `<span class="px-1 py-0.2 rounded text-[9px] font-mono bg-panel2/80">${dayCount}</span>` : ''}
+                  </button>
+                `;
+              }).join('')}
+            </div>
+          </div>
+
+          <!-- Room-by-Room Swimlanes across All Spaces -->
+          <div class="overflow-x-auto scrollbar-hide pb-2">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7 gap-3 items-start min-w-full md:min-w-[1100px]">
+        `;
+
+        activeSpaces.forEach((spaceName) => {
+          const spaceColor = getSpaceColor(spaceName);
+          const spaceItems = daySchedule.filter((i) => i.space === spaceName);
+
+          out += `
+            <div class="rounded-xl border border-line bg-panel p-3 flex flex-col gap-2.5 min-h-[320px]">
+              <!-- Room Header -->
+              <div class="flex items-center justify-between pb-2 border-b border-line/60">
+                <div class="flex items-center gap-2 min-w-0">
+                  <span class="w-2.5 h-2.5 rounded-full ${spaceColor.dot} shrink-0"></span>
+                  <div class="min-w-0">
+                    <span class="font-bold text-xs text-ink block truncate" title="${ui.esc(spaceName)}">${ui.esc(spaceName)}</span>
+                    <span class="text-[10px] text-muted font-mono font-semibold">${spaceItems.length} shift${spaceItems.length === 1 ? '' : 's'}</span>
+                  </div>
+                </div>
+                <button data-add-space-shift="${ui.esc(spaceName)}" class="p-1 rounded text-muted hover:text-accent hover:bg-panel2 transition" title="Add shift in ${ui.esc(spaceName)}">
+                  ${ui.icon('plus', 'w-3.5 h-3.5')}
+                </button>
+              </div>
+
+              <!-- Shifts in this Room -->
+              <div class="space-y-2 flex-1 max-h-[580px] overflow-y-auto pr-1 scrollbar-thin">
+          `;
+
+          if (spaceItems.length === 0) {
+            out += `
+              <div class="py-12 px-2 text-center text-xs text-muted/50 italic rounded-lg border border-dashed border-line/30 flex flex-col items-center justify-center gap-1.5">
+                <span>Room Dark / No shifts</span>
+                <button data-add-space-shift="${ui.esc(spaceName)}" class="text-[10px] font-semibold text-accent hover:underline">
+                  + Schedule Shift
+                </button>
+              </div>
+            `;
+          } else {
+            spaceItems.forEach((item) => {
+              out += renderCardHtml(item);
+            });
+          }
+
+          out += `
+              </div>
+            </div>
+          `;
+        });
+
+        out += `
+            </div>
+          </div>
+        `;
+      }
+
+      // ----------------------------------------------------------------------
+      // SUB-VIEW 3: TIMELINE AGENDA VIEW
+      // ----------------------------------------------------------------------
+      else if (state.boardView === 'agenda') {
+        const totalItemsCount = daysData.reduce((acc, d) => acc + d.items.length, 0);
+
+        out += `
+          <div class="border border-line rounded-xl bg-panel overflow-hidden">
+            <div class="p-3 bg-panel2/60 border-b border-line text-xs font-semibold text-ink flex items-center justify-between">
+              <span>Chronological Run of Shifts (${startD} – ${endD})</span>
+              <span class="text-muted font-mono">${totalItemsCount} Total Shifts</span>
+            </div>
+            <div class="divide-y divide-line/60">
+        `;
+
+        if (totalItemsCount === 0) {
+          out += `
+            <div class="p-8 text-center text-xs text-muted italic">
+              No shifts match the current view and filter selection.
+            </div>
+          `;
+        }
+
+        daysData.forEach((day) => {
+          if (day.items.length === 0) return;
+
+          out += `
+            <div class="p-3.5 ${day.isToday ? 'bg-accent/5' : ''}">
+              <div class="flex items-center gap-2 mb-2">
+                <span class="text-xs font-bold uppercase tracking-wider ${day.isToday ? 'text-accent' : 'text-ink'}">${day.dayName} ${day.dayNum} ${day.monthName}</span>
+                <span class="text-[10px] text-muted font-mono font-semibold px-2 py-0.2 rounded bg-panel2 border border-line">${day.items.length} shift${day.items.length === 1 ? '' : 's'}</span>
+              </div>
+              <div class="space-y-1.5">
+          `;
+
+          day.items.forEach((item) => {
+            const spaceCls = getSpaceColor(item.space);
+            const statusMeta = getStatusMeta(item.status, item.isUnfilled);
 
             out += `
-              <div class="p-2.5 rounded-lg border bg-panel2/80 hover:border-line/90 transition shadow-2xs space-y-2 ${b.status === 'confirmed' ? 'border-emerald-500/20' : (b.status === 'pencil' ? 'border-amber-500/30' : 'border-line')}">
-                <!-- Card Header -->
-                <div class="flex items-start justify-between gap-1.5">
-                  <div class="min-w-0">
-                    <span class="text-[10px] font-semibold text-accent uppercase tracking-wider block truncate">${ui.esc(b.space || 'Venue')}</span>
-                    <span class="text-xs font-bold text-ink leading-tight block truncate" title="${ui.esc(b.eventName || 'Shift')}">${ui.esc(b.eventName || 'Shift')}</span>
-                  </div>
-                  <div class="shrink-0">
-                    ${renderStatusPill(b.status, b.cancellationReason)}
-                  </div>
+              <div data-schedule-item="${item.key}" class="p-2.5 rounded-lg border border-l-[3.5px] ${spaceCls.bar} border-line bg-panel hover:bg-panel2 transition flex flex-col sm:flex-row sm:items-center justify-between gap-2 cursor-pointer group">
+                <div class="flex items-center gap-3 min-w-0">
+                  <span class="font-mono text-xs font-semibold text-ink shrink-0 w-24 tabular-nums">${item.startTime} – ${item.finishTime}</span>
+                  <span class="font-bold px-2 py-0.5 rounded border uppercase tracking-wider text-[10px] ${spaceCls.tag} shrink-0">${ui.esc(item.space)}</span>
+                  <span class="text-xs font-bold text-ink truncate group-hover:text-accent transition">${ui.esc(item.eventName)}</span>
                 </div>
-
-                <!-- Shift Meta -->
-                <div class="flex items-center justify-between text-[11px] text-muted pt-1 border-t border-line/40">
-                  <span class="font-mono tabular-nums text-ink">${b.startTime || '17:00'} – ${b.finishTime || '23:30'}</span>
-                  <span class="px-1.5 py-0.2 rounded bg-panel text-[10px] font-semibold border border-line text-ink">${ui.esc(b.role || 'Tech')}</span>
-                </div>
-
-                <!-- Assigned Technician -->
-                <div class="flex items-center justify-between gap-2 text-xs pt-1">
-                  <div class="flex items-center gap-1.5 min-w-0">
-                    <span class="w-5 h-5 rounded-full bg-accent/20 text-accent text-[10px] font-bold flex items-center justify-center shrink-0">
-                      ${(techName[0] || 'T').toUpperCase()}
-                    </span>
-                    <span class="text-xs font-medium text-ink truncate">${ui.esc(techName)}</span>
-                  </div>
-                  ${b.rate ? `<span class="text-[10px] font-mono text-muted tabular-nums">${ui.esc(b.rate)}</span>` : ''}
-                </div>
-
-                ${b.status === 'cancelled' && b.cancellationReason ? `
-                  <div class="text-[10px] text-muted italic bg-panel p-1 rounded border border-line">
-                    Reason: ${ui.esc(b.cancellationReason)}
-                  </div>
-                ` : ''}
-
-                <!-- Actions on Card -->
-                <div class="flex items-center justify-end gap-1.5 pt-1.5 border-t border-line/50">
-                  ${b.status === 'pencil' ? `
-                    <button data-quick-confirm="${b.id}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/30 transition">
-                      Confirm
-                    </button>
-                  ` : ''}
-                  ${b.status === 'confirmed' ? `
-                    <button data-quick-pencil="${b.id}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 border border-amber-500/30 transition">
-                      Pencil
-                    </button>
-                  ` : ''}
-                  <button data-edit-booking="${b.id}" class="p-1 rounded text-muted hover:text-ink hover:bg-panel" title="Edit Shift">
-                    ${ui.icon('pen', 'w-3 h-3')}
-                  </button>
-                  ${isTechManager && b.status !== 'cancelled' ? `
-                    <button data-cancel-booking="${b.id}" class="p-1 rounded text-muted hover:text-danger hover:bg-panel" title="Cancel Shift (Venue Manager)">
-                      ${ui.icon('x', 'w-3 h-3')}
-                    </button>
-                  ` : ''}
+                <div class="flex items-center gap-3 shrink-0 text-xs">
+                  <span class="font-medium ${item.isUnfilled ? 'text-amber-400 font-semibold' : 'text-ink'}">${item.isUnfilled ? '+ Assign Freelancer' : ui.esc(item.userName)}</span>
+                  ${item.role ? `<span class="text-[10px] text-muted px-1.5 py-0.2 rounded bg-panel2 border border-line font-mono">${ui.esc(item.role)}</span>` : ''}
+                  <span class="flex items-center gap-1.5 text-[11px] font-semibold ${statusMeta.textCls}">
+                    <span class="w-1.5 h-1.5 rounded-full ${statusMeta.dot}"></span>
+                    <span>${statusMeta.label}</span>
+                  </span>
                 </div>
               </div>
             `;
           });
 
-          // Unassigned advancing events in this day that need crew
-          dayAdvEvents.forEach((ev) => {
-            const hasBooking = dayBookings.some((b) => b.eventId === ev.id);
-            if (!hasBooking) {
-              out += `
-                <div class="p-2.5 rounded-lg border border-dashed border-line bg-panel2/30 space-y-1.5">
-                  <div class="flex items-center justify-between gap-1">
-                    <span class="text-[10px] font-semibold text-muted uppercase tracking-wider">${ui.esc(ev.space)}</span>
-                    <span class="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 font-semibold">Unfilled</span>
-                  </div>
-                  <div class="text-xs font-semibold text-ink truncate">${ui.esc(ev.name)}</div>
-                  <div class="text-[11px] font-mono text-muted tabular-nums">${ev.startTime || '18:00'} – ${ev.finishTime || '23:00'}</div>
-                  <button data-assign-event="${ev.id}" class="btn btn-ghost !py-0.5 !px-1.5 text-[10px] w-full justify-center text-accent">
-                    + Assign Freelancer
-                  </button>
-                </div>
-              `;
-            }
-          });
-        }
+          out += `
+              </div>
+            </div>
+          `;
+        });
 
         out += `
             </div>
           </div>
         `;
-      });
+      }
 
-      out += `
-          </div>
-        </div>
-      `;
+      out += `</div>`; // end space-y-3
 
       tabContainer.innerHTML = out;
       wireBoardEvents();
@@ -556,10 +1064,76 @@ RMTP.views.rota = (function () {
       });
       tabContainer.querySelector('#week-today')?.addEventListener('click', () => {
         state.weekOffset = 0;
+        state.selectedDay = formatDate(new Date());
         renderBoardTab();
       });
 
-      // Filters
+      // View Mode Switcher
+      tabContainer.querySelector('#view-mode-week')?.addEventListener('click', () => {
+        state.boardView = 'week';
+        renderBoardTab();
+      });
+      tabContainer.querySelector('#view-mode-day')?.addEventListener('click', () => {
+        state.boardView = 'day';
+        renderBoardTab();
+      });
+      tabContainer.querySelector('#view-mode-agenda')?.addEventListener('click', () => {
+        state.boardView = 'agenda';
+        renderBoardTab();
+      });
+
+      // Density Switcher
+      tabContainer.querySelector('#density-compact')?.addEventListener('click', () => {
+        state.density = 'compact';
+        renderBoardTab();
+      });
+      tabContainer.querySelector('#density-detailed')?.addEventListener('click', () => {
+        state.density = 'detailed';
+        renderBoardTab();
+      });
+
+      // Day View Day Switcher
+      tabContainer.querySelectorAll('[data-set-day]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.selectedDay = btn.getAttribute('data-set-day');
+          state.boardView = 'day';
+          renderBoardTab();
+        });
+      });
+
+      // Jump to Day View by clicking Day Header in Week Grid
+      tabContainer.querySelectorAll('[data-jump-day]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.selectedDay = btn.getAttribute('data-jump-day');
+          state.boardView = 'day';
+          renderBoardTab();
+        });
+      });
+
+      // Mobile Day Filter
+      tabContainer.querySelectorAll('[data-mob-day]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.mobileDayFilter = btn.getAttribute('data-mob-day');
+          renderBoardTab();
+        });
+      });
+
+      // Quick Status Chips
+      tabContainer.querySelectorAll('[data-quick-filter]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const val = btn.getAttribute('data-quick-filter');
+          if (val === 'unfilled') {
+            state.unfilledOnly = true;
+            state.statusFilter = '';
+          } else {
+            state.unfilledOnly = false;
+            state.statusFilter = val;
+          }
+          renderBoardTab();
+        });
+      });
+
+      // Dropdown Filters
       tabContainer.querySelector('#flt-space')?.addEventListener('change', (e) => {
         state.spaceFilter = e.target.value;
         renderBoardTab();
@@ -568,64 +1142,37 @@ RMTP.views.rota = (function () {
         state.roleFilter = e.target.value;
         renderBoardTab();
       });
-      tabContainer.querySelector('#flt-status')?.addEventListener('change', (e) => {
-        state.statusFilter = e.target.value;
-        renderBoardTab();
-      });
       tabContainer.querySelector('#flt-tech')?.addEventListener('change', (e) => {
         state.techFilter = e.target.value;
         renderBoardTab();
       });
       tabContainer.querySelector('#flt-clear')?.addEventListener('click', () => {
-        state.spaceFilter = ''; state.roleFilter = ''; state.statusFilter = ''; state.techFilter = '';
+        state.spaceFilter = '';
+        state.roleFilter = '';
+        state.statusFilter = '';
+        state.techFilter = '';
+        state.unfilledOnly = false;
         renderBoardTab();
       });
 
-      // Quick Actions on Cards
-      tabContainer.querySelectorAll('[data-quick-confirm]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const id = btn.getAttribute('data-quick-confirm');
-          const b = store.find('bookings', id);
-          if (b) {
-            b.status = 'confirmed';
-            b.confirmedAt = new Date().toISOString();
-            store.upsert('bookings', b);
-            ui.toast(`Shift confirmed for ${b.userName || 'technician'}`, 'ok');
-            renderActiveTab();
-          }
-        });
+      // Top metrics strip filter shortcuts
+      el.querySelector('#strip-confirmed')?.addEventListener('click', () => {
+        state.statusFilter = state.statusFilter === 'confirmed' ? '' : 'confirmed';
+        state.unfilledOnly = false;
+        renderBoardTab();
+      });
+      el.querySelector('#strip-pencil')?.addEventListener('click', () => {
+        state.statusFilter = state.statusFilter === 'pencil' ? '' : 'pencil';
+        state.unfilledOnly = false;
+        renderBoardTab();
+      });
+      el.querySelector('#strip-unfilled')?.addEventListener('click', () => {
+        state.unfilledOnly = !state.unfilledOnly;
+        state.statusFilter = '';
+        renderBoardTab();
       });
 
-      tabContainer.querySelectorAll('[data-quick-pencil]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const id = btn.getAttribute('data-quick-pencil');
-          const b = store.find('bookings', id);
-          if (b) {
-            b.status = 'pencil';
-            b.penciledAt = new Date().toISOString();
-            store.upsert('bookings', b);
-            ui.toast(`Shift status updated to Pencil hold`, 'info');
-            renderActiveTab();
-          }
-        });
-      });
-
-      tabContainer.querySelectorAll('[data-cancel-booking]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const id = btn.getAttribute('data-cancel-booking');
-          const b = store.find('bookings', id);
-          if (b) openCancelShiftModal(b);
-        });
-      });
-
-      tabContainer.querySelectorAll('[data-edit-booking]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const id = btn.getAttribute('data-edit-booking');
-          const b = store.find('bookings', id);
-          if (b) openBookingModal(b);
-        });
-      });
-
+      // Quick add shift in date
       tabContainer.querySelectorAll('[data-quick-add-date]').forEach((btn) => {
         btn.addEventListener('click', () => {
           const d = btn.getAttribute('data-quick-add-date');
@@ -633,39 +1180,86 @@ RMTP.views.rota = (function () {
         });
       });
 
-      tabContainer.querySelectorAll('[data-assign-event]').forEach((btn) => {
+      // Quick add shift in space (from Day View)
+      tabContainer.querySelectorAll('[data-add-space-shift]').forEach((btn) => {
         btn.addEventListener('click', () => {
-          const evId = btn.getAttribute('data-assign-event');
-          const ev = store.find('advancing', evId);
-          if (ev) {
+          const sp = btn.getAttribute('data-add-space-shift');
+          openBookingModal({ space: sp, date: state.selectedDay || formatDate(new Date()), startTime: '17:00', finishTime: '23:30', status: 'pencil' });
+        });
+      });
+
+      // 1-Click Status Toggle on Shift Cards
+      tabContainer.querySelectorAll('[data-quick-toggle-status]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const id = btn.getAttribute('data-quick-toggle-status');
+          const b = store.find('bookings', id);
+          if (b) {
+            const nextStatus = b.status === 'confirmed' ? 'pencil' : 'confirmed';
+            b.status = nextStatus;
+            if (nextStatus === 'confirmed') b.confirmedAt = new Date().toISOString();
+            store.upsert('bookings', b);
+            ui.toast(`Shift status updated to ${nextStatus === 'confirmed' ? 'Confirmed' : 'Pencil Hold'}`, 'ok');
+            renderActiveTab();
+          }
+        });
+      });
+
+      // 1-Click Assign Freelancer button on Unfilled Shifts
+      tabContainer.querySelectorAll('[data-assign-shift]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const key = btn.getAttribute('data-assign-shift');
+          const item = allScheduleItemsMap.get(key);
+          if (item) {
             openBookingModal({
-              eventId: ev.id,
-              eventName: ev.name,
-              space: Array.isArray(ev.space) ? ev.space[0] : ev.space,
-              date: ev.date,
-              startTime: ev.startTime || '17:00',
-              finishTime: ev.finishTime || '23:30',
-              role: 'Sound',
+              eventId: item.eventId,
+              eventName: item.eventName,
+              space: item.space,
+              date: item.date,
+              startTime: item.startTime,
+              finishTime: item.finishTime,
+              role: item.role || 'Sound',
               status: 'pencil',
             });
           }
         });
       });
 
-      tabContainer.querySelectorAll('[data-quick-fill]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const evId = btn.getAttribute('data-quick-fill');
-          const ev = store.find('advancing', evId);
-          if (ev) {
+      // Card Click Handler: Opens booking/shift modal for instant view, edit or assign
+      tabContainer.querySelectorAll('[data-schedule-item]').forEach((card) => {
+        card.addEventListener('click', (e) => {
+          // If clicked a button inside card, don't trigger modal
+          if (e.target.closest('button')) return;
+          const key = card.getAttribute('data-schedule-item');
+          const item = allScheduleItemsMap.get(key);
+          if (!item) return;
+
+          if (item.type === 'booking') {
+            openBookingModal(item.booking);
+          } else if (item.type === 'unfilled') {
             openBookingModal({
-              eventId: ev.id,
-              eventName: ev.name,
-              space: Array.isArray(ev.space) ? ev.space[0] : ev.space,
-              date: ev.date,
-              startTime: ev.startTime || '17:00',
-              finishTime: ev.finishTime || '23:30',
+              eventId: item.eventId,
+              eventName: item.eventName,
+              space: item.space,
+              date: item.date,
+              startTime: item.startTime,
+              finishTime: item.finishTime,
               role: 'Sound',
               status: 'pencil',
+            });
+          } else if (item.type === 'adv_tech') {
+            openBookingModal({
+              eventId: item.eventId,
+              eventName: item.eventName,
+              space: item.space,
+              date: item.date,
+              startTime: item.startTime,
+              finishTime: item.finishTime,
+              userId: item.userId,
+              userName: item.userName,
+              role: item.role,
+              status: item.status,
             });
           }
         });

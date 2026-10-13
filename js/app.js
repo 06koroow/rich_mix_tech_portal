@@ -197,20 +197,65 @@
       RMTP.store.init();
       RMTP.auth.ensureSession();                // locked login if nobody is signed in
     }
-    // Sync RMTP.SPACES with database venues
-    const dbVenues = RMTP.store.all('venues');
-    if (dbVenues && dbVenues.length) {
-      const spaceOrder = {
-        'The Stage': 1, 'The Studio': 2, 'The Mix': 3, 
-        'Screen One': 4, 'Screen Two': 5, 'Screen Three': 6
-      };
-      RMTP.SPACES = dbVenues.map(v => v.name).sort((a, b) => {
-        const wa = spaceOrder[a] || 99;
-        const wb = spaceOrder[b] || 99;
-        return wa !== wb ? wa - wb : a.localeCompare(b);
-      });
-      RMTP.LOCATIONS = RMTP.SPACES.concat(RMTP.STORES);
-    }
+    // Sync RMTP.SPACES with database venues, ensuring default spaces are never lost
+    const defaultSpaces = RMTP.DEFAULT_SPACES || ['The Stage', 'The Studio', 'The Mix', 'Screen One', 'Screen Two', 'Screen Three'];
+    const deletedSpaces = new Set(RMTP.store.read('deleted_spaces', []) || []);
+    const dbVenues = RMTP.store.all('venues') || [];
+
+    // Ensure default spaces have entries in the venues store
+    const existingVenuesMap = new Map(dbVenues.map(v => [(v.name || v.id || '').trim(), v]));
+    defaultSpaces.forEach(name => {
+      if (!deletedSpaces.has(name) && !existingVenuesMap.has(name)) {
+        const seedTpl = (RMTP.seed?.venues || []).find(sv => sv.name === name || sv.id === name);
+        const venueRecord = seedTpl ? JSON.parse(JSON.stringify(seedTpl)) : {
+          id: name,
+          name: name,
+          capacity: '',
+          stageDimensions: '',
+          inventory: '',
+          audio: {
+            inputChannels: 32,
+            localInputChannels: 8,
+            outputChannels: 16,
+            localOutputChannels: 8,
+            prefix: name.slice(0, 2).toUpperCase(),
+            mixingDeskProtocol: 'Dante',
+            mixingDeskInvId: '',
+            stageboxes: []
+          },
+          dmx: []
+        };
+        RMTP.store.upsert('venues', venueRecord);
+        existingVenuesMap.set(name, venueRecord);
+      }
+    });
+
+    // Re-read venues after seeding
+    const allVenues = RMTP.store.all('venues') || [];
+    const spaceNamesSet = new Set();
+    
+    // Always include non-deleted default spaces
+    defaultSpaces.filter(s => !deletedSpaces.has(s)).forEach(s => spaceNamesSet.add(s));
+    
+    // Add all database spaces that aren't deleted
+    allVenues.forEach(v => {
+      const n = (v.name || v.id || '').trim();
+      if (n && !deletedSpaces.has(n)) {
+        spaceNamesSet.add(n);
+      }
+    });
+
+    const spaceOrder = {
+      'The Stage': 1, 'The Studio': 2, 'The Mix': 3, 
+      'Screen One': 4, 'Screen Two': 5, 'Screen Three': 6,
+      'Streetside': 7
+    };
+    RMTP.SPACES = Array.from(spaceNamesSet).sort((a, b) => {
+      const wa = spaceOrder[a] || 99;
+      const wb = spaceOrder[b] || 99;
+      return wa !== wb ? wa - wb : a.localeCompare(b);
+    });
+    RMTP.LOCATIONS = RMTP.SPACES.concat(RMTP.STORES || []);
     refreshIdentity();
     RMTP.router.start();
     

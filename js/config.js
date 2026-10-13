@@ -37,6 +37,7 @@ RMTP.views = {};
    events, inventory (current location) and maintenance faults.
    Stores are the non-performance home locations kit lives in.
    Together they form the set of inventory locations. */
+RMTP.DEFAULT_SPACES = ['The Stage', 'The Studio', 'The Mix', 'Screen One', 'Screen Two', 'Screen Three'];
 RMTP.SPACES = ['The Stage', 'The Studio', 'The Mix', 'Screen One', 'Screen Two', 'Screen Three'];
 RMTP.STORES = ['Store', 'Cable store', 'PA rack', 'RF case', 'Stage store', 'Workshop'];
 RMTP.LOCATIONS = RMTP.SPACES.concat(RMTP.STORES);

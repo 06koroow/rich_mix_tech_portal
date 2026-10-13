@@ -1035,7 +1035,11 @@ RMTP.views.advancing = function (el, params, query) {
         "Screen 3": "Screen Three",
         "Cinema 1": "Screen One",
         "Cinema 2": "Screen Two",
-        "Cinema 3": "Screen Three"
+        "Cinema 3": "Screen Three",
+        "Streetside": "Streetside",
+        "Street Side": "Streetside",
+        "Streetside Bar": "Streetside",
+        "Streetside Cafe": "Streetside"
       };
 
       const toCategory = (type) => {

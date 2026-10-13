@@ -317,9 +317,22 @@
         const name = prompt('Enter name for the new space:');
         if (name && name.trim()) {
           const newName = name.trim();
+          const deleted = store.read('deleted_spaces', []) || [];
+          if (deleted.includes(newName)) {
+            store.write('deleted_spaces', deleted.filter(s => s !== newName));
+          }
           if (RMTP.SPACES.indexOf(newName) === -1) {
             RMTP.SPACES.push(newName);
-            RMTP.SPACES.sort();
+            const spaceOrder = {
+              'The Stage': 1, 'The Studio': 2, 'The Mix': 3, 
+              'Screen One': 4, 'Screen Two': 5, 'Screen Three': 6,
+              'Streetside': 7
+            };
+            RMTP.SPACES.sort((a, b) => {
+              const wa = spaceOrder[a] || 99;
+              const wb = spaceOrder[b] || 99;
+              return wa !== wb ? wa - wb : a.localeCompare(b);
+            });
             RMTP.LOCATIONS = RMTP.SPACES.concat(RMTP.STORES || []);
             m.activeSpace = newName;
             loadVenueData(); // creates the default store entry
@@ -339,6 +352,11 @@
         if (!m.activeSpace) return;
         const confirmName = prompt('WARNING: You are about to delete the space "' + m.activeSpace + '".\nThis cannot be undone. Type the name of the space exactly to confirm:');
         if (confirmName === m.activeSpace) {
+          const deleted = store.read('deleted_spaces', []) || [];
+          if (!deleted.includes(m.activeSpace)) {
+            deleted.push(m.activeSpace);
+            store.write('deleted_spaces', deleted);
+          }
           store.remove('venues', m.activeSpace);
           const idx = RMTP.SPACES.indexOf(m.activeSpace);
           if (idx > -1) {

@@ -361,6 +361,122 @@ RMTP.seed = {
     },
   ],
 
+  /* ---- Venue Specifications & Spaces ---- */
+  venues: [
+    {
+      id: 'The Stage',
+      name: 'The Stage',
+      capacity: '350 standing / 180 seated',
+      stageDimensions: '8m x 5m x 0.8m',
+      inventory: '',
+      audio: {
+        inputChannels: 48,
+        localInputChannels: 8,
+        outputChannels: 24,
+        localOutputChannels: 8,
+        prefix: 'HR',
+        mixingDeskProtocol: 'Dante',
+        mixingDeskInvId: '',
+        stageboxes: [
+          { letter: 'A', name: 'SL Rack', location: 'Stage Left', sockets: 16 }
+        ]
+      },
+      dmx: []
+    },
+    {
+      id: 'The Studio',
+      name: 'The Studio',
+      capacity: '140 standing / 90 seated',
+      stageDimensions: '6m x 4m',
+      inventory: '',
+      audio: {
+        inputChannels: 32,
+        localInputChannels: 8,
+        outputChannels: 16,
+        localOutputChannels: 8,
+        prefix: 'ST',
+        mixingDeskProtocol: 'Dante',
+        mixingDeskInvId: '',
+        stageboxes: [
+          { letter: 'A', name: 'Studio Rack', location: 'Upstage', sockets: 16 }
+        ]
+      },
+      dmx: []
+    },
+    {
+      id: 'The Mix',
+      name: 'The Mix',
+      capacity: '100 standing / 50 seated',
+      stageDimensions: '',
+      inventory: '',
+      audio: {
+        inputChannels: 16,
+        localInputChannels: 8,
+        outputChannels: 8,
+        localOutputChannels: 4,
+        prefix: 'MX',
+        mixingDeskProtocol: 'Analog',
+        mixingDeskInvId: '',
+        stageboxes: []
+      },
+      dmx: []
+    },
+    {
+      id: 'Screen One',
+      name: 'Screen One',
+      capacity: '181 seats',
+      stageDimensions: '',
+      inventory: '',
+      audio: {
+        inputChannels: 16,
+        localInputChannels: 4,
+        outputChannels: 8,
+        localOutputChannels: 4,
+        prefix: 'S1',
+        mixingDeskProtocol: 'Analog',
+        mixingDeskInvId: '',
+        stageboxes: []
+      },
+      dmx: []
+    },
+    {
+      id: 'Screen Two',
+      name: 'Screen Two',
+      capacity: '132 seats',
+      stageDimensions: '',
+      inventory: '',
+      audio: {
+        inputChannels: 16,
+        localInputChannels: 4,
+        outputChannels: 8,
+        localOutputChannels: 4,
+        prefix: 'S2',
+        mixingDeskProtocol: 'Analog',
+        mixingDeskInvId: '',
+        stageboxes: []
+      },
+      dmx: []
+    },
+    {
+      id: 'Screen Three',
+      name: 'Screen Three',
+      capacity: '50 seats',
+      stageDimensions: '',
+      inventory: '',
+      audio: {
+        inputChannels: 16,
+        localInputChannels: 4,
+        outputChannels: 8,
+        localOutputChannels: 4,
+        prefix: 'S3',
+        mixingDeskProtocol: 'Analog',
+        mixingDeskInvId: '',
+        stageboxes: []
+      },
+      dmx: []
+    }
+  ],
+
   /* ---- End-of-shift reports (keyed by eventId; see views/advancing.js) ---- */
   reports: [],
 

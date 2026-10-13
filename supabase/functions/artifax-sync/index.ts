@@ -38,6 +38,10 @@ const ROOM_TO_SPACE: Record<string, string> = {
   "Screen 1": "Screen One",
   "Screen 2": "Screen Two",
   "Screen 3": "Screen Three",
+  "Streetside": "Streetside",
+  "Street Side": "Streetside",
+  "Streetside Bar": "Streetside",
+  "Streetside Cafe": "Streetside",
 };
 
 // ---- Artifax booking type/label → advancing category ----

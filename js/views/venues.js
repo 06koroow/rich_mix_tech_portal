@@ -52,7 +52,7 @@
     }
     
     if (spaces.length === 0) {
-      m.root.innerHTML = '<div class="flex flex-col md:flex-row h-[calc(100vh-100px)] border border-line rounded-xl bg-panel overflow-hidden shadow-sm">' +
+      m.root.innerHTML = '<div class="flex flex-col md:flex-row min-h-[calc(100vh-140px)] md:h-[calc(100vh-100px)] border border-line rounded-xl bg-panel overflow-hidden shadow-sm">' +
         '<div class="w-full md:w-64 border-b md:border-b-0 md:border-r border-line bg-panel2/30 flex flex-col shrink-0">' +
           '<div class="hidden md:block p-3 border-b border-line"><h2 class="font-display font-semibold text-sm">Venues & Spaces</h2></div>' +
           '<div class="flex-1 flex items-center justify-center p-3 md:p-4 text-sm text-muted italic">No spaces configured.</div>' +
@@ -78,7 +78,7 @@
     const protocolOptions = (selectedProto) => protos.map(p => '<option value="' + p + '" ' + (p === selectedProto ? 'selected' : '') + '>' + p + '</option>').join('');
 
     m.root.innerHTML =
-      '<div class="flex flex-col md:flex-row h-[calc(100vh-100px)] border border-line rounded-xl bg-panel overflow-hidden shadow-sm">' +
+      '<div class="flex flex-col md:flex-row min-h-[calc(100vh-140px)] md:h-[calc(100vh-100px)] border border-line rounded-xl bg-panel overflow-hidden shadow-sm">' +
         // Left Sidebar: List of Venues
         '<div class="w-full md:w-64 border-b md:border-b-0 md:border-r border-line bg-panel2/30 flex flex-col shrink-0 min-h-0">' +
           '<div class="hidden md:block p-3 border-b border-line">' +
@@ -99,19 +99,19 @@
         // Right Main Canvas: Configuration
         '<div class="flex-1 flex flex-col bg-panel relative overflow-hidden">' +
           '<div class="px-4 md:px-6 py-3 md:py-4 border-b border-line flex items-center justify-between gap-2 md:gap-3 bg-panel/50 backdrop-blur sticky top-0 z-10">' +
-            '<h1 class="text-lg md:text-xl font-display font-bold truncate pr-2">' + ui.esc(m.activeSpace || 'Select a Venue') + '</h1>' +
+            '<h1 class="text-base sm:text-lg md:text-xl font-display font-bold truncate pr-2">' + ui.esc(m.activeSpace || 'Select a Venue') + '</h1>' +
             '<div class="flex items-center gap-1.5 md:gap-2 shrink-0">' +
               '<button id="btn-save-venue" class="btn btn-primary btn-sm flex items-center justify-center gap-1.5 shadow-sm !p-1.5 md:!px-3 md:!py-1.5 aspect-square md:aspect-auto" title="Save Changes">' +
                 ui.icon('check', 'w-4 h-4') + '<span class="hidden md:inline">Save</span>' +
               '</button>' +
-              '<button class="btn btn-ghost border border-line btn-sm flex items-center justify-center gap-1.5 shadow-sm !p-1.5 md:!px-3 md:!py-1.5 aspect-square md:aspect-auto" onclick="alert(\'Printing Venue Specs to PDF...\')" title="Print Tech Spec">' +
-                ui.icon('printer', 'w-4 h-4') + '<span class="hidden md:inline">Print</span>' +
+              '<button id="btn-print-venue" class="btn btn-ghost border border-line btn-sm flex items-center justify-center gap-1.5 shadow-sm !p-1.5 md:!px-3 md:!py-1.5 aspect-square md:aspect-auto" title="Print Tech Spec">' +
+                ui.icon('print', 'w-4 h-4') + '<span class="hidden md:inline">Print</span>' +
               '</button>' +
               (RMTP.auth.current() && RMTP.auth.current().admin && m.activeSpace ? 
               '<button id="btn-delete-space" class="btn btn-danger btn-sm flex items-center justify-center gap-1.5 shadow-sm !p-1.5 md:!px-3 md:!py-1.5 aspect-square md:aspect-auto" title="Delete Space">' + ui.icon('trash', 'w-4 h-4') + '<span class="hidden md:inline">Delete</span></button>' : '') +
             '</div>' +
           '</div>' +
-          '<div class="flex-1 overflow-y-auto p-6 space-y-8" id="venue-config-forms">' +
+          '<div class="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 sm:space-y-8" id="venue-config-forms">' +
             
             // Tab Overview Concept
             '<div class="grid gap-4">' +
@@ -373,9 +373,16 @@
     }
 
     const saveBtn = m.root.querySelector('#btn-save-venue');
-
     if (saveBtn) {
       saveBtn.addEventListener('click', saveVenueData);
+    }
+
+    const printBtn = m.root.querySelector('#btn-print-venue');
+    if (printBtn) {
+      printBtn.addEventListener('click', () => {
+        ui.toast('Preparing ' + (m.activeSpace || 'Venue') + ' specs for printing...', 'info');
+        setTimeout(() => window.print(), 350);
+      });
     }
 
     const invSearch = m.root.querySelector('#v-inv-search');

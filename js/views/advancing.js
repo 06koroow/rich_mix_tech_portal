@@ -1712,7 +1712,7 @@ RMTP.views.advancing = function (el, params, query) {
             (prodBadges ? '<div class="flex items-center gap-1.5 flex-wrap mt-2.5 pt-2 border-t border-line/50">' + prodBadges + '</div>' : '') +
           '</div>' +
 
-          '<div class="flex items-center gap-1.5 shrink-0 self-end sm:self-start w-full sm:w-auto justify-end pt-2 sm:pt-0 border-t sm:border-t-0 border-line/40">' +
+          '<div class="flex items-center gap-1.5 shrink-0 self-end sm:self-start w-full sm:w-auto justify-end flex-wrap pt-2 sm:pt-0 border-t sm:border-t-0 border-line/40">' +
             (ev.deleted ? 
               '<button data-reinstate="' + ev.id + '" class="btn btn-ok !py-1.5 !px-3 text-xs font-semibold flex items-center gap-1.5 rounded-lg flex-1 sm:flex-initial justify-center">' + ui.icon('refresh', 'w-4 h-4') + '<span>Reinstate Event</span></button>' 
             :

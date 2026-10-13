@@ -144,11 +144,11 @@ RMTP.views.inventory = function (el, params, query) {
   }
 
   function getHeaderActions() {
-    return (canMove ? '<button id="toggle-select-mode" class="btn ' + (selectMode ? 'btn-primary' : 'btn-ghost') + '">' + ui.icon('check', 'w-4 h-4') + (selectMode ? 'Done' : 'Select Multiple') + '</button>' : '') +
-      (canMove ? '<button id="scan-item" class="btn btn-primary">' + ui.icon('qr', 'w-4 h-4') + 'Scan QR</button>' : '') +
-      (canManage ? '<button id="print-labels" class="btn btn-ghost">' + ui.icon('print', 'w-4 h-4') + 'Labels</button>' : '') +
-      (canManage ? '<button id="setup-cats" class="btn btn-ghost">' + ui.icon('list', 'w-4 h-4') + 'Setup Categories</button>' : '') +
-      (canManage ? '<button id="add-item" class="btn btn-ghost">' + ui.icon('plus', 'w-4 h-4') + 'Add</button>' : '');
+    return (canMove ? '<button id="toggle-select-mode" class="btn text-xs sm:text-sm !py-1.5 !px-2.5 sm:!px-3 ' + (selectMode ? 'btn-primary' : 'btn-ghost') + '">' + ui.icon('check', 'w-3.5 h-3.5') + '<span>' + (selectMode ? 'Done' : 'Select') + '</span></button>' : '') +
+      (canMove ? '<button id="scan-item" class="btn btn-primary text-xs sm:text-sm !py-1.5 !px-2.5 sm:!px-3">' + ui.icon('qr', 'w-3.5 h-3.5') + '<span>Scan QR</span></button>' : '') +
+      (canManage ? '<button id="print-labels" class="btn btn-ghost text-xs sm:text-sm !py-1.5 !px-2 sm:!px-3" title="Print QR code asset tags">' + ui.icon('print', 'w-3.5 h-3.5') + '<span class="hidden sm:inline">Labels</span></button>' : '') +
+      (canManage ? '<button id="setup-cats" class="btn btn-ghost text-xs sm:text-sm !py-1.5 !px-2 sm:!px-3" title="Manage inventory categories">' + ui.icon('list', 'w-3.5 h-3.5') + '<span class="hidden sm:inline">Categories</span></button>' : '') +
+      (canManage ? '<button id="add-item" class="btn btn-ghost text-xs sm:text-sm !py-1.5 !px-2.5 sm:!px-3">' + ui.icon('plus', 'w-3.5 h-3.5') + '<span>Add</span></button>' : '');
   }
 
   el.innerHTML =

@@ -432,15 +432,18 @@ RMTP.views.dashboard = function (el) {
     '</div>';
   }
 
+  const curHour = new Date().getHours();
+  const timeGreeting = curHour < 12 ? 'Good morning' : (curHour < 17 ? 'Good afternoon' : 'Good evening');
+
   el.innerHTML =
     '<div class="view-enter">' +
-      ui.pageHeader('Rich Mix · ' + RMTP.meta.product, 'Good evening' + greetName) +
+      ui.pageHeader('Rich Mix · ' + RMTP.meta.product, timeGreeting + greetName) +
       '<p class="text-muted -mt-2 mb-6 md:mb-8 max-w-2xl text-sm md:text-base">Quick access to the building\u2019s technical operations. ' +
         'Pick a section to get started.</p>' +
 
       topPanel() +
 
-      '<div class="hidden md:grid gap-4 sm:grid-cols-2 lg:grid-cols-3">' + cardHtml + '</div>' +
+      '<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">' + cardHtml + '</div>' +
 
       movementsPanel() +
     '</div>';

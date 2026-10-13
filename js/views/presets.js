@@ -3807,20 +3807,20 @@ RMTP.views.presets = function (contentEl) {
 
         // 4 Primary Menu Options Tab Navigation
         '<div class="panel p-2 flex flex-wrap items-center justify-between gap-3 bg-panel2/60 border border-line">' +
-          '<div class="flex items-center gap-1.5 flex-wrap">' +
-            '<button data-main-view="sheets" class="px-4 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-2 ' + (activeMainView === 'sheets' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel') + '">' +
+          '<div class="flex items-center gap-1.5 overflow-x-auto max-w-full pb-1 scrollbar-hide -mx-1 px-1 sm:mx-0 sm:px-0">' +
+            '<button data-main-view="sheets" class="shrink-0 px-3.5 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-2 ' + (activeMainView === 'sheets' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel') + '">' +
               ui.icon('box', 'w-4 h-4') +
               '<span>1. Event Patch Sheets (' + allSheets.length + ')</span>' +
             '</button>' +
-            '<button data-main-view="library" class="px-4 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-2 ' + (activeMainView === 'library' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel') + '">' +
+            '<button data-main-view="library" class="shrink-0 px-3.5 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-2 ' + (activeMainView === 'library' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel') + '">' +
               ui.icon('sliders', 'w-4 h-4') +
               '<span>2. Presets Library (' + allPresets.length + ')</span>' +
             '</button>' +
-            '<button data-main-view="builder" class="px-4 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-2 ' + (activeMainView === 'builder' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel') + '">' +
+            '<button data-main-view="builder" class="shrink-0 px-3.5 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-2 ' + (activeMainView === 'builder' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel') + '">' +
               ui.icon('sliders', 'w-4 h-4') +
               '<span>3. Tech Spec Builder</span>' +
             '</button>' +
-            '<button data-main-view="dmx" class="px-4 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-2 ' + (activeMainView === 'dmx' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel') + '">' +
+            '<button data-main-view="dmx" class="shrink-0 px-3.5 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-2 ' + (activeMainView === 'dmx' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel') + '">' +
               ui.icon('bulb', 'w-4 h-4') +
               '<span>4. DMX Lighting Patch (' + dmxFixtures.length + ')</span>' +
             '</button>' +

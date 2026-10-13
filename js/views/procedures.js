@@ -33,7 +33,7 @@ RMTP.views.procedures = function (el, params) {
         '<span class="tabular text-xs text-muted ml-auto mr-1 hidden md:inline">' + (c.items ? c.items.length : 0) + '</span>' +
       '</a>' +
       (isAdmin ? (
-        '<div class="flex items-center pr-1.5 opacity-80 md:opacity-0 group-hover/nav:opacity-100 transition-opacity no-print">' +
+        '<div class="hidden md:flex items-center pr-1.5 opacity-80 md:opacity-0 group-hover/nav:opacity-100 transition-opacity no-print">' +
           '<button type="button" data-cat-up="' + cIdx + '" class="btn btn-ghost !p-1 text-muted hover:text-accent" title="Move Category Up" ' + (cIdx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3.5 h-3.5') + '</button>' +
           '<button type="button" data-cat-down="' + cIdx + '" class="btn btn-ghost !p-1 text-muted hover:text-accent" title="Move Category Down" ' + (cIdx === cats.length - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</button>' +
         '</div>'
@@ -78,10 +78,10 @@ RMTP.views.procedures = function (el, params) {
   const headerAction = item
     ? ''
     : (isAdmin ? (
-        '<div class="flex items-center gap-2">' +
-          '<button id="reorder-menu-btn" class="btn btn-ghost no-print" title="Reorder menu categories">' + ui.icon('sliders', 'w-4 h-4') + 'Reorder Menu</button>' +
-          '<button id="edit-tab-btn" class="btn btn-ghost no-print">' + ui.icon('pen', 'w-4 h-4') + 'Edit Tab / Reorder</button>' +
-          '<button id="add-proc" class="btn btn-primary no-print">' + ui.icon('plus', 'w-4 h-4') + 'Add procedure</button>' +
+        '<div class="flex items-center gap-2 flex-wrap">' +
+          '<button id="reorder-menu-btn" class="btn btn-ghost text-xs no-print flex items-center gap-1.5" title="Reorder menu categories">' + ui.icon('sliders', 'w-3.5 h-3.5') + '<span>Reorder Menu</span></button>' +
+          '<button id="edit-tab-btn" class="btn btn-ghost text-xs no-print flex items-center gap-1.5">' + ui.icon('pen', 'w-3.5 h-3.5') + '<span>Edit Tab</span></button>' +
+          '<button id="add-proc" class="btn btn-primary text-xs no-print flex items-center gap-1.5">' + ui.icon('plus', 'w-3.5 h-3.5') + '<span>Add procedure</span></button>' +
         '</div>'
       ) : '');
 
@@ -96,7 +96,7 @@ RMTP.views.procedures = function (el, params) {
     '<div class="view-enter">' +
       ui.pageHeader('Operating procedures', item ? cat.name : 'Procedures', headerAction) +
       '<div class="grid md:grid-cols-[248px_1fr] gap-5 items-start">' +
-        '<nav class="panel p-2 flex md:flex-col gap-1 overflow-x-auto">' + navHeader + catNav + '</nav>' +
+        '<nav class="panel p-2 flex md:flex-col gap-1 overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-2">' + navHeader + catNav + '</nav>' +
         '<div class="min-w-0">' + content + '</div>' +
       '</div>' +
     '</div>';

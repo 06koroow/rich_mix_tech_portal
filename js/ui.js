@@ -71,6 +71,22 @@ RMTP.ui = (function () {
     cart:   '<circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/>',
     package:'<path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
     filter: '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',
+    chevD:  '<path d="m6 9 6 6 6-6"/>',
+    chevU:  '<path d="m18 15-6-6-6 6"/>',
+    arrowL: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+    printer:'<path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>',
+    refresh:'<path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/>',
+    download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+    copy:   '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+    'corner-down-right':'<polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/>',
+    close:  '<path d="M18 6 6 18M6 6l12 12"/>',
+    save:   '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+    warning:'<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+    layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/>',
+    gear:   '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+    mapPin: '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/>',
+    edit:   '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+    info:   '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
   };
   function icon(name, cls) {
     const path = ICONS[name] || ICONS.box;
@@ -96,24 +112,52 @@ RMTP.ui = (function () {
   }
 
   /* --- Modal ---
-     opts: { title, body (html string), footer (html string), size } 
+     opts: { title, body (html string), footer (html string or array), actions (html string or array), size, locked } 
+     Also supports modal(title, bodyHtml, options/footer)
      Returns { root, close }. Caller queries root for its own fields/buttons. */
-  function modal(opts) {
+  function modal(opts, maybeBody, maybeFooter) {
+    if (typeof opts === 'string') {
+      opts = Object.assign(
+        { title: opts, body: maybeBody || '' },
+        typeof maybeFooter === 'object' ? maybeFooter : (maybeFooter ? { footer: maybeFooter } : {})
+      );
+    }
+    opts = opts || {};
+
+    let footerHtml = '';
+    if (opts.footer) {
+      footerHtml = Array.isArray(opts.footer) ? opts.footer.join('') : String(opts.footer);
+    } else if (opts.actions) {
+      if (Array.isArray(opts.actions)) {
+        footerHtml = opts.actions.map((act, idx) => {
+          if (typeof act === 'string') return act;
+          if (act && typeof act === 'object') {
+            const cls = act.type === 'primary' ? 'btn btn-primary' : (act.type === 'danger' ? 'btn btn-danger' : 'btn btn-ghost');
+            return '<button type="button" class="' + cls + '" ' + (act.id ? 'id="' + act.id + '" ' : '') + 'data-modal-action="' + idx + '">' + esc(act.label || 'OK') + '</button>';
+          }
+          return '';
+        }).join('');
+      } else {
+        footerHtml = String(opts.actions);
+      }
+    }
+
     const layer = document.getElementById('modal-layer');
     const root = document.createElement('div');
     // inset-x-0 + top set by fit(); height tracks the VISIBLE viewport so the
     // sheet never sits behind the mobile keyboard or run off the bottom.
-    root.className = 'fixed inset-x-0 top-0 z-40 flex items-end md:items-center justify-center';
+    root.className = 'fixed inset-x-0 top-0 z-40 flex items-end md:items-center justify-center p-0 md:p-4';
     root.innerHTML =
       '<div class="absolute inset-0 bg-black/60" data-backdrop></div>' +
       '<div class="modal-in panel relative w-full ' + (opts.size || 'md:max-w-lg') +
-        ' md:rounded-2xl rounded-t-2xl rounded-b-none max-h-full flex flex-col shadow-2xl">' +
-        '<div class="flex items-center justify-between px-5 py-4 border-b border-line shrink-0">' +
-          '<h3 class="font-display text-lg font-semibold">' + esc(opts.title || '') + '</h3>' +
-          (opts.locked ? '' : '<button data-close class="text-muted hover:text-ink p-1 -mr-1" aria-label="Close">' + icon('x') + '</button>') +
+        ' md:rounded-2xl rounded-t-2xl rounded-b-none max-h-[92vh] md:max-h-[90vh] flex flex-col shadow-2xl">' +
+        '<div class="w-10 h-1 rounded-full bg-line/80 mx-auto mt-2.5 -mb-1 md:hidden shrink-0"></div>' +
+        '<div class="flex items-center justify-between px-4 sm:px-5 py-3 sm:py-4 border-b border-line shrink-0 gap-2">' +
+          '<h3 class="font-display text-base sm:text-lg font-semibold truncate pr-2">' + esc(opts.title || '') + '</h3>' +
+          (opts.locked ? '' : '<button data-close class="text-muted hover:text-ink p-1 -mr-1 shrink-0 rounded-lg hover:bg-panel2 transition-colors" aria-label="Close">' + icon('x') + '</button>') +
         '</div>' +
-        '<div class="px-5 py-4 overflow-y-auto min-h-0">' + (opts.body || '') + '</div>' +
-        (opts.footer ? '<div class="px-5 py-4 border-t border-line flex justify-end gap-2 shrink-0">' + opts.footer + '</div>' : '') +
+        '<div class="px-4 sm:px-5 py-3 sm:py-4 overflow-y-auto min-h-0 overscroll-contain">' + (opts.body || '') + '</div>' +
+        (footerHtml ? '<div class="px-4 sm:px-5 py-3 sm:py-4 border-t border-line flex flex-wrap justify-end gap-2 shrink-0">' + footerHtml + '</div>' : '') +
       '</div>';
     layer.appendChild(root);
 
@@ -145,6 +189,16 @@ RMTP.ui = (function () {
       document.addEventListener('keydown', onKey);
     }
     root.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', close));
+
+    if (Array.isArray(opts.actions)) {
+      opts.actions.forEach((act, idx) => {
+        if (act && typeof act.click === 'function') {
+          const btn = root.querySelector('[data-modal-action="' + idx + '"]');
+          if (btn) btn.addEventListener('click', () => act.click({ root, close }));
+        }
+      });
+    }
+
     const firstField = root.querySelector('.field, button[data-primary]');
     if (firstField) setTimeout(() => firstField.focus(), 30);
 

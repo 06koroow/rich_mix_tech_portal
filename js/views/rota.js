@@ -241,24 +241,24 @@ RMTP.views.rota = (function () {
               </div>
             </div>
           </div>
-          <div class="flex items-center gap-2 flex-wrap">
-            <button id="btn-submit-avail" class="btn btn-ghost text-xs">
+          <div class="flex items-center gap-2 flex-wrap w-full sm:w-auto">
+            <button id="btn-submit-avail" class="btn btn-ghost text-xs flex-1 sm:flex-initial justify-center">
               ${ui.icon('clock', 'w-4 h-4')}
               <span>Log Availability</span>
             </button>
-            <button id="btn-bulk-avail" class="btn btn-ghost text-xs">
+            <button id="btn-bulk-avail" class="btn btn-ghost text-xs flex-1 sm:flex-initial justify-center">
               ${ui.icon('calendar', 'w-4 h-4')}
               <span>Bulk Period</span>
             </button>
-            <button id="btn-add-booking" class="btn btn-primary text-xs">
+            <button id="btn-add-booking" class="btn btn-primary text-xs flex-1 sm:flex-initial justify-center">
               ${ui.icon('plus', 'w-4 h-4')}
-              <span>+ Book Shift / Freelancer</span>
+              <span>+ Book Shift</span>
             </button>
           </div>
         </div>
 
         <!-- Metrics Banner -->
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
           <div class="p-3 rounded-xl bg-panel border border-line flex items-center justify-between">
             <div>
               <div class="text-[11px] font-semibold uppercase tracking-wider text-muted">Weekly Shifts</div>
@@ -288,7 +288,7 @@ RMTP.views.rota = (function () {
           </div>
           <div class="p-3 rounded-xl bg-panel border border-line flex items-center justify-between">
             <div>
-              <div class="text-[11px] font-semibold uppercase tracking-wider text-ink/80">Active Technicians</div>
+              <div class="text-[11px] font-semibold uppercase tracking-wider text-ink/80">Active Techs</div>
               <div class="text-lg font-bold font-mono text-ink mt-0.5">${activeFreelancers}</div>
             </div>
             <div class="p-2 rounded-lg bg-panel2 border border-line text-muted">
@@ -298,22 +298,22 @@ RMTP.views.rota = (function () {
         </div>
 
         <!-- Navigation Tabs -->
-        <div class="flex items-center gap-1.5 border-b border-line pb-1 overflow-x-auto text-xs">
-          <button data-tab="board" class="px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'board' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
+        <div class="flex items-center gap-1.5 border-b border-line pb-1 overflow-x-auto text-xs scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0">
+          <button data-tab="board" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'board' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
             ${ui.icon('grid', 'w-3.5 h-3.5')}
             <span>Master Rota Board</span>
           </button>
-          <button data-tab="my_avail" class="px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'my_avail' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
+          <button data-tab="my_avail" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'my_avail' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
             ${ui.icon('user', 'w-3.5 h-3.5')}
             <span>My Availability & Shifts</span>
           </button>
-          <button data-tab="team_matrix" class="px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'team_matrix' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
+          <button data-tab="team_matrix" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'team_matrix' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
             ${ui.icon('users', 'w-3.5 h-3.5')}
-            <span>Team Availability Matrix</span>
+            <span>Team Matrix</span>
           </button>
-          <button data-tab="list" class="px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'list' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
+          <button data-tab="list" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'list' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
             ${ui.icon('list', 'w-3.5 h-3.5')}
-            <span>All Shift Bookings (${allBookings.length})</span>
+            <span>Shift Bookings (${allBookings.length})</span>
           </button>
         </div>
 
@@ -418,7 +418,7 @@ RMTP.views.rota = (function () {
         const dayAdvEvents = weekEvents.filter((e) => e.date === day.date);
 
         out += `
-          <div class="rounded-xl border ${day.isToday ? 'border-accent/50 bg-panel2/40' : 'border-line bg-panel'} p-2.5 flex flex-col gap-2 min-h-[360px]">
+          <div class="rounded-xl border ${day.isToday ? 'border-accent/50 bg-panel2/40' : 'border-line bg-panel'} p-2.5 flex flex-col gap-2 min-h-[90px] md:min-h-[360px]">
             <!-- Day Column Header -->
             <div class="flex items-center justify-between pb-2 border-b border-line/60">
               <div>
@@ -741,60 +741,63 @@ RMTP.views.rota = (function () {
           <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
             <!-- 2-cols: Month Calendar Grid -->
             <div class="lg:col-span-2 p-4 rounded-xl bg-panel border border-line space-y-3">
-              <div class="flex items-center justify-between pb-2 border-b border-line/60">
+              <div class="flex items-center justify-between pb-2 border-b border-line/60 flex-wrap gap-2">
                 <div class="text-xs font-semibold text-ink flex items-center gap-2">
                   <span>Interactive Availability Calendar</span>
-                  <span class="text-[11px] text-muted">(Click any date to set or update)</span>
+                  <span class="text-[11px] text-muted hidden sm:inline">(Click any date to set or update)</span>
                 </div>
-                <div class="flex items-center gap-3 text-[11px]">
+                <div class="flex items-center gap-2.5 text-[11px] flex-wrap">
                   <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-400"></span> Available</span>
                   <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-rose-400"></span> Unavailable</span>
-                  <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-400"></span> Shift Booked</span>
+                  <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-400"></span> Booked</span>
                 </div>
               </div>
 
-              <!-- Day headers -->
-              <div class="grid grid-cols-7 gap-1 text-center text-[11px] font-bold text-muted uppercase tracking-wider py-1">
-                <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
-              </div>
+              <!-- Calendar Grid with Mobile Scroll Safety -->
+              <div class="overflow-x-auto scrollbar-hide">
+                <div class="min-w-[280px]">
+                  <!-- Day headers -->
+                  <div class="grid grid-cols-7 gap-1 text-center text-[11px] font-bold text-muted uppercase tracking-wider py-1">
+                    <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
+                  </div>
 
-              <!-- Days -->
-              <div class="grid grid-cols-7 gap-1.5">
-      `;
+                  <!-- Days -->
+                  <div class="grid grid-cols-7 gap-1 sm:gap-1.5">
+          `;
 
-      // Blank padding days
-      for (let i = 0; i < startingDayOfWeek; i++) {
-        out += `<div class="p-2 min-h-[72px] rounded-lg bg-panel2/20 border border-transparent opacity-30"></div>`;
-      }
-
-      // Actual month days
-      const todayStr = formatDate(new Date());
-      for (let dayNum = 1; dayNum <= daysInMonth; dayNum++) {
-        const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
-        const avail = userAvails.find((a) => a.date === dateStr);
-        const dayBookings = userBookings.filter((b) => b.date === dateStr);
-        const isToday = dateStr === todayStr;
-
-        let statusBorder = 'border-line';
-        let statusBg = 'bg-panel2/40';
-
-        if (dayBookings.length > 0) {
-          statusBorder = 'border-amber-400/40';
-          statusBg = 'bg-amber-400/5';
-        } else if (avail) {
-          if (avail.type === 'available') {
-            statusBorder = 'border-emerald-500/40';
-            statusBg = 'bg-emerald-500/5';
-          } else {
-            statusBorder = 'border-rose-500/40';
-            statusBg = 'bg-rose-500/5';
+          // Blank padding days
+          for (let i = 0; i < startingDayOfWeek; i++) {
+            out += `<div class="p-1 sm:p-2 min-h-[52px] sm:min-h-[72px] rounded-lg bg-panel2/20 border border-transparent opacity-30"></div>`;
           }
-        }
 
-        out += `
-          <div data-cell-date="${dateStr}" class="p-1.5 min-h-[76px] rounded-lg border ${statusBorder} ${statusBg} ${isToday ? 'ring-1 ring-accent' : ''} hover:border-accent cursor-pointer transition flex flex-col justify-between">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-mono font-bold ${isToday ? 'text-accent' : 'text-ink'}">${dayNum}</span>
+          // Actual month days
+          const todayStr = formatDate(new Date());
+          for (let dayNum = 1; dayNum <= daysInMonth; dayNum++) {
+            const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+            const avail = userAvails.find((a) => a.date === dateStr);
+            const dayBookings = userBookings.filter((b) => b.date === dateStr);
+            const isToday = dateStr === todayStr;
+
+            let statusBorder = 'border-line';
+            let statusBg = 'bg-panel2/40';
+
+            if (dayBookings.length > 0) {
+              statusBorder = 'border-amber-400/40';
+              statusBg = 'bg-amber-400/5';
+            } else if (avail) {
+              if (avail.type === 'available') {
+                statusBorder = 'border-emerald-500/40';
+                statusBg = 'bg-emerald-500/5';
+              } else {
+                statusBorder = 'border-rose-500/40';
+                statusBg = 'bg-rose-500/5';
+              }
+            }
+
+            out += `
+              <div data-cell-date="${dateStr}" class="p-1 sm:p-1.5 min-h-[54px] sm:min-h-[76px] rounded-lg border ${statusBorder} ${statusBg} ${isToday ? 'ring-1 ring-accent' : ''} hover:border-accent cursor-pointer transition flex flex-col justify-between">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-mono font-bold ${isToday ? 'text-accent' : 'text-ink'}">${dayNum}</span>
               ${avail ? `
                 <span class="w-1.5 h-1.5 rounded-full ${avail.type === 'available' ? 'bg-emerald-400' : 'bg-rose-400'}"></span>
               ` : ''}
@@ -1316,13 +1319,20 @@ RMTP.views.rota = (function () {
                 <span id="b-avail-status-tag" class="text-[11px] font-semibold px-2 py-0.5 rounded border">Live Availability</span>
               </div>
               <select id="b-user" class="field font-medium">
-                <option value="">Select a technician…</option>
-                ${allUsers.map((u) => `
-                  <option value="${u.id}" ${u.id === initialData.userId ? 'selected' : ''}>
-                    ${ui.esc(auth.displayName(u))} (${ui.esc(u.position || 'Tech')})
-                  </option>
-                `).join('')}
+                <option value="">Select a technician / freelancer…</option>
+                <optgroup label="Registered Technicians &amp; Freelancers">
+                  ${allUsers.map((u) => `
+                    <option value="${u.id}" ${u.id === initialData.userId ? 'selected' : ''}>
+                      ${ui.esc(auth.displayName(u))} (${ui.esc(u.position || 'Tech')})
+                    </option>
+                  `).join('')}
+                </optgroup>
+                <option value="__custom__" ${(!initialData.userId && initialData.userName && initialData.userName !== 'Unassigned') ? 'selected' : ''}>+ Other / External Freelancer (Type Name)</option>
               </select>
+              <div id="b-custom-wrap" class="${(!initialData.userId && initialData.userName && initialData.userName !== 'Unassigned') ? 'block' : 'hidden'} mt-2">
+                <label class="block font-semibold text-muted mb-1">Freelancer Full Name</label>
+                <input id="b-custom-name" class="field" value="${ui.esc(initialData.userName && initialData.userName !== 'Unassigned' ? initialData.userName : '')}" placeholder="e.g. Alex Morgan (Freelance Sound)" />
+              </div>
               <p id="b-avail-details-text" class="text-[11px] text-muted mt-1 italic"></p>
             </div>
 
@@ -1360,12 +1370,19 @@ RMTP.views.rota = (function () {
             </div>
           </div>
         `,
-        actions: [
+        footer: [
           ...(!isNew ? [
-            '<button type="button" id="b-delete" class="btn btn-danger mr-auto">Delete Shift</button>'
+            '<button type="button" id="b-delete" class="btn btn-danger mr-auto flex items-center gap-1.5">' + ui.icon('trash', 'w-4 h-4') + '<span>Delete Shift</span></button>'
           ] : []),
           '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
-          '<button type="button" id="b-save" class="btn btn-primary" data-primary>Save Booking</button>',
+          '<button type="button" id="b-save" class="btn btn-primary font-semibold flex items-center gap-1.5 shadow-sm" data-primary>' + ui.icon('check', 'w-4 h-4') + '<span>Save Booking</span></button>',
+        ].join(''),
+        actions: [
+          ...(!isNew ? [
+            '<button type="button" id="b-delete" class="btn btn-danger mr-auto flex items-center gap-1.5">' + ui.icon('trash', 'w-4 h-4') + '<span>Delete Shift</span></button>'
+          ] : []),
+          '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
+          '<button type="button" id="b-save" class="btn btn-primary font-semibold flex items-center gap-1.5 shadow-sm" data-primary>' + ui.icon('check', 'w-4 h-4') + '<span>Save Booking</span></button>',
         ]
       });
 
@@ -1376,10 +1393,24 @@ RMTP.views.rota = (function () {
       const spaceSel = m.root.querySelector('#b-space');
       const tagEl = m.root.querySelector('#b-avail-status-tag');
       const detailsEl = m.root.querySelector('#b-avail-details-text');
+      const customWrap = m.root.querySelector('#b-custom-wrap');
+      const customNameInp = m.root.querySelector('#b-custom-name');
 
       function updateAvailabilityCheck() {
         const uid = userSel.value;
         const dStr = dateInp.value;
+
+        if (uid === '__custom__') {
+          if (customWrap) customWrap.classList.remove('hidden');
+          tagEl.className = 'text-[11px] font-semibold px-2 py-0.5 rounded bg-panel2 border border-line text-ink';
+          tagEl.textContent = 'External Freelancer';
+          detailsEl.textContent = 'External contractor booking. Specify name above.';
+          detailsEl.className = 'text-[11px] text-muted mt-1 italic';
+          return;
+        }
+
+        if (customWrap) customWrap.classList.add('hidden');
+
         if (!uid || !dStr) {
           tagEl.className = 'text-[11px] font-semibold px-2 py-0.5 rounded bg-panel border border-line text-muted';
           tagEl.textContent = 'Select technician & date';
@@ -1429,12 +1460,36 @@ RMTP.views.rota = (function () {
       // Save
       m.root.querySelector('#b-save').addEventListener('click', () => {
         const userId = userSel.value;
-        const techObj = allUsers.find((u) => u.id === userId);
         const bookingDate = dateInp.value;
 
         if (!bookingDate) {
           ui.toast('Date is required', 'danger');
           return;
+        }
+
+        let finalUserId = '';
+        let finalUserName = '';
+        let isFreelancerFlag = false;
+
+        if (userId === '__custom__') {
+          const cName = (customNameInp ? customNameInp.value : '').trim();
+          if (!cName) {
+            ui.toast('Please enter the freelancer\'s name', 'danger');
+            if (customNameInp) customNameInp.focus();
+            return;
+          }
+          finalUserId = '';
+          finalUserName = cName;
+          isFreelancerFlag = true;
+        } else if (userId) {
+          const techObj = allUsers.find((u) => u.id === userId);
+          finalUserId = userId;
+          finalUserName = techObj ? auth.displayName(techObj) : '';
+          isFreelancerFlag = techObj ? (techObj.position === 'Freelancer') : false;
+        } else {
+          finalUserId = '';
+          finalUserName = initialData.userName || 'Unassigned';
+          isFreelancerFlag = false;
         }
 
         const record = {
@@ -1445,8 +1500,9 @@ RMTP.views.rota = (function () {
           date: bookingDate,
           startTime: m.root.querySelector('#b-start').value || '17:00',
           finishTime: m.root.querySelector('#b-end').value || '23:30',
-          userId: userId,
-          userName: techObj ? auth.displayName(techObj) : (initialData.userName || ''),
+          userId: finalUserId,
+          userName: finalUserName,
+          isFreelancer: isFreelancerFlag,
           role: m.root.querySelector('#b-role').value || 'Sound',
           status: m.root.querySelector('#b-status').value || 'pencil',
           rate: m.root.querySelector('#b-rate').value.trim(),
@@ -1463,21 +1519,47 @@ RMTP.views.rota = (function () {
         store.upsert('bookings', record);
 
         // If linked to advancing event, ensure advancing record's technicians array is also updated!
-        if (record.eventId && record.userId) {
+        if (record.eventId) {
           const advEv = store.find('advancing', record.eventId);
           if (advEv) {
             advEv.technicians = advEv.technicians || [];
-            const exists = advEv.technicians.some((t) => t.userId === record.userId);
-            if (!exists) {
-              advEv.technicians.push({
-                userId: record.userId,
-                role: record.role,
-                startTime: record.startTime,
-                finishTime: record.finishTime,
-                bookingStatus: record.status,
-              });
-              store.upsert('advancing', advEv);
+            if (record.userId) {
+              const existingTech = advEv.technicians.find((t) => t.userId === record.userId);
+              if (existingTech) {
+                existingTech.role = record.role;
+                existingTech.startTime = record.startTime;
+                existingTech.finishTime = record.finishTime;
+                existingTech.bookingStatus = record.status;
+                existingTech.isFreelancer = record.isFreelancer;
+              } else {
+                advEv.technicians.push({
+                  userId: record.userId,
+                  role: record.role,
+                  startTime: record.startTime,
+                  finishTime: record.finishTime,
+                  bookingStatus: record.status,
+                  isFreelancer: record.isFreelancer,
+                });
+              }
+            } else if (record.userName && record.userName !== 'Unassigned') {
+              const existingTech = advEv.technicians.find((t) => t.isFreelancer && t.freelancerName === record.userName);
+              if (existingTech) {
+                existingTech.role = record.role;
+                existingTech.startTime = record.startTime;
+                existingTech.finishTime = record.finishTime;
+                existingTech.bookingStatus = record.status;
+              } else {
+                advEv.technicians.push({
+                  isFreelancer: true,
+                  freelancerName: record.userName,
+                  role: record.role,
+                  startTime: record.startTime,
+                  finishTime: record.finishTime,
+                  bookingStatus: record.status,
+                });
+              }
             }
+            store.upsert('advancing', advEv);
           }
         }
 
@@ -1569,6 +1651,13 @@ RMTP.views.rota = (function () {
             </div>
           </div>
         `,
+        footer: [
+          ...(!isNew ? [
+            '<button type="button" id="av-delete" class="btn btn-danger mr-auto">Clear Date</button>'
+          ] : []),
+          '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
+          '<button type="button" id="av-save" class="btn btn-primary" data-primary>Save Availability</button>',
+        ].join(''),
         actions: [
           ...(!isNew ? [
             '<button type="button" id="av-delete" class="btn btn-danger mr-auto">Clear Date</button>'
@@ -1736,6 +1825,10 @@ RMTP.views.rota = (function () {
             </div>
           </div>
         `,
+        footer: [
+          '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
+          '<button type="button" id="blk-submit" class="btn btn-primary" data-primary>Apply Period Availability</button>',
+        ].join(''),
         actions: [
           '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
           '<button type="button" id="blk-submit" class="btn btn-primary" data-primary>Apply Period Availability</button>',
@@ -1832,6 +1925,10 @@ RMTP.views.rota = (function () {
             </div>
           </div>
         `,
+        footer: [
+          '<button type="button" class="btn btn-ghost" data-close>Keep Shift</button>',
+          '<button type="button" id="c-confirm" class="btn btn-danger" data-primary>Confirm Cancellation</button>',
+        ].join(''),
         actions: [
           '<button type="button" class="btn btn-ghost" data-close>Keep Shift</button>',
           '<button type="button" id="c-confirm" class="btn btn-danger" data-primary>Confirm Cancellation</button>',

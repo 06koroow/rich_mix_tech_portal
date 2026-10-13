@@ -73,9 +73,9 @@
             '</button>' +
             brand(true) +
           '</div>' +
-          '<div class="flex items-center gap-3">' +
-            '<span id="section-title" class="font-display font-semibold text-sm"></span>' +
-            '<div id="mobile-identity"></div>' +
+          '<div class="flex items-center gap-2.5 min-w-0">' +
+            '<span id="section-title" class="font-display font-semibold text-xs sm:text-sm truncate max-w-[125px] sm:max-w-[200px] text-right text-muted"></span>' +
+            '<div id="mobile-identity" class="shrink-0"></div>' +
           '</div>' +
         '</header>' +
 

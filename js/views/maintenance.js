@@ -1143,9 +1143,9 @@ RMTP.views.maintenance = function (el, params, query) {
       '<div class="view-enter">' +
         ui.pageHeader('Maintenance', 'Fault Log & Consumables Ordering',
           '<div class="flex items-center gap-2 flex-wrap">' +
-            '<button id="new-consumables" class="btn btn-secondary flex items-center gap-1.5 text-accent"><span class="text-accent">' + ui.icon('cart', 'w-4 h-4') + '</span><span>Order Consumables</span></button>' +
-            '<button id="schedule-shift-btn" class="btn btn-secondary flex items-center gap-1.5"><span class="text-accent">' + ui.icon('clock', 'w-4 h-4') + '</span><span>Schedule Shift</span></button>' +
-            '<button id="new-fault" class="btn btn-primary flex items-center gap-1.5">' + ui.icon('plus', 'w-4 h-4') + '<span>Report a fault</span></button>' +
+            '<button id="new-consumables" class="btn btn-secondary text-xs sm:text-sm !py-1.5 !px-2.5 sm:!px-3 flex items-center gap-1.5 text-accent"><span class="text-accent">' + ui.icon('cart', 'w-3.5 h-3.5') + '</span><span>Order Consumables</span></button>' +
+            '<button id="schedule-shift-btn" class="btn btn-secondary text-xs sm:text-sm !py-1.5 !px-2.5 sm:!px-3 flex items-center gap-1.5"><span class="text-accent">' + ui.icon('clock', 'w-3.5 h-3.5') + '</span><span>Schedule Shift</span></button>' +
+            '<button id="new-fault" class="btn btn-primary text-xs sm:text-sm !py-1.5 !px-2.5 sm:!px-3 flex items-center gap-1.5">' + ui.icon('plus', 'w-3.5 h-3.5') + '<span>Report a fault</span></button>' +
           '</div>') +
         flaggedPanel() +
         '<div class="relative mb-3.5">' +

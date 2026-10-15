@@ -276,14 +276,11 @@ async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInsta
     throw new Error("ARTIFAX credentials not fully set — see docs/ARTIFAX-EDGE-FUNCTION.md");
   }
   
-  // Loosened query parameters to include custom forms and full arrangement details
   const params = new URLSearchParams({
     date: 'between',
     start_date: from.toISOString().slice(0, 10),
     end_date: to.toISOString().slice(0, 10),
     schedule_output: "1",
-    custom_forms: "1",
-    include_custom_forms: "1"
   });
   
   const baseUrl = ARTIFAX_URL.replace(/\/api\/?$/, '').replace(/\/$/, '');
@@ -422,16 +419,19 @@ Deno.serve(async (req) => {
         const existingTech = (existing.techInfo || "").trim();
         const techInfoVal = existingTech ? existingTech : currentNotes;
 
-        rowsToUpsert.push({ 
+        const row: Record<string, any> = { 
           ...existing, 
           ...booking, 
-          notes: currentNotes,
-          artifaxNotes: currentNotes,
           techInfo: techInfoVal,
           artifaxHistory: artifaxHistory,
           id: existing.id, 
           production_package: prodPkg 
-        });
+        };
+        // Clean out extra properties that are not columns in standard advancing SQL schema
+        delete row.notes;
+        delete row.artifaxNotes;
+
+        rowsToUpsert.push(row);
         updated++;
       } else {
         const currentNotes = booking.notes || "";
@@ -441,15 +441,18 @@ Deno.serve(async (req) => {
           changes: ["Initial sync from Artifax"]
         }] : [];
         booking.artifaxHistory = artifaxHistory;
-        rowsToUpsert.push({ 
+
+        const row: Record<string, any> = { 
           id: `evt-afx-${booking.artifaxId}`, 
           ...booking, 
-          notes: currentNotes,
-          artifaxNotes: currentNotes,
           techInfo: currentNotes,
           artifaxHistory: artifaxHistory,
-          production_package: { artifaxHistory } 
-        });
+          production_package: { artifaxHistory, artifaxNotes: currentNotes } 
+        };
+        delete row.notes;
+        delete row.artifaxNotes;
+
+        rowsToUpsert.push(row);
         created++;
       }
     }

@@ -40,60 +40,76 @@ RMTP.views.advancing = function (el, params, query) {
     }
   }
 
-  if (!RMTP._artifaxLegacyMigratedV3) {
+  if (!RMTP._artifaxHealingLoosenedV4) {
     let migrated = false;
     let count = 0;
     const events = store.all('advancing');
     events.forEach(ev => {
       let changed = false;
-      let newTechInfo = ev.techInfo;
+      let newTechInfo = (ev.techInfo || '').trim();
       let history = Array.isArray(ev.artifaxHistory) ? ev.artifaxHistory.slice() : [];
+      let newNotes = (ev.notes || '').trim();
+      let newAfxNotes = (ev.artifaxNotes || '').trim();
 
-      // 1. Legacy string notes split
-      if (ev.techInfo && typeof ev.techInfo === 'string' && ev.techInfo.includes('--- ') && ev.techInfo.includes(' Updates ---')) {
-        const parts = ev.techInfo.split(/--- (.*?) Updates ---(?:\r?\n|$)/);
-        if (parts.length > 1) {
-          newTechInfo = parts[0].trim();
-          for (let i = 1; i < parts.length; i += 2) {
-             history.push({
-                date: parts[i],
-                notes: (parts[i+1] || '').trim(),
-                changes: ['Imported from legacy notes']
-             });
-          }
-          changed = true;
+      // Find any non-empty notes in history
+      let historyNotes = '';
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i] && history[i].notes && history[i].notes.trim()) {
+          historyNotes = history[i].notes.trim();
+          break;
         }
       }
 
-      // 2. Self-healing: fill empty revision notes from previous non-empty revision
-      if (history.length > 1) {
-        for (let i = 1; i < history.length; i++) {
-          if ((!history[i].notes || !history[i].notes.trim()) && history[i-1].notes && history[i-1].notes.trim()) {
-            history[i].notes = history[i-1].notes;
+      const availableNote = historyNotes || newTechInfo || newNotes || newAfxNotes || (ev.description || '').trim();
+
+      // If event has Artifax link or history, but techInfo is blank, heal it!
+      if ((ev.artifaxId || history.length > 0) && !newTechInfo && availableNote) {
+        newTechInfo = availableNote;
+        changed = true;
+      }
+
+      // If notes or artifaxNotes are blank, heal them!
+      if (!newNotes && availableNote) {
+        newNotes = availableNote;
+        changed = true;
+      }
+      if (!newAfxNotes && availableNote) {
+        newAfxNotes = availableNote;
+        changed = true;
+      }
+
+      // If history exists but revisions have empty notes, backfill from availableNote
+      if (history.length > 0 && availableNote) {
+        for (let i = 0; i < history.length; i++) {
+          if (!history[i].notes || !history[i].notes.trim()) {
+            history[i].notes = availableNote;
             changed = true;
           }
         }
-      }
-
-      // 3. If Artifax event has techInfo with brackets/layout info but empty history, seed initial history
-      if (ev.artifaxId && (!history || history.length === 0) && newTechInfo && typeof newTechInfo === 'string' && newTechInfo.trim()) {
+      } else if (ev.artifaxId && (!history || history.length === 0) && availableNote) {
         history = [{
           date: ev.date || new Date().toISOString(),
-          notes: newTechInfo.trim(),
+          notes: availableNote,
           changes: ['Initial sync from Artifax']
         }];
         changed = true;
       }
 
       if (changed) {
-        store.upsert('advancing', { ...ev, techInfo: newTechInfo, artifaxHistory: history });
+        store.upsert('advancing', { 
+          ...ev, 
+          techInfo: newTechInfo, 
+          notes: newNotes, 
+          artifaxNotes: newAfxNotes, 
+          artifaxHistory: history 
+        });
         migrated = true;
         count++;
       }
     });
-    RMTP._artifaxLegacyMigratedV3 = true;
+    RMTP._artifaxHealingLoosenedV4 = true;
     if (migrated) {
-      console.log('[Artifax Migration V3] Repaired/migrated ' + count + ' events.');
+      console.log('[Artifax Healing V4] Repaired ' + count + ' events with recovered notes.');
       if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
     }
   }
@@ -1024,22 +1040,213 @@ RMTP.views.advancing = function (el, params, query) {
       const ROOM_TO_SPACE = {
         "The Stage (MS)": "The Stage",
         "The Stage": "The Stage",
+        "Stage": "The Stage",
+        "Main Stage": "The Stage",
+        "MS": "The Stage",
         "The Studio (V1)": "The Studio",
-        "Studio": "The Studio",
         "The Studio": "The Studio",
+        "Studio": "The Studio",
+        "Studio 1": "The Studio",
+        "Studio 2": "The Studio",
+        "V1": "The Studio",
         "The Mix & Bar (V2)": "The Mix",
-        "Mix": "The Mix",
         "The Mix": "The Mix",
+        "Mix": "The Mix",
+        "Mix Bar": "The Mix",
+        "The Mix Bar": "The Mix",
+        "Bar": "The Mix",
+        "V2": "The Mix",
         "Screen 1": "Screen One",
-        "Screen 2": "Screen Two",
-        "Screen 3": "Screen Three",
+        "Screen One": "Screen One",
         "Cinema 1": "Screen One",
+        "Cinema One": "Screen One",
+        "Screen 2": "Screen Two",
+        "Screen Two": "Screen Two",
         "Cinema 2": "Screen Two",
+        "Cinema Two": "Screen Two",
+        "Screen 3": "Screen Three",
+        "Screen Three": "Screen Three",
         "Cinema 3": "Screen Three",
+        "Cinema Three": "Screen Three",
         "Streetside": "Streetside",
         "Street Side": "Streetside",
         "Streetside Bar": "Streetside",
-        "Streetside Cafe": "Streetside"
+        "Streetside Cafe": "Streetside",
+        "Streetside Foyer": "Streetside",
+        "Foyer": "Streetside",
+        "Cafe": "Streetside",
+      };
+
+      const resolveSpace = (roomName) => {
+        const r = (roomName || "").trim();
+        if (!r) return "The Stage";
+        if (ROOM_TO_SPACE[r]) return ROOM_TO_SPACE[r];
+        
+        const lower = r.toLowerCase();
+        if (lower.includes("screen 1") || lower.includes("cinema 1") || lower.includes("screen one") || lower.includes("cinema one")) return "Screen One";
+        if (lower.includes("screen 2") || lower.includes("cinema 2") || lower.includes("screen two") || lower.includes("cinema two")) return "Screen Two";
+        if (lower.includes("screen 3") || lower.includes("cinema 3") || lower.includes("screen three") || lower.includes("cinema three")) return "Screen Three";
+        if (lower.includes("stage")) return "The Stage";
+        if (lower.includes("studio")) return "The Studio";
+        if (lower.includes("mix") || lower.includes("bar")) return "The Mix";
+        if (lower.includes("street") || lower.includes("cafe") || lower.includes("foyer")) return "Streetside";
+        
+        const raw = lower.replace(/[^a-z0-9]/g, '');
+        const found = RMTP.SPACES.find(s => s.toLowerCase().replace(/[^a-z0-9]/g, '') === raw);
+        if (found) return found;
+
+        // Return original room name rather than dropping the event!
+        return r;
+      };
+
+      // Extract all technical, layout, and event notes from Artifax response without overly strict filtering
+      const extractArtifaxNotes = (r) => {
+        const parts = [];
+        const seenNotes = new Set();
+
+        const addNote = (label, text) => {
+          if (text === null || text === undefined) return;
+          const str = String(text).trim();
+          if (!str || seenNotes.has(str)) return;
+          seenNotes.add(str);
+          if (label) {
+            parts.push(`[${label}]: ${str}`);
+          } else {
+            parts.push(str);
+          }
+        };
+
+        // 1. Check all standard and custom note fields (including PascalCase)
+        const candidateFields = [
+          { key: 'notes', label: '' },
+          { key: 'description', label: 'Description' },
+          { key: 'event_notes', label: 'Event Notes' },
+          { key: 'arrangement_notes', label: 'Arrangement Notes' },
+          { key: 'internal_notes', label: 'Internal Notes' },
+          { key: 'public_description', label: 'Public Description' },
+          { key: 'event_description', label: 'Event Description' },
+          { key: 'arrangement_description', label: 'Arrangement Description' },
+          { key: 'comments', label: 'Comments' },
+          { key: 'event_comments', label: 'Event Comments' },
+          { key: 'arrangement_comments', label: 'Arrangement Comments' },
+          { key: 'technical_requirements', label: 'Technical Requirements' },
+          { key: 'tech_requirements', label: 'Tech Requirements' },
+          { key: 'technical_notes', label: 'Technical Notes' },
+          { key: 'tech_notes', label: 'Tech Notes' },
+          { key: 'requirements', label: 'Requirements' },
+          { key: 'setup_notes', label: 'Setup Notes' },
+          { key: 'set_up_notes', label: 'Setup Notes' },
+          { key: 'staging_notes', label: 'Staging Notes' },
+          { key: 'av_notes', label: 'AV Notes' },
+          { key: 'sound_notes', label: 'Sound Notes' },
+          { key: 'lighting_notes', label: 'Lighting Notes' },
+          { key: 'catering_notes', label: 'Catering Notes' },
+          { key: 'special_instructions', label: 'Special Instructions' },
+          { key: 'memo', label: 'Memo' },
+          { key: 'memos', label: 'Memos' },
+          { key: 'summary', label: 'Summary' },
+          { key: 'details', label: 'Details' },
+          { key: 'task_notes', label: 'Tasks' },
+          { key: 'roster_notes', label: 'Roster Notes' },
+          { key: 'Notes', label: '' },
+          { key: 'Description', label: 'Description' },
+          { key: 'EventNotes', label: 'Event Notes' },
+          { key: 'ArrangementNotes', label: 'Arrangement Notes' },
+          { key: 'InternalNotes', label: 'Internal Notes' },
+          { key: 'TechnicalNotes', label: 'Technical Notes' },
+          { key: 'Comments', label: 'Comments' },
+        ];
+
+        for (const { key, label } of candidateFields) {
+          if (r[key] !== undefined && r[key] !== null) {
+            if (typeof r[key] === 'string' || typeof r[key] === 'number') {
+              addNote(label, r[key]);
+            } else if (Array.isArray(r[key])) {
+              for (const item of r[key]) {
+                if (typeof item === 'string') addNote(label, item);
+                else if (item && typeof item === 'object') {
+                  const itemText = item.text || item.note || item.content || item.description || item.value || '';
+                  if (itemText) addNote(item.title || item.label || label, itemText);
+                }
+              }
+            }
+          }
+        }
+
+        // 2. Custom forms: loosen the filter completely so no real user event data is discarded
+        const forms = Array.isArray(r.custom_forms) ? r.custom_forms : (Array.isArray(r.forms) ? r.forms : []);
+        for (const form of forms) {
+          if (!form || typeof form !== 'object') continue;
+          const formTitle = String(form.custom_form_name || form.form_name || form.name || form.title || form.label || '').trim();
+          const lowerForm = formTitle.toLowerCase();
+          
+          // Only exclude strictly sensitive payment credentials
+          if (/credit\s*card|bank\s*account|stripe\s*token/i.test(lowerForm)) {
+            continue;
+          }
+
+          const formElements = [];
+          
+          // Collect from sections if present
+          const sections = Array.isArray(form.custom_form_sections) ? form.custom_form_sections : (Array.isArray(form.sections) ? form.sections : []);
+          for (const sec of sections) {
+            if (!sec) continue;
+            const elements = Array.isArray(sec.custom_form_elements) ? sec.custom_form_elements : (Array.isArray(sec.elements) ? sec.elements : (Array.isArray(sec.fields) ? sec.fields : []));
+            formElements.push(...elements);
+          }
+          
+          // Also collect direct elements on form
+          const directElements = Array.isArray(form.custom_form_elements) ? form.custom_form_elements : (Array.isArray(form.elements) ? form.elements : (Array.isArray(form.fields) ? form.fields : []));
+          formElements.push(...directElements);
+
+          for (const el of formElements) {
+            if (!el || typeof el !== 'object') continue;
+            const elName = String(el.custom_form_element_name || el.element_name || el.name || el.label || el.title || el.prompt || el.field_name || '').trim();
+            if (!elName) continue;
+
+            let val = el.custom_form_data_text !== undefined && el.custom_form_data_text !== null && el.custom_form_data_text !== ''
+              ? el.custom_form_data_text
+              : (el.custom_form_data_value !== undefined && el.custom_form_data_value !== null ? el.custom_form_data_value : (el.value ?? el.data_value ?? el.text_value ?? el.display_value ?? el.selected_option_label ?? ''));
+
+            if (val === true) val = 'Yes';
+            if (val === false) val = 'No';
+            if (Array.isArray(val)) val = val.join(', ');
+            
+            const valStr = String(val ?? '').trim();
+            // Keep informative values like 'No', '0', 'None', 'n/a' so requirements aren't left blank
+            if (valStr.length === 0) continue;
+
+            const prefix = formTitle ? `[${formTitle}] ${elName}` : elName;
+            addNote(prefix, valStr);
+          }
+        }
+
+        // 3. Direct custom fields array
+        const customFields = Array.isArray(r.custom_fields) ? r.custom_fields : (Array.isArray(r.custom_form_elements) ? r.custom_form_elements : []);
+        for (const cf of customFields) {
+          if (!cf || typeof cf !== 'object') continue;
+          const name = String(cf.name || cf.label || cf.title || cf.field_name || cf.custom_form_element_name || '').trim();
+          let val = cf.value ?? cf.custom_form_data_text ?? cf.custom_form_data_value ?? cf.text ?? '';
+          if (val === true) val = 'Yes';
+          if (val === false) val = 'No';
+          if (Array.isArray(val)) val = val.join(', ');
+          const valStr = String(val ?? '').trim();
+          if (name && valStr.length > 0) {
+            addNote(name, valStr);
+          }
+        }
+
+        // 4. Custom form data key-value dictionary
+        if (r.custom_form_data && typeof r.custom_form_data === 'object' && !Array.isArray(r.custom_form_data)) {
+          for (const [k, v] of Object.entries(r.custom_form_data)) {
+            if (v !== null && v !== undefined) {
+              const vStr = String(v).trim();
+              if (vStr) addNote(k, vStr);
+            }
+          }
+        }
+
+        return parts.join('\n').trim();
       };
 
       const toCategory = (type) => {
@@ -1081,34 +1288,22 @@ RMTP.views.advancing = function (el, params, query) {
         // Status can be in multiple places depending on the API output
         const eventStatus = (r.status ?? r.Status ?? r.event_status_name ?? "").toLowerCase();
         const salesStatus = (r.sales_process_stage_name ?? "").toLowerCase();
-        
         const combinedStatus = eventStatus + " " + salesStatus;
         
+        const isCancelled = combinedStatus.includes("cancel");
+        const isTentative = combinedStatus.includes("tentative") || 
+                            combinedStatus.includes("provisional") || 
+                            combinedStatus.includes("pencil") ||
+                            combinedStatus.includes("enquiry") ||
+                            combinedStatus.includes("inquiry") ||
+                            combinedStatus.includes("hold");
+
+        // Do NOT drop tentative/enquiry events! Map their status cleanly so nothing is silently lost.
+        const resolvedStatus = isCancelled ? "Cancelled" : (isTentative ? "Tentative" : "Confirmed");
+
         const existing = existingEvents.find(e => e.artifaxId === id);
 
-        // Skip explicitly cancelled, tentative, or provisional events, unless they already exist and we need to update them to cancelled.
-        const isExcluded = combinedStatus.includes("cancel") || 
-                           combinedStatus.includes("tentative") || 
-                           combinedStatus.includes("provisional") ||
-                           combinedStatus.includes("enquiry") ||
-                           combinedStatus.includes("inquiry");
-                           
-        if (!existing && isExcluded && !combinedStatus.includes("confirm") && !combinedStatus.includes("contract")) {
-          skipped++;
-          continue;
-        }
-
-        let space = ROOM_TO_SPACE[room];
-        if (!space) {
-          const raw = room.toLowerCase().replace(/[^a-z0-9]/g, '');
-          space = RMTP.SPACES.find(s => s.toLowerCase().replace(/[^a-z0-9]/g, '') === raw);
-        }
-        
-        // Filter out any events not in the explicitly defined spaces
-        if (!space) { 
-          skipped++; 
-          continue; 
-        }
+        const space = resolveSpace(room);
 
         const startDate = dateStr ? new Date(dateStr) : null;
         
@@ -1117,7 +1312,6 @@ RMTP.views.advancing = function (el, params, query) {
         let finishTimeStr = "";
         
         if (start && typeof start === 'string' && start.includes(':')) {
-           // If it's a timestamp like 09:00:00.0000
            if (/^\d{2}:\d{2}/.test(start)) {
              startTimeStr = start.slice(0, 5);
            } else {
@@ -1132,64 +1326,8 @@ RMTP.views.advancing = function (el, params, query) {
            }
         }
         
-        // Check for Custom Forms and General Notes
-        let techInfoNotesParts = [];
-        
-        // 1. General arrangement or event notes / description
-        const generalNotes = String(r.notes || r.description || r.event_notes || r.arrangement_notes || r.comments || r.internal_notes || '').trim();
-        if (generalNotes) {
-          techInfoNotesParts.push(generalNotes);
-        }
-        
-        // 2. Custom forms: check for technical, layout, staging, production, cinema, event details
-        if (Array.isArray(r.custom_forms)) {
-          for (const form of r.custom_forms) {
-            const formName = String(form.custom_form_name || '').trim();
-            const lowerForm = formName.toLowerCase();
-            
-            // Exclude non-tech / financial / administrative / marketing forms
-            if (/finance|billing|invoice|payment|contract|legal|gdpr|marketing|box\s*office|ticketing/i.test(lowerForm)) {
-              continue;
-            }
-            
-            // Include forms that are technical, layout, production, screening, event details, or general
-            const isRelevant = /layout|setup|set-up|detail|tech|production|stage|staging|sound|audio|lighting|lx|av|screen|cinema|dcp|projection|format|schedule|spec|crew|artist|rider/i.test(lowerForm) || !lowerForm;
-            
-            if (isRelevant && Array.isArray(form.custom_form_sections)) {
-              for (const section of form.custom_form_sections) {
-                if (Array.isArray(section.custom_form_elements)) {
-                  for (const el of section.custom_form_elements) {
-                    const elName = String(el.custom_form_element_name || el.element_name || el.name || '').trim();
-                    if (!elName) continue;
-                    
-                    // Value can be in custom_form_data_text, custom_form_data_value, value, data_value, etc.
-                    let rawVal = el.custom_form_data_text !== undefined && el.custom_form_data_text !== null && el.custom_form_data_text !== ''
-                      ? el.custom_form_data_text
-                      : (el.custom_form_data_value !== undefined && el.custom_form_data_value !== null ? el.custom_form_data_value : (el.value ?? ''));
-                      
-                    if (rawVal === true) rawVal = 'Yes';
-                    if (Array.isArray(rawVal)) rawVal = rawVal.join(', ');
-                    
-                    let strVal = String(rawVal ?? '').trim();
-                    if (!strVal) continue;
-                    
-                    // Filter out non-informative noise values that cause "too much info" clutter
-                    const lowerVal = strVal.toLowerCase();
-                    if (lowerVal === 'no' || lowerVal === 'none' || lowerVal === 'n/a' || lowerVal === 'na' || lowerVal === 'false' || lowerVal === '0' || lowerVal === 'not required' || lowerVal === 'unspecified') {
-                      continue;
-                    }
-                    
-                    techInfoNotesParts.push(`[${elName}]: ${strVal}`);
-                  }
-                }
-              }
-            }
-          }
-        }
-        
-        let techInfoNotes = techInfoNotesParts.join('\n').trim();
-
-        const cancelled = /cancel/i.test(eventStatus) || /cancel/i.test(salesStatus);
+        // Comprehensive extraction of Artifax notes & forms
+        const techInfoNotes = extractArtifaxNotes(r) || String(r.notes || r.description || '').trim();
 
         const booking = {
           artifaxId: id,
@@ -1201,13 +1339,11 @@ RMTP.views.advancing = function (el, params, query) {
           startTime: startTimeStr,
           finishTime: finishTimeStr,
           clientContact: contact,
-          status: cancelled ? "Cancelled" : "Confirmed"
+          status: resolvedStatus,
+          notes: techInfoNotes || "",
+          artifaxNotes: techInfoNotes || "",
+          techInfo: techInfoNotes || ""
         };
-        
-        // Only set techInfo if we found something, to avoid overwriting existing notes unnecessarily
-        if (techInfoNotes) {
-          booking.techInfo = techInfoNotes;
-        }
 
         let row = null;
         
@@ -1245,7 +1381,13 @@ RMTP.views.advancing = function (el, params, query) {
              });
           }
           
-          row.techInfo = existing.techInfo || '';
+          // Always ensure notes and artifaxNotes are populated
+          row.notes = techInfoNotes || existing.notes || '';
+          row.artifaxNotes = techInfoNotes || existing.artifaxNotes || '';
+
+          // Preserve user-edited techInfo if not blank, otherwise populate from Artifax notes so it doesn't show blank
+          const existingTech = (existing.techInfo || '').trim();
+          row.techInfo = existingTech ? existingTech : (techInfoNotes || '');
           updated++;
         } else {
           row = { id: 'evt-afx-' + id, ...booking };
@@ -1257,7 +1399,9 @@ RMTP.views.advancing = function (el, params, query) {
                   changes: ["Initial sync from Artifax"]
               });
           }
-          row.techInfo = ''; // Explicitly empty for RMTP local tech info
+          row.notes = techInfoNotes || '';
+          row.artifaxNotes = techInfoNotes || '';
+          row.techInfo = techInfoNotes || '';
           created++;
         }
         
@@ -1266,7 +1410,7 @@ RMTP.views.advancing = function (el, params, query) {
 
       if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
       
-      const skippedMsg = skipped > 0 ? `, ${skipped} skipped (unconfirmed)` : '';
+      const skippedMsg = skipped > 0 ? `, ${skipped} skipped` : '';
       if (!silent || created > 0 || updated > 0) {
          ui.toast('Artifax: ' + created + ' added, ' + updated + ' updated' + skippedMsg, 'ok');
       }
@@ -1628,6 +1772,7 @@ RMTP.views.advancing = function (el, params, query) {
       : 0;
 
     const prodBadges = renderProductionBadges(ev, false);
+    const hasArtifaxInfo = !!((ev.artifaxHistory && ev.artifaxHistory.some(h => h.notes && h.notes.trim())) || (ev.techInfo && ev.techInfo.trim()) || (ev.artifaxNotes && ev.artifaxNotes.trim()) || (ev.notes && ev.notes.trim()));
 
     const statusControl = canManageEvents
       ? '<div class="inline-flex items-center gap-1" onclick="event.stopPropagation()">' +
@@ -1662,6 +1807,7 @@ RMTP.views.advancing = function (el, params, query) {
               maintPill +
               (ev.guestEngineer ? ui.pill('Guest Engineer', 'var(--info)') : '') +
               (hasReports ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-danger/15 text-danger border border-danger/30" title="Shift reports submitted">' + ui.icon('alert', 'w-3 h-3') + 'Reports</span>' : '') +
+              (hasArtifaxInfo ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-accent/15 text-accent border border-accent/30" title="Technical and layout notes imported from Artifax">' + ui.icon('file', 'w-3 h-3') + 'Artifax Spec</span>' : '') +
             '</div>' +
             '<div class="flex flex-wrap items-center gap-x-4 gap-y-2.5 mt-1 text-xs">' +
               (ev.date ? 
@@ -1850,6 +1996,19 @@ RMTP.views.advancing = function (el, params, query) {
     }
 
     if (!rawHistory || rawHistory.length === 0) {
+      const fallbackNotes = (ev.techInfo || ev.notes || ev.artifaxNotes || ev.description || '').trim();
+      if (fallbackNotes) {
+        return (
+          '<div class="mb-4 p-3.5 rounded-xl bg-panel2/30 border border-line text-xs artifax-history-block">' +
+            '<div class="flex items-center gap-1.5 font-semibold text-accent uppercase tracking-wider text-[11px] mb-2">' +
+              ui.icon('refresh', 'w-3.5 h-3.5') + '<span>Artifax Event Notes</span>' +
+            '</div>' +
+            '<div class="p-2.5 rounded-lg bg-panel border border-line/80 font-mono text-[11px] text-ink/90 whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto select-text">' +
+              ui.esc(fallbackNotes) +
+            '</div>' +
+          '</div>'
+        );
+      }
       return (
         '<div class="mb-4 p-3.5 rounded-xl bg-panel2/30 border border-line text-xs">' +
           '<div class="flex items-center gap-1.5 font-semibold text-muted uppercase tracking-wider text-[11px] mb-1">' +
@@ -1871,7 +2030,9 @@ RMTP.views.advancing = function (el, params, query) {
     }).join('');
 
     const defaultChangesHtml = formatArtifaxChangeBadges(defaultEntry.changes);
-    const defaultNotesText = defaultEntry.notes || 'No technical or layout notes recorded in this revision.';
+    const defaultNotesText = (defaultEntry.notes && defaultEntry.notes.trim()) 
+      ? defaultEntry.notes 
+      : ((ev.techInfo && ev.techInfo.trim()) ? ev.techInfo : ((ev.notes && ev.notes.trim()) ? ev.notes : ((ev.artifaxNotes && ev.artifaxNotes.trim()) ? ev.artifaxNotes : 'No technical or layout notes recorded in this revision.')));
 
     const copyBtnHtml = isEditMode
       ? '<button type="button" class="btn-copy-artifax-notes text-[11px] text-accent hover:underline font-semibold flex items-center gap-1 cursor-pointer ml-auto">' +

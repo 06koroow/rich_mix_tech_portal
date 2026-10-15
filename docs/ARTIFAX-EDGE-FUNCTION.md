@@ -64,7 +64,9 @@ serve(async (req) => {
       date: 'between',
       start_date: from.toISOString().slice(0, 10),
       end_date: to.toISOString().slice(0, 10),
-      schedule_output: "1"
+      schedule_output: "1",
+      custom_forms: "1",
+      include_custom_forms: "1"
     });
 
     const endpoint = `${baseUrl}/api/arrangements/event?${params}`;

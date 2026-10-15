@@ -419,7 +419,7 @@ RMTP.views.rota = (function () {
               userName: tName,
               role: t.role || 'Tech',
               status: t.bookingStatus || 'confirmed',
-              notes: ev.notes || '',
+              notes: ev.notes || ev.techInfo || (ev.artifaxHistory && ev.artifaxHistory.length ? ev.artifaxHistory[ev.artifaxHistory.length - 1].notes : '') || ev.artifaxNotes || '',
               isUnfilled: false,
             };
             items.push(item);
@@ -445,7 +445,7 @@ RMTP.views.rota = (function () {
             userName: 'Unassigned',
             role: 'Tech',
             status: 'unfilled',
-            notes: ev.notes || '',
+            notes: ev.notes || ev.techInfo || (ev.artifaxHistory && ev.artifaxHistory.length ? ev.artifaxHistory[ev.artifaxHistory.length - 1].notes : '') || ev.artifaxNotes || '',
             isUnfilled: true,
           };
           items.push(item);

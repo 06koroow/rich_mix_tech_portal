@@ -28,21 +28,220 @@ const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 // How far ahead to sync.
 const HORIZON_DAYS = 120;
 
-// ---- Artifax room name → Tech Portal space. EDIT to match your rooms. ----
+// ---- Artifax room name → Tech Portal space. Comprehensive alias map. ----
 const ROOM_TO_SPACE: Record<string, string> = {
+  "The Stage (MS)": "The Stage",
   "The Stage": "The Stage",
-  "Studio": "The Studio",
+  "Stage": "The Stage",
+  "Main Stage": "The Stage",
+  "MS": "The Stage",
+  "The Studio (V1)": "The Studio",
   "The Studio": "The Studio",
-  "Mix": "The Mix",
+  "Studio": "The Studio",
+  "Studio 1": "The Studio",
+  "Studio 2": "The Studio",
+  "V1": "The Studio",
+  "The Mix & Bar (V2)": "The Mix",
   "The Mix": "The Mix",
+  "Mix": "The Mix",
+  "Mix Bar": "The Mix",
+  "The Mix Bar": "The Mix",
+  "Bar": "The Mix",
+  "V2": "The Mix",
   "Screen 1": "Screen One",
+  "Screen One": "Screen One",
+  "Cinema 1": "Screen One",
+  "Cinema One": "Screen One",
   "Screen 2": "Screen Two",
+  "Screen Two": "Screen Two",
+  "Cinema 2": "Screen Two",
+  "Cinema Two": "Screen Two",
   "Screen 3": "Screen Three",
+  "Screen Three": "Screen Three",
+  "Cinema 3": "Screen Three",
+  "Cinema Three": "Screen Three",
   "Streetside": "Streetside",
   "Street Side": "Streetside",
   "Streetside Bar": "Streetside",
   "Streetside Cafe": "Streetside",
+  "Streetside Foyer": "Streetside",
+  "Foyer": "Streetside",
+  "Cafe": "Streetside",
 };
+
+function resolveSpace(roomName: string): string {
+  const r = (roomName || "").trim();
+  if (!r) return "The Stage";
+  if (ROOM_TO_SPACE[r]) return ROOM_TO_SPACE[r];
+  
+  const lower = r.toLowerCase();
+  if (lower.includes("screen 1") || lower.includes("cinema 1") || lower.includes("screen one") || lower.includes("cinema one")) return "Screen One";
+  if (lower.includes("screen 2") || lower.includes("cinema 2") || lower.includes("screen two") || lower.includes("cinema two")) return "Screen Two";
+  if (lower.includes("screen 3") || lower.includes("cinema 3") || lower.includes("screen three") || lower.includes("cinema three")) return "Screen Three";
+  if (lower.includes("stage")) return "The Stage";
+  if (lower.includes("studio")) return "The Studio";
+  if (lower.includes("mix") || lower.includes("bar")) return "The Mix";
+  if (lower.includes("street") || lower.includes("cafe") || lower.includes("foyer")) return "Streetside";
+  
+  // Return the original room name rather than dropping the event!
+  return r;
+}
+
+function resolveStatus(statusStr: string): string {
+  const s = (statusStr || "").toLowerCase();
+  if (s.includes("cancel")) return "Cancelled";
+  if (s.includes("tentative") || s.includes("provisional") || s.includes("pencil") || s.includes("enquiry") || s.includes("inquiry") || s.includes("hold")) return "Tentative";
+  return "Confirmed";
+}
+
+// Extract all technical, layout, and event notes from Artifax response without overly strict filtering
+function extractArtifaxNotes(r: any): string {
+  const parts: string[] = [];
+  const seenNotes = new Set<string>();
+
+  const addNote = (label: string, text: any) => {
+    if (text === null || text === undefined) return;
+    const str = String(text).trim();
+    if (!str || seenNotes.has(str)) return;
+    seenNotes.add(str);
+    if (label) {
+      parts.push(`[${label}]: ${str}`);
+    } else {
+      parts.push(str);
+    }
+  };
+
+  // 1. Check all standard and custom note fields (including PascalCase)
+  const candidateFields = [
+    { key: 'notes', label: '' },
+    { key: 'description', label: 'Description' },
+    { key: 'event_notes', label: 'Event Notes' },
+    { key: 'arrangement_notes', label: 'Arrangement Notes' },
+    { key: 'internal_notes', label: 'Internal Notes' },
+    { key: 'public_description', label: 'Public Description' },
+    { key: 'event_description', label: 'Event Description' },
+    { key: 'arrangement_description', label: 'Arrangement Description' },
+    { key: 'comments', label: 'Comments' },
+    { key: 'event_comments', label: 'Event Comments' },
+    { key: 'arrangement_comments', label: 'Arrangement Comments' },
+    { key: 'technical_requirements', label: 'Technical Requirements' },
+    { key: 'tech_requirements', label: 'Tech Requirements' },
+    { key: 'technical_notes', label: 'Technical Notes' },
+    { key: 'tech_notes', label: 'Tech Notes' },
+    { key: 'requirements', label: 'Requirements' },
+    { key: 'setup_notes', label: 'Setup Notes' },
+    { key: 'set_up_notes', label: 'Setup Notes' },
+    { key: 'staging_notes', label: 'Staging Notes' },
+    { key: 'av_notes', label: 'AV Notes' },
+    { key: 'sound_notes', label: 'Sound Notes' },
+    { key: 'lighting_notes', label: 'Lighting Notes' },
+    { key: 'catering_notes', label: 'Catering Notes' },
+    { key: 'special_instructions', label: 'Special Instructions' },
+    { key: 'memo', label: 'Memo' },
+    { key: 'memos', label: 'Memos' },
+    { key: 'summary', label: 'Summary' },
+    { key: 'details', label: 'Details' },
+    { key: 'task_notes', label: 'Tasks' },
+    { key: 'roster_notes', label: 'Roster Notes' },
+    { key: 'Notes', label: '' },
+    { key: 'Description', label: 'Description' },
+    { key: 'EventNotes', label: 'Event Notes' },
+    { key: 'ArrangementNotes', label: 'Arrangement Notes' },
+    { key: 'TechnicalNotes', label: 'Technical Notes' },
+    { key: 'Comments', label: 'Comments' },
+  ];
+
+  for (const { key, label } of candidateFields) {
+    if (r[key] !== undefined && r[key] !== null) {
+      if (typeof r[key] === 'string' || typeof r[key] === 'number') {
+        addNote(label, r[key]);
+      } else if (Array.isArray(r[key])) {
+        for (const item of r[key]) {
+          if (typeof item === 'string') addNote(label, item);
+          else if (item && typeof item === 'object') {
+            const itemText = item.text || item.note || item.content || item.description || item.value || '';
+            if (itemText) addNote(item.title || item.label || label, itemText);
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Custom forms: loosen the filter completely so no real user event data is discarded
+  const forms = Array.isArray(r.custom_forms) ? r.custom_forms : (Array.isArray(r.forms) ? r.forms : []);
+  for (const form of forms) {
+    if (!form || typeof form !== 'object') continue;
+    const formTitle = String(form.custom_form_name || form.form_name || form.name || form.title || form.label || '').trim();
+    const lowerForm = formTitle.toLowerCase();
+    
+    // Only exclude strictly sensitive payment credentials
+    if (/credit\s*card|bank\s*account|stripe\s*token/i.test(lowerForm)) {
+      continue;
+    }
+
+    const formElements: any[] = [];
+    
+    // Collect from sections if present
+    const sections = Array.isArray(form.custom_form_sections) ? form.custom_form_sections : (Array.isArray(form.sections) ? form.sections : []);
+    for (const sec of sections) {
+      if (!sec) continue;
+      const elements = Array.isArray(sec.custom_form_elements) ? sec.custom_form_elements : (Array.isArray(sec.elements) ? sec.elements : (Array.isArray(sec.fields) ? sec.fields : []));
+      formElements.push(...elements);
+    }
+    
+    // Also collect direct elements on form
+    const directElements = Array.isArray(form.custom_form_elements) ? form.custom_form_elements : (Array.isArray(form.elements) ? form.elements : (Array.isArray(form.fields) ? form.fields : []));
+    formElements.push(...directElements);
+
+    for (const el of formElements) {
+      if (!el || typeof el !== 'object') continue;
+      const elName = String(el.custom_form_element_name || el.element_name || el.name || el.label || el.title || el.prompt || el.field_name || '').trim();
+      if (!elName) continue;
+
+      let val = el.custom_form_data_text !== undefined && el.custom_form_data_text !== null && el.custom_form_data_text !== ''
+        ? el.custom_form_data_text
+        : (el.custom_form_data_value !== undefined && el.custom_form_data_value !== null ? el.custom_form_data_value : (el.value ?? el.data_value ?? el.text_value ?? el.display_value ?? el.selected_option_label ?? ''));
+
+      if (val === true) val = 'Yes';
+      if (val === false) val = 'No';
+      if (Array.isArray(val)) val = val.join(', ');
+      
+      const valStr = String(val ?? '').trim();
+      // Keep informative values like 'No', '0', 'None', 'n/a' so requirements aren't left blank
+      if (valStr.length === 0) continue;
+
+      const prefix = formTitle ? `[${formTitle}] ${elName}` : elName;
+      addNote(prefix, valStr);
+    }
+  }
+
+  // 3. Direct custom fields array
+  const customFields = Array.isArray(r.custom_fields) ? r.custom_fields : (Array.isArray(r.custom_form_elements) ? r.custom_form_elements : []);
+  for (const cf of customFields) {
+    if (!cf || typeof cf !== 'object') continue;
+    const name = String(cf.name || cf.label || cf.title || cf.field_name || cf.custom_form_element_name || '').trim();
+    let val = cf.value ?? cf.custom_form_data_text ?? cf.custom_form_data_value ?? cf.text ?? '';
+    if (val === true) val = 'Yes';
+    if (val === false) val = 'No';
+    if (Array.isArray(val)) val = val.join(', ');
+    const valStr = String(val ?? '').trim();
+    if (name && valStr.length > 0) {
+      addNote(name, valStr);
+    }
+  }
+
+  // 4. Custom form data key-value dictionary
+  if (r.custom_form_data && typeof r.custom_form_data === 'object' && !Array.isArray(r.custom_form_data)) {
+    for (const [k, v] of Object.entries(r.custom_form_data)) {
+      if (v !== null && v !== undefined) {
+        const vStr = String(v).trim();
+        if (vStr) addNote(k, vStr);
+      }
+    }
+  }
+
+  return parts.join('\n').trim();
+}
 
 // ---- Artifax booking type/label → advancing category ----
 function toCategory(type: string): string {
@@ -59,15 +258,6 @@ const cors = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 
-// ------------------------------------------------------------
-//  Fetch instances from Artifax.
-//  TODO: set the exact endpoint + query params from your Artifax API
-//  docs (Admin → Configuration → API, or ask Artifax Support). The
-//  ArtifaxEvent data model is Arrangements → Events → Instances; you
-//  want dated INSTANCES within [from, to], including room + contact.
-//  The shape below is what mapInstance() expects — adjust the parsing
-//  to whatever Artifax returns.
-// ------------------------------------------------------------
 interface ArtifaxInstance {
   id: string;            // stable Artifax instance id
   groupId?: string;      // arrangement id / group id for multi-room takeovers
@@ -77,27 +267,27 @@ interface ArtifaxInstance {
   start: string;         // ISO datetime
   end?: string;          // ISO datetime
   contact?: string;      // primary contact name/org
-  notes?: string;        // any tech-relevant custom field(s)
-  status?: string;       // e.g. Confirmed / Pencilled / Cancelled
+  notes?: string;        // full technical and custom field notes
+  status?: string;       // e.g. Confirmed / Tentative / Cancelled
 }
 
 async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInstance[]> {
   if (!ARTIFAX_URL || !ARTIFAX_API_KEY || !ARTIFAX_USERNAME || !ARTIFAX_PASSWORD) {
     throw new Error("ARTIFAX credentials not fully set — see docs/ARTIFAX-EDGE-FUNCTION.md");
   }
-  // --- EXAMPLE call — replace path/params/headers per Artifax docs ---
+  
+  // Loosened query parameters to include custom forms and full arrangement details
   const params = new URLSearchParams({
     date: 'between',
     start_date: from.toISOString().slice(0, 10),
     end_date: to.toISOString().slice(0, 10),
-    schedule_output: "1"
+    schedule_output: "1",
+    custom_forms: "1",
+    include_custom_forms: "1"
   });
-    // Ensure base URL doesn't have a trailing slash or trailing /api since we append it
+  
   const baseUrl = ARTIFAX_URL.replace(/\/api\/?$/, '').replace(/\/$/, '');
-    
-  // Use the correct Artifax Events endpoint
   const endpoint = `${baseUrl}/api/arrangements/event?${params}`;
-    
   const basicAuth = 'Basic ' + btoa(ARTIFAX_USERNAME + ':' + ARTIFAX_PASSWORD);
 
   const res = await fetch(endpoint, {
@@ -111,11 +301,12 @@ async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInsta
   if (!res.ok) throw new Error(`Artifax responded ${res.status}: ${await res.text()}`);
   const data = await res.json();
 
-  // --- Map Artifax's response fields to ArtifaxInstance. Adjust keys. ---
-  const list: any[] = Array.isArray(data) ? data : (data.instances ?? data.results ?? []);
+  // --- Map Artifax's response fields to ArtifaxInstance with comprehensive note extraction ---
+  const list: any[] = Array.isArray(data) ? data : (data.instances ?? data.results ?? data.events ?? []);
   return list.map((r) => {
     const title = String(r.title || r.name || r.EventName || r.arrangement_description || r.arrangement_name || "Untitled");
     const groupId = String(r.arrangement_id || r.arrangementId || r.ArrangementId || r.groupId || r.GroupId || r.event_id || r.EventId || title);
+    const combinedStatus = String(r.status || r.Status || r.event_status_name || r.sales_process_stage_name || "Confirmed");
     
     return {
       id: String(r.id || r.instanceId || r.InstanceId || r.event_id),
@@ -126,19 +317,18 @@ async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInsta
       start: String(r.start || r.startDateTime || r.StartDateTime || r.start_date_time || ""),
       end: String(r.end || r.endDateTime || r.EndDateTime || r.end_date_time || ""),
       contact: String(r.contact || r.contactName || r.CustomerName || r.client_name || r.arrangement_contact_entity_full_name || ""),
-      notes: String(r.notes || r.description || ""),
-      status: String(r.status || r.Status || r.event_status_name || "Confirmed"),
+      notes: extractArtifaxNotes(r),
+      status: resolveStatus(combinedStatus),
     };
   });
 }
 
-// Artifax instance → the booking fields of an advancing row (tech fields excluded).
+// Artifax instance → advancing row format
 function mapInstance(i: ArtifaxInstance) {
-  const space = ROOM_TO_SPACE[i.room] ?? "";
+  const space = resolveSpace(i.room);
   const start = i.start ? new Date(i.start) : null;
   const end = i.end ? new Date(i.end) : null;
   const hhmm = (d: Date | null) => (d ? d.toISOString().slice(11, 16) : "");
-  const cancelled = /cancel/i.test(i.status || "");
   return {
     artifaxId: i.id,
     groupId: i.groupId || null,
@@ -149,10 +339,10 @@ function mapInstance(i: ArtifaxInstance) {
     startTime: hhmm(start),
     finishTime: hhmm(end),
     clientContact: i.contact || "",
-    status: cancelled ? "Cancelled" : "Confirmed",
+    status: i.status || "Confirmed",
     notes: i.notes || "",
-    // NB: techUserId / techInfo / techSpec / guestEngineer are NOT set here —
-    // they belong to the Portal and are preserved below.
+    techInfo: i.notes || "",
+    artifaxNotes: i.notes || "",
   };
 }
 
@@ -229,20 +419,35 @@ Deno.serve(async (req) => {
         prodPkg.artifaxHistory = artifaxHistory;
 
         booking.artifaxHistory = artifaxHistory;
-        const { notes, ...cleanBooking } = booking;
-        rowsToUpsert.push({ ...existing, ...cleanBooking, id: existing.id, production_package: prodPkg });
+        const existingTech = (existing.techInfo || "").trim();
+        const techInfoVal = existingTech ? existingTech : currentNotes;
+
+        rowsToUpsert.push({ 
+          ...existing, 
+          ...booking, 
+          notes: currentNotes,
+          artifaxNotes: currentNotes,
+          techInfo: techInfoVal,
+          artifaxHistory: artifaxHistory,
+          id: existing.id, 
+          production_package: prodPkg 
+        });
         updated++;
       } else {
-        const artifaxHistory = booking.notes ? [{
+        const currentNotes = booking.notes || "";
+        const artifaxHistory = currentNotes ? [{
           date: new Date().toISOString(),
-          notes: booking.notes,
+          notes: currentNotes,
           changes: ["Initial sync from Artifax"]
         }] : [];
         booking.artifaxHistory = artifaxHistory;
-        const { notes, ...cleanBooking } = booking;
         rowsToUpsert.push({ 
           id: `evt-afx-${booking.artifaxId}`, 
-          ...cleanBooking, 
+          ...booking, 
+          notes: currentNotes,
+          artifaxNotes: currentNotes,
+          techInfo: currentNotes,
+          artifaxHistory: artifaxHistory,
           production_package: { artifaxHistory } 
         });
         created++;

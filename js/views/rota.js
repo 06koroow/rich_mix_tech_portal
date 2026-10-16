@@ -103,6 +103,7 @@ RMTP.views.rota = (function () {
     function getAllUsers() {
       return store.all('users') || [];
     }
+    const allUsers = getAllUsers();
 
     function getAllEvents() {
       return (store.all('advancing') || []).filter((e) => !e.deleted);
@@ -322,35 +323,39 @@ RMTP.views.rota = (function () {
       };
     }
 
-    // --- Main Layout ---
-    const allUsers = getAllUsers();
-    const allBookings = getAllBookings();
-    const weekDays = getWeekDays(state.weekOffset);
-    const startWeekStr = weekDays[0].date;
-    const endWeekStr = weekDays[6].date;
+    // --- Dynamic Navigation & Date Synchronization Helpers ---
+    function getWeekOffsetForDate(dateStr) {
+      if (!dateStr) return 0;
+      const target = parseDate(dateStr);
+      const now = new Date();
+      const currentDay = now.getDay();
+      const distanceToMon = (currentDay + 6) % 7;
+      const currentMon = new Date(now);
+      currentMon.setDate(now.getDate() - distanceToMon);
+      currentMon.setHours(0, 0, 0, 0);
 
-    // Counts for metrics banner
-    const totalWeekBookings = allBookings.filter((b) => b.date >= startWeekStr && b.date <= endWeekStr);
-    const confirmedCount = totalWeekBookings.filter((b) => b.status === 'confirmed').length;
-    const pencilCount = totalWeekBookings.filter((b) => b.status === 'pencil').length;
-    const cancelledCount = totalWeekBookings.filter((b) => b.status === 'cancelled').length;
-    const activeFreelancers = new Set(totalWeekBookings.filter((b) => b.status !== 'cancelled').map((b) => b.userId)).size;
+      const targetDay = target.getDay();
+      const targetDistToMon = (targetDay + 6) % 7;
+      const targetMon = new Date(target);
+      targetMon.setDate(target.getDate() - targetDistToMon);
+      targetMon.setHours(0, 0, 0, 0);
 
-    // Check advancing events in this week to detect unfilled tech shifts
-    const weekEvents = getAllEvents().filter((e) => e.date >= startWeekStr && e.date <= endWeekStr);
-    const unfilledEvents = weekEvents.filter((e) => {
-      const assigned = allBookings.filter((b) => b.eventId === e.id && b.status !== 'cancelled');
-      const evTechs = RMTP.eventTechnicians(e);
-      return assigned.length === 0 && evTechs.length === 0;
-    });
+      const diffMs = targetMon.getTime() - currentMon.getTime();
+      return Math.round(diffMs / (7 * 24 * 60 * 60 * 1000));
+    }
+
+    function getCurrentWeekDays() {
+      return getWeekDays(state.weekOffset);
+    }
 
     // Map storing active schedule items for fast click routing
     const allScheduleItemsMap = new Map();
 
-    // Unified helper: builds all shifts & advancing events for any date
+    // Unified helper: builds all shifts & advancing events for any date dynamically
     function getDaySchedule(dateStr) {
-      const bookings = allBookings.filter((b) => b.date === dateStr);
+      const bookings = getAllBookings().filter((b) => b.date === dateStr);
       const advEvents = getAllEvents().filter((e) => e.date === dateStr);
+      const allUsers = getAllUsers();
 
       const items = [];
       const eventIdsWithBookings = new Set();
@@ -558,6 +563,93 @@ RMTP.views.rota = (function () {
       `;
     }
 
+    // Top Metrics & Status Filter Strip updater
+    function updateTopMetrics() {
+      const stripEl = el.querySelector('#rota-metrics-strip');
+      const allB = getAllBookings();
+      const allEv = getAllEvents();
+      const wDays = getCurrentWeekDays();
+      const wStart = wDays[0].date;
+      const wEnd = wDays[6].date;
+
+      const totalWeekBookings = allB.filter((b) => b.date >= wStart && b.date <= wEnd && b.status !== 'cancelled');
+      const confirmedCount = totalWeekBookings.filter((b) => b.status === 'confirmed').length;
+      const pencilCount = totalWeekBookings.filter((b) => b.status === 'pencil').length;
+      const activeFreelancers = new Set(totalWeekBookings.map((b) => b.userId).filter(Boolean)).size;
+
+      const weekEvents = allEv.filter((e) => e.date >= wStart && e.date <= wEnd);
+      const unfilledEvents = weekEvents.filter((e) => {
+        const assigned = allB.filter((b) => b.eventId === e.id && b.status !== 'cancelled');
+        const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(e) : [];
+        return assigned.length === 0 && evTechs.length === 0;
+      });
+
+      // Update badge on Master Rota Board tab button
+      const boardCountBadge = el.querySelector('#rota-board-count');
+      if (boardCountBadge) {
+        boardCountBadge.textContent = `(${totalWeekBookings.length})`;
+      }
+      const listCountBadge = el.querySelector('#rota-list-count');
+      if (listCountBadge) {
+        listCountBadge.textContent = `(${allB.length})`;
+      }
+
+      if (!stripEl) return;
+
+      const startDStr = parseDate(wStart).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+      const endDStr = parseDate(wEnd).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+
+      stripEl.innerHTML = `
+        <div class="flex items-center gap-2.5 flex-wrap">
+          <span class="font-semibold text-ink flex items-center gap-1.5">
+            ${ui.icon('calendar', 'w-4 h-4 text-accent')}
+            <span>Week Total (${startDStr}–${endDStr}):</span>
+            <span class="font-mono font-bold text-accent">${totalWeekBookings.length} shifts</span>
+          </span>
+          <span class="text-line hidden sm:inline">|</span>
+          <button id="strip-confirmed" class="flex items-center gap-1.5 px-2 py-0.5 rounded transition cursor-pointer ${state.statusFilter === 'confirmed' ? 'bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/40' : 'text-muted hover:text-emerald-400'}">
+            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span>${confirmedCount} Confirmed</span>
+          </button>
+          <button id="strip-pencil" class="flex items-center gap-1.5 px-2 py-0.5 rounded transition cursor-pointer ${state.statusFilter === 'pencil' ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : 'text-muted hover:text-amber-400'}">
+            <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+            <span>${pencilCount} Pencil Hold</span>
+          </button>
+          ${unfilledEvents.length > 0 ? `
+            <button id="strip-unfilled" class="flex items-center gap-1.5 px-2 py-0.5 rounded border transition cursor-pointer ${state.unfilledOnly ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 font-bold' : 'bg-rose-500/10 text-rose-400 border-rose-500/30'}">
+              <span class="w-2 h-2 rounded-full bg-rose-400 animate-pulse"></span>
+              <span>${unfilledEvents.length} Unfilled Gap${unfilledEvents.length > 1 ? 's' : ''}</span>
+            </button>
+          ` : ''}
+          <span class="text-line hidden sm:inline">|</span>
+          <span class="text-muted flex items-center gap-1">
+            ${ui.icon('users', 'w-3.5 h-3.5')}
+            <span>${activeFreelancers} Active Techs</span>
+          </span>
+        </div>
+        <div class="text-[11px] text-muted font-mono hidden md:block">
+          Click any shift to edit · Click + to schedule on that date
+        </div>
+      `;
+
+      // Wire strip buttons
+      stripEl.querySelector('#strip-confirmed')?.addEventListener('click', () => {
+        state.statusFilter = state.statusFilter === 'confirmed' ? '' : 'confirmed';
+        state.unfilledOnly = false;
+        renderActiveTab();
+      });
+      stripEl.querySelector('#strip-pencil')?.addEventListener('click', () => {
+        state.statusFilter = state.statusFilter === 'pencil' ? '' : 'pencil';
+        state.unfilledOnly = false;
+        renderActiveTab();
+      });
+      stripEl.querySelector('#strip-unfilled')?.addEventListener('click', () => {
+        state.unfilledOnly = !state.unfilledOnly;
+        state.statusFilter = '';
+        renderActiveTab();
+      });
+    }
+
     let html = `
       <div class="space-y-3.5 animate-fadeIn">
         <!-- Page Header -->
@@ -594,45 +686,14 @@ RMTP.views.rota = (function () {
         </div>
 
         <!-- Sleek Metrics & Quick Filter Strip -->
-        <div class="px-3.5 py-2 rounded-xl bg-panel border border-line flex flex-wrap items-center justify-between gap-2.5 text-xs">
-          <div class="flex items-center gap-2.5 flex-wrap">
-            <span class="font-semibold text-ink flex items-center gap-1.5">
-              ${ui.icon('calendar', 'w-4 h-4 text-accent')}
-              <span>Week Total:</span>
-              <span class="font-mono font-bold text-accent">${totalWeekBookings.length} shifts</span>
-            </span>
-            <span class="text-line hidden sm:inline">|</span>
-            <button id="strip-confirmed" class="flex items-center gap-1.5 px-2 py-0.5 rounded transition cursor-pointer ${state.statusFilter === 'confirmed' ? 'bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/40' : 'text-muted hover:text-emerald-400'}">
-              <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-              <span>${confirmedCount} Confirmed</span>
-            </button>
-            <button id="strip-pencil" class="flex items-center gap-1.5 px-2 py-0.5 rounded transition cursor-pointer ${state.statusFilter === 'pencil' ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : 'text-muted hover:text-amber-400'}">
-              <span class="w-2 h-2 rounded-full bg-amber-400"></span>
-              <span>${pencilCount} Pencil Hold</span>
-            </button>
-            ${unfilledEvents.length > 0 ? `
-              <button id="strip-unfilled" class="flex items-center gap-1.5 px-2 py-0.5 rounded border transition cursor-pointer ${state.unfilledOnly ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 font-bold' : 'bg-rose-500/10 text-rose-400 border-rose-500/30'}">
-                <span class="w-2 h-2 rounded-full bg-rose-400 animate-pulse"></span>
-                <span>${unfilledEvents.length} Unfilled Gap${unfilledEvents.length > 1 ? 's' : ''}</span>
-              </button>
-            ` : ''}
-            <span class="text-line hidden sm:inline">|</span>
-            <span class="text-muted flex items-center gap-1">
-              ${ui.icon('users', 'w-3.5 h-3.5')}
-              <span>${activeFreelancers} Active Techs</span>
-            </span>
-          </div>
-          <div class="text-[11px] text-muted font-mono hidden md:block">
-            Click any shift to edit · Click + to schedule on that date
-          </div>
-        </div>
+        <div id="rota-metrics-strip" class="px-3.5 py-2 rounded-xl bg-panel border border-line flex flex-wrap items-center justify-between gap-2.5 text-xs"></div>
 
         <!-- Navigation Tabs -->
         <div class="flex items-center gap-1.5 border-b border-line pb-1 overflow-x-auto text-xs scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0">
           <button data-tab="board" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'board' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
             ${ui.icon('grid', 'w-3.5 h-3.5')}
             <span>Master Rota Board</span>
-            <span class="text-[10px] opacity-75 font-mono">(${totalWeekBookings.length})</span>
+            <span id="rota-board-count" class="text-[10px] opacity-75 font-mono"></span>
           </button>
           <button data-tab="my_avail" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'my_avail' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
             ${ui.icon('user', 'w-3.5 h-3.5')}
@@ -644,7 +705,8 @@ RMTP.views.rota = (function () {
           </button>
           <button data-tab="list" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'list' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
             ${ui.icon('list', 'w-3.5 h-3.5')}
-            <span>Shift Bookings (${allBookings.length})</span>
+            <span>Shift Bookings</span>
+            <span id="rota-list-count" class="text-[10px] opacity-75 font-mono"></span>
           </button>
         </div>
 
@@ -659,6 +721,7 @@ RMTP.views.rota = (function () {
     const tabContainer = el.querySelector('#rota-tab-view');
 
     function renderActiveTab() {
+      updateTopMetrics();
       if (state.tab === 'board') renderBoardTab();
       else if (state.tab === 'my_avail') renderMyAvailTab();
       else if (state.tab === 'team_matrix') renderTeamMatrixTab();
@@ -671,6 +734,9 @@ RMTP.views.rota = (function () {
     function renderBoardTab() {
       allScheduleItemsMap.clear();
 
+      const weekDays = getCurrentWeekDays();
+      const startWeekStr = weekDays[0].date;
+      const endWeekStr = weekDays[6].date;
       const startD = parseDate(startWeekStr).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
       const endD = parseDate(endWeekStr).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 
@@ -835,8 +901,8 @@ RMTP.views.rota = (function () {
                 </div>
               </div>
 
-              <!-- Shifts List for Day (Scroll-Safe so busy days never break the screen alignment) -->
-              <div class="space-y-1.5 flex-1 max-h-[580px] overflow-y-auto pr-1 scrollbar-thin">
+              <!-- Shifts List for Day (Glanceable and unclipped so all events render completely) -->
+              <div class="space-y-1.5 flex-1 min-h-[300px] pr-0.5">
           `;
 
           if (day.items.length === 0) {
@@ -946,7 +1012,7 @@ RMTP.views.rota = (function () {
               </div>
 
               <!-- Shifts in this Room -->
-              <div class="space-y-2 flex-1 max-h-[580px] overflow-y-auto pr-1 scrollbar-thin">
+              <div class="space-y-2 flex-1 min-h-[280px] pr-0.5">
           `;
 
           if (spaceItems.length === 0) {
@@ -1056,16 +1122,29 @@ RMTP.views.rota = (function () {
       // Week Navigator
       tabContainer.querySelector('#week-prev')?.addEventListener('click', () => {
         state.weekOffset -= 1;
+        if (state.selectedDay) {
+          const d = parseDate(state.selectedDay);
+          d.setDate(d.getDate() - 7);
+          state.selectedDay = formatDate(d);
+        }
         renderBoardTab();
+        updateTopMetrics();
       });
       tabContainer.querySelector('#week-next')?.addEventListener('click', () => {
         state.weekOffset += 1;
+        if (state.selectedDay) {
+          const d = parseDate(state.selectedDay);
+          d.setDate(d.getDate() + 7);
+          state.selectedDay = formatDate(d);
+        }
         renderBoardTab();
+        updateTopMetrics();
       });
       tabContainer.querySelector('#week-today')?.addEventListener('click', () => {
         state.weekOffset = 0;
         state.selectedDay = formatDate(new Date());
         renderBoardTab();
+        updateTopMetrics();
       });
 
       // View Mode Switcher
@@ -1092,21 +1171,27 @@ RMTP.views.rota = (function () {
         renderBoardTab();
       });
 
-      // Day View Day Switcher
+      // Day View Day Switcher (Syncs weekOffset with target date)
       tabContainer.querySelectorAll('[data-set-day]').forEach((btn) => {
         btn.addEventListener('click', () => {
-          state.selectedDay = btn.getAttribute('data-set-day');
+          const targetDayStr = btn.getAttribute('data-set-day');
+          state.selectedDay = targetDayStr;
+          state.weekOffset = getWeekOffsetForDate(targetDayStr);
           state.boardView = 'day';
           renderBoardTab();
+          updateTopMetrics();
         });
       });
 
       // Jump to Day View by clicking Day Header in Week Grid
       tabContainer.querySelectorAll('[data-jump-day]').forEach((btn) => {
         btn.addEventListener('click', () => {
-          state.selectedDay = btn.getAttribute('data-jump-day');
+          const targetDayStr = btn.getAttribute('data-jump-day');
+          state.selectedDay = targetDayStr;
+          state.weekOffset = getWeekOffsetForDate(targetDayStr);
           state.boardView = 'day';
           renderBoardTab();
+          updateTopMetrics();
         });
       });
 
@@ -1130,6 +1215,7 @@ RMTP.views.rota = (function () {
             state.statusFilter = val;
           }
           renderBoardTab();
+          updateTopMetrics();
         });
       });
 
@@ -1137,14 +1223,17 @@ RMTP.views.rota = (function () {
       tabContainer.querySelector('#flt-space')?.addEventListener('change', (e) => {
         state.spaceFilter = e.target.value;
         renderBoardTab();
+        updateTopMetrics();
       });
       tabContainer.querySelector('#flt-role')?.addEventListener('change', (e) => {
         state.roleFilter = e.target.value;
         renderBoardTab();
+        updateTopMetrics();
       });
       tabContainer.querySelector('#flt-tech')?.addEventListener('change', (e) => {
         state.techFilter = e.target.value;
         renderBoardTab();
+        updateTopMetrics();
       });
       tabContainer.querySelector('#flt-clear')?.addEventListener('click', () => {
         state.spaceFilter = '';
@@ -1153,23 +1242,7 @@ RMTP.views.rota = (function () {
         state.techFilter = '';
         state.unfilledOnly = false;
         renderBoardTab();
-      });
-
-      // Top metrics strip filter shortcuts
-      el.querySelector('#strip-confirmed')?.addEventListener('click', () => {
-        state.statusFilter = state.statusFilter === 'confirmed' ? '' : 'confirmed';
-        state.unfilledOnly = false;
-        renderBoardTab();
-      });
-      el.querySelector('#strip-pencil')?.addEventListener('click', () => {
-        state.statusFilter = state.statusFilter === 'pencil' ? '' : 'pencil';
-        state.unfilledOnly = false;
-        renderBoardTab();
-      });
-      el.querySelector('#strip-unfilled')?.addEventListener('click', () => {
-        state.unfilledOnly = !state.unfilledOnly;
-        state.statusFilter = '';
-        renderBoardTab();
+        updateTopMetrics();
       });
 
       // Quick add shift in date
@@ -1556,12 +1629,14 @@ RMTP.views.rota = (function () {
     function renderTeamMatrixTab() {
       // 14-day rolling window starting from Monday of target week
       const days = [];
-      const monday = parseDate(startWeekStr);
+      const matrixWeekDays = getCurrentWeekDays();
+      const monday = parseDate(matrixWeekDays[0].date);
       for (let i = 0; i < 14; i++) {
         const d = new Date(monday);
         d.setDate(monday.getDate() + i);
         days.push({
           date: formatDate(d),
+          dObj: d,
           dayName: d.toLocaleDateString('en-GB', { weekday: 'narrow' }),
           dayNum: d.getDate(),
           monthName: d.toLocaleDateString('en-GB', { month: 'short' }),
@@ -1569,21 +1644,26 @@ RMTP.views.rota = (function () {
         });
       }
 
+      const allUsers = getAllUsers();
+
       let out = `
         <div class="space-y-4">
-          <div class="flex items-center justify-between pb-2 border-b border-line">
+          <div class="flex items-center justify-between pb-2 border-b border-line flex-wrap gap-2">
             <div>
               <h2 class="text-sm font-bold text-ink">Two-Week Team Availability & Rota Matrix</h2>
               <p class="text-xs text-muted">Bird's eye view of freelancer and core duty technician availability across Rich Mix</p>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap">
               <button id="matrix-week-prev" class="btn btn-ghost !p-1.5" title="Previous Week">
                 ${ui.icon('chevL', 'w-4 h-4')}
               </button>
-              <button id="matrix-week-today" class="btn btn-ghost text-xs">Today</button>
+              <button id="matrix-week-today" class="btn btn-ghost text-xs ${state.weekOffset === 0 ? 'bg-panel2 font-bold text-accent' : ''}">This Week</button>
               <button id="matrix-week-next" class="btn btn-ghost !p-1.5" title="Next Week">
                 ${ui.icon('chevR', 'w-4 h-4')}
               </button>
+              <span class="text-xs font-mono font-bold text-ink px-1.5 whitespace-nowrap">
+                ${days[0].dayNum} ${days[0].monthName} – ${days[13].dayNum} ${days[13].monthName}
+              </span>
             </div>
           </div>
 
@@ -1677,14 +1757,17 @@ RMTP.views.rota = (function () {
       tabContainer.querySelector('#matrix-week-prev')?.addEventListener('click', () => {
         state.weekOffset -= 1;
         renderTeamMatrixTab();
+        updateTopMetrics();
       });
       tabContainer.querySelector('#matrix-week-next')?.addEventListener('click', () => {
         state.weekOffset += 1;
         renderTeamMatrixTab();
+        updateTopMetrics();
       });
       tabContainer.querySelector('#matrix-week-today')?.addEventListener('click', () => {
         state.weekOffset = 0;
         renderTeamMatrixTab();
+        updateTopMetrics();
       });
 
       tabContainer.querySelectorAll('[data-matrix-cell]').forEach((td) => {
@@ -1713,7 +1796,8 @@ RMTP.views.rota = (function () {
     // TAB 4: ALL SHIFT BOOKINGS LIST
     // ------------------------------------------------------------------------
     function renderListTab() {
-      let bookings = allBookings.slice().sort((a, b) => (a.date < b.date ? 1 : -1));
+      const allUsers = getAllUsers();
+      let bookings = getAllBookings().slice().sort((a, b) => (a.date < b.date ? 1 : -1));
 
       if (state.spaceFilter) bookings = bookings.filter((b) => b.space === state.spaceFilter);
       if (state.roleFilter) bookings = bookings.filter((b) => b.role === state.roleFilter);

@@ -170,6 +170,21 @@ RMTP.syncSb = (function () {
              payload.production_package.artifaxHistory = record.artifaxHistory;
            }
 
+           // Auto-promote any pending local PDF tech specs to Supabase Storage
+           if (name === 'advancing' && RMTP.files && RMTP.files.toRemote) {
+             if (record.techSpec && record.techSpec.id && !record.techSpec.url) {
+               RMTP.files.toRemote(record.techSpec).then(remote => {
+                 if (remote && remote.url) {
+                   const fresh = store.find('advancing', record.id);
+                   if (fresh && (!fresh.techSpec || !fresh.techSpec.url)) {
+                     fresh.techSpec = remote;
+                     store.upsert('advancing', fresh);
+                   }
+                 }
+               }).catch(e => console.warn('[syncSb] Background PDF promotion failed:', e));
+             }
+           }
+
            if (unsupportedCols[table]) {
              Object.keys(unsupportedCols[table]).forEach(col => {
                if (unsupportedCols[table][col]) delete payload[col];

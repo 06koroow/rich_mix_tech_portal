@@ -2,7 +2,7 @@
    views/dashboard.js — landing / at-a-glance
    ============================================================ */
 RMTP.views.dashboard = function (el) {
-  const ui = RMTP.ui, store = RMTP.store;
+  const ui = RMTP.ui, store = RMTP.store, auth = RMTP.auth;
 
   const cards = [
     { id: 'advancing',   desc: 'Gather show info, assign techs and file shift reports.',
@@ -105,8 +105,9 @@ RMTP.views.dashboard = function (el) {
       .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
     // Faults and Orders specifically tagged to current user
+    const myName = (me && auth && auth.displayName) ? auth.displayName(me) : '';
     const myTaggedTasks = store.all('maintenance')
-      .filter((f) => f.status !== 'Resolved' && (f.assignedTechId === me.id || (f.assignedTechName && f.assignedTechName === auth.displayName(me))))
+      .filter((f) => f.status !== 'Resolved' && me && (f.assignedTechId === me.id || (myName && f.assignedTechName === myName)))
       .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
     // Scheduled Maintenance Shifts

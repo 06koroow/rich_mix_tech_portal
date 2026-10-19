@@ -19,10 +19,17 @@ Open **SQL Editor → New query**, paste the whole of `docs/supabase-setup.sql`,
 **Run**. That creates the seven tables, the role helpers, Row-Level Security, and
 the starter data. It's safe to re-run.
 
-## 3. Create the file bucket
-**Storage → New bucket**, name it `techfiles`, set it **Public** (simplest — the
-app stores public URLs). If you'd rather keep it private, swap `getPublicUrl` for
-`createSignedUrl` in `js/supabase.js`.
+## 3. Create the file bucket (PDFs, Riders, Photos & SOP Docs)
+You can create the bucket either via SQL or via the Supabase Dashboard:
+
+- **Via SQL (Recommended - 1 Click)**:
+  Open **SQL Editor → New query**, paste `docs/storage-setup.sql`, and **Run**.
+  This creates the `techfiles` bucket (up to 50MB per file) and sets up the storage security policies automatically.
+
+- **Via Dashboard**:
+  **Storage → New bucket**, name it `techfiles`, set it **Public** (simplest — the
+  app stores public URLs). If you'd rather keep it private, swap `getPublicUrl` for
+  `createSignedUrl` in `js/supabase.js`.
 
 ## 4. Auth settings
 **Authentication → Providers → Email**: make sure it's enabled. For an internal

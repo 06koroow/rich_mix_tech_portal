@@ -7365,6 +7365,26 @@ RMTP.views.advancing = function (el, params, query) {
       }
 
       const { record, processedScheduleItems } = buildRecordFromDraft(draft);
+
+      // Auto-promote PDFs to Supabase Storage when configured
+      if (RMTP.files && RMTP.files.toRemote) {
+        if (record.techSpec && !record.techSpec.url) {
+          try {
+            record.techSpec = await RMTP.files.toRemote(record.techSpec);
+            draft.specMeta = record.techSpec;
+          } catch (e) { console.warn('Could not upload tech spec to Supabase:', e); }
+        }
+        if (Array.isArray(record.schedule_items)) {
+          for (let it of record.schedule_items) {
+            if (it && it.techFile && !it.techFile.url) {
+              try {
+                it.techFile = await RMTP.files.toRemote(it.techFile);
+              } catch (e) { console.warn('Could not upload rider to Supabase:', e); }
+            }
+          }
+        }
+      }
+
       store.upsert('advancing', record);
       syncPatchSheetForRecord(record, processedScheduleItems);
       syncShiftBookingsForEvent(record);
@@ -7418,6 +7438,26 @@ RMTP.views.advancing = function (el, params, query) {
         const draft = spaceDrafts[i];
         if (sharedGroupId) draft.groupId = sharedGroupId;
         const { record, processedScheduleItems } = buildRecordFromDraft(draft);
+
+        // Auto-promote PDFs to Supabase Storage when configured
+        if (RMTP.files && RMTP.files.toRemote) {
+          if (record.techSpec && !record.techSpec.url) {
+            try {
+              record.techSpec = await RMTP.files.toRemote(record.techSpec);
+              draft.specMeta = record.techSpec;
+            } catch (e) { console.warn('Could not upload tech spec to Supabase:', e); }
+          }
+          if (Array.isArray(record.schedule_items)) {
+            for (let it of record.schedule_items) {
+              if (it && it.techFile && !it.techFile.url) {
+                try {
+                  it.techFile = await RMTP.files.toRemote(it.techFile);
+                } catch (e) { console.warn('Could not upload rider to Supabase:', e); }
+              }
+            }
+          }
+        }
+
         store.upsert('advancing', record);
         syncPatchSheetForRecord(record, processedScheduleItems);
         syncShiftBookingsForEvent(record);

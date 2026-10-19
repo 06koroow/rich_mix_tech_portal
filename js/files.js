@@ -13,15 +13,21 @@
    bloat a collection and quota failures stay isolated.
    ============================================================ */
 RMTP.files = (function () {
-  const MAX = 3 * 1024 * 1024; // 3MB per file
+  const LOCAL_MAX = 3 * 1024 * 1024; // 3MB per file in localStorage
+  const REMOTE_MAX = 25 * 1024 * 1024; // 25MB per file in Supabase Storage
+  const MAX = LOCAL_MAX;
   const fileKey = (id) => 'file:' + id; // stored via RMTP.store raw helpers
+
+  function getMax() {
+    return (RMTP.supabase && RMTP.supabase.isConfigured()) ? REMOTE_MAX : LOCAL_MAX;
+  }
 
   /* Read a File into memory (no storage write). Resolves with
      { dataUrl, name, size, type }. */
   function readAsDataUrl(file) {
     return new Promise((resolve, reject) => {
       if (!file) { reject(new Error('no-file')); return; }
-      if (file.size > MAX) { reject(new Error('too-large')); return; }
+      if (file.size > getMax()) { reject(new Error('too-large')); return; }
       const reader = new FileReader();
       reader.onerror = () => reject(reader.error || new Error('read-failed'));
       reader.onload = () => resolve({ dataUrl: reader.result, name: file.name, size: file.size, type: file.type || 'application/octet-stream' });
@@ -33,7 +39,11 @@ RMTP.files = (function () {
      the record. Throws on quota errors — callers should catch. */
   function persist(pending) {
     const id = RMTP.store.uid('file');
-    RMTP.store.writeRaw(fileKey(id), pending.dataUrl); // may throw QuotaExceededError
+    try {
+      RMTP.store.writeRaw(fileKey(id), pending.dataUrl); // may throw QuotaExceededError
+    } catch (e) {
+      console.warn('[files.persist] LocalStorage write failed (file size or quota), metadata kept:', e);
+    }
     return { id: id, name: pending.name, size: pending.size, type: pending.type };
   }
 
@@ -58,7 +68,7 @@ RMTP.files = (function () {
     if (!meta) return;
     if (meta.url) { window.open(meta.url, '_blank'); return; }   // remote (Supabase/SharePoint)
     const dataUrl = RMTP.store.readRaw(fileKey(meta.id), null);
-    if (!dataUrl) { RMTP.ui.toast('File no longer available', 'danger'); return; }
+    if (!dataUrl) { RMTP.ui.toast('File no longer available locally. Connect Supabase Storage for persistent cloud hosting.', 'danger'); return; }
     openDataUrl(dataUrl);
   }
 
@@ -78,8 +88,16 @@ RMTP.files = (function () {
     const raw = RMTP.store.readRaw(fileKey(meta.id), null);
     if (!raw) return meta;
     const safe = String(meta.name || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
-    const url = await RMTP.supabase.uploadFile(meta.id + '-' + safe, dataUrlToBlob(raw), meta.type);
-    return { url: url, name: meta.name, type: meta.type, size: meta.size };
+    try {
+      const path = (meta.id || RMTP.store.uid('file')) + '-' + safe;
+      const url = await RMTP.supabase.uploadFile(path, dataUrlToBlob(raw), meta.type);
+      if (url) {
+        return { url: url, name: meta.name, type: meta.type, size: meta.size, id: meta.id };
+      }
+    } catch (err) {
+      console.warn('[files.toRemote] Could not upload file to Supabase Storage bucket:', err);
+    }
+    return meta;
   }
 
   function remove(meta) {
@@ -93,5 +111,16 @@ RMTP.files = (function () {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   }
 
-  return { readAsDataUrl, persist, open, openDataUrl, dataUrl, toRemote, remove, humanSize, MAX };
+  return {
+    readAsDataUrl,
+    persist,
+    open,
+    openDataUrl,
+    dataUrl,
+    toRemote,
+    remove,
+    humanSize,
+    get MAX() { return getMax(); },
+    getMax
+  };
 })();

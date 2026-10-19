@@ -675,6 +675,18 @@ RMTP.maintenance = (function () {
         image: currentTaskType === 'fault' ? finalImg : null,
       });
 
+      if (finalImg && !finalImg.url && RMTP.files && RMTP.files.toRemote) {
+        RMTP.files.toRemote(finalImg).then((remote) => {
+          if (remote && remote.url) {
+            const cur = store.find('maintenance', record.id);
+            if (cur) {
+              cur.image = remote;
+              store.upsert('maintenance', cur);
+            }
+          }
+        }).catch((e) => console.warn('Could not promote fault image to Supabase:', e));
+      }
+
       store.upsert('maintenance', record);
       m.close();
       const msg = existing

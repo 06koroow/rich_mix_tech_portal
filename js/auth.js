@@ -27,8 +27,19 @@ RMTP.auth = (function () {
     return 'h' + (h >>> 0).toString(16);
   }
 
-  function displayName(u) { return u ? ((u.firstName || '') + ' ' + (u.lastName || '')).trim() : ''; }
-  function initials(u) { return u ? (((u.firstName || ' ')[0] + (u.lastName || ' ')[0]).trim().toUpperCase() || '?') : '?'; }
+  function displayName(u) {
+    if (!u) return '';
+    const full = ((u.firstName || '') + ' ' + (u.lastName || '')).trim();
+    if (full) return full;
+    return u.name || u.displayName || u.email || 'Technician';
+  }
+  function initials(u) {
+    if (!u) return '?';
+    const dn = displayName(u);
+    const parts = dn.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return ((parts[0][0] || '') + (parts[1][0] || '')).toUpperCase();
+    return (dn[0] || '?').toUpperCase();
+  }
 
   function currentId() { return RMTP.store.read(KEY, null); }
   function current() {

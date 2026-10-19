@@ -14,6 +14,7 @@
   function loadVenueData() {
     // If not found in store, create a default template for the space
     let v = store.find('venues', m.activeSpace);
+    const defaultBasicCrew = (m.activeSpace === 'The Stage' || m.activeSpace === 'The Studio') ? 2 : 1;
     if (!v) {
       v = {
         id: m.activeSpace,
@@ -21,6 +22,7 @@
         capacity: '',
         stageDimensions: '',
         inventory: '',
+        basicCrew: defaultBasicCrew,
         audio: {
           inputChannels: 48,
           localInputChannels: 8,
@@ -33,6 +35,9 @@
         },
         dmx: []
       };
+    }
+    if (v.basicCrew === undefined || v.basicCrew === null) {
+      v.basicCrew = defaultBasicCrew;
     }
     m.venueData = JSON.parse(JSON.stringify(v));
   }
@@ -116,9 +121,10 @@
             // Tab Overview Concept
             '<div class="grid gap-4">' +
               '<h3 class="text-xs font-bold uppercase tracking-wider text-muted border-b border-line pb-2">Overview & Specs</h3>' +
-              '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
+              '<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">' +
                 '<div><label class="text-[10px] font-bold text-muted uppercase">Capacity</label><input type="text" class="field" id="v-capacity" value="' + ui.esc(m.venueData.capacity) + '" placeholder="e.g. 500 Standing"></div>' +
                 '<div><label class="text-[10px] font-bold text-muted uppercase">Stage Dimensions</label><input type="text" class="field" id="v-dims" value="' + ui.esc(m.venueData.stageDimensions) + '" placeholder="e.g. 8m x 6m"></div>' +
+                '<div><label class="text-[10px] font-bold text-accent uppercase flex items-center gap-1" title="Minimum target technicians required per shift/event in this space"><span>Basic Crew</span><span class="text-[9px] text-muted normal-case font-normal">(Shift Staffing)</span></label><input type="number" min="0" max="20" class="field border-accent/40 bg-accent/5 font-mono font-bold text-accent" id="v-basic-crew" value="' + (m.venueData.basicCrew !== undefined ? m.venueData.basicCrew : (['The Stage', 'The Studio'].includes(m.activeSpace) ? 2 : 1)) + '" placeholder="1"></div>' +
               '</div>' +
               '<div><label class="text-[10px] font-bold text-muted uppercase">Standard Inventory / Backline</label><textarea class="field min-h-[80px]" id="v-inv" placeholder="Drum kit, DJ setup, default wedges...">' + ui.esc(m.venueData.inventory) + '</textarea></div>' +
             '</div>' +
@@ -247,8 +253,9 @@
 
     if (m.venueData) {
       bindInput('#v-capacity', m.venueData, 'capacity');
-    bindInput('#v-dims', m.venueData, 'stageDimensions');
-    bindInput('#v-inv', m.venueData, 'inventory');
+      bindInput('#v-dims', m.venueData, 'stageDimensions');
+      bindInput('#v-basic-crew', m.venueData, 'basicCrew', true);
+      bindInput('#v-inv', m.venueData, 'inventory');
     bindInput('#v-audio-in', m.venueData.audio, 'inputChannels', true);
     bindInput('#v-audio-local-in', m.venueData.audio, 'localInputChannels', true);
     bindInput('#v-audio-out', m.venueData.audio, 'outputChannels', true);

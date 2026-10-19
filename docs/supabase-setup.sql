@@ -149,12 +149,95 @@ create table if not exists public.bookings (
   "status" text default 'pencil',
   "rate" text default '',
   "notes" text default '',
+  "isTakeover" boolean default false,
   "penciledAt" text default null,
   "confirmedAt" text default null,
   "cancelledAt" text default null,
   "cancellationReason" text default '',
   "updatedAt" text default ''
 );
+
+create table if not exists public.venues (
+  "id" text primary key,
+  "name" text not null,
+  "capacity" text default '',
+  "stageDimensions" text default '',
+  "inventory" text default '',
+  "basicCrew" integer default 1,
+  "audio" jsonb default '{}'::jsonb,
+  "dmx" jsonb default '[]'::jsonb,
+  "createdAt" text
+);
+
+-- Venues resilient migration: handles legacy UUID foreign keys (e.g. venue_audio_trunks)
+do $$
+declare
+  r record;
+begin
+  create temp table if not exists _tmp_venue_fkeys (
+    schema_name text, table_name text, column_name text, constraint_name text
+  ) on commit drop;
+  truncate _tmp_venue_fkeys;
+
+  for r in (
+    select c.conname as constraint_name, ns.nspname as schema_name, cl.relname as table_name, att.attname as column_name, t.typname as data_type
+    from pg_constraint c
+    join pg_class cl on cl.oid = c.conrelid
+    join pg_namespace ns on ns.oid = cl.relnamespace
+    join pg_attribute att on att.attrelid = cl.oid and att.attnum = any(c.conkey)
+    join pg_type t on t.oid = att.atttypid
+    where c.confrelid = 'public.venues'::regclass and c.contype = 'f'
+  ) loop
+    insert into _tmp_venue_fkeys values (r.schema_name, r.table_name, r.column_name, r.constraint_name);
+    execute format('alter table %I.%I drop constraint if exists %I', r.schema_name, r.table_name, r.constraint_name);
+    if r.data_type = 'uuid' then
+      execute format('alter table %I.%I alter column %I type text using %I::text', r.schema_name, r.table_name, r.column_name, r.column_name);
+    end if;
+  end loop;
+
+  if exists (
+    select 1 from information_schema.columns 
+    where table_schema = 'public' and table_name = 'venues' and column_name = 'id' and data_type = 'uuid'
+  ) then
+    alter table public.venues alter column "id" drop default;
+    alter table public.venues alter column "id" type text using "id"::text;
+  end if;
+
+  for r in select * from _tmp_venue_fkeys loop
+    begin
+      execute format('update %I.%I t set %I = v.name from public.venues v where t.%I = v.id and v.name in (''The Stage'', ''The Studio'', ''The Mix'', ''Screen One'', ''Screen Two'', ''Screen Three'', ''Streetside'', ''Foyer'') and t.%I != v.name', r.schema_name, r.table_name, r.column_name, r.column_name, r.column_name);
+    exception when others then null;
+    end;
+  end loop;
+
+  update public.venues set "id" = name 
+  where name in ('The Stage', 'The Studio', 'The Mix', 'Screen One', 'Screen Two', 'Screen Three', 'Streetside', 'Foyer') and "id" != name;
+
+  for r in select * from _tmp_venue_fkeys loop
+    begin
+      execute format('alter table %I.%I add constraint %I foreign key (%I) references public.venues("id") on update cascade on delete cascade', r.schema_name, r.table_name, r.constraint_name, r.column_name);
+    exception when others then
+      begin
+        execute format('alter table %I.%I add constraint %I foreign key (%I) references public.venues("id") on update cascade on delete cascade not valid', r.schema_name, r.table_name, r.constraint_name, r.column_name);
+      exception when others then null;
+      end;
+    end;
+  end loop;
+end $$;
+
+alter table public.venues add column if not exists "basicCrew" integer default 1;
+
+insert into public.venues ("id", "name", "basicCrew")
+values
+  ('The Stage', 'The Stage', 2),
+  ('The Studio', 'The Studio', 2),
+  ('The Mix', 'The Mix', 1),
+  ('Screen One', 'Screen One', 1),
+  ('Screen Two', 'Screen Two', 1),
+  ('Screen Three', 'Screen Three', 1),
+  ('Streetside', 'Streetside', 1),
+  ('Foyer', 'Foyer', 1)
+on conflict ("id") do update set "basicCrew" = excluded."basicCrew";
 
 -- ---------- Migrations for already-live databases ----------
 -- Safe to re-run. Only needed once per environment; adds new columns to tables created in earlier versions.
@@ -532,12 +615,16 @@ alter table public.patch_sheets add column if not exists "dmx_fixtures" jsonb de
 
 alter table public.availability enable row level security;
 alter table public.bookings enable row level security;
+alter table public.venues enable row level security;
 
 drop policy if exists rw_all_availability on public.availability;
 create policy rw_all_availability on public.availability for all to authenticated, anon using (true) with check (true);
 
 drop policy if exists rw_all_bookings on public.bookings;
 create policy rw_all_bookings on public.bookings for all to authenticated, anon using (true) with check (true);
+
+drop policy if exists rw_all_venues on public.venues;
+create policy rw_all_venues on public.venues for all to authenticated, anon using (true) with check (true);
 
 alter table public.dmx_personalities enable row level security;
 alter table public.dmx_patches enable row level security;

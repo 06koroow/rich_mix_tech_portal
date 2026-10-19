@@ -348,26 +348,198 @@ RMTP.views.rota = (function () {
       return getWeekDays(state.weekOffset);
     }
 
+    // Helper: reads Basic Crew requirement for a space (from venue specs or Rich Mix defaults)
+    function getSpaceBasicCrew(spaceName) {
+      if (!spaceName) return 1;
+      const v = store.find('venues', spaceName);
+      if (v && v.basicCrew !== undefined && v.basicCrew !== null && !isNaN(Number(v.basicCrew))) {
+        return Math.max(0, parseInt(v.basicCrew, 10));
+      }
+      const s = String(spaceName).toLowerCase();
+      if (s.includes('stage') || s.includes('studio')) return 2;
+      return 1;
+    }
+
     // Map storing active schedule items for fast click routing
     const allScheduleItemsMap = new Map();
 
-    // Unified helper: builds all shifts & advancing events for any date dynamically
+    // Unified helper: builds all shifts & advancing events for any date dynamically,
+    // consolidating multi-room takeovers into a single card with crew needed vs assigned.
     function getDaySchedule(dateStr) {
-      const bookings = getAllBookings().filter((b) => b.date === dateStr);
-      const advEvents = getAllEvents().filter((e) => e.date === dateStr);
+      const allB = getAllBookings().filter((b) => b.date === dateStr);
+      const allEv = getAllEvents().filter((e) => e.date === dateStr);
       const allUsers = getAllUsers();
 
       const items = [];
-      const eventIdsWithBookings = new Set();
+      const handledEventIds = new Set();
+      const handledBookingIds = new Set();
 
-      bookings.forEach((b) => {
+      // --- STEP 1: DETECT AND CLUSTER MULTI-ROOM TAKEOVERS ---
+      // A takeover is an event that:
+      // - Has ev.isTakeover === true, OR
+      // - Has multiple spaces in ev.space (array) or ev.spaces (array), OR
+      // - Multiple events on this date share the same groupId or same name (case-insensitive) across spaces
+      const takeoverClusters = [];
+      const usedEventIdsForTakeover = new Set();
+
+      const byGroupId = {};
+      allEv.forEach((ev) => {
+        if (ev.groupId && !String(ev.groupId).startsWith('implicit-')) {
+          if (!byGroupId[ev.groupId]) byGroupId[ev.groupId] = [];
+          byGroupId[ev.groupId].push(ev);
+        }
+      });
+
+      allEv.forEach((ev) => {
+        if (usedEventIdsForTakeover.has(ev.id)) return;
+
+        const isExplicitMulti = (Array.isArray(ev.space) && ev.space.length > 1) || (Array.isArray(ev.spaces) && ev.spaces.length > 1) || ev.isTakeover;
+        const groupEvents = (ev.groupId && byGroupId[ev.groupId] && byGroupId[ev.groupId].length > 1) ? byGroupId[ev.groupId] : null;
+
+        // Check matching name on same date across different spaces (e.g. Artifax multi-room arrangement)
+        const nameMatches = allEv.filter((other) => other.id !== ev.id && other.name && ev.name && other.name.trim().toLowerCase() === ev.name.trim().toLowerCase() && other.date === dateStr);
+
+        if (isExplicitMulti || groupEvents || nameMatches.length > 0) {
+          const clusterEvents = groupEvents ? groupEvents : (nameMatches.length > 0 ? [ev, ...nameMatches] : [ev]);
+          clusterEvents.forEach((e) => usedEventIdsForTakeover.add(e.id));
+
+          // Collect spaces
+          const spacesSet = new Set();
+          clusterEvents.forEach((e) => {
+            if (Array.isArray(e.spaces)) e.spaces.forEach((s) => spacesSet.add(s));
+            if (Array.isArray(e.space)) e.space.forEach((s) => spacesSet.add(s));
+            else if (e.space) spacesSet.add(e.space);
+          });
+
+          takeoverClusters.push({
+            primaryEvent: ev,
+            events: clusterEvents,
+            spaces: Array.from(spacesSet),
+            name: ev.name,
+            date: dateStr,
+            groupId: ev.groupId || ('takeover-' + ev.id),
+          });
+        }
+      });
+
+      // --- BUILD CONSOLIDATED TAKEOVER ITEMS ---
+      takeoverClusters.forEach((cl) => {
+        cl.events.forEach((e) => handledEventIds.add(e.id));
+
+        const spaces = cl.spaces.length > 0 ? cl.spaces : ['The Stage', 'The Studio'];
+        const totalCrewNeeded = spaces.reduce((sum, sp) => sum + getSpaceBasicCrew(sp), 0);
+
+        // Find all bookings for this takeover
+        const takeoverBookings = allB.filter((b) => {
+          if (cl.events.some((e) => e.id === b.eventId)) return true;
+          if (b.groupId && b.groupId === cl.groupId) return true;
+          if (spaces.includes(b.space) && b.eventName && b.eventName.trim().toLowerCase() === cl.name.trim().toLowerCase()) return true;
+          return false;
+        });
+        takeoverBookings.forEach((b) => handledBookingIds.add(b.id));
+
+        // Find all event technicians for this takeover
+        const allEvTechs = [];
+        cl.events.forEach((e) => {
+          const techs = RMTP.eventTechnicians ? RMTP.eventTechnicians(e) : [];
+          techs.forEach((t) => allEvTechs.push({ ...t, eventSpace: Array.isArray(e.space) ? e.space[0] : e.space }));
+        });
+
+        // Compute space breakdown
+        const spaceBreakdown = spaces.map((sp) => {
+          const basic = getSpaceBasicCrew(sp);
+          const spBookings = takeoverBookings.filter((b) => b.space === sp && b.status !== 'cancelled');
+          const spTechs = allEvTechs.filter((t) => (t.space === sp || t.eventSpace === sp) && (t.bookingStatus || 'confirmed') !== 'cancelled');
+
+          const assignedTechs = [];
+          spBookings.forEach((b) => {
+            const u = allUsers.find((u) => u.id === b.userId);
+            assignedTechs.push({
+              id: b.userId || b.id,
+              name: b.userName || (u ? auth.displayName(u) : 'Technician'),
+              role: b.role || 'Tech',
+              status: b.status || 'pencil',
+              bookingId: b.id,
+            });
+          });
+          spTechs.forEach((t) => {
+            const u = allUsers.find((u) => u.id === t.userId);
+            if (!assignedTechs.some((at) => at.id === t.userId)) {
+              assignedTechs.push({
+                id: t.userId || 'tech',
+                name: t.freelancerName || (u ? auth.displayName(u) : 'Technician'),
+                role: t.role || 'Tech',
+                status: t.bookingStatus || 'confirmed',
+              });
+            }
+          });
+
+          const assignedCount = assignedTechs.length;
+          const gap = Math.max(0, basic - assignedCount);
+          return {
+            space: sp,
+            basicCrew: basic,
+            assignedCount: assignedCount,
+            assignedTechs: assignedTechs,
+            gap: gap,
+            isFilled: assignedCount >= basic,
+          };
+        });
+
+        const totalCrewAssigned = spaceBreakdown.reduce((sum, sb) => sum + sb.assignedCount, 0);
+        const unfilledSpaces = spaceBreakdown.filter((sb) => !sb.isFilled).map((sb) => sb.space);
+        const isFullyStaffed = unfilledSpaces.length === 0 && totalCrewAssigned >= totalCrewNeeded;
+
+        // Apply filters
+        if (state.spaceFilter && !spaces.includes(state.spaceFilter)) return;
+        if (state.unfilledOnly && isFullyStaffed) return;
+        if (state.statusFilter) {
+          const matchesStatus = (state.statusFilter === 'confirmed' && isFullyStaffed) ||
+                                (state.statusFilter === 'pencil' && !isFullyStaffed && totalCrewAssigned > 0) ||
+                                (state.statusFilter === 'unfilled' && !isFullyStaffed);
+          if (!matchesStatus) return;
+        }
+        if (state.techFilter) {
+          const hasTech = spaceBreakdown.some((sb) => sb.assignedTechs.some((t) => t.id === state.techFilter));
+          if (!hasTech) return;
+        }
+
+        const primary = cl.primaryEvent;
+        const item = {
+          key: 'takeover_' + (cl.groupId || primary.id),
+          type: 'takeover',
+          eventId: primary.id,
+          groupId: cl.groupId,
+          advEvent: primary,
+          eventName: cl.name,
+          space: spaces.join(', '),
+          spaces: spaces,
+          date: dateStr,
+          startTime: primary.startTime || '17:00',
+          finishTime: primary.finishTime || '23:30',
+          totalCrewNeeded: totalCrewNeeded,
+          totalCrewAssigned: totalCrewAssigned,
+          spaceBreakdown: spaceBreakdown,
+          unfilledSpaces: unfilledSpaces,
+          isFullyStaffed: isFullyStaffed,
+          isUnfilled: unfilledSpaces.length > 0,
+          status: isFullyStaffed ? 'confirmed' : (totalCrewAssigned > 0 ? 'pencil' : 'unfilled'),
+          notes: primary.notes || primary.techInfo || '',
+        };
+        items.push(item);
+        allScheduleItemsMap.set(item.key, item);
+      });
+
+      // --- STEP 2: REMAINING REGULAR BOOKINGS ---
+      allB.forEach((b) => {
+        if (handledBookingIds.has(b.id)) return;
         if (state.spaceFilter && b.space !== state.spaceFilter) return;
         if (state.roleFilter && b.role !== state.roleFilter) return;
         if (state.statusFilter && b.status !== state.statusFilter) return;
         if (state.techFilter && b.userId !== state.techFilter) return;
         if (state.unfilledOnly) return;
 
-        if (b.eventId) eventIdsWithBookings.add(b.eventId);
+        if (b.eventId) handledEventIds.add(b.eventId);
         const techObj = allUsers.find((u) => u.id === b.userId);
         const item = {
           key: 'b_' + b.id,
@@ -392,14 +564,13 @@ RMTP.views.rota = (function () {
         allScheduleItemsMap.set(item.key, item);
       });
 
-      advEvents.forEach((ev) => {
+      // --- STEP 3: REMAINING ADVANCING EVENTS (SINGLE ROOM) ---
+      allEv.forEach((ev) => {
+        if (handledEventIds.has(ev.id)) return;
         const spaceVal = Array.isArray(ev.space) ? ev.space[0] : (ev.space || 'Venue');
         if (state.spaceFilter && spaceVal !== state.spaceFilter) return;
 
-        // If event already has bookings for this date, those bookings are rendered
-        if (eventIdsWithBookings.has(ev.id)) return;
-
-        const evTechs = RMTP.eventTechnicians(ev);
+        const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(ev) : [];
         if (evTechs && evTechs.length > 0) {
           if (state.unfilledOnly) return;
           evTechs.forEach((t, idx) => {
@@ -463,11 +634,151 @@ RMTP.views.rota = (function () {
     }
 
     // Card Renderer: Glanceable, Compact, Clean & Free of UI Clutter
-    function renderCardHtml(item) {
+    // Supports Multi-Room Takeover consolidation, Basic Crew progress, and Dynamic Density scaling.
+    function renderCardHtml(item, contextSpace) {
       const spaceCls = getSpaceColor(item.space);
       const statusMeta = getStatusMeta(item.status, item.isUnfilled);
       const isCompact = state.density === 'compact';
 
+      // ----------------------------------------------------------------------
+      // MULTI-ROOM TAKEOVER CONSOLIDATED CARD
+      // ----------------------------------------------------------------------
+      if (item.type === 'takeover') {
+        const isFull = item.isFullyStaffed;
+        const totalNeeded = item.totalCrewNeeded;
+        const totalAssigned = item.totalCrewAssigned;
+        const gapsCount = item.unfilledSpaces.length;
+
+        // If rendering in context of a specific room (Day View swimlane):
+        if (contextSpace && item.spaces.includes(contextSpace)) {
+          const roomBreakdown = item.spaceBreakdown.find((s) => s.space === contextSpace) || {
+            basicCrew: getSpaceBasicCrew(contextSpace),
+            assignedCount: 0,
+            assignedTechs: [],
+            gap: getSpaceBasicCrew(contextSpace),
+            isFilled: false,
+          };
+          const rColor = getSpaceColor(contextSpace);
+
+          return `
+            <div data-schedule-item="${item.key}" class="p-2.5 rounded-xl border border-l-[4px] border-l-amber-500 ${roomBreakdown.isFilled ? 'border-line bg-panel2/80' : 'border-amber-500/40 bg-amber-500/5'} transition shadow-2xs hover:border-accent cursor-pointer group select-none flex flex-col justify-between gap-1.5 text-left relative">
+              <div class="flex items-center justify-between gap-1 text-[10px]">
+                <span class="font-bold px-1.5 py-0.2 rounded border uppercase tracking-wider text-[9px] bg-amber-500/15 text-amber-300 border-amber-500/30">
+                  Takeover Room
+                </span>
+                <span class="font-mono tabular-nums text-muted font-semibold">${item.startTime}–${item.finishTime}</span>
+              </div>
+
+              <div>
+                <div class="text-xs font-bold text-ink leading-snug break-words group-hover:text-accent transition-colors" title="${ui.esc(item.eventName)}">
+                  ${ui.esc(item.eventName)}
+                </div>
+                <div class="text-[10px] text-muted mt-0.5">
+                  Part of multi-room takeover across <span class="font-medium text-ink">${item.spaces.join(', ')}</span>
+                </div>
+              </div>
+
+              <!-- Room Crew Requirement & Assigned Techs -->
+              <div class="pt-1 border-t border-line/40 text-[11px] flex items-center justify-between gap-1">
+                <span class="text-muted text-[10px]">Room Crew:</span>
+                <span class="font-mono font-bold ${roomBreakdown.isFilled ? 'text-emerald-400' : 'text-amber-400'}">
+                  ${roomBreakdown.assignedCount}/${roomBreakdown.basicCrew} Assigned
+                </span>
+              </div>
+
+              ${roomBreakdown.assignedTechs.length > 0 ? `
+                <div class="space-y-1">
+                  ${roomBreakdown.assignedTechs.map((t) => `
+                    <div class="flex items-center justify-between text-[10px] py-0.5 px-1.5 rounded bg-panel border border-line/60">
+                      <span class="font-medium text-ink truncate">${ui.esc(t.name)}</span>
+                      <span class="text-[9px] font-mono text-muted uppercase">${ui.esc(t.role)}</span>
+                    </div>
+                  `).join('')}
+                </div>
+              ` : ''}
+
+              ${!roomBreakdown.isFilled ? `
+                <button type="button" data-assign-space-crew="${item.key}|${ui.esc(contextSpace)}" class="w-full mt-1 px-2 py-1 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 border border-amber-500/30 flex items-center justify-center gap-1 transition">
+                  ${ui.icon('plus', 'w-3 h-3 text-amber-400')}
+                  <span>+ Assign Crew to ${ui.esc(contextSpace)} (${roomBreakdown.gap} gap)</span>
+                </button>
+              ` : ''}
+            </div>
+          `;
+        }
+
+        // Standard Consolidated Card (Week Board & Agenda)
+        return `
+          <div data-schedule-item="${item.key}" class="p-2.5 rounded-xl border-2 ${isFull ? 'border-emerald-500/40 bg-panel2/90 hover:border-emerald-400' : 'border-amber-500/50 bg-amber-500/5 hover:border-amber-400'} transition shadow-2xs hover:shadow-md cursor-pointer group select-none flex flex-col justify-between gap-2 text-left relative">
+            <!-- Tier 1: Takeover Header & Time -->
+            <div class="flex items-center justify-between gap-1 flex-wrap text-[10px]">
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <span class="px-2 py-0.5 rounded text-[9px] font-extrabold uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
+                  ${ui.icon('grid', 'w-2.5 h-2.5 text-amber-300')}
+                  <span>Takeover · ${item.spaces.length} Spaces</span>
+                </span>
+                <span class="font-mono tabular-nums text-muted font-semibold">${item.startTime}–${item.finishTime}</span>
+              </div>
+              <span class="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-semibold border ${isFull ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border-amber-500/30'}">
+                <span class="w-1.5 h-1.5 rounded-full ${isFull ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}"></span>
+                <span>${totalAssigned}/${totalNeeded} Crew</span>
+              </span>
+            </div>
+
+            <!-- Tier 2: Event Name -->
+            <div>
+              <div class="text-xs font-bold text-ink leading-snug break-words group-hover:text-accent transition-colors" title="${ui.esc(item.eventName)}">
+                ${ui.esc(item.eventName)}
+              </div>
+            </div>
+
+            <!-- Tier 3: Crew Needed vs Assigned Progress Bar / Alert -->
+            <div class="p-1.5 rounded-lg bg-panel/85 border border-line/60 space-y-1.5">
+              <div class="flex items-center justify-between text-[10px] font-medium">
+                <span class="text-muted">Staffing Status:</span>
+                ${isFull ? `
+                  <span class="text-emerald-400 font-bold flex items-center gap-1">✓ Fully Staffed (${totalAssigned}/${totalNeeded})</span>
+                ` : `
+                  <span class="text-amber-400 font-bold flex items-center gap-1">
+                    <span>${totalAssigned}/${totalNeeded} Assigned</span>
+                    <span class="text-rose-400 font-bold">· ${gapsCount} space${gapsCount > 1 ? 's' : ''} need crew</span>
+                  </span>
+                `}
+              </div>
+
+              <!-- Space-by-Space breakdown chips with 1-click crew assignment -->
+              <div class="space-y-1 pt-1 border-t border-line/40 text-[10px]">
+                ${item.spaceBreakdown.map((sb) => {
+                  const spColor = getSpaceColor(sb.space);
+                  return `
+                    <div class="flex items-center justify-between gap-1 py-0.5 px-1.5 rounded bg-panel2/50 border border-line/40">
+                      <div class="flex items-center gap-1.5 min-w-0">
+                        <span class="w-1.5 h-1.5 rounded-full ${sb.isFilled ? 'bg-emerald-400' : 'bg-amber-400'} shrink-0"></span>
+                        <span class="font-bold text-ink truncate">${ui.esc(sb.space)}</span>
+                        <span class="text-[9px] font-mono text-muted font-semibold shrink-0">[${sb.assignedCount}/${sb.basicCrew}]</span>
+                      </div>
+                      ${sb.isFilled ? `
+                        <span class="text-muted text-[10px] truncate max-w-[110px]" title="${ui.esc(sb.assignedTechs.map((t) => t.name).join(', '))}">
+                          ${ui.esc(sb.assignedTechs.map((t) => t.name).join(', '))}
+                        </span>
+                      ` : `
+                        <button type="button" data-assign-space-crew="${item.key}|${ui.esc(sb.space)}" class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/40 flex items-center gap-1 transition shrink-0" title="Assign crew to ${ui.esc(sb.space)}">
+                          ${ui.icon('plus', 'w-2.5 h-2.5 text-amber-300')}
+                          <span>+ Crew (${sb.gap})</span>
+                        </button>
+                      `}
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      // ----------------------------------------------------------------------
+      // STANDARD SINGLE-ROOM SHIFTS & EVENTS
+      // ----------------------------------------------------------------------
       if (isCompact) {
         return `
           <div data-schedule-item="${item.key}" class="p-2 rounded-lg border border-l-[3.5px] ${spaceCls.bar} ${item.isUnfilled ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400' : 'border-line bg-panel2/80 hover:bg-panel2 hover:border-line/90'} transition shadow-2xs cursor-pointer group select-none flex flex-col justify-between gap-1 text-left relative">
@@ -483,7 +794,7 @@ RMTP.views.rota = (function () {
             </div>
 
             <!-- Line 2: Event Name (unclipped, clean wrapping) -->
-            <div class="text-xs font-bold text-ink leading-snug break-words" title="${ui.esc(item.eventName)}">
+            <div class="text-xs font-bold text-ink leading-snug break-words group-hover:text-accent transition-colors" title="${ui.esc(item.eventName)}">
               ${ui.esc(item.eventName)}
             </div>
 
@@ -515,12 +826,13 @@ RMTP.views.rota = (function () {
       }
 
       // Detailed Mode
+      const initialLetter = ((item.userName || 'Tech')[0] || 'T').toUpperCase();
       return `
         <div data-schedule-item="${item.key}" class="p-2.5 rounded-xl border border-l-[4px] ${spaceCls.bar} ${item.isUnfilled ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400' : 'border-line bg-panel2/80 hover:bg-panel2 hover:border-line/90'} transition shadow-2xs cursor-pointer group select-none space-y-2 text-left relative">
           <div class="flex items-start justify-between gap-1.5">
             <div class="min-w-0">
               <span class="font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider text-[9px] ${spaceCls.tag} inline-block mb-1">${ui.esc(item.space)}</span>
-              <div class="text-xs font-bold text-ink leading-snug break-words" title="${ui.esc(item.eventName)}">${ui.esc(item.eventName)}</div>
+              <div class="text-xs font-bold text-ink leading-snug break-words group-hover:text-accent transition-colors" title="${ui.esc(item.eventName)}">${ui.esc(item.eventName)}</div>
             </div>
             <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${item.isUnfilled ? 'border-amber-500/30 bg-amber-500/10 text-amber-400' : 'border-line bg-panel text-ink'} shrink-0">
               <span class="w-1.5 h-1.5 rounded-full ${statusMeta.dot}"></span>
@@ -536,7 +848,7 @@ RMTP.views.rota = (function () {
           <div class="flex items-center justify-between gap-2 text-xs pt-1">
             <div class="flex items-center gap-1.5 min-w-0">
               <span class="w-5 h-5 rounded-full bg-accent/20 text-accent text-[10px] font-bold flex items-center justify-center shrink-0">
-                ${(item.userName[0] || 'T').toUpperCase()}
+                ${initialLetter}
               </span>
               <span class="text-xs font-medium text-ink truncate ${item.isUnfilled ? 'text-amber-400 font-semibold' : ''}">
                 ${item.isUnfilled ? '+ Assign Freelancer' : ui.esc(item.userName)}
@@ -734,6 +1046,7 @@ RMTP.views.rota = (function () {
     function renderBoardTab() {
       allScheduleItemsMap.clear();
 
+      const allUsers = getAllUsers();
       const weekDays = getCurrentWeekDays();
       const startWeekStr = weekDays[0].date;
       const endWeekStr = weekDays[6].date;
@@ -993,7 +1306,7 @@ RMTP.views.rota = (function () {
 
         activeSpaces.forEach((spaceName) => {
           const spaceColor = getSpaceColor(spaceName);
-          const spaceItems = daySchedule.filter((i) => i.space === spaceName);
+          const spaceItems = daySchedule.filter((i) => i.space === spaceName || (i.spaces && i.spaces.includes(spaceName)));
 
           out += `
             <div class="rounded-xl border border-line bg-panel p-3 flex flex-col gap-2.5 min-h-[320px]">
@@ -1003,7 +1316,7 @@ RMTP.views.rota = (function () {
                   <span class="w-2.5 h-2.5 rounded-full ${spaceColor.dot} shrink-0"></span>
                   <div class="min-w-0">
                     <span class="font-bold text-xs text-ink block truncate" title="${ui.esc(spaceName)}">${ui.esc(spaceName)}</span>
-                    <span class="text-[10px] text-muted font-mono font-semibold">${spaceItems.length} shift${spaceItems.length === 1 ? '' : 's'}</span>
+                    <span class="text-[10px] text-muted font-mono font-semibold">${spaceItems.length} shift${spaceItems.length === 1 ? '' : 's'} · Basic Crew: ${getSpaceBasicCrew(spaceName)}</span>
                   </div>
                 </div>
                 <button data-add-space-shift="${ui.esc(spaceName)}" class="p-1 rounded text-muted hover:text-accent hover:bg-panel2 transition" title="Add shift in ${ui.esc(spaceName)}">
@@ -1026,7 +1339,7 @@ RMTP.views.rota = (function () {
             `;
           } else {
             spaceItems.forEach((item) => {
-              out += renderCardHtml(item);
+              out += renderCardHtml(item, spaceName);
             });
           }
 
@@ -1299,6 +1612,28 @@ RMTP.views.rota = (function () {
         });
       });
 
+      // 1-Click Assign Crew directly to specific room in a Multi-Room Takeover
+      tabContainer.querySelectorAll('[data-assign-space-crew]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const raw = btn.getAttribute('data-assign-space-crew');
+          const [key, spaceName] = raw.split('|');
+          const item = allScheduleItemsMap.get(key);
+          if (item) {
+            openBookingModal({
+              eventId: item.eventId,
+              eventName: item.eventName,
+              space: spaceName || item.spaces[0],
+              date: item.date,
+              startTime: item.startTime,
+              finishTime: item.finishTime,
+              role: 'Sound',
+              status: 'pencil',
+            });
+          }
+        });
+      });
+
       // Card Click Handler: Opens booking/shift modal for instant view, edit or assign
       tabContainer.querySelectorAll('[data-schedule-item]').forEach((card) => {
         card.addEventListener('click', (e) => {
@@ -1308,7 +1643,19 @@ RMTP.views.rota = (function () {
           const item = allScheduleItemsMap.get(key);
           if (!item) return;
 
-          if (item.type === 'booking') {
+          if (item.type === 'takeover') {
+            const targetSpace = (item.unfilledSpaces && item.unfilledSpaces.length > 0) ? item.unfilledSpaces[0] : (item.spaces ? item.spaces[0] : 'The Stage');
+            openBookingModal({
+              eventId: item.eventId,
+              eventName: item.eventName,
+              space: targetSpace,
+              date: item.date,
+              startTime: item.startTime,
+              finishTime: item.finishTime,
+              role: 'Sound',
+              status: 'pencil',
+            });
+          } else if (item.type === 'booking') {
             openBookingModal(item.booking);
           } else if (item.type === 'unfilled') {
             openBookingModal({
@@ -1343,6 +1690,7 @@ RMTP.views.rota = (function () {
     // TAB 2: MY AVAILABILITY & SHIFTS
     // ------------------------------------------------------------------------
     function renderMyAvailTab() {
+      const allUsers = getAllUsers();
       const selectedUserId = state.selectedUserForAvail || (me ? me.id : 'user-3');
       const targetUser = allUsers.find((u) => u.id === selectedUserId) || me;
       const targetName = targetUser ? auth.displayName(targetUser) : 'Technician';
@@ -1940,6 +2288,7 @@ RMTP.views.rota = (function () {
     function openBookingModal(initialData = {}) {
       const isNew = !initialData.id;
       const events = getAllEvents();
+      const allUsers = getAllUsers();
 
       const m = ui.modal({
         title: isNew ? 'Book Shift / Freelancer' : 'Edit Shift Booking',
@@ -2262,6 +2611,7 @@ RMTP.views.rota = (function () {
 
     // 2. Technician Availability Modal (Single Date)
     function openAvailabilityModal(data = {}) {
+      const allUsers = getAllUsers();
       const isNew = !data.id;
       const targetUserId = data.userId || (me ? me.id : 'user-3');
       const targetUser = allUsers.find((u) => u.id === targetUserId);
@@ -2426,6 +2776,7 @@ RMTP.views.rota = (function () {
 
     // 3. Bulk Multi-Day Period Availability Modal
     function openBulkPeriodModal() {
+      const allUsers = getAllUsers();
       const targetUserId = state.selectedUserForAvail || (me ? me.id : 'user-3');
       const targetUser = allUsers.find((u) => u.id === targetUserId);
       const targetName = targetUser ? auth.displayName(targetUser) : 'Technician';

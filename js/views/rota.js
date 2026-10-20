@@ -579,7 +579,10 @@ RMTP.views.rota = (function () {
             if (state.statusFilter && (t.bookingStatus || 'confirmed') !== state.statusFilter) return;
 
             const techObj = allUsers.find((u) => u.id === t.userId);
-            const tName = t.freelancerName || (techObj ? auth.displayName(techObj) : (t.userId ? 'Tech' : 'Unassigned'));
+            const isNoTech = t.isNoTech || t.role === 'None';
+            const hasAssigned = !!(t.userId || (t.freelancerName && t.freelancerName.trim()));
+            const isSlotUnfilled = !isNoTech && !hasAssigned;
+            const tName = isNoTech ? 'No Tech Required' : (t.freelancerName || (techObj ? auth.displayName(techObj) : (t.userId ? 'Tech' : 'Unassigned')));
 
             const item = {
               key: 'evtech_' + ev.id + '_' + idx,
@@ -593,10 +596,11 @@ RMTP.views.rota = (function () {
               finishTime: t.finishTime || ev.finishTime || '23:00',
               userId: t.userId,
               userName: tName,
-              role: t.role || 'Tech',
-              status: t.bookingStatus || 'confirmed',
+              role: isNoTech ? '' : (t.role || 'Tech'),
+              status: isSlotUnfilled ? 'unfilled' : (t.bookingStatus || 'confirmed'),
               notes: ev.notes || ev.techInfo || (ev.artifaxHistory && ev.artifaxHistory.length ? ev.artifaxHistory[ev.artifaxHistory.length - 1].notes : '') || ev.artifaxNotes || '',
-              isUnfilled: false,
+              isUnfilled: isSlotUnfilled,
+              isNoTech: isNoTech,
             };
             items.push(item);
             allScheduleItemsMap.set(item.key, item);
@@ -661,68 +665,121 @@ RMTP.views.rota = (function () {
           const rColor = getSpaceColor(contextSpace);
 
           return `
-            <div data-schedule-item="${item.key}" class="p-2.5 rounded-xl border border-l-[4px] border-l-amber-500 ${roomBreakdown.isFilled ? 'border-line bg-panel2/80' : 'border-amber-500/40 bg-amber-500/5'} transition shadow-2xs hover:border-accent cursor-pointer group select-none flex flex-col justify-between gap-1.5 text-left relative">
+            <div data-schedule-item="${item.key}" class="p-3 rounded-xl border border-l-[4px] border-l-amber-500 ${roomBreakdown.isFilled ? 'border-line bg-panel2/80' : 'border-amber-500/40 bg-amber-500/5'} transition shadow-2xs hover:border-accent cursor-pointer group select-none flex flex-col gap-2.5 text-left relative">
               <div class="flex items-center justify-between gap-1 text-[10px]">
-                <span class="font-bold px-1.5 py-0.2 rounded border uppercase tracking-wider text-[9px] bg-amber-500/15 text-amber-300 border-amber-500/30">
-                  Takeover Room
+                <span class="font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider text-[9px] bg-amber-500/15 text-amber-300 border-amber-500/30 flex items-center gap-1 shrink-0">
+                  ${ui.icon('grid', 'w-2.5 h-2.5 text-amber-300')}
+                  <span>Takeover Room</span>
                 </span>
-                <span class="font-mono tabular-nums text-muted font-semibold">${item.startTime}–${item.finishTime}</span>
+                <span class="font-mono tabular-nums text-muted font-semibold text-[10px] shrink-0">${item.startTime}–${item.finishTime}</span>
               </div>
 
               <div>
                 <div class="text-xs font-bold text-ink leading-snug break-words group-hover:text-accent transition-colors" title="${ui.esc(item.eventName)}">
                   ${ui.esc(item.eventName)}
                 </div>
-                <div class="text-[10px] text-muted mt-0.5">
-                  Part of multi-room takeover across <span class="font-medium text-ink">${item.spaces.join(', ')}</span>
+                <div class="text-[10px] text-muted mt-0.5 truncate" title="${item.spaces.join(', ')}">
+                  Across <span class="font-medium text-ink">${item.spaces.join(', ')}</span>
                 </div>
               </div>
 
               <!-- Room Crew Requirement & Assigned Techs -->
-              <div class="pt-1 border-t border-line/40 text-[11px] flex items-center justify-between gap-1">
-                <span class="text-muted text-[10px]">Room Crew:</span>
-                <span class="font-mono font-bold ${roomBreakdown.isFilled ? 'text-emerald-400' : 'text-amber-400'}">
-                  ${roomBreakdown.assignedCount}/${roomBreakdown.basicCrew} Assigned
-                </span>
-              </div>
-
-              ${roomBreakdown.assignedTechs.length > 0 ? `
-                <div class="space-y-1">
-                  ${roomBreakdown.assignedTechs.map((t) => `
-                    <div class="flex items-center justify-between text-[10px] py-0.5 px-1.5 rounded bg-panel border border-line/60">
-                      <span class="font-medium text-ink truncate">${ui.esc(t.name)}</span>
-                      <span class="text-[9px] font-mono text-muted uppercase">${ui.esc(t.role)}</span>
-                    </div>
-                  `).join('')}
+              <div class="p-2 rounded-lg bg-panel/85 border border-line/60 space-y-1.5">
+                <div class="flex items-center justify-between text-[11px]">
+                  <span class="text-muted text-[10px] font-semibold uppercase">Room Staffing</span>
+                  <span class="font-mono font-bold text-[11px] ${roomBreakdown.isFilled ? 'text-emerald-400' : 'text-amber-400'}">
+                    ${roomBreakdown.assignedCount}/${roomBreakdown.basicCrew} Assigned
+                  </span>
                 </div>
-              ` : ''}
 
-              ${!roomBreakdown.isFilled ? `
-                <button type="button" data-assign-space-crew="${item.key}|${ui.esc(contextSpace)}" class="w-full mt-1 px-2 py-1 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 border border-amber-500/30 flex items-center justify-center gap-1 transition">
-                  ${ui.icon('plus', 'w-3 h-3 text-amber-400')}
-                  <span>+ Assign Crew to ${ui.esc(contextSpace)} (${roomBreakdown.gap} gap)</span>
-                </button>
-              ` : ''}
+                ${roomBreakdown.assignedTechs.length > 0 ? `
+                  <div class="space-y-1 pt-1 border-t border-line/40">
+                    ${roomBreakdown.assignedTechs.map((t) => `
+                      <div class="flex items-center justify-between text-[10px] py-0.5 px-1.5 rounded bg-panel2/60 border border-line/50">
+                        <span class="font-medium text-ink truncate">${ui.esc(t.name)}</span>
+                        <span class="text-[9px] font-mono text-muted uppercase shrink-0">${ui.esc(t.role)}</span>
+                      </div>
+                    `).join('')}
+                  </div>
+                ` : ''}
+
+                ${!roomBreakdown.isFilled ? `
+                  <button type="button" data-assign-space-crew="${item.key}|${ui.esc(contextSpace)}" class="w-full mt-1 py-1.5 px-2 rounded text-[10px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center justify-center gap-1 transition shadow-2xs" title="Assign crew to ${ui.esc(contextSpace)}">
+                    ${ui.icon('plus', 'w-3 h-3 text-amber-300')}
+                    <span>+ Assign Crew (${roomBreakdown.gap} needed)</span>
+                  </button>
+                ` : ''}
+              </div>
             </div>
           `;
         }
 
         // Standard Consolidated Card (Week Board & Agenda)
-        return `
-          <div data-schedule-item="${item.key}" class="p-2.5 rounded-xl border-2 ${isFull ? 'border-emerald-500/40 bg-panel2/90 hover:border-emerald-400' : 'border-amber-500/50 bg-amber-500/5 hover:border-amber-400'} transition shadow-2xs hover:shadow-md cursor-pointer group select-none flex flex-col justify-between gap-2 text-left relative">
-            <!-- Tier 1: Takeover Header & Time -->
-            <div class="flex items-center justify-between gap-1 flex-wrap text-[10px]">
-              <div class="flex items-center gap-1.5 flex-wrap">
-                <span class="px-2 py-0.5 rounded text-[9px] font-extrabold uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
+        if (isCompact) {
+          // GLANCEABLE COMPACT TAKEOVER CARD
+          return `
+            <div data-schedule-item="${item.key}" class="p-2.5 rounded-xl border border-l-[4px] border-l-amber-500 ${isFull ? 'border-line bg-panel2/80 hover:border-line/90' : 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400'} transition shadow-2xs hover:shadow-md cursor-pointer group select-none flex flex-col gap-2 text-left relative">
+              <!-- Tier 1: Takeover Header & Time -->
+              <div class="flex items-center justify-between gap-1 text-[10px]">
+                <span class="px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1 shrink-0">
                   ${ui.icon('grid', 'w-2.5 h-2.5 text-amber-300')}
-                  <span>Takeover · ${item.spaces.length} Spaces</span>
+                  <span>Takeover · ${item.spaces.length} Rooms</span>
                 </span>
-                <span class="font-mono tabular-nums text-muted font-semibold">${item.startTime}–${item.finishTime}</span>
+                <span class="font-mono tabular-nums text-muted font-semibold text-[10px] shrink-0">${item.startTime}–${item.finishTime}</span>
               </div>
-              <span class="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-semibold border ${isFull ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border-amber-500/30'}">
-                <span class="w-1.5 h-1.5 rounded-full ${isFull ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}"></span>
-                <span>${totalAssigned}/${totalNeeded} Crew</span>
+
+              <!-- Tier 2: Event Name -->
+              <div>
+                <div class="text-xs font-bold text-ink leading-snug break-words group-hover:text-accent transition-colors" title="${ui.esc(item.eventName)}">
+                  ${ui.esc(item.eventName)}
+                </div>
+              </div>
+
+              <!-- Tier 3: Compact Space Badges & Quick Action -->
+              <div class="pt-1.5 border-t border-line/50 space-y-1.5">
+                <div class="flex items-center justify-between text-[10px]">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-semibold border ${isFull ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border-amber-500/30'}">
+                    <span class="w-1.5 h-1.5 rounded-full ${isFull ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}"></span>
+                    <span>${totalAssigned}/${totalNeeded} Crew</span>
+                  </span>
+                  <span class="text-[10px] font-bold ${isFull ? 'text-emerald-400' : 'text-amber-400'}">
+                    ${isFull ? '✓ Staffed' : `${gapsCount} gap${gapsCount > 1 ? 's' : ''}`}
+                  </span>
+                </div>
+
+                <!-- Clean Room Pills (Click any room to assign) -->
+                <div class="flex flex-wrap gap-1">
+                  ${item.spaceBreakdown.map((sb) => `
+                    <button type="button" data-assign-space-crew="${item.key}|${ui.esc(sb.space)}" class="px-1.5 py-0.5 rounded text-[9.5px] font-semibold border transition flex items-center gap-1 ${sb.isFilled ? 'bg-panel border-line text-ink' : 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'}" title="${ui.esc(sb.space)}: ${sb.assignedCount}/${sb.basicCrew} crew (click to assign)">
+                      <span class="w-1.5 h-1.5 rounded-full ${sb.isFilled ? 'bg-emerald-400' : 'bg-amber-400'} shrink-0"></span>
+                      <span class="truncate max-w-[95px]">${ui.esc(sb.space)}</span>
+                      <span class="font-mono text-[9px] opacity-80">${sb.assignedCount}/${sb.basicCrew}</span>
+                    </button>
+                  `).join('')}
+                </div>
+
+                <!-- 1-Click Action Button -->
+                ${!isFull ? `
+                  <button type="button" data-assign-space-crew="${item.key}|${ui.esc(item.unfilledSpaces[0] || item.spaces[0])}" class="w-full py-1 px-2 rounded text-[10px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center justify-center gap-1 transition shadow-2xs">
+                    ${ui.icon('plus', 'w-3 h-3 text-amber-300')}
+                    <span>+ Assign Crew (${totalNeeded - totalAssigned} needed)</span>
+                  </button>
+                ` : ''}
+              </div>
+            </div>
+          `;
+        }
+
+        // DETAILED MODE (Fully Stacked Space Breakdown)
+        return `
+          <div data-schedule-item="${item.key}" class="p-3 rounded-xl border border-l-[4px] border-l-amber-500 ${isFull ? 'border-line bg-panel2/80 hover:border-line/90' : 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400'} transition shadow-2xs hover:shadow-md cursor-pointer group select-none flex flex-col gap-2.5 text-left relative">
+            <!-- Tier 1: Takeover Header & Time -->
+            <div class="flex items-center justify-between gap-1 text-[10px]">
+              <span class="px-2 py-0.5 rounded text-[9px] font-extrabold uppercase tracking-wider bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1 shrink-0">
+                ${ui.icon('grid', 'w-2.5 h-2.5 text-amber-300')}
+                <span>Takeover · ${item.spaces.length} Rooms</span>
               </span>
+              <span class="font-mono tabular-nums text-muted font-semibold text-[10px] shrink-0">${item.startTime}–${item.finishTime}</span>
             </div>
 
             <!-- Tier 2: Event Name -->
@@ -732,45 +789,55 @@ RMTP.views.rota = (function () {
               </div>
             </div>
 
-            <!-- Tier 3: Crew Needed vs Assigned Progress Bar / Alert -->
-            <div class="p-1.5 rounded-lg bg-panel/85 border border-line/60 space-y-1.5">
-              <div class="flex items-center justify-between text-[10px] font-medium">
-                <span class="text-muted">Staffing Status:</span>
-                ${isFull ? `
-                  <span class="text-emerald-400 font-bold flex items-center gap-1">✓ Fully Staffed (${totalAssigned}/${totalNeeded})</span>
-                ` : `
-                  <span class="text-amber-400 font-bold flex items-center gap-1">
-                    <span>${totalAssigned}/${totalNeeded} Assigned</span>
-                    <span class="text-rose-400 font-bold">· ${gapsCount} space${gapsCount > 1 ? 's' : ''} need crew</span>
-                  </span>
-                `}
+            <!-- Tier 3: Crew Overview Strip -->
+            <div class="px-2 py-1.5 rounded-lg bg-panel/90 border border-line/70 flex items-center justify-between text-[10px]">
+              <div class="flex items-center gap-1.5">
+                <span class="w-1.5 h-1.5 rounded-full ${isFull ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'} shrink-0"></span>
+                <span class="text-muted font-semibold uppercase tracking-wider text-[9px]">Crewing</span>
               </div>
+              <div class="flex items-center gap-2">
+                <span class="font-mono font-bold text-[10px] tabular-nums ${isFull ? 'text-emerald-400' : 'text-amber-400'}">
+                  ${totalAssigned}/${totalNeeded} Assigned
+                </span>
+                <span class="text-[9.5px] font-bold ${isFull ? 'text-emerald-400' : 'text-rose-400'}">
+                  ${isFull ? '✓ Complete' : `(${gapsCount} room gap${gapsCount > 1 ? 's' : ''})`}
+                </span>
+              </div>
+            </div>
 
-              <!-- Space-by-Space breakdown chips with 1-click crew assignment -->
-              <div class="space-y-1 pt-1 border-t border-line/40 text-[10px]">
-                ${item.spaceBreakdown.map((sb) => {
-                  const spColor = getSpaceColor(sb.space);
-                  return `
-                    <div class="flex items-center justify-between gap-1 py-0.5 px-1.5 rounded bg-panel2/50 border border-line/40">
-                      <div class="flex items-center gap-1.5 min-w-0">
-                        <span class="w-1.5 h-1.5 rounded-full ${sb.isFilled ? 'bg-emerald-400' : 'bg-amber-400'} shrink-0"></span>
-                        <span class="font-bold text-ink truncate">${ui.esc(sb.space)}</span>
-                        <span class="text-[9px] font-mono text-muted font-semibold shrink-0">[${sb.assignedCount}/${sb.basicCrew}]</span>
-                      </div>
-                      ${sb.isFilled ? `
-                        <span class="text-muted text-[10px] truncate max-w-[110px]" title="${ui.esc(sb.assignedTechs.map((t) => t.name).join(', '))}">
-                          ${ui.esc(sb.assignedTechs.map((t) => t.name).join(', '))}
-                        </span>
-                      ` : `
-                        <button type="button" data-assign-space-crew="${item.key}|${ui.esc(sb.space)}" class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/40 flex items-center gap-1 transition shrink-0" title="Assign crew to ${ui.esc(sb.space)}">
-                          ${ui.icon('plus', 'w-2.5 h-2.5 text-amber-300')}
-                          <span>+ Crew (${sb.gap})</span>
-                        </button>
-                      `}
+            <!-- Space-by-Space detailed row breakdown (Clean table-like rows without overflow) -->
+            <div class="space-y-1.5 pt-1 border-t border-line/40 text-[10px]">
+              ${item.spaceBreakdown.map((sb) => `
+                <div class="p-2 rounded-lg bg-panel border border-line/70 flex items-center justify-between gap-1.5">
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-1.5">
+                      <span class="w-1.5 h-1.5 rounded-full ${sb.isFilled ? 'bg-emerald-400' : 'bg-amber-400'} shrink-0"></span>
+                      <span class="font-bold text-ink text-[11px] truncate block" title="${ui.esc(sb.space)}">${ui.esc(sb.space)}</span>
                     </div>
-                  `;
-                }).join('')}
-              </div>
+                    ${sb.isFilled ? `
+                      <div class="text-[9.5px] text-muted truncate mt-0.5 pl-3" title="${ui.esc(sb.assignedTechs.map((t) => t.name).join(', '))}">
+                        👤 ${ui.esc(sb.assignedTechs.map((t) => t.name).join(', '))}
+                      </div>
+                    ` : `
+                      <div class="text-[9.5px] text-amber-400 font-mono font-medium mt-0.5 pl-3">
+                        ${sb.assignedCount}/${sb.basicCrew} crew (${sb.gap} gap)
+                      </div>
+                    `}
+                  </div>
+                  <div class="shrink-0">
+                    ${sb.isFilled ? `
+                      <span class="text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded border bg-emerald-500/10 text-emerald-300 border-emerald-500/20">
+                        ✓ Filled
+                      </span>
+                    ` : `
+                      <button type="button" data-assign-space-crew="${item.key}|${ui.esc(sb.space)}" class="py-1 px-2 rounded text-[10px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center gap-1 transition shadow-2xs whitespace-nowrap" title="Assign crew to ${ui.esc(sb.space)}">
+                        ${ui.icon('plus', 'w-2.5 h-2.5 text-amber-300')}
+                        <span>Assign</span>
+                      </button>
+                    `}
+                  </div>
+                </div>
+              `).join('')}
             </div>
           </div>
         `;
@@ -781,11 +848,11 @@ RMTP.views.rota = (function () {
       // ----------------------------------------------------------------------
       if (isCompact) {
         return `
-          <div data-schedule-item="${item.key}" class="p-2 rounded-lg border border-l-[3.5px] ${spaceCls.bar} ${item.isUnfilled ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400' : 'border-line bg-panel2/80 hover:bg-panel2 hover:border-line/90'} transition shadow-2xs cursor-pointer group select-none flex flex-col justify-between gap-1 text-left relative">
+          <div data-schedule-item="${item.key}" class="p-2.5 rounded-xl border border-l-[3.5px] ${spaceCls.bar} ${item.isUnfilled ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400' : 'border-line bg-panel2/80 hover:bg-panel2 hover:border-line/90'} transition shadow-2xs cursor-pointer group select-none flex flex-col justify-between gap-1.5 text-left relative">
             <!-- Line 1: Space short tag, Time & Status -->
             <div class="flex items-center justify-between gap-1 text-[10px]">
-              <span class="font-bold px-1.5 py-0.2 rounded border uppercase tracking-wider text-[9px] ${spaceCls.tag} shrink-0" title="${ui.esc(item.space)}">
-                ${ui.esc(spaceCls.short)}
+              <span class="font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider text-[9px] ${spaceCls.tag} shrink-0" title="${ui.esc(item.space)}">
+                ${ui.esc(spaceCls.short || item.space)}
               </span>
               <div class="flex items-center gap-1.5 shrink-0 ml-auto">
                 <span class="font-mono tabular-nums text-muted font-semibold text-[10px]">${item.startTime}–${item.finishTime}</span>
@@ -793,17 +860,22 @@ RMTP.views.rota = (function () {
               </div>
             </div>
 
-            <!-- Line 2: Event Name (unclipped, clean wrapping) -->
+            <!-- Line 2: Event Name -->
             <div class="text-xs font-bold text-ink leading-snug break-words group-hover:text-accent transition-colors" title="${ui.esc(item.eventName)}">
               ${ui.esc(item.eventName)}
             </div>
 
             <!-- Line 3: Tech & Role or Unfilled Call to Action -->
-            ${item.isUnfilled ? `
+            ${item.isNoTech ? `
+              <div class="flex items-center justify-between text-[10px] pt-1 border-t border-line/40 text-muted">
+                <span class="italic text-muted/80">No Tech Required</span>
+                <span class="text-[9px] px-1 py-0.2 rounded bg-panel border border-line text-muted">Self-Managed</span>
+              </div>
+            ` : (item.isUnfilled ? `
               <div class="pt-1 border-t border-line/40">
-                <button type="button" data-assign-shift="${item.key}" class="w-full px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 border border-amber-500/30 flex items-center justify-center gap-1 transition">
+                <button type="button" data-assign-shift="${item.key}" class="w-full px-2 py-1 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 border border-amber-500/30 flex items-center justify-center gap-1 transition">
                   ${ui.icon('plus', 'w-3 h-3 text-amber-400')}
-                  <span>Assign Freelancer</span>
+                  <span>+ Assign Freelancer</span>
                 </button>
               </div>
             ` : `
@@ -813,14 +885,9 @@ RMTP.views.rota = (function () {
                 </span>
                 <div class="flex items-center gap-1 shrink-0">
                   ${item.role ? `<span class="text-[9px] font-mono font-semibold px-1 py-0.2 rounded bg-panel border border-line text-muted">${ui.esc(item.role)}</span>` : ''}
-                  ${item.type === 'booking' ? `
-                    <button type="button" data-quick-toggle-status="${item.id}" class="p-0.5 rounded text-muted hover:text-ink hover:bg-panel transition opacity-0 group-hover:opacity-100" title="Click to toggle Confirmed / Pencil">
-                      ${ui.icon(item.status === 'confirmed' ? 'check' : 'pen', 'w-2.5 h-2.5')}
-                    </button>
-                  ` : ''}
                 </div>
               </div>
-            `}
+            `)}
           </div>
         `;
       }
@@ -828,7 +895,7 @@ RMTP.views.rota = (function () {
       // Detailed Mode
       const initialLetter = ((item.userName || 'Tech')[0] || 'T').toUpperCase();
       return `
-        <div data-schedule-item="${item.key}" class="p-2.5 rounded-xl border border-l-[4px] ${spaceCls.bar} ${item.isUnfilled ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400' : 'border-line bg-panel2/80 hover:bg-panel2 hover:border-line/90'} transition shadow-2xs cursor-pointer group select-none space-y-2 text-left relative">
+        <div data-schedule-item="${item.key}" class="p-3 rounded-xl border border-l-[4px] ${spaceCls.bar} ${item.isUnfilled ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400' : 'border-line bg-panel2/80 hover:bg-panel2 hover:border-line/90'} transition shadow-2xs cursor-pointer group select-none space-y-2 text-left relative">
           <div class="flex items-start justify-between gap-1.5">
             <div class="min-w-0">
               <span class="font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider text-[9px] ${spaceCls.tag} inline-block mb-1">${ui.esc(item.space)}</span>
@@ -851,7 +918,7 @@ RMTP.views.rota = (function () {
                 ${initialLetter}
               </span>
               <span class="text-xs font-medium text-ink truncate ${item.isUnfilled ? 'text-amber-400 font-semibold' : ''}">
-                ${item.isUnfilled ? '+ Assign Freelancer' : ui.esc(item.userName)}
+                ${item.isUnfilled ? 'Unassigned' : ui.esc(item.userName)}
               </span>
             </div>
             ${item.rate ? `<span class="text-[10px] font-mono text-muted tabular-nums">${ui.esc(item.rate)}</span>` : ''}
@@ -865,9 +932,9 @@ RMTP.views.rota = (function () {
 
           ${item.isUnfilled ? `
             <div class="pt-1">
-              <button type="button" data-assign-shift="${item.key}" class="w-full py-1 px-2 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 border border-amber-500/30 flex items-center justify-center gap-1 transition">
+              <button type="button" data-assign-shift="${item.key}" class="w-full py-1.5 px-2 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 border border-amber-500/30 flex items-center justify-center gap-1 transition">
                 ${ui.icon('plus', 'w-3.5 h-3.5')}
-                <span>Assign Freelancer to Shift</span>
+                <span>+ Assign Freelancer</span>
               </button>
             </div>
           ` : ''}
@@ -1164,25 +1231,33 @@ RMTP.views.rota = (function () {
       // SUB-VIEW 1: WEEK GRID (7 DAYS SIDE-BY-SIDE)
       // ----------------------------------------------------------------------
       if (state.boardView === 'week') {
-        // Mobile Day Switcher Bar (phone/small screens only)
+        // Day Switcher Bar (Mobile & Tablet: filters view; Desktop: scroll/jump indicator)
         out += `
-          <div class="flex items-center gap-1.5 overflow-x-auto pb-1 md:hidden scrollbar-hide -mx-4 px-4">
-            <button data-mob-day="all" class="shrink-0 px-2.5 py-1 text-xs font-semibold rounded-lg border transition ${state.mobileDayFilter === 'all' ? 'bg-accent text-accent-ink border-accent' : 'bg-panel border-line text-muted'}">
-              All 7 Days
-            </button>
-            ${daysData.map((d) => `
-              <button data-mob-day="${d.date}" class="shrink-0 px-2.5 py-1 text-xs font-semibold rounded-lg border transition flex items-center gap-1.5 ${state.mobileDayFilter === d.date ? 'bg-accent text-accent-ink border-accent' : (d.isToday ? 'bg-accent/10 border-accent/40 text-accent font-bold' : 'bg-panel border-line text-muted')}">
-                <span>${d.dayName} ${d.dayNum}</span>
-                ${d.items.length > 0 ? `<span class="w-1.5 h-1.5 rounded-full ${d.items.some(i => i.isUnfilled) ? 'bg-rose-400' : 'bg-accent'}"></span>` : ''}
+          <div class="flex items-center justify-between gap-2 overflow-x-auto pb-1 scrollbar-hide -mx-2 px-2 sm:mx-0 sm:px-0">
+            <div class="flex items-center gap-1.5 overflow-x-auto scrollbar-hide">
+              <button data-mob-day="all" class="shrink-0 px-3 py-1 text-xs font-semibold rounded-lg border transition ${state.mobileDayFilter === 'all' ? 'bg-accent text-accent-ink border-accent shadow-xs' : 'bg-panel border-line text-muted hover:text-ink'}">
+                All 7 Days
               </button>
-            `).join('')}
+              ${daysData.map((d) => `
+                <button data-mob-day="${d.date}" class="shrink-0 px-2.5 py-1 text-xs font-semibold rounded-lg border transition flex items-center gap-1.5 ${state.mobileDayFilter === d.date ? 'bg-accent text-accent-ink border-accent shadow-xs' : (d.isToday ? 'bg-accent/10 border-accent/40 text-accent font-bold' : 'bg-panel border-line text-muted hover:text-ink')}">
+                  <span>${d.dayName} ${d.dayNum}</span>
+                  <span class="px-1 py-0.2 rounded text-[10px] font-mono ${d.items.some(i => i.isUnfilled) ? 'bg-rose-500/20 text-rose-300 font-bold' : 'bg-panel2/80 text-muted'}">${d.items.length}</span>
+                </button>
+              `).join('')}
+            </div>
+
+            <!-- Scroll helper cue on medium/desktop viewports -->
+            <div class="hidden lg:flex items-center gap-1 text-[11px] text-muted shrink-0 pl-2">
+              <span>Scroll horizontally to view all days</span>
+              ${ui.icon('chevR', 'w-3.5 h-3.5 opacity-60')}
+            </div>
           </div>
         `;
 
         out += `
           <!-- 7-Day Matrix Columns with Desktop Horizontal Safety & Scroll Containment -->
-          <div class="overflow-x-auto scrollbar-hide pb-2">
-            <div class="grid grid-cols-1 md:grid-cols-7 gap-2.5 items-start min-w-full md:min-w-[1050px]">
+          <div class="w-full overflow-x-auto pb-6 scrollbar-thin rounded-xl">
+            <div class="grid grid-cols-1 md:grid-cols-7 gap-3.5 items-start min-w-full md:min-w-[1540px] 2xl:min-w-full">
         `;
 
         daysData.forEach((day) => {
@@ -1191,10 +1266,10 @@ RMTP.views.rota = (function () {
           const unfilledCount = day.items.filter((i) => i.isUnfilled).length;
 
           out += `
-            <div class="rounded-xl border ${day.isToday ? 'border-accent/60 bg-panel2/40 ring-1 ring-accent/30' : 'border-line bg-panel'} p-2.5 flex flex-col gap-2 min-h-[140px] md:min-h-[460px] ${isHiddenOnMobile ? 'hidden md:flex' : ''}">
+            <div id="day-col-${day.date}" class="rounded-xl border ${day.isToday ? 'border-accent/60 bg-panel2/40 ring-1 ring-accent/30' : 'border-line bg-panel'} p-3 flex flex-col gap-2.5 min-w-[215px] min-h-[140px] md:min-h-[480px] ${isHiddenOnMobile ? 'hidden md:flex' : ''} shadow-2xs">
               <!-- Day Column Header (Pinned for Glanceability) -->
-              <div class="sticky top-0 bg-panel z-10 flex items-center justify-between pb-2 border-b border-line/60">
-                <button data-jump-day="${day.date}" class="text-left group cursor-pointer" title="Zoom into Day Room Swimlanes">
+              <div class="sticky top-0 ${day.isToday ? 'bg-panel2/95' : 'bg-panel/95'} backdrop-blur-xs z-10 flex items-center justify-between pb-2 border-b border-line/60">
+                <button data-jump-day="${day.date}" class="text-left group cursor-pointer min-w-0" title="Zoom into Day Room Swimlanes">
                   <div class="flex items-center gap-1.5">
                     <span class="text-xs font-bold uppercase tracking-wider ${day.isToday ? 'text-accent' : 'text-ink group-hover:text-accent transition'}">${day.dayName}</span>
                     <span class="text-xs font-mono font-semibold ${day.isToday ? 'text-accent font-bold' : 'text-muted'}">${day.dayNum} ${day.monthName}</span>
@@ -1204,7 +1279,7 @@ RMTP.views.rota = (function () {
                     ${unfilledCount > 0 ? `<span class="text-rose-400 font-bold">· ${unfilledCount} unfilled</span>` : ''}
                   </div>
                 </button>
-                <div class="flex items-center gap-1">
+                <div class="flex items-center gap-1 shrink-0">
                   <button data-jump-day="${day.date}" class="p-1 rounded text-muted hover:text-accent hover:bg-panel2 transition" title="View Day Swimlanes">
                     ${ui.icon('grid', 'w-3 h-3')}
                   </button>
@@ -1215,12 +1290,12 @@ RMTP.views.rota = (function () {
               </div>
 
               <!-- Shifts List for Day (Glanceable and unclipped so all events render completely) -->
-              <div class="space-y-1.5 flex-1 min-h-[300px] pr-0.5">
+              <div class="space-y-2 flex-1 min-h-[300px]">
           `;
 
           if (day.items.length === 0) {
             out += `
-              <div class="py-10 px-2 text-center text-[11px] text-muted/60 italic rounded-lg border border-dashed border-line/40 flex flex-col items-center justify-center gap-1.5">
+              <div class="py-12 px-2 text-center text-[11px] text-muted/60 italic rounded-lg border border-dashed border-line/40 flex flex-col items-center justify-center gap-1.5">
                 <span>No shifts scheduled</span>
                 <button data-quick-add-date="${day.date}" class="text-[10px] font-semibold text-accent hover:underline">
                   + Add Shift
@@ -1300,8 +1375,8 @@ RMTP.views.rota = (function () {
           </div>
 
           <!-- Room-by-Room Swimlanes across All Spaces -->
-          <div class="overflow-x-auto scrollbar-hide pb-2">
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7 gap-3 items-start min-w-full md:min-w-[1100px]">
+          <div class="overflow-x-auto scrollbar-thin pb-4 rounded-xl">
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7 gap-3.5 items-start min-w-full md:min-w-[1400px]">
         `;
 
         activeSpaces.forEach((spaceName) => {
@@ -1309,7 +1384,7 @@ RMTP.views.rota = (function () {
           const spaceItems = daySchedule.filter((i) => i.space === spaceName || (i.spaces && i.spaces.includes(spaceName)));
 
           out += `
-            <div class="rounded-xl border border-line bg-panel p-3 flex flex-col gap-2.5 min-h-[320px]">
+            <div class="rounded-xl border border-line bg-panel p-3 flex flex-col gap-2.5 min-w-[230px] min-h-[320px] shadow-2xs">
               <!-- Room Header -->
               <div class="flex items-center justify-between pb-2 border-b border-line/60">
                 <div class="flex items-center gap-2 min-w-0">

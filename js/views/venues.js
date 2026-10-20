@@ -11,10 +11,34 @@
     return Array.from(new Set(baseCats.concat(usedCats))).sort((a, b) => a.localeCompare(b));
   }
 
+  const DISCIPLINES = RMTP.DISCIPLINES || ['Sound', 'Lighting', 'Cinema', 'AV', 'Stage', 'Support', 'Duty Manager'];
+
+  function getDisciplineTheme(role) {
+    const r = String(role || '').toLowerCase();
+    if (r.includes('sound') || r.includes('audio')) {
+      return { bg: 'bg-emerald-500/15', color: 'text-emerald-400', border: 'border-emerald-500/30', icon: 'volume' };
+    }
+    if (r.includes('light')) {
+      return { bg: 'bg-amber-500/15', color: 'text-amber-400', border: 'border-amber-500/30', icon: 'sun' };
+    }
+    if (r.includes('cinema') || r.includes('film') || r.includes('dcp')) {
+      return { bg: 'bg-indigo-500/15', color: 'text-indigo-400', border: 'border-indigo-500/30', icon: 'grid' };
+    }
+    if (r.includes('av') || r.includes('video') || r.includes('screen')) {
+      return { bg: 'bg-sky-500/15', color: 'text-sky-400', border: 'border-sky-500/30', icon: 'eye' };
+    }
+    if (r.includes('stage') || r.includes('floor') || r.includes('backline')) {
+      return { bg: 'bg-purple-500/15', color: 'text-purple-400', border: 'border-purple-500/30', icon: 'sliders' };
+    }
+    if (r.includes('manager') || r.includes('lead') || r.includes('duty')) {
+      return { bg: 'bg-rose-500/15', color: 'text-rose-400', border: 'border-rose-500/30', icon: 'user' };
+    }
+    return { bg: 'bg-panel2', color: 'text-ink', border: 'border-line', icon: 'wrench' };
+  }
+
   function loadVenueData() {
-    // If not found in store, create a default template for the space
     let v = store.find('venues', m.activeSpace);
-    const defaultBasicCrew = (m.activeSpace === 'The Stage' || m.activeSpace === 'The Studio') ? 2 : 1;
+    const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(m.activeSpace) : { total: 1, disciplines: [{ role: 'Sound', count: 1 }] };
     if (!v) {
       v = {
         id: m.activeSpace,
@@ -22,13 +46,16 @@
         capacity: '',
         stageDimensions: '',
         inventory: '',
-        basicCrew: defaultBasicCrew,
+        basicCrew: specs.total,
+        crewDisciplines: specs.disciplines.map(d => ({ ...d })),
         audio: {
           inputChannels: 48,
           localInputChannels: 8,
           outputChannels: 24,
           localOutputChannels: 8,
-          prefix: 'HR',
+          prefix: (m.activeSpace || 'RM').slice(0, 2).toUpperCase(),
+          mixingDeskProtocol: 'Dante',
+          mixingDeskInvId: '',
           stageboxes: [
             { letter: 'A', name: 'SL Rack', location: 'Stage Left', sockets: 16 }
           ]
@@ -36,9 +63,10 @@
         dmx: []
       };
     }
-    if (v.basicCrew === undefined || v.basicCrew === null) {
-      v.basicCrew = defaultBasicCrew;
+    if (!v.crewDisciplines || !Array.isArray(v.crewDisciplines) || v.crewDisciplines.length === 0) {
+      v.crewDisciplines = specs.disciplines.map(d => ({ ...d }));
     }
+    v.basicCrew = v.crewDisciplines.reduce((sum, d) => sum + (parseInt(d.count, 10) || 0), 0);
     m.venueData = JSON.parse(JSON.stringify(v));
   }
 
@@ -89,11 +117,16 @@
           '<div class="hidden md:block p-3 border-b border-line">' +
             '<h2 class="font-display font-semibold text-sm">Venues & Spaces</h2>' +
           '</div>' +
-          '<div class="flex flex-row md:flex-col overflow-x-auto md:overflow-y-auto p-2 gap-2 md:gap-0 md:space-y-1 scrollbar-hide">' +
+          '<div class="flex flex-row md:flex-col overflow-x-auto md:overflow-y-auto p-2 gap-2 md:gap-0 md:space-y-1.5 scrollbar-hide">' +
             spaces.map(sp => {
               const isActive = sp === m.activeSpace;
-              return '<button data-space="' + ui.esc(sp) + '" class="whitespace-nowrap md:w-full text-left px-3 py-1.5 md:py-2 text-xs md:text-sm font-medium rounded-lg shrink-0 ' + (isActive ? 'bg-panel border border-line shadow-xs text-ink' : 'text-muted hover:bg-panel/50 hover:text-ink transition-colors') + '">' +
-                ui.esc(sp) +
+              const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(sp) : { total: 1, disciplines: [] };
+              return '<button data-space="' + ui.esc(sp) + '" class="whitespace-nowrap md:w-full text-left px-3 py-2 text-xs md:text-sm font-medium rounded-lg shrink-0 flex flex-col gap-0.5 ' + (isActive ? 'bg-panel border border-line shadow-xs text-ink ring-1 ring-accent/30' : 'text-muted hover:bg-panel/50 hover:text-ink transition-colors') + '">' +
+                '<div class="flex items-center justify-between w-full gap-2">' +
+                  '<span class="font-semibold truncate">' + ui.esc(sp) + '</span>' +
+                  '<span class="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-panel2 border border-line text-accent shrink-0">' + specs.total + ' tech' + (specs.total === 1 ? '' : 's') + '</span>' +
+                '</div>' +
+                '<span class="text-[10.5px] text-muted truncate max-w-[210px]">' + ui.esc(specs.summary || 'No crew set') + '</span>' +
               '</button>';
             }).join('') +
             '<button id="btn-add-space-mobile" class="md:hidden whitespace-nowrap px-3 py-1.5 text-xs font-medium rounded-lg shrink-0 btn-ghost border border-dashed border-line flex items-center gap-1.5">' + ui.icon('plus', 'w-3 h-3') + ' Add Space</button>' +
@@ -121,11 +154,97 @@
             // Tab Overview Concept
             '<div class="grid gap-4">' +
               '<h3 class="text-xs font-bold uppercase tracking-wider text-muted border-b border-line pb-2">Overview & Specs</h3>' +
-              '<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">' +
+              '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
                 '<div><label class="text-[10px] font-bold text-muted uppercase">Capacity</label><input type="text" class="field" id="v-capacity" value="' + ui.esc(m.venueData.capacity) + '" placeholder="e.g. 500 Standing"></div>' +
                 '<div><label class="text-[10px] font-bold text-muted uppercase">Stage Dimensions</label><input type="text" class="field" id="v-dims" value="' + ui.esc(m.venueData.stageDimensions) + '" placeholder="e.g. 8m x 6m"></div>' +
-                '<div><label class="text-[10px] font-bold text-accent uppercase flex items-center gap-1" title="Minimum target technicians required per shift/event in this space"><span>Basic Crew</span><span class="text-[9px] text-muted normal-case font-normal">(Shift Staffing)</span></label><input type="number" min="0" max="20" class="field border-accent/40 bg-accent/5 font-mono font-bold text-accent" id="v-basic-crew" value="' + (m.venueData.basicCrew !== undefined ? m.venueData.basicCrew : (['The Stage', 'The Studio'].includes(m.activeSpace) ? 2 : 1)) + '" placeholder="1"></div>' +
               '</div>' +
+
+              // Minimum Crew & Disciplines Panel
+              '<div class="grid gap-3 p-4 rounded-xl border border-accent/30 bg-accent/5 shadow-2xs">' +
+                '<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-line pb-2.5">' +
+                  '<div>' +
+                    '<div class="flex items-center gap-2">' +
+                      '<h4 class="text-xs font-bold uppercase tracking-wider text-ink flex items-center gap-1.5">' +
+                        ui.icon('users', 'w-4 h-4 text-accent') +
+                        '<span>Minimum Crew & Disciplines</span>' +
+                      '</h4>' +
+                      '<span id="v-crew-total-badge" class="px-2 py-0.5 rounded-full text-[10px] font-bold font-mono bg-accent/20 text-accent border border-accent/40 shadow-2xs">' +
+                        m.venueData.basicCrew + ' Total Required' +
+                      '</span>' +
+                    '</div>' +
+                    '<p class="text-[11px] text-muted mt-0.5">' +
+                      'Specify the required technical headcount and specific disciplines (Sound, Lighting, Cinema, AV, etc.) for ' + ui.esc(m.activeSpace) + '. This synchronises directly with the Rota, Shift Bookings, Takeovers, and Event Advancing.' +
+                    '</p>' +
+                  '</div>' +
+                  '<button type="button" id="btn-add-crew-discipline" class="btn btn-ghost text-xs border border-line flex items-center gap-1.5 self-start sm:self-auto shrink-0 shadow-2xs hover:border-accent hover:bg-panel2 transition">' +
+                    ui.icon('plus', 'w-3.5 h-3.5 text-accent') +
+                    '<span>Add Discipline</span>' +
+                  '</button>' +
+                '</div>' +
+
+                // Quick Add Discipline Chips
+                '<div class="flex items-center gap-1.5 flex-wrap pt-0.5">' +
+                  '<span class="text-[10px] text-muted font-bold uppercase tracking-wider mr-0.5">Quick Add:</span>' +
+                  DISCIPLINES.map(d => {
+                    const theme = getDisciplineTheme(d);
+                    return '<button type="button" data-quick-add-disc="' + d + '" class="px-2 py-0.5 rounded-md text-[10.5px] font-semibold border transition shadow-2xs flex items-center gap-1 hover:opacity-85 ' + theme.bg + ' ' + theme.color + ' ' + theme.border + '">' +
+                      ui.icon('plus', 'w-2.5 h-2.5') +
+                      '<span>' + d + '</span>' +
+                    '</button>';
+                  }).join('') +
+                '</div>' +
+
+                '<div class="space-y-2" id="v-disciplines-container">' +
+                  (m.venueData.crewDisciplines.length === 0 ? 
+                    '<div class="p-4 text-center text-xs text-muted italic border border-dashed border-line/60 rounded-lg">No crew disciplines configured yet. Use "Quick Add" above or click "Add Discipline".</div>' : 
+                    m.venueData.crewDisciplines.map((cd, idx) => {
+                      const theme = getDisciplineTheme(cd.role);
+                      return '<div class="flex items-center gap-2.5 p-2 rounded-lg bg-panel border border-line shadow-2xs">' +
+                        '<div class="w-8 h-8 rounded-lg ' + theme.bg + ' flex items-center justify-center shrink-0 border ' + theme.border + '">' +
+                          ui.icon(theme.icon, 'w-4 h-4 ' + theme.color) +
+                        '</div>' +
+                        '<div class="flex-1 min-w-0 grid grid-cols-1 sm:grid-cols-2 gap-2">' +
+                          '<div>' +
+                            '<label class="text-[9px] font-bold uppercase text-muted block mb-0.5">Discipline / Technical Role</label>' +
+                            '<select class="field !py-1 text-xs font-semibold" data-cd-role="' + idx + '">' +
+                              DISCIPLINES.map(d => '<option value="' + d + '" ' + (d === cd.role ? 'selected' : '') + '>' + d + '</option>').join('') +
+                              '<option value="__custom__" ' + (!DISCIPLINES.includes(cd.role) ? 'selected' : '') + '>Custom Role…</option>' +
+                            '</select>' +
+                            (!DISCIPLINES.includes(cd.role) ? 
+                              '<input type="text" class="field !py-1 text-xs mt-1" data-cd-custom="' + idx + '" value="' + ui.esc(cd.role) + '" placeholder="Role name">' : '') +
+                          '</div>' +
+                          '<div>' +
+                            '<label class="text-[9px] font-bold uppercase text-muted block mb-0.5">Required Headcount</label>' +
+                            '<div class="flex items-center gap-1">' +
+                              '<button type="button" data-cd-step="-1" data-cd-step-idx="' + idx + '" class="w-7 h-7 rounded bg-panel2 border border-line flex items-center justify-center font-bold text-xs hover:bg-panel hover:text-accent select-none transition shadow-2xs" title="Decrease headcount">-</button>' +
+                              '<input type="number" min="1" max="15" class="field !py-1 text-xs font-mono font-bold w-14 text-center" data-cd-count="' + idx + '" value="' + (cd.count || 1) + '">' +
+                              '<button type="button" data-cd-step="1" data-cd-step-idx="' + idx + '" class="w-7 h-7 rounded bg-panel2 border border-line flex items-center justify-center font-bold text-xs hover:bg-panel hover:text-accent select-none transition shadow-2xs" title="Increase headcount">+</button>' +
+                              '<span class="text-xs text-muted ml-1">technician' + ((cd.count || 1) > 1 ? 's' : '') + '</span>' +
+                            '</div>' +
+                          '</div>' +
+                        '</div>' +
+                        '<button type="button" class="btn btn-ghost text-danger !p-1.5 hover:bg-danger/10 rounded-lg shrink-0" data-cd-del="' + idx + '" title="Remove discipline">' +
+                          ui.icon('trash', 'w-4 h-4') +
+                        '</button>' +
+                      '</div>';
+                    }).join('')
+                  ) +
+                '</div>' +
+
+                '<div class="pt-2 border-t border-line/60 flex flex-wrap items-center gap-1.5 text-xs">' +
+                  '<span class="text-[10px] font-bold uppercase text-muted tracking-wider mr-1">Active Staffing Spec:</span>' +
+                  m.venueData.crewDisciplines.map(cd => {
+                    const theme = getDisciplineTheme(cd.role);
+                    return '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-semibold text-[11px] border ' + theme.bg + ' ' + theme.color + ' ' + theme.border + '">' +
+                      '<span>' + (cd.count || 1) + 'x ' + ui.esc(cd.role) + '</span>' +
+                    '</span>';
+                  }).join('') +
+                  '<span id="v-crew-total-text" class="ml-auto font-mono text-[11px] font-bold text-ink">' +
+                    '= ' + m.venueData.basicCrew + ' Technicians Minimum' +
+                  '</span>' +
+                '</div>' +
+              '</div>' +
+
               '<div><label class="text-[10px] font-bold text-muted uppercase">Standard Inventory / Backline</label><textarea class="field min-h-[80px]" id="v-inv" placeholder="Drum kit, DJ setup, default wedges...">' + ui.esc(m.venueData.inventory) + '</textarea></div>' +
             '</div>' +
 
@@ -254,8 +373,106 @@
     if (m.venueData) {
       bindInput('#v-capacity', m.venueData, 'capacity');
       bindInput('#v-dims', m.venueData, 'stageDimensions');
-      bindInput('#v-basic-crew', m.venueData, 'basicCrew', true);
       bindInput('#v-inv', m.venueData, 'inventory');
+
+      // Minimum Crew & Disciplines Handlers with Instant Auto-Persistence
+      function syncDisciplines(reRender) {
+        m.venueData.basicCrew = (m.venueData.crewDisciplines || []).reduce((sum, d) => sum + (parseInt(d.count, 10) || 0), 0);
+        store.upsert('venues', m.venueData);
+        window.dispatchEvent(new CustomEvent('rmtp:venues-updated', { detail: { space: m.venueData.name, specs: m.venueData } }));
+        if (reRender) {
+          render();
+        } else {
+          const totalBadge = m.root.querySelector('#v-crew-total-badge');
+          if (totalBadge) totalBadge.textContent = m.venueData.basicCrew + ' Total Required';
+          const totalText = m.root.querySelector('#v-crew-total-text');
+          if (totalText) totalText.textContent = '= ' + m.venueData.basicCrew + ' Technicians Minimum';
+        }
+      }
+
+      // Quick Add Discipline Chips
+      m.root.querySelectorAll('[data-quick-add-disc]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const role = btn.getAttribute('data-quick-add-disc');
+          if (!m.venueData.crewDisciplines) m.venueData.crewDisciplines = [];
+          const existing = m.venueData.crewDisciplines.find(d => d.role.toLowerCase() === role.toLowerCase());
+          if (existing) {
+            existing.count = (parseInt(existing.count, 10) || 1) + 1;
+            ui.toast(`Increased ${role} requirement to ${existing.count}`, 'ok');
+          } else {
+            m.venueData.crewDisciplines.push({ role: role, count: 1 });
+            ui.toast(`Added ${role} discipline to ${m.venueData.name}`, 'ok');
+          }
+          syncDisciplines(true);
+        });
+      });
+
+      // Role Select
+      m.root.querySelectorAll('[data-cd-role]').forEach(sel => {
+        sel.addEventListener('change', () => {
+          const idx = parseInt(sel.getAttribute('data-cd-role'), 10);
+          const val = sel.value;
+          if (val === '__custom__') {
+            m.venueData.crewDisciplines[idx].role = 'Custom';
+          } else {
+            m.venueData.crewDisciplines[idx].role = val;
+          }
+          syncDisciplines(true);
+        });
+      });
+
+      // Custom Role Input
+      m.root.querySelectorAll('[data-cd-custom]').forEach(inp => {
+        inp.addEventListener('input', () => {
+          const idx = parseInt(inp.getAttribute('data-cd-custom'), 10);
+          m.venueData.crewDisciplines[idx].role = inp.value.trim() || 'Custom';
+          syncDisciplines(false);
+        });
+      });
+
+      // Headcount Input
+      m.root.querySelectorAll('[data-cd-count]').forEach(inp => {
+        inp.addEventListener('input', () => {
+          const idx = parseInt(inp.getAttribute('data-cd-count'), 10);
+          const val = Math.max(1, parseInt(inp.value, 10) || 1);
+          m.venueData.crewDisciplines[idx].count = val;
+          syncDisciplines(false);
+        });
+      });
+
+      // Headcount Stepper Buttons (+ / -)
+      m.root.querySelectorAll('[data-cd-step]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const delta = parseInt(btn.getAttribute('data-cd-step'), 10);
+          const idx = parseInt(btn.getAttribute('data-cd-step-idx'), 10);
+          const cur = parseInt(m.venueData.crewDisciplines[idx].count, 10) || 1;
+          const nextVal = Math.max(1, cur + delta);
+          m.venueData.crewDisciplines[idx].count = nextVal;
+          syncDisciplines(true);
+        });
+      });
+
+      // Delete Discipline Row
+      m.root.querySelectorAll('[data-cd-del]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt(btn.getAttribute('data-cd-del'), 10);
+          const removed = m.venueData.crewDisciplines.splice(idx, 1);
+          if (removed && removed[0]) ui.toast(`Removed ${removed[0].role} discipline`, 'info');
+          syncDisciplines(true);
+        });
+      });
+
+      // Add Discipline Button
+      const btnAddDiscipline = m.root.querySelector('#btn-add-crew-discipline');
+      if (btnAddDiscipline) {
+        btnAddDiscipline.addEventListener('click', () => {
+          const existingRoles = (m.venueData.crewDisciplines || []).map(d => d.role);
+          const nextRole = DISCIPLINES.find(d => !existingRoles.includes(d)) || 'Sound';
+          if (!m.venueData.crewDisciplines) m.venueData.crewDisciplines = [];
+          m.venueData.crewDisciplines.push({ role: nextRole, count: 1 });
+          syncDisciplines(true);
+        });
+      }
     bindInput('#v-audio-in', m.venueData.audio, 'inputChannels', true);
     bindInput('#v-audio-local-in', m.venueData.audio, 'localInputChannels', true);
     bindInput('#v-audio-out', m.venueData.audio, 'outputChannels', true);

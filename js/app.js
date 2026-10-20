@@ -79,7 +79,7 @@
           '</div>' +
         '</header>' +
 
-        '<main id="content" class="flex-1 w-full max-w-[1720px] mx-auto px-3 sm:px-4 md:px-6 lg:px-8 py-4 md:py-6 pb-12"></main>' +
+        '<main id="content" class="flex-1 w-full max-w-[1840px] mx-auto px-3 sm:px-4 md:px-6 lg:px-8 py-4 md:py-6 pb-12"></main>' +
       '</div>' +
     '</div>';
 
@@ -232,6 +232,14 @@
 
     // Re-read venues after seeding
     const allVenues = RMTP.store.all('venues') || [];
+    allVenues.forEach(v => {
+      if (!v.crewDisciplines || !Array.isArray(v.crewDisciplines) || v.crewDisciplines.length === 0) {
+        const specs = RMTP.getSpaceCrewSpecs(v.name || v.id);
+        v.crewDisciplines = specs.disciplines.map(d => ({ ...d }));
+        v.basicCrew = specs.total;
+        RMTP.store.upsert('venues', v);
+      }
+    });
     const spaceNamesSet = new Set();
     
     // Always include non-deleted default spaces

@@ -6648,8 +6648,40 @@ RMTP.views.advancing = function (el, params, query) {
     // Tech crew builder
     function techAreaHtml() {
       const eventDate = (m.root.querySelector('#e-date') ? m.root.querySelector('#e-date').value : ev.date) || '';
+      const currentSpace = (m.root.querySelector('#e-space') ? m.root.querySelector('#e-space').value : (spaceDrafts[activeSpaceIndex]?.space || ev.space)) || 'The Stage';
+      const crewSpecs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(currentSpace) : { total: 1, disciplines: [{ role: 'Sound', count: 1 }], rolesList: ['Sound'], summary: '1x Sound' };
       const allAvails = store.all('availability') || [];
       const allBookings = store.all('bookings') || [];
+
+      const isNoTechActive = !!ev.noTechNeeded;
+
+      // Space Crew Baseline Guidance Banner & Workflow Automation Strip
+      const specsBanner = '<div class="p-2.5 rounded-lg bg-panel2/60 border border-line flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs mb-3 shadow-2xs">' +
+        '<div class="flex items-center gap-2 flex-wrap">' +
+          '<span class="font-bold text-ink flex items-center gap-1.5">' +
+            ui.icon('users', 'w-3.5 h-3.5 ' + (isNoTechActive ? 'text-muted' : 'text-accent')) +
+            '<span>' + ui.esc(currentSpace) + (isNoTechActive ? ' (Self-Service):' : ' Staffing Baseline:') + '</span>' +
+          '</span>' +
+          (isNoTechActive 
+            ? '<span class="text-emerald-400 font-medium">✓ No Tech Needed active · Crew shortfall alerts suppressed</span>'
+            : '<span class="text-muted font-medium">' + crewSpecs.total + ' tech' + (crewSpecs.total === 1 ? '' : 's') + ' required (' + ui.esc(crewSpecs.summary) + ')</span>') +
+        '</div>' +
+        '<div class="flex items-center gap-1.5 flex-wrap shrink-0">' +
+          '<button type="button" id="btn-toggle-no-tech" class="btn btn-ghost text-xs !py-1 !px-2.5 border ' + (isNoTechActive ? 'border-line bg-panel2 text-ink font-bold' : 'border-line text-muted hover:text-ink') + ' flex items-center gap-1.5 shadow-2xs" title="Toggle No Tech Needed for this event">' +
+            ui.icon(isNoTechActive ? 'check' : 'slash', 'w-3.5 h-3.5') +
+            '<span>' + (isNoTechActive ? 'Self-Service Active' : 'No Tech Needed') + '</span>' +
+          '</button>' +
+          (!isNoTechActive ? 
+            '<button type="button" id="btn-autofill-roles" class="btn btn-ghost text-xs !py-1 !px-2.5 border border-accent/40 bg-accent/10 text-accent font-semibold flex items-center gap-1.5 hover:bg-accent/20 shadow-2xs">' +
+              ui.icon('zap', 'w-3.5 h-3.5 text-accent') +
+              '<span>Auto-Fill Roles</span>' +
+            '</button>' : '') +
+          '<button type="button" id="btn-push-to-rota" class="btn btn-ghost text-xs !py-1 !px-2.5 border border-line hover:border-accent text-accent font-semibold flex items-center gap-1.5 hover:bg-panel2 shadow-2xs" title="Auto-generate draft shifts on live Rota from these tech specs">' +
+            ui.icon('calendar', 'w-3.5 h-3.5 text-accent') +
+            '<span>Push to Rota</span>' +
+          '</button>' +
+        '</div>' +
+      '</div>';
 
       const rows = techs.map((t, i) => {
         const usedElsewhere = techs.filter((x, j) => j !== i).map((x) => x.userId);
@@ -6728,7 +6760,7 @@ RMTP.views.advancing = function (el, params, query) {
         rowHtml += '</div>';
         return rowHtml;
       }).join('');
-      return (rows ? '<div class="grid gap-2.5 mb-2">' + rows + '</div>' : '<p class="text-xs text-muted mb-2">No technicians tagged yet.</p>') +
+      return specsBanner + (rows ? '<div class="grid gap-2.5 mb-2">' + rows + '</div>' : '<p class="text-xs text-muted mb-2">No technicians tagged yet.</p>') +
         '<button type="button" data-t-add class="btn btn-ghost">' + ui.icon('plus', 'w-4 h-4') + 'Add technician / freelancer</button>';
     }
 
@@ -6737,6 +6769,61 @@ RMTP.views.advancing = function (el, params, query) {
         const area = m.root.querySelector(sel);
         if (!area) return;
         area.innerHTML = techAreaHtml();
+
+        const autofillBtn = area.querySelector('#btn-autofill-roles');
+        if (autofillBtn) {
+          autofillBtn.addEventListener('click', () => {
+            const currentSpace = (m.root.querySelector('#e-space') ? m.root.querySelector('#e-space').value : (spaceDrafts[activeSpaceIndex]?.space || ev.space)) || 'The Stage';
+            const crewSpecs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(currentSpace) : { rolesList: ['Sound'] };
+            const currentRoles = techs.map((t) => t.role);
+            crewSpecs.rolesList.forEach((reqRole) => {
+              const matchIdx = currentRoles.indexOf(reqRole);
+              if (matchIdx > -1) {
+                currentRoles.splice(matchIdx, 1);
+              } else {
+                techs.push({ userId: '', role: reqRole, isFreelancer: false, freelancerName: '', startTime: '', finishTime: '', bookingStatus: 'confirmed' });
+              }
+            });
+            wireTechs();
+          });
+        }
+
+        const toggleNoTechBtn = area.querySelector('#btn-toggle-no-tech');
+        if (toggleNoTechBtn) {
+          toggleNoTechBtn.addEventListener('click', () => {
+            ev.noTechNeeded = !ev.noTechNeeded;
+            if (ev.noTechNeeded) {
+              techs.length = 0;
+              techs.push({ userId: '', role: 'None', isNoTech: true, isFreelancer: false, freelancerName: '', startTime: '', finishTime: '', bookingStatus: 'confirmed' });
+              ui.toast('Marked event as Self-Service (No Tech Needed)', 'info');
+            } else {
+              techs.length = 0;
+              ui.toast('Re-enabled technician staffing requirements', 'ok');
+            }
+            wireTechs();
+          });
+        }
+
+        const pushToRotaBtn = area.querySelector('#btn-push-to-rota');
+        if (pushToRotaBtn) {
+          pushToRotaBtn.addEventListener('click', () => {
+            const currentSpace = (m.root.querySelector('#e-space') ? m.root.querySelector('#e-space').value : (spaceDrafts[activeSpaceIndex]?.space || ev.space)) || 'The Stage';
+            const draftEvent = {
+              id: ev.id,
+              name: (m.root.querySelector('#e-name') ? m.root.querySelector('#e-name').value : ev.name) || 'Event',
+              space: currentSpace,
+              date: (m.root.querySelector('#e-date') ? m.root.querySelector('#e-date').value : ev.date) || '',
+              startTime: (m.root.querySelector('#e-start') ? m.root.querySelector('#e-start').value : ev.startTime) || '18:00',
+              finishTime: (m.root.querySelector('#e-finish') ? m.root.querySelector('#e-finish').value : ev.finishTime) || '23:00',
+              technicians: techs,
+              noTechNeeded: !!ev.noTechNeeded,
+              notes: ev.notes || ev.techInfo || '',
+            };
+            const generated = RMTP.syncAdvancingToRota ? RMTP.syncAdvancingToRota(draftEvent) : [];
+            ui.toast(`Pushed ${generated.length} shift slot(s) directly to Rota!`, 'ok');
+          });
+        }
+
         area.querySelectorAll('[data-t-user]').forEach((s) => s.addEventListener('change', () => {
           const val = s.value;
           const idx = +s.getAttribute('data-t-user');
@@ -6777,7 +6864,14 @@ RMTP.views.advancing = function (el, params, query) {
           techs.splice(+btn.getAttribute('data-t-remove'), 1); wireTechs();
         }));
         const addBtn = area.querySelector('[data-t-add]');
-        if (addBtn) addBtn.addEventListener('click', () => { techs.push({ userId: '', role: '', isFreelancer: false, freelancerName: '', startTime: '', finishTime: '', bookingStatus: 'confirmed' }); wireTechs(); });
+        if (addBtn) addBtn.addEventListener('click', () => {
+          const currentSpace = (m.root.querySelector('#e-space') ? m.root.querySelector('#e-space').value : (spaceDrafts[activeSpaceIndex]?.space || ev.space)) || 'The Stage';
+          const crewSpecs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(currentSpace) : { rolesList: ['Sound'] };
+          const assignedRoles = techs.map((t) => t.role);
+          const nextRole = crewSpecs.rolesList.find((r) => !assignedRoles.includes(r)) || crewSpecs.rolesList[0] || 'Sound';
+          techs.push({ userId: '', role: nextRole, isFreelancer: false, freelancerName: '', startTime: '', finishTime: '', bookingStatus: 'confirmed' });
+          wireTechs();
+        });
       });
       updateSectionBannerPills();
     }
@@ -7144,6 +7238,7 @@ RMTP.views.advancing = function (el, params, query) {
         equipmentBookings: draft.equipmentBookings || [],
 
         technicians: finalTechs,
+        noTechNeeded: !!ev.noTechNeeded || finalTechs.some((t) => t.isNoTech),
         clientContact: (draft.clientContact || '').trim(),
         guestEngineer: !!draft.guestEngineer,
         techInfo: (draft.techInfo || '').trim(),
@@ -7231,41 +7326,9 @@ RMTP.views.advancing = function (el, params, query) {
     function syncShiftBookingsForEvent(record) {
       if (!record || !record.id) return;
       try {
-        const allB = store.all('bookings') || [];
-        const evTechs = record.technicians || [];
-        const assignedUserIds = new Set();
-
-        evTechs.forEach((t) => {
-          if (!t.userId) return;
-          assignedUserIds.add(t.userId);
-          const techUser = store.find('users', t.userId);
-          const techName = techUser ? auth.displayName(techUser) : (t.freelancerName || 'Technician');
-          const existingB = allB.find((b) => b.eventId === record.id && b.userId === t.userId);
-          const bRecord = {
-            id: existingB ? existingB.id : store.uid('book'),
-            eventId: record.id,
-            eventName: record.name,
-            space: Array.isArray(record.space) ? record.space[0] : (record.space || 'Venue'),
-            date: record.date,
-            startTime: t.startTime || record.startTime || '17:00',
-            finishTime: t.finishTime || record.finishTime || '23:30',
-            userId: t.userId,
-            userName: techName,
-            role: t.role || 'Sound',
-            status: t.bookingStatus || (existingB ? existingB.status : 'confirmed'),
-            rate: t.rate || (existingB ? existingB.rate : ''),
-            notes: existingB ? existingB.notes : '',
-            updatedAt: new Date().toISOString()
-          };
-          if (bRecord.status === 'confirmed' && !bRecord.confirmedAt) bRecord.confirmedAt = new Date().toISOString();
-          if (bRecord.status === 'pencil' && !bRecord.penciledAt) bRecord.penciledAt = new Date().toISOString();
-          store.upsert('bookings', bRecord);
-        });
-
-        // Clean up bookings for users removed from this event
-        allB.filter((b) => b.eventId === record.id && !assignedUserIds.has(b.userId)).forEach((b) => {
-          store.remove('bookings', b.id);
-        });
+        if (RMTP.syncAdvancingToRota) {
+          RMTP.syncAdvancingToRota(record);
+        }
       } catch (e) {
         console.warn('Error syncing shift bookings:', e);
       }

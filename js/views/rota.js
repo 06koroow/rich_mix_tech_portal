@@ -27,7 +27,8 @@ RMTP.views.rota = (function () {
     RMTP._rotaState = RMTP._rotaState || {
       tab: 'board', // 'board' | 'my_avail' | 'team_matrix' | 'list'
       weekOffset: 0, // 0 = current week, +1 next week, etc.
-      boardView: 'week', // 'week' | 'day' | 'agenda'
+      boardView: 'timeline', // 'timeline' | 'week' | 'day' | 'agenda'
+      collapsedSpaces: new Set(),
       density: 'compact', // 'compact' | 'detailed'
       selectedDay: '',
       mobileDayFilter: 'all',
@@ -41,7 +42,8 @@ RMTP.views.rota = (function () {
     };
     const state = RMTP._rotaState;
     if (state.density === undefined) state.density = 'compact';
-    if (state.boardView === undefined) state.boardView = 'week';
+    if (state.boardView === undefined) state.boardView = 'timeline';
+    if (!state.collapsedSpaces) state.collapsedSpaces = new Set();
     if (!state.selectedDay) state.selectedDay = formatDate(new Date());
     if (state.mobileDayFilter === undefined) state.mobileDayFilter = 'all';
     if (me && !state.selectedUserForAvail) state.selectedUserForAvail = me.id;
@@ -351,6 +353,9 @@ RMTP.views.rota = (function () {
     // Helper: reads Basic Crew requirement for a space (from venue specs or Rich Mix defaults)
     function getSpaceBasicCrew(spaceName) {
       if (!spaceName) return 1;
+      if (RMTP.getSpaceCrewSpecs) {
+        return RMTP.getSpaceCrewSpecs(spaceName).total;
+      }
       const v = store.find('venues', spaceName);
       if (v && v.basicCrew !== undefined && v.basicCrew !== null && !isNaN(Number(v.basicCrew))) {
         return Math.max(0, parseInt(v.basicCrew, 10));
@@ -445,9 +450,10 @@ RMTP.views.rota = (function () {
           techs.forEach((t) => allEvTechs.push({ ...t, eventSpace: Array.isArray(e.space) ? e.space[0] : e.space }));
         });
 
-        // Compute space breakdown
+        // Compute space breakdown with discipline fulfillment
         const spaceBreakdown = spaces.map((sp) => {
-          const basic = getSpaceBasicCrew(sp);
+          const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(sp) : { total: getSpaceBasicCrew(sp), disciplines: [{ role: 'Sound', count: 1 }], summary: '1x Sound' };
+          const basic = specs.total;
           const spBookings = takeoverBookings.filter((b) => b.space === sp && b.status !== 'cancelled');
           const spTechs = allEvTechs.filter((t) => (t.space === sp || t.eventSpace === sp) && (t.bookingStatus || 'confirmed') !== 'cancelled');
 
@@ -474,11 +480,37 @@ RMTP.views.rota = (function () {
             }
           });
 
+          // Discipline fulfillment status for this space
+          const disciplineStatus = (specs.disciplines || []).map((cd) => {
+            const reqCount = cd.count || 1;
+            const assignedCount = assignedTechs.filter((t) => {
+              const tr = (t.role || '').toLowerCase();
+              const cr = (cd.role || '').toLowerCase();
+              return tr === cr || (cr.includes('sound') && tr.includes('sound')) || (cr.includes('light') && tr.includes('light')) || (cr.includes('cinema') && tr.includes('cinema'));
+            }).length;
+            return {
+              role: cd.role,
+              required: reqCount,
+              assigned: assignedCount,
+              isFilled: assignedCount >= reqCount,
+              gap: Math.max(0, reqCount - assignedCount),
+            };
+          });
+
+          const missingDisciplines = [];
+          disciplineStatus.forEach((ds) => {
+            for (let i = 0; i < ds.gap; i++) missingDisciplines.push(ds.role);
+          });
+
           const assignedCount = assignedTechs.length;
           const gap = Math.max(0, basic - assignedCount);
           return {
             space: sp,
             basicCrew: basic,
+            specsSummary: specs.summary,
+            specsDisciplines: specs.disciplines,
+            disciplineStatus: disciplineStatus,
+            missingDisciplines: missingDisciplines,
             assignedCount: assignedCount,
             assignedTechs: assignedTechs,
             gap: gap,
@@ -541,6 +573,7 @@ RMTP.views.rota = (function () {
 
         if (b.eventId) handledEventIds.add(b.eventId);
         const techObj = allUsers.find((u) => u.id === b.userId);
+        const isBookingNoTech = !!b.isNoTech || b.role === 'None';
         const item = {
           key: 'b_' + b.id,
           type: 'booking',
@@ -552,13 +585,14 @@ RMTP.views.rota = (function () {
           date: b.date,
           startTime: b.startTime || '17:00',
           finishTime: b.finishTime || '23:30',
-          userId: b.userId,
-          userName: b.userName || (techObj ? auth.displayName(techObj) : 'Unassigned Tech'),
-          role: b.role || 'Tech',
-          status: b.status || 'pencil',
+          userId: isBookingNoTech ? '' : b.userId,
+          userName: isBookingNoTech ? 'No Tech Required' : (b.userName || (techObj ? auth.displayName(techObj) : 'Unassigned Tech')),
+          role: isBookingNoTech ? 'None' : (b.role || 'Tech'),
+          status: isBookingNoTech ? 'confirmed' : (b.status || 'pencil'),
           rate: b.rate,
           notes: b.notes,
           isUnfilled: false,
+          isNoTech: isBookingNoTech,
         };
         items.push(item);
         allScheduleItemsMap.set(item.key, item);
@@ -570,6 +604,8 @@ RMTP.views.rota = (function () {
         const spaceVal = Array.isArray(ev.space) ? ev.space[0] : (ev.space || 'Venue');
         if (state.spaceFilter && spaceVal !== state.spaceFilter) return;
 
+        const isEventNoTech = !!ev.noTechNeeded;
+
         const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(ev) : [];
         if (evTechs && evTechs.length > 0) {
           if (state.unfilledOnly) return;
@@ -579,7 +615,7 @@ RMTP.views.rota = (function () {
             if (state.statusFilter && (t.bookingStatus || 'confirmed') !== state.statusFilter) return;
 
             const techObj = allUsers.find((u) => u.id === t.userId);
-            const isNoTech = t.isNoTech || t.role === 'None';
+            const isNoTech = isEventNoTech || !!t.isNoTech || t.role === 'None';
             const hasAssigned = !!(t.userId || (t.freelancerName && t.freelancerName.trim()));
             const isSlotUnfilled = !isNoTech && !hasAssigned;
             const tName = isNoTech ? 'No Tech Required' : (t.freelancerName || (techObj ? auth.displayName(techObj) : (t.userId ? 'Tech' : 'Unassigned')));
@@ -594,9 +630,9 @@ RMTP.views.rota = (function () {
               date: ev.date,
               startTime: t.startTime || ev.startTime || '18:00',
               finishTime: t.finishTime || ev.finishTime || '23:00',
-              userId: t.userId,
+              userId: isNoTech ? '' : t.userId,
               userName: tName,
-              role: isNoTech ? '' : (t.role || 'Tech'),
+              role: isNoTech ? 'None' : (t.role || 'Tech'),
               status: isSlotUnfilled ? 'unfilled' : (t.bookingStatus || 'confirmed'),
               notes: ev.notes || ev.techInfo || (ev.artifaxHistory && ev.artifaxHistory.length ? ev.artifaxHistory[ev.artifaxHistory.length - 1].notes : '') || ev.artifaxNotes || '',
               isUnfilled: isSlotUnfilled,
@@ -605,6 +641,28 @@ RMTP.views.rota = (function () {
             items.push(item);
             allScheduleItemsMap.set(item.key, item);
           });
+        } else if (isEventNoTech) {
+          // Self-Service advancing event with zero crew needed
+          const item = {
+            key: 'notech_' + ev.id,
+            type: 'notech',
+            eventId: ev.id,
+            advEvent: ev,
+            eventName: ev.name,
+            space: spaceVal,
+            date: ev.date,
+            startTime: ev.startTime || '18:00',
+            finishTime: ev.finishTime || '23:00',
+            userId: '',
+            userName: 'No Tech Required',
+            role: 'None',
+            status: 'confirmed',
+            notes: ev.notes || ev.techInfo || (ev.artifaxHistory && ev.artifaxHistory.length ? ev.artifaxHistory[ev.artifaxHistory.length - 1].notes : '') || ev.artifaxNotes || '',
+            isUnfilled: false,
+            isNoTech: true,
+          };
+          items.push(item);
+          allScheduleItemsMap.set(item.key, item);
         } else {
           // Unfilled advancing event
           if (state.roleFilter) return;
@@ -627,6 +685,7 @@ RMTP.views.rota = (function () {
             status: 'unfilled',
             notes: ev.notes || ev.techInfo || (ev.artifaxHistory && ev.artifaxHistory.length ? ev.artifaxHistory[ev.artifaxHistory.length - 1].notes : '') || ev.artifaxNotes || '',
             isUnfilled: true,
+            isNoTech: false,
           };
           items.push(item);
           allScheduleItemsMap.set(item.key, item);
@@ -643,6 +702,7 @@ RMTP.views.rota = (function () {
       const spaceCls = getSpaceColor(item.space);
       const statusMeta = getStatusMeta(item.status, item.isUnfilled);
       const isCompact = state.density === 'compact';
+      const timeStr = `${item.startTime || '17:00'} – ${item.finishTime || '23:30'}`;
 
       // ----------------------------------------------------------------------
       // MULTI-ROOM TAKEOVER CONSOLIDATED CARD
@@ -662,16 +722,17 @@ RMTP.views.rota = (function () {
             gap: getSpaceBasicCrew(contextSpace),
             isFilled: false,
           };
-          const rColor = getSpaceColor(contextSpace);
 
           return `
-            <div data-schedule-item="${item.key}" class="p-3 rounded-xl border border-l-[4px] border-l-amber-500 ${roomBreakdown.isFilled ? 'border-line bg-panel2/80' : 'border-amber-500/40 bg-amber-500/5'} transition shadow-2xs hover:border-accent cursor-pointer group select-none flex flex-col gap-2.5 text-left relative">
+            <div data-schedule-item="${item.key}" class="p-3 rounded-xl border border-l-[4px] border-l-amber-500 ${roomBreakdown.isFilled ? 'border-line bg-panel2/80' : 'border-amber-500/40 bg-amber-500/5'} transition shadow-2xs hover:border-accent cursor-pointer group select-none flex flex-col gap-2 text-left relative">
               <div class="flex items-center justify-between gap-1 text-[10px]">
                 <span class="font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider text-[9px] bg-amber-500/15 text-amber-300 border-amber-500/30 flex items-center gap-1 shrink-0">
                   ${ui.icon('grid', 'w-2.5 h-2.5 text-amber-300')}
                   <span>Takeover Room</span>
                 </span>
-                <span class="font-mono tabular-nums text-muted font-semibold text-[10px] shrink-0">${item.startTime}–${item.finishTime}</span>
+                <span class="px-1.5 py-0.2 rounded text-[9.5px] font-bold border ${roomBreakdown.isFilled ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border-amber-500/30'} shrink-0">
+                  ${roomBreakdown.isFilled ? 'Staffed' : 'Unfilled'}
+                </span>
               </div>
 
               <div>
@@ -683,14 +744,34 @@ RMTP.views.rota = (function () {
                 </div>
               </div>
 
+              <!-- Dedicated Non-Clipping Time Badge -->
+              <div class="flex items-center">
+                <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-panel border border-line/80 font-mono text-[10.5px] font-semibold text-ink tabular-nums shadow-2xs">
+                  ${ui.icon('clock', 'w-3 h-3 text-amber-400 shrink-0')}
+                  <span class="whitespace-nowrap">${timeStr}</span>
+                </div>
+              </div>
+
               <!-- Room Crew Requirement & Assigned Techs -->
-              <div class="p-2 rounded-lg bg-panel/85 border border-line/60 space-y-1.5">
+              <div class="p-2 rounded-lg bg-panel/85 border border-line/60 space-y-1.5 mt-0.5">
                 <div class="flex items-center justify-between text-[11px]">
                   <span class="text-muted text-[10px] font-semibold uppercase">Room Staffing</span>
                   <span class="font-mono font-bold text-[11px] ${roomBreakdown.isFilled ? 'text-emerald-400' : 'text-amber-400'}">
                     ${roomBreakdown.assignedCount}/${roomBreakdown.basicCrew} Assigned
                   </span>
                 </div>
+
+                <!-- Disciplines fulfillment pills -->
+                ${roomBreakdown.disciplineStatus && roomBreakdown.disciplineStatus.length > 0 ? `
+                  <div class="flex flex-wrap gap-1 pt-1 border-t border-line/40">
+                    ${roomBreakdown.disciplineStatus.map((ds) => `
+                      <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] font-semibold border ${ds.isFilled ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border-amber-500/30'}">
+                        <span>${ui.esc(ds.role)}: ${ds.assigned}/${ds.required}</span>
+                        ${ds.isFilled ? '✓' : ''}
+                      </span>
+                    `).join('')}
+                  </div>
+                ` : ''}
 
                 ${roomBreakdown.assignedTechs.length > 0 ? `
                   <div class="space-y-1 pt-1 border-t border-line/40">
@@ -704,9 +785,9 @@ RMTP.views.rota = (function () {
                 ` : ''}
 
                 ${!roomBreakdown.isFilled ? `
-                  <button type="button" data-assign-space-crew="${item.key}|${ui.esc(contextSpace)}" class="w-full mt-1 py-1.5 px-2 rounded text-[10px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center justify-center gap-1 transition shadow-2xs" title="Assign crew to ${ui.esc(contextSpace)}">
+                  <button type="button" data-assign-space-crew="${item.key}|${ui.esc(contextSpace)}|${ui.esc(roomBreakdown.missingDisciplines ? roomBreakdown.missingDisciplines[0] || '' : '')}" class="w-full mt-1 py-1.5 px-2 rounded text-[10px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center justify-center gap-1 transition shadow-2xs" title="Assign crew to ${ui.esc(contextSpace)}">
                     ${ui.icon('plus', 'w-3 h-3 text-amber-300')}
-                    <span>+ Assign Crew (${roomBreakdown.gap} needed)</span>
+                    <span>+ Assign ${roomBreakdown.missingDisciplines && roomBreakdown.missingDisciplines[0] ? roomBreakdown.missingDisciplines[0] : 'Crew'} (${roomBreakdown.gap} needed)</span>
                   </button>
                 ` : ''}
               </div>
@@ -718,14 +799,16 @@ RMTP.views.rota = (function () {
         if (isCompact) {
           // GLANCEABLE COMPACT TAKEOVER CARD
           return `
-            <div data-schedule-item="${item.key}" class="p-2.5 rounded-xl border border-l-[4px] border-l-amber-500 ${isFull ? 'border-line bg-panel2/80 hover:border-line/90' : 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400'} transition shadow-2xs hover:shadow-md cursor-pointer group select-none flex flex-col gap-2 text-left relative">
-              <!-- Tier 1: Takeover Header & Time -->
+            <div data-schedule-item="${item.key}" class="p-3 rounded-xl border border-l-[4px] border-l-amber-500 ${isFull ? 'border-line bg-panel2/80 hover:border-line/90' : 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400'} transition shadow-2xs hover:shadow-md cursor-pointer group select-none flex flex-col gap-2 text-left relative">
+              <!-- Tier 1: Takeover Header & Staffing badge -->
               <div class="flex items-center justify-between gap-1 text-[10px]">
                 <span class="px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1 shrink-0">
                   ${ui.icon('grid', 'w-2.5 h-2.5 text-amber-300')}
                   <span>Takeover · ${item.spaces.length} Rooms</span>
                 </span>
-                <span class="font-mono tabular-nums text-muted font-semibold text-[10px] shrink-0">${item.startTime}–${item.finishTime}</span>
+                <span class="text-[10px] font-bold ${isFull ? 'text-emerald-400' : 'text-amber-400'} shrink-0">
+                  ${isFull ? '✓ Staffed' : `${gapsCount} gap${gapsCount > 1 ? 's' : ''}`}
+                </span>
               </div>
 
               <!-- Tier 2: Event Name -->
@@ -735,32 +818,37 @@ RMTP.views.rota = (function () {
                 </div>
               </div>
 
-              <!-- Tier 3: Compact Space Badges & Quick Action -->
+              <!-- Tier 3: Dedicated Time Badge (Zero Clipping) -->
+              <div class="flex items-center">
+                <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-panel border border-amber-500/30 font-mono text-[10.5px] font-semibold text-amber-300 tabular-nums shadow-2xs">
+                  ${ui.icon('clock', 'w-3 h-3 text-amber-400 shrink-0')}
+                  <span class="whitespace-nowrap">${timeStr}</span>
+                </div>
+              </div>
+
+              <!-- Tier 4: Compact Space Badges & Quick Action -->
               <div class="pt-1.5 border-t border-line/50 space-y-1.5">
                 <div class="flex items-center justify-between text-[10px]">
                   <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-semibold border ${isFull ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border-amber-500/30'}">
                     <span class="w-1.5 h-1.5 rounded-full ${isFull ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}"></span>
                     <span>${totalAssigned}/${totalNeeded} Crew</span>
                   </span>
-                  <span class="text-[10px] font-bold ${isFull ? 'text-emerald-400' : 'text-amber-400'}">
-                    ${isFull ? '✓ Staffed' : `${gapsCount} gap${gapsCount > 1 ? 's' : ''}`}
-                  </span>
                 </div>
 
                 <!-- Clean Room Pills (Click any room to assign) -->
                 <div class="flex flex-wrap gap-1">
                   ${item.spaceBreakdown.map((sb) => `
-                    <button type="button" data-assign-space-crew="${item.key}|${ui.esc(sb.space)}" class="px-1.5 py-0.5 rounded text-[9.5px] font-semibold border transition flex items-center gap-1 ${sb.isFilled ? 'bg-panel border-line text-ink' : 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'}" title="${ui.esc(sb.space)}: ${sb.assignedCount}/${sb.basicCrew} crew (click to assign)">
+                    <button type="button" data-assign-space-crew="${item.key}|${ui.esc(sb.space)}|${ui.esc(sb.missingDisciplines ? sb.missingDisciplines[0] || '' : '')}" class="px-2 py-0.5 rounded text-[9.5px] font-semibold border transition flex items-center gap-1 ${sb.isFilled ? 'bg-panel border-line text-ink' : 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'}" title="${ui.esc(sb.space)}: ${sb.assignedCount}/${sb.basicCrew} crew (${ui.esc(sb.specsSummary || '')}) - click to assign">
                       <span class="w-1.5 h-1.5 rounded-full ${sb.isFilled ? 'bg-emerald-400' : 'bg-amber-400'} shrink-0"></span>
-                      <span class="truncate max-w-[95px]">${ui.esc(sb.space)}</span>
-                      <span class="font-mono text-[9px] opacity-80">${sb.assignedCount}/${sb.basicCrew}</span>
+                      <span class="truncate max-w-[120px]">${ui.esc(sb.space)}</span>
+                      <span class="font-mono text-[9px] opacity-80">(${sb.assignedCount}/${sb.basicCrew})</span>
                     </button>
                   `).join('')}
                 </div>
 
                 <!-- 1-Click Action Button -->
                 ${!isFull ? `
-                  <button type="button" data-assign-space-crew="${item.key}|${ui.esc(item.unfilledSpaces[0] || item.spaces[0])}" class="w-full py-1 px-2 rounded text-[10px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center justify-center gap-1 transition shadow-2xs">
+                  <button type="button" data-assign-space-crew="${item.key}|${ui.esc(item.unfilledSpaces[0] || item.spaces[0])}" class="w-full mt-1 py-1.5 px-2 rounded text-[10px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center justify-center gap-1 transition shadow-2xs">
                     ${ui.icon('plus', 'w-3 h-3 text-amber-300')}
                     <span>+ Assign Crew (${totalNeeded - totalAssigned} needed)</span>
                   </button>
@@ -773,13 +861,15 @@ RMTP.views.rota = (function () {
         // DETAILED MODE (Fully Stacked Space Breakdown)
         return `
           <div data-schedule-item="${item.key}" class="p-3 rounded-xl border border-l-[4px] border-l-amber-500 ${isFull ? 'border-line bg-panel2/80 hover:border-line/90' : 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400'} transition shadow-2xs hover:shadow-md cursor-pointer group select-none flex flex-col gap-2.5 text-left relative">
-            <!-- Tier 1: Takeover Header & Time -->
+            <!-- Tier 1: Takeover Header & Status -->
             <div class="flex items-center justify-between gap-1 text-[10px]">
               <span class="px-2 py-0.5 rounded text-[9px] font-extrabold uppercase tracking-wider bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1 shrink-0">
                 ${ui.icon('grid', 'w-2.5 h-2.5 text-amber-300')}
                 <span>Takeover · ${item.spaces.length} Rooms</span>
               </span>
-              <span class="font-mono tabular-nums text-muted font-semibold text-[10px] shrink-0">${item.startTime}–${item.finishTime}</span>
+              <span class="text-[9.5px] font-bold ${isFull ? 'text-emerald-400' : 'text-amber-400'} shrink-0">
+                ${isFull ? '✓ Complete' : `(${gapsCount} room gap${gapsCount > 1 ? 's' : ''})`}
+              </span>
             </div>
 
             <!-- Tier 2: Event Name -->
@@ -789,23 +879,26 @@ RMTP.views.rota = (function () {
               </div>
             </div>
 
-            <!-- Tier 3: Crew Overview Strip -->
-            <div class="px-2 py-1.5 rounded-lg bg-panel/90 border border-line/70 flex items-center justify-between text-[10px]">
+            <!-- Tier 3: Dedicated Time Badge (Zero Clipping) -->
+            <div class="flex items-center">
+              <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-panel border border-amber-500/30 font-mono text-[11px] font-bold text-amber-300 tabular-nums shadow-2xs">
+                ${ui.icon('clock', 'w-3.5 h-3.5 text-amber-400 shrink-0')}
+                <span class="whitespace-nowrap">${timeStr}</span>
+              </div>
+            </div>
+
+            <!-- Tier 4: Crew Overview Strip -->
+            <div class="px-2.5 py-1.5 rounded-lg bg-panel/90 border border-line/70 flex items-center justify-between text-[10px]">
               <div class="flex items-center gap-1.5">
                 <span class="w-1.5 h-1.5 rounded-full ${isFull ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'} shrink-0"></span>
                 <span class="text-muted font-semibold uppercase tracking-wider text-[9px]">Crewing</span>
               </div>
-              <div class="flex items-center gap-2">
-                <span class="font-mono font-bold text-[10px] tabular-nums ${isFull ? 'text-emerald-400' : 'text-amber-400'}">
-                  ${totalAssigned}/${totalNeeded} Assigned
-                </span>
-                <span class="text-[9.5px] font-bold ${isFull ? 'text-emerald-400' : 'text-rose-400'}">
-                  ${isFull ? '✓ Complete' : `(${gapsCount} room gap${gapsCount > 1 ? 's' : ''})`}
-                </span>
-              </div>
+              <span class="font-mono font-bold text-[10px] tabular-nums ${isFull ? 'text-emerald-400' : 'text-amber-400'}">
+                ${totalAssigned}/${totalNeeded} Assigned
+              </span>
             </div>
 
-            <!-- Space-by-Space detailed row breakdown (Clean table-like rows without overflow) -->
+            <!-- Space-by-Space detailed row breakdown -->
             <div class="space-y-1.5 pt-1 border-t border-line/40 text-[10px]">
               ${item.spaceBreakdown.map((sb) => `
                 <div class="p-2 rounded-lg bg-panel border border-line/70 flex items-center justify-between gap-1.5">
@@ -823,6 +916,16 @@ RMTP.views.rota = (function () {
                         ${sb.assignedCount}/${sb.basicCrew} crew (${sb.gap} gap)
                       </div>
                     `}
+                    ${sb.disciplineStatus && sb.disciplineStatus.length > 0 ? `
+                      <div class="flex flex-wrap gap-1 mt-1 pl-3">
+                        ${sb.disciplineStatus.map((ds) => `
+                          <span class="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[9px] font-semibold border ${ds.isFilled ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25' : 'bg-amber-500/10 text-amber-400 border-amber-500/25'}">
+                            <span>${ui.esc(ds.role)}: ${ds.assigned}/${ds.required}</span>
+                            ${ds.isFilled ? '✓' : ''}
+                          </span>
+                        `).join('')}
+                      </div>
+                    ` : ''}
                   </div>
                   <div class="shrink-0">
                     ${sb.isFilled ? `
@@ -830,9 +933,9 @@ RMTP.views.rota = (function () {
                         ✓ Filled
                       </span>
                     ` : `
-                      <button type="button" data-assign-space-crew="${item.key}|${ui.esc(sb.space)}" class="py-1 px-2 rounded text-[10px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center gap-1 transition shadow-2xs whitespace-nowrap" title="Assign crew to ${ui.esc(sb.space)}">
+                      <button type="button" data-assign-space-crew="${item.key}|${ui.esc(sb.space)}|${ui.esc(sb.missingDisciplines ? sb.missingDisciplines[0] || '' : '')}" class="py-1 px-2 rounded text-[10px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center gap-1 transition shadow-2xs whitespace-nowrap" title="Assign crew to ${ui.esc(sb.space)}">
                         ${ui.icon('plus', 'w-2.5 h-2.5 text-amber-300')}
-                        <span>Assign</span>
+                        <span>Assign ${sb.missingDisciplines && sb.missingDisciplines[0] ? sb.missingDisciplines[0] : ''}</span>
                       </button>
                     `}
                   </div>
@@ -848,16 +951,16 @@ RMTP.views.rota = (function () {
       // ----------------------------------------------------------------------
       if (isCompact) {
         return `
-          <div data-schedule-item="${item.key}" class="p-2.5 rounded-xl border border-l-[3.5px] ${spaceCls.bar} ${item.isUnfilled ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400' : 'border-line bg-panel2/80 hover:bg-panel2 hover:border-line/90'} transition shadow-2xs cursor-pointer group select-none flex flex-col justify-between gap-1.5 text-left relative">
-            <!-- Line 1: Space short tag, Time & Status -->
-            <div class="flex items-center justify-between gap-1 text-[10px]">
-              <span class="font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider text-[9px] ${spaceCls.tag} shrink-0" title="${ui.esc(item.space)}">
+          <div data-schedule-item="${item.key}" class="p-3 rounded-xl border border-l-[3.5px] ${spaceCls.bar} ${item.isUnfilled ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400' : 'border-line bg-panel2/80 hover:bg-panel2 hover:border-line/90'} transition shadow-2xs cursor-pointer group select-none flex flex-col gap-2 text-left relative">
+            <!-- Line 1: Space short tag & Status Indicator -->
+            <div class="flex items-center justify-between gap-1.5 text-[10px]">
+              <span class="font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider text-[9px] ${spaceCls.tag} truncate max-w-[120px]" title="${ui.esc(item.space)}">
                 ${ui.esc(spaceCls.short || item.space)}
               </span>
-              <div class="flex items-center gap-1.5 shrink-0 ml-auto">
-                <span class="font-mono tabular-nums text-muted font-semibold text-[10px]">${item.startTime}–${item.finishTime}</span>
-                <span class="w-1.5 h-1.5 rounded-full ${statusMeta.dot} shrink-0" title="${statusMeta.label}"></span>
-              </div>
+              <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] font-semibold border ${item.isUnfilled ? 'border-amber-500/30 bg-amber-500/10 text-amber-400' : 'border-line bg-panel text-muted'} shrink-0">
+                <span class="w-1.5 h-1.5 rounded-full ${statusMeta.dot}"></span>
+                <span>${statusMeta.label}</span>
+              </span>
             </div>
 
             <!-- Line 2: Event Name -->
@@ -865,27 +968,36 @@ RMTP.views.rota = (function () {
               ${ui.esc(item.eventName)}
             </div>
 
-            <!-- Line 3: Tech & Role or Unfilled Call to Action -->
+            <!-- Line 3: Dedicated Time Badge (Zero Clipping Guarantee) -->
+            <div class="flex items-center">
+              <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-panel border border-line/75 font-mono text-[10.5px] font-semibold text-ink/90 tabular-nums shadow-2xs">
+                ${ui.icon('clock', 'w-3 h-3 text-muted shrink-0')}
+                <span class="whitespace-nowrap">${timeStr}</span>
+              </div>
+            </div>
+
+            <!-- Line 4: Tech & Role or Unfilled Call to Action -->
             ${item.isNoTech ? `
-              <div class="flex items-center justify-between text-[10px] pt-1 border-t border-line/40 text-muted">
+              <div class="flex items-center justify-between text-[10px] pt-1.5 border-t border-line/40 text-muted">
                 <span class="italic text-muted/80">No Tech Required</span>
-                <span class="text-[9px] px-1 py-0.2 rounded bg-panel border border-line text-muted">Self-Managed</span>
+                <span class="text-[9px] px-1.5 py-0.2 rounded bg-panel border border-line text-muted font-medium">Self-Managed</span>
               </div>
             ` : (item.isUnfilled ? `
               <div class="pt-1 border-t border-line/40">
-                <button type="button" data-assign-shift="${item.key}" class="w-full px-2 py-1 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 border border-amber-500/30 flex items-center justify-center gap-1 transition">
-                  ${ui.icon('plus', 'w-3 h-3 text-amber-400')}
+                <button type="button" data-assign-shift="${item.key}" class="w-full px-2.5 py-1.5 rounded-lg text-[10.5px] font-bold bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 border border-amber-500/30 flex items-center justify-center gap-1.5 transition shadow-2xs">
+                  ${ui.icon('plus', 'w-3 h-3 text-amber-300')}
                   <span>+ Assign Freelancer</span>
                 </button>
               </div>
             ` : `
-              <div class="flex items-center justify-between text-[11px] pt-1 border-t border-line/40 gap-1">
-                <span class="truncate font-medium text-ink/90 flex items-center gap-1" title="${ui.esc(item.userName)}">
+              <div class="flex items-center justify-between text-[11px] pt-1.5 border-t border-line/40 gap-1.5">
+                <span class="truncate font-medium text-ink flex items-center gap-1.5 min-w-0" title="${ui.esc(item.userName)}">
+                  <span class="w-4 h-4 rounded-full bg-accent/20 text-accent text-[9px] font-bold flex items-center justify-center shrink-0">
+                    ${((item.userName || 'T')[0] || 'T').toUpperCase()}
+                  </span>
                   <span class="truncate">${ui.esc(item.userName)}</span>
                 </span>
-                <div class="flex items-center gap-1 shrink-0">
-                  ${item.role ? `<span class="text-[9px] font-mono font-semibold px-1 py-0.2 rounded bg-panel border border-line text-muted">${ui.esc(item.role)}</span>` : ''}
-                </div>
+                ${item.role ? `<span class="text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded bg-panel border border-line text-muted shrink-0">${ui.esc(item.role)}</span>` : ''}
               </div>
             `)}
           </div>
@@ -895,34 +1007,54 @@ RMTP.views.rota = (function () {
       // Detailed Mode
       const initialLetter = ((item.userName || 'Tech')[0] || 'T').toUpperCase();
       return `
-        <div data-schedule-item="${item.key}" class="p-3 rounded-xl border border-l-[4px] ${spaceCls.bar} ${item.isUnfilled ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400' : 'border-line bg-panel2/80 hover:bg-panel2 hover:border-line/90'} transition shadow-2xs cursor-pointer group select-none space-y-2 text-left relative">
-          <div class="flex items-start justify-between gap-1.5">
-            <div class="min-w-0">
-              <span class="font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider text-[9px] ${spaceCls.tag} inline-block mb-1">${ui.esc(item.space)}</span>
-              <div class="text-xs font-bold text-ink leading-snug break-words group-hover:text-accent transition-colors" title="${ui.esc(item.eventName)}">${ui.esc(item.eventName)}</div>
-            </div>
-            <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${item.isUnfilled ? 'border-amber-500/30 bg-amber-500/10 text-amber-400' : 'border-line bg-panel text-ink'} shrink-0">
+        <div data-schedule-item="${item.key}" class="p-3 rounded-xl border border-l-[4px] ${spaceCls.bar} ${item.isUnfilled ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400' : 'border-line bg-panel2/80 hover:bg-panel2 hover:border-line/90'} transition shadow-2xs cursor-pointer group select-none flex flex-col gap-2 text-left relative">
+          <!-- Line 1: Space & Status -->
+          <div class="flex items-center justify-between gap-1.5">
+            <span class="font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider text-[9px] ${spaceCls.tag} truncate max-w-[120px]">${ui.esc(item.space)}</span>
+            <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] font-semibold border ${item.isUnfilled ? 'border-amber-500/30 bg-amber-500/10 text-amber-400' : 'border-line bg-panel text-ink'} shrink-0">
               <span class="w-1.5 h-1.5 rounded-full ${statusMeta.dot}"></span>
               <span>${statusMeta.label}</span>
             </span>
           </div>
 
-          <div class="flex items-center justify-between text-[11px] text-muted pt-1 border-t border-line/40">
-            <span class="font-mono tabular-nums text-ink font-semibold">${item.startTime} – ${item.finishTime}</span>
-            ${item.role ? `<span class="px-1.5 py-0.2 rounded bg-panel text-[10px] font-semibold border border-line text-ink">${ui.esc(item.role)}</span>` : ''}
+          <!-- Line 2: Event Name -->
+          <div class="text-xs font-bold text-ink leading-snug break-words group-hover:text-accent transition-colors" title="${ui.esc(item.eventName)}">
+            ${ui.esc(item.eventName)}
           </div>
 
-          <div class="flex items-center justify-between gap-2 text-xs pt-1">
+          <!-- Line 3: Dedicated Time Badge (Zero Clipping Guarantee) -->
+          <div class="flex items-center">
+            <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-panel border border-line/80 font-mono text-xs font-bold text-ink tabular-nums shadow-2xs">
+              ${ui.icon('clock', 'w-3.5 h-3.5 text-accent shrink-0')}
+              <span class="whitespace-nowrap">${timeStr}</span>
+            </div>
+          </div>
+
+          <!-- Line 4: Technician Profile & Assignment or Self-Service -->
+          ${item.isNoTech ? `
+            <div class="flex items-center justify-between gap-2 pt-1.5 border-t border-line/40 text-xs text-muted">
+              <span class="italic text-muted/90 flex items-center gap-1.5">
+                ${ui.icon('slash', 'w-3.5 h-3.5 text-muted')}
+                <span>No Tech Required (Self-Service)</span>
+              </span>
+              <span class="text-[9.5px] px-2 py-0.5 rounded bg-panel border border-line text-muted font-medium">Dark / Automated</span>
+            </div>
+          ` : `
+          <div class="flex items-center justify-between gap-2 pt-1.5 border-t border-line/40 text-xs">
             <div class="flex items-center gap-1.5 min-w-0">
               <span class="w-5 h-5 rounded-full bg-accent/20 text-accent text-[10px] font-bold flex items-center justify-center shrink-0">
                 ${initialLetter}
               </span>
-              <span class="text-xs font-medium text-ink truncate ${item.isUnfilled ? 'text-amber-400 font-semibold' : ''}">
-                ${item.isUnfilled ? 'Unassigned' : ui.esc(item.userName)}
-              </span>
+              <div class="min-w-0">
+                <span class="text-xs font-semibold text-ink truncate block ${item.isUnfilled ? 'text-amber-400' : ''}">
+                  ${item.isUnfilled ? 'Unassigned' : ui.esc(item.userName)}
+                </span>
+                ${item.role ? `<span class="text-[10px] text-muted block truncate font-mono">${ui.esc(item.role)}</span>` : ''}
+              </div>
             </div>
-            ${item.rate ? `<span class="text-[10px] font-mono text-muted tabular-nums">${ui.esc(item.rate)}</span>` : ''}
+            ${item.rate ? `<span class="text-[10px] font-mono text-muted tabular-nums shrink-0 px-1.5 py-0.5 rounded bg-panel border border-line">${ui.esc(item.rate)}</span>` : ''}
           </div>
+          `}
 
           ${item.notes ? `
             <div class="text-[10px] text-muted italic bg-panel px-2 py-1 rounded border border-line/60 break-words">
@@ -930,10 +1062,10 @@ RMTP.views.rota = (function () {
             </div>
           ` : ''}
 
-          ${item.isUnfilled ? `
-            <div class="pt-1">
-              <button type="button" data-assign-shift="${item.key}" class="w-full py-1.5 px-2 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 border border-amber-500/30 flex items-center justify-center gap-1 transition">
-                ${ui.icon('plus', 'w-3.5 h-3.5')}
+          ${(item.isUnfilled && !item.isNoTech) ? `
+            <div class="pt-0.5">
+              <button type="button" data-assign-shift="${item.key}" class="w-full py-1.5 px-2.5 rounded-lg text-xs font-bold bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 border border-amber-500/30 flex items-center justify-center gap-1 transition shadow-2xs">
+                ${ui.icon('plus', 'w-3.5 h-3.5 text-amber-300')}
                 <span>+ Assign Freelancer</span>
               </button>
             </div>
@@ -1152,8 +1284,11 @@ RMTP.views.rota = (function () {
                 </span>
               </div>
 
-              <!-- Middle: Board View Switcher (Week 7D vs Day Swimlanes vs Agenda) -->
-              <div class="flex items-center gap-1 p-1 bg-panel2/80 rounded-lg border border-line self-start md:self-auto">
+              <!-- Middle: Board View Switcher (Unified Timeline vs Week 7D vs Day Swimlanes vs Agenda) -->
+              <div class="flex items-center gap-1 p-1 bg-panel2/80 rounded-lg border border-line self-start md:self-auto flex-wrap sm:flex-nowrap">
+                <button id="view-mode-timeline" class="px-2.5 py-1 text-xs font-semibold rounded-md transition ${state.boardView === 'timeline' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}" title="Unified multi-room timeline grid with collapsible space rows on one screen">
+                  Unified Multi-Room Grid
+                </button>
                 <button id="view-mode-week" class="px-2.5 py-1 text-xs font-semibold rounded-md transition ${state.boardView === 'week' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}">
                   Week Grid (7D)
                 </button>
@@ -1228,9 +1363,264 @@ RMTP.views.rota = (function () {
       `;
 
       // ----------------------------------------------------------------------
+      // SUB-VIEW 0: UNIFIED MULTI-ROOM TIMELINE GRID WITH COLLAPSIBLE SPACES
+      // ----------------------------------------------------------------------
+      if (state.boardView === 'timeline') {
+        const selDayStr = state.selectedDay || weekDays[0].date;
+        const selDayObj = parseDate(selDayStr);
+        const selDayFormatted = selDayObj.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+        const daySchedule = getDaySchedule(selDayStr);
+
+        // Previous and Next day calculations
+        const prevDayObj = new Date(selDayObj);
+        prevDayObj.setDate(prevDayObj.getDate() - 1);
+        const prevDayStr = formatDate(prevDayObj);
+        const nextDayObj = new Date(selDayObj);
+        nextDayObj.setDate(nextDayObj.getDate() + 1);
+        const nextDayStr = formatDate(nextDayObj);
+
+        // Spaces list
+        const activeSpaces = Array.from(new Set([...RMTP.SPACES, ...daySchedule.map((i) => i.space)])).filter(Boolean);
+        state.collapsedSpaces = state.collapsedSpaces || new Set();
+
+        // Calculate Venue-wide Metrics for today
+        const totalShiftsToday = daySchedule.length;
+        const noTechCount = daySchedule.filter((i) => i.isNoTech).length;
+        const unfilledCount = daySchedule.filter((i) => i.isUnfilled && !i.isNoTech).length;
+        const filledTechCount = daySchedule.filter((i) => !i.isUnfilled && !i.isNoTech).length;
+
+        out += `
+          <!-- Unified Master Date & Actions Strip -->
+          <div class="p-3 rounded-xl bg-panel border border-line flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 shadow-2xs">
+            <!-- Day Jumpers & Quick Title -->
+            <div class="flex items-center gap-2 flex-wrap">
+              <div class="flex items-center gap-1">
+                <button data-set-day="${prevDayStr}" class="btn btn-ghost !p-2" title="Previous Day">
+                  ${ui.icon('chevL', 'w-4 h-4')}
+                </button>
+                <button data-set-day="${formatDate(new Date())}" class="btn btn-ghost text-xs ${selDayStr === formatDate(new Date()) ? 'bg-panel2 border border-line font-bold text-accent' : ''}">
+                  Today
+                </button>
+                <button data-set-day="${nextDayStr}" class="btn btn-ghost !p-2" title="Next Day">
+                  ${ui.icon('chevR', 'w-4 h-4')}
+                </button>
+              </div>
+              <span class="text-sm font-bold text-ink px-1 whitespace-nowrap">
+                ${selDayFormatted}
+              </span>
+              <!-- Metric summary badges -->
+              <div class="flex items-center gap-2 text-xs font-mono flex-wrap">
+                <span class="px-2 py-0.5 rounded bg-panel2 border border-line text-ink">${totalShiftsToday} Shifts Scheduled</span>
+                ${filledTechCount > 0 ? `<span class="px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-semibold">${filledTechCount} Staffed</span>` : ''}
+                ${noTechCount > 0 ? `<span class="px-2 py-0.5 rounded bg-panel2 border border-line text-muted">${noTechCount} Self-Service</span>` : ''}
+                ${unfilledCount > 0 ? `<span class="px-2 py-0.5 rounded bg-rose-500/15 border border-rose-500/30 text-rose-300 font-bold">⚠️ ${unfilledCount} Unfilled</span>` : ''}
+              </div>
+            </div>
+
+            <!-- Workflow Tools: Sync from Advancing & Expand/Collapse All -->
+            <div class="flex items-center gap-2 flex-wrap justify-end">
+              <!-- Week Days Quick Jump Strip -->
+              <div class="flex items-center gap-1 overflow-x-auto scrollbar-hide">
+                ${weekDays.map((d) => {
+                  const dayCount = getDaySchedule(d.date).length;
+                  return `
+                    <button data-set-day="${d.date}" class="px-2 py-1 text-[11px] font-semibold rounded-lg border transition flex items-center gap-1 shrink-0 ${d.date === selDayStr ? 'bg-accent text-accent-ink border-accent font-bold' : (d.isToday ? 'bg-panel2 text-accent border-accent/40' : 'bg-panel border-line text-muted hover:text-ink')}">
+                      <span>${d.dayName} ${d.dayNum}</span>
+                      ${dayCount > 0 ? `<span class="px-1 py-0.2 rounded text-[9px] font-mono bg-panel2/80">${dayCount}</span>` : ''}
+                    </button>
+                  `;
+                }).join('')}
+              </div>
+
+              <!-- Streamline Action: Auto-Sync Advancing Shifts -->
+              <button id="btn-sync-advancing-rota" class="btn btn-ghost text-xs !py-1.5 !px-2.5 border border-line hover:border-accent text-accent font-semibold flex items-center gap-1.5 shadow-2xs" title="Auto-populate draft shifts for all events advanced on ${selDayFormatted}">
+                ${ui.icon('refresh', 'w-3.5 h-3.5 text-accent')}
+                <span>Sync Advancing Shifts</span>
+              </button>
+
+              <!-- Expand/Collapse Controls -->
+              <div class="flex items-center gap-1 p-0.5 rounded-lg border border-line bg-panel2/60">
+                <button id="btn-expand-all-spaces" class="px-2 py-1 text-[11px] font-semibold rounded hover:bg-panel text-muted hover:text-ink transition" title="Expand all venue space rows">
+                  Expand All
+                </button>
+                <button id="btn-collapse-all-spaces" class="px-2 py-1 text-[11px] font-semibold rounded hover:bg-panel text-muted hover:text-ink transition" title="Collapse all venue space rows">
+                  Collapse All
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Pinned Timeline Hours Header Bar -->
+          <div class="rounded-xl border border-line bg-panel p-2 hidden sm:flex items-center text-[11px] font-mono text-muted select-none">
+            <div class="w-72 shrink-0 font-bold uppercase tracking-wider text-ink/80 pl-2">
+              Venue Space &amp; Staffing Requirements
+            </div>
+            <div class="flex-1 grid grid-cols-8 text-center border-l border-line/60">
+              <span>08:00</span>
+              <span>10:00</span>
+              <span>12:00</span>
+              <span>14:00</span>
+              <span>16:00</span>
+              <span>18:00</span>
+              <span>20:00</span>
+              <span>22:00</span>
+            </div>
+          </div>
+
+          <!-- Space-by-Space Collapsible Rows -->
+          <div class="space-y-3">
+        `;
+
+        activeSpaces.forEach((spaceName) => {
+          const spaceColor = getSpaceColor(spaceName);
+          const spaceItems = daySchedule.filter((i) => i.space === spaceName || (i.spaces && i.spaces.includes(spaceName)));
+          const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(spaceName) : { total: 1, disciplines: [{ role: 'Sound', count: 1 }], summary: '1x Sound' };
+          const isCollapsed = state.collapsedSpaces.has(spaceName);
+
+          const hasNoTechOnly = spaceItems.length > 0 && spaceItems.every((i) => i.isNoTech);
+          const unfilledItems = spaceItems.filter((i) => i.isUnfilled && !i.isNoTech);
+          const isRoomUnfilled = unfilledItems.length > 0;
+          const isRoomFilled = spaceItems.length > 0 && unfilledItems.length === 0;
+
+          // Determine missing disciplines for this space
+          const missingDiscs = [];
+          if (specs.disciplines && specs.disciplines.length) {
+            specs.disciplines.forEach((cd) => {
+              const req = cd.count || 1;
+              const assigned = spaceItems.filter((it) => {
+                const r = (it.role || '').toLowerCase();
+                return r === cd.role.toLowerCase() || (cd.role.toLowerCase().includes('sound') && r.includes('sound'));
+              }).length;
+              if (assigned < req) {
+                missingDiscs.push(cd.role);
+              }
+            });
+          }
+
+          out += `
+            <div class="rounded-xl border ${isRoomUnfilled ? 'border-amber-500/40 bg-panel shadow-2xs' : 'border-line bg-panel shadow-2xs'} overflow-hidden transition">
+              <!-- Space Header Bar (Accordion Trigger) -->
+              <div class="p-3 bg-panel2/60 hover:bg-panel2/90 border-b border-line/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition">
+                <button type="button" data-toggle-space="${ui.esc(spaceName)}" class="flex items-center gap-2.5 min-w-0 text-left group cursor-pointer flex-1">
+                  <span class="p-1 rounded text-muted group-hover:text-ink transition shrink-0">
+                    ${ui.icon(isCollapsed ? 'chevR' : 'chevDown', 'w-4 h-4')}
+                  </span>
+                  <span class="w-3 h-3 rounded-full ${spaceColor.dot} shrink-0"></span>
+                  <span class="font-bold text-sm text-ink group-hover:text-accent transition truncate" title="${ui.esc(spaceName)}">
+                    ${ui.esc(spaceName)}
+                  </span>
+                  <!-- Baseline Crew Specification tag -->
+                  <span class="text-xs font-mono font-semibold px-2 py-0.5 rounded bg-panel border border-line text-muted shrink-0" title="Baseline Minimum Staffing Spec for ${ui.esc(spaceName)}">
+                    Min: ${specs.total} (${specs.summary})
+                  </span>
+                </button>
+
+                <!-- Status Indicators & Actions on Space Row -->
+                <div class="flex items-center gap-2 flex-wrap shrink-0 justify-end">
+                  ${hasNoTechOnly ? `
+                    <span class="text-[11px] font-medium text-muted bg-panel px-2.5 py-0.5 rounded border border-line flex items-center gap-1.5">
+                      ${ui.icon('slash', 'w-3 h-3 text-muted')}
+                      <span>Self-Service (No Tech Needed)</span>
+                    </span>
+                  ` : (isRoomUnfilled ? `
+                    <span class="text-[11px] font-bold text-rose-300 bg-rose-500/15 border border-rose-500/30 px-2.5 py-0.5 rounded flex items-center gap-1">
+                      <span>⚠️ ${unfilledItems.length} Unfilled</span>
+                    </span>
+                    ${missingDiscs.length > 0 ? `
+                      <button type="button" data-add-space-shift-role="${ui.esc(spaceName)}|${ui.esc(missingDiscs[0])}" class="py-1 px-2.5 rounded text-xs font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center gap-1 transition shadow-2xs whitespace-nowrap">
+                        ${ui.icon('plus', 'w-3 h-3 text-amber-300')}
+                        <span>Assign ${missingDiscs[0]}</span>
+                      </button>
+                    ` : ''}
+                  ` : (isRoomFilled ? `
+                    <span class="text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-0.5 rounded flex items-center gap-1">
+                      ${ui.icon('check', 'w-3 h-3 text-emerald-400')}
+                      <span>Fully Staffed (${spaceItems.length} shifts)</span>
+                    </span>
+                  ` : `
+                    <span class="text-[11px] text-muted italic">Room Dark</span>
+                  `))}
+
+                  <button type="button" data-add-space-shift="${ui.esc(spaceName)}" class="btn btn-ghost text-xs !py-1 !px-2.5 border border-line hover:border-accent hover:text-accent font-semibold flex items-center gap-1 transition shadow-2xs" title="Add shift in ${ui.esc(spaceName)}">
+                    ${ui.icon('plus', 'w-3.5 h-3.5')}
+                    <span>Add Shift</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Collapsible Content -->
+              ${!isCollapsed ? `
+                <div class="p-3 space-y-3">
+                  <!-- Visual Horizontal Time Span Preview (Desktop) -->
+                  ${spaceItems.length > 0 ? `
+                    <div class="hidden sm:block p-2 rounded-lg bg-panel2/40 border border-line/60">
+                      <div class="relative h-10 w-full rounded bg-panel/80 border border-line/40 overflow-hidden">
+                        ${spaceItems.map((it) => {
+                          const parseHour = (tStr) => {
+                            if (!tStr) return 18;
+                            const [hh, mm] = tStr.split(':').map(Number);
+                            return (hh || 0) + (mm || 0) / 60;
+                          };
+                          const startH = parseHour(it.startTime || '17:00');
+                          const endH = parseHour(it.finishTime || '23:30');
+                          const spanStart = Math.max(8, Math.min(24, startH));
+                          const spanEnd = Math.max(spanStart + 0.5, Math.min(24, endH <= startH ? endH + 24 : endH));
+                          const leftPct = Math.max(0, Math.min(100, ((spanStart - 8) / 16) * 100));
+                          const widthPct = Math.max(4, Math.min(100 - leftPct, ((spanEnd - spanStart) / 16) * 100));
+
+                          let blockBg = it.isNoTech 
+                            ? 'bg-slate-700/60 border-slate-600 text-slate-300' 
+                            : (it.isUnfilled ? 'bg-amber-500/25 border-amber-500/60 text-amber-300' : 'bg-accent/20 border-accent/60 text-ink');
+
+                          return `
+                            <div style="left: ${leftPct}%; width: ${widthPct}%;" data-schedule-item="${it.key}" class="absolute top-1 bottom-1 rounded border px-2 flex items-center justify-between text-[10px] font-medium truncate cursor-pointer hover:brightness-125 transition ${blockBg}" title="${ui.esc(it.eventName)} (${it.startTime} - ${it.finishTime}) · ${ui.esc(it.userName)}">
+                              <span class="truncate font-bold">${ui.esc(it.eventName)}</span>
+                              <span class="font-mono text-[9px] shrink-0 opacity-80">${it.startTime}–${it.finishTime}</span>
+                            </div>
+                          `;
+                        }).join('')}
+                      </div>
+                    </div>
+                  ` : ''}
+
+                  <!-- Shift Cards in this space -->
+                  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                    ${spaceItems.length === 0 ? `
+                      <div class="col-span-full py-6 text-center text-xs text-muted/60 italic rounded-lg border border-dashed border-line/40 flex flex-col items-center justify-center gap-1.5">
+                        <span>No shifts or events scheduled in ${ui.esc(spaceName)} on this date</span>
+                        <button type="button" data-add-space-shift="${ui.esc(spaceName)}" class="text-xs font-semibold text-accent hover:underline">
+                          + Schedule Shift
+                        </button>
+                      </div>
+                    ` : spaceItems.map((item) => renderCardHtml(item, spaceName)).join('')}
+                  </div>
+                </div>
+              ` : `
+                <!-- Compact Collapsed Summary -->
+                <div class="p-2.5 px-4 bg-panel text-xs text-muted flex items-center justify-between cursor-pointer hover:bg-panel2/40 transition" data-toggle-space="${ui.esc(spaceName)}">
+                  <div class="flex items-center gap-2">
+                    <span class="italic">${spaceItems.length} shift${spaceItems.length === 1 ? '' : 's'} scheduled</span>
+                    ${spaceItems.length > 0 ? `
+                      <span>·</span>
+                      <span class="text-ink font-medium truncate max-w-md">${spaceItems.map(i => i.isNoTech ? 'Self-Service' : (i.userName + (i.role ? ' (' + i.role + ')' : ''))).join(', ')}</span>
+                    ` : ''}
+                  </div>
+                  <span class="text-accent text-[11px] font-semibold hover:underline">Click to expand row</span>
+                </div>
+              `}
+            </div>
+          `;
+        });
+
+        out += `
+          </div>
+        `;
+      }
+
+      // ----------------------------------------------------------------------
       // SUB-VIEW 1: WEEK GRID (7 DAYS SIDE-BY-SIDE)
       // ----------------------------------------------------------------------
-      if (state.boardView === 'week') {
+      else if (state.boardView === 'week') {
         // Day Switcher Bar (Mobile & Tablet: filters view; Desktop: scroll/jump indicator)
         out += `
           <div class="flex items-center justify-between gap-2 overflow-x-auto pb-1 scrollbar-hide -mx-2 px-2 sm:mx-0 sm:px-0">
@@ -1257,7 +1647,7 @@ RMTP.views.rota = (function () {
         out += `
           <!-- 7-Day Matrix Columns with Desktop Horizontal Safety & Scroll Containment -->
           <div class="w-full overflow-x-auto pb-6 scrollbar-thin rounded-xl">
-            <div class="grid grid-cols-1 md:grid-cols-7 gap-3.5 items-start min-w-full md:min-w-[1540px] 2xl:min-w-full">
+            <div class="grid grid-cols-1 md:grid-cols-7 gap-3.5 items-start min-w-full md:min-w-[1720px]">
         `;
 
         daysData.forEach((day) => {
@@ -1266,7 +1656,7 @@ RMTP.views.rota = (function () {
           const unfilledCount = day.items.filter((i) => i.isUnfilled).length;
 
           out += `
-            <div id="day-col-${day.date}" class="rounded-xl border ${day.isToday ? 'border-accent/60 bg-panel2/40 ring-1 ring-accent/30' : 'border-line bg-panel'} p-3 flex flex-col gap-2.5 min-w-[215px] min-h-[140px] md:min-h-[480px] ${isHiddenOnMobile ? 'hidden md:flex' : ''} shadow-2xs">
+            <div id="day-col-${day.date}" class="rounded-xl border ${day.isToday ? 'border-accent/60 bg-panel2/40 ring-1 ring-accent/30' : 'border-line bg-panel'} p-3 flex flex-col gap-2.5 min-w-[240px] min-h-[140px] md:min-h-[480px] ${isHiddenOnMobile ? 'hidden md:flex' : ''} shadow-2xs">
               <!-- Day Column Header (Pinned for Glanceability) -->
               <div class="sticky top-0 ${day.isToday ? 'bg-panel2/95' : 'bg-panel/95'} backdrop-blur-xs z-10 flex items-center justify-between pb-2 border-b border-line/60">
                 <button data-jump-day="${day.date}" class="text-left group cursor-pointer min-w-0" title="Zoom into Day Room Swimlanes">
@@ -1376,27 +1766,33 @@ RMTP.views.rota = (function () {
 
           <!-- Room-by-Room Swimlanes across All Spaces -->
           <div class="overflow-x-auto scrollbar-thin pb-4 rounded-xl">
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7 gap-3.5 items-start min-w-full md:min-w-[1400px]">
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7 gap-3.5 items-start min-w-full md:min-w-[1680px]">
         `;
 
         activeSpaces.forEach((spaceName) => {
           const spaceColor = getSpaceColor(spaceName);
           const spaceItems = daySchedule.filter((i) => i.space === spaceName || (i.spaces && i.spaces.includes(spaceName)));
+          const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(spaceName) : { total: getSpaceBasicCrew(spaceName), disciplines: [], summary: '' };
 
           out += `
-            <div class="rounded-xl border border-line bg-panel p-3 flex flex-col gap-2.5 min-w-[230px] min-h-[320px] shadow-2xs">
-              <!-- Room Header -->
-              <div class="flex items-center justify-between pb-2 border-b border-line/60">
-                <div class="flex items-center gap-2 min-w-0">
-                  <span class="w-2.5 h-2.5 rounded-full ${spaceColor.dot} shrink-0"></span>
-                  <div class="min-w-0">
-                    <span class="font-bold text-xs text-ink block truncate" title="${ui.esc(spaceName)}">${ui.esc(spaceName)}</span>
-                    <span class="text-[10px] text-muted font-mono font-semibold">${spaceItems.length} shift${spaceItems.length === 1 ? '' : 's'} · Basic Crew: ${getSpaceBasicCrew(spaceName)}</span>
+            <div class="rounded-xl border border-line bg-panel p-3 flex flex-col gap-2.5 min-w-[240px] min-h-[320px] shadow-2xs">
+              <!-- Room Header with Minimum Crew & Disciplines -->
+              <div class="flex flex-col gap-1.5 pb-2 border-b border-line/60">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-2 min-w-0">
+                    <span class="w-2.5 h-2.5 rounded-full ${spaceColor.dot} shrink-0"></span>
+                    <span class="font-bold text-xs text-ink truncate" title="${ui.esc(spaceName)}">${ui.esc(spaceName)}</span>
                   </div>
+                  <button data-add-space-shift="${ui.esc(spaceName)}" class="p-1 rounded text-muted hover:text-accent hover:bg-panel2 transition" title="Add shift in ${ui.esc(spaceName)}">
+                    ${ui.icon('plus', 'w-3.5 h-3.5')}
+                  </button>
                 </div>
-                <button data-add-space-shift="${ui.esc(spaceName)}" class="p-1 rounded text-muted hover:text-accent hover:bg-panel2 transition" title="Add shift in ${ui.esc(spaceName)}">
-                  ${ui.icon('plus', 'w-3.5 h-3.5')}
-                </button>
+                <div class="flex items-center justify-between gap-1 text-[10px]">
+                  <span class="text-muted font-mono font-semibold">${spaceItems.length} shift${spaceItems.length === 1 ? '' : 's'}</span>
+                  <span class="font-bold px-1.5 py-0.2 rounded bg-panel2 border border-line text-accent font-mono text-[9.5px]" title="${ui.esc(spaceName)} staffing requirement: ${ui.esc(specs.summary)}">
+                    Min: ${specs.total} (${specs.disciplines.map(d => d.role).join(', ')})
+                  </span>
+                </div>
               </div>
 
               <!-- Shifts in this Room -->
@@ -1472,7 +1868,7 @@ RMTP.views.rota = (function () {
             out += `
               <div data-schedule-item="${item.key}" class="p-2.5 rounded-lg border border-l-[3.5px] ${spaceCls.bar} border-line bg-panel hover:bg-panel2 transition flex flex-col sm:flex-row sm:items-center justify-between gap-2 cursor-pointer group">
                 <div class="flex items-center gap-3 min-w-0">
-                  <span class="font-mono text-xs font-semibold text-ink shrink-0 w-24 tabular-nums">${item.startTime} – ${item.finishTime}</span>
+                  <span class="font-mono text-xs font-semibold text-ink shrink-0 whitespace-nowrap tabular-nums px-2 py-0.5 rounded bg-panel2 border border-line/60">${item.startTime} – ${item.finishTime}</span>
                   <span class="font-bold px-2 py-0.5 rounded border uppercase tracking-wider text-[10px] ${spaceCls.tag} shrink-0">${ui.esc(item.space)}</span>
                   <span class="text-xs font-bold text-ink truncate group-hover:text-accent transition">${ui.esc(item.eventName)}</span>
                 </div>
@@ -1536,6 +1932,10 @@ RMTP.views.rota = (function () {
       });
 
       // View Mode Switcher
+      tabContainer.querySelector('#view-mode-timeline')?.addEventListener('click', () => {
+        state.boardView = 'timeline';
+        renderBoardTab();
+      });
       tabContainer.querySelector('#view-mode-week')?.addEventListener('click', () => {
         state.boardView = 'week';
         renderBoardTab();
@@ -1559,15 +1959,64 @@ RMTP.views.rota = (function () {
         renderBoardTab();
       });
 
-      // Day View Day Switcher (Syncs weekOffset with target date)
+      // Day Switcher (Syncs weekOffset with target date)
       tabContainer.querySelectorAll('[data-set-day]').forEach((btn) => {
         btn.addEventListener('click', () => {
           const targetDayStr = btn.getAttribute('data-set-day');
           state.selectedDay = targetDayStr;
           state.weekOffset = getWeekOffsetForDate(targetDayStr);
-          state.boardView = 'day';
+          if (state.boardView !== 'timeline') {
+            state.boardView = 'day';
+          }
           renderBoardTab();
           updateTopMetrics();
+        });
+      });
+
+      // Timeline View: Toggle Collapsible Space Row
+      tabContainer.querySelectorAll('[data-toggle-space]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const sp = btn.getAttribute('data-toggle-space');
+          if (state.collapsedSpaces.has(sp)) {
+            state.collapsedSpaces.delete(sp);
+          } else {
+            state.collapsedSpaces.add(sp);
+          }
+          renderBoardTab();
+        });
+      });
+
+      // Expand All / Collapse All Spaces
+      tabContainer.querySelector('#btn-expand-all-spaces')?.addEventListener('click', () => {
+        state.collapsedSpaces.clear();
+        renderBoardTab();
+      });
+      tabContainer.querySelector('#btn-collapse-all-spaces')?.addEventListener('click', () => {
+        RMTP.SPACES.forEach((s) => state.collapsedSpaces.add(s));
+        renderBoardTab();
+      });
+
+      // 1-Click Sync Advancing Shifts for current selected day
+      tabContainer.querySelector('#btn-sync-advancing-rota')?.addEventListener('click', () => {
+        const targetDay = state.selectedDay || formatDate(new Date());
+        const dayEvents = (store.all('advancing') || []).filter((e) => e.date === targetDay && !e.deleted);
+        let count = 0;
+        dayEvents.forEach((ev) => {
+          const created = RMTP.syncAdvancingToRota ? RMTP.syncAdvancingToRota(ev) : [];
+          count += created.length;
+        });
+        ui.toast(`Synced ${count} shift slot(s) for ${dayEvents.length} event(s) on ${targetDay}!`, 'ok');
+        renderBoardTab();
+        updateTopMetrics();
+      });
+
+      // Quick add shift in space with preselected role
+      tabContainer.querySelectorAll('[data-add-space-shift-role]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const raw = btn.getAttribute('data-add-space-shift-role');
+          const [sp, role] = raw.split('|');
+          openBookingModal({ space: sp, role: role || 'Sound', date: state.selectedDay || formatDate(new Date()), startTime: '17:00', finishTime: '23:30', status: 'pencil' });
         });
       });
 
@@ -1645,7 +2094,9 @@ RMTP.views.rota = (function () {
       tabContainer.querySelectorAll('[data-add-space-shift]').forEach((btn) => {
         btn.addEventListener('click', () => {
           const sp = btn.getAttribute('data-add-space-shift');
-          openBookingModal({ space: sp, date: state.selectedDay || formatDate(new Date()), startTime: '17:00', finishTime: '23:30', status: 'pencil' });
+          const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(sp) : null;
+          const defaultRole = (specs && specs.rolesList && specs.rolesList.length) ? specs.rolesList[0] : 'Sound';
+          openBookingModal({ space: sp, role: defaultRole, date: state.selectedDay || formatDate(new Date()), startTime: '17:00', finishTime: '23:30', status: 'pencil' });
         });
       });
 
@@ -1692,17 +2143,20 @@ RMTP.views.rota = (function () {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
           const raw = btn.getAttribute('data-assign-space-crew');
-          const [key, spaceName] = raw.split('|');
+          const [key, spaceName, roleHint] = raw.split('|');
           const item = allScheduleItemsMap.get(key);
           if (item) {
+            const targetSpace = spaceName || (item.spaces ? item.spaces[0] : 'The Stage');
+            const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(targetSpace) : null;
+            const targetRole = roleHint || (specs && specs.rolesList && specs.rolesList.length ? specs.rolesList[0] : 'Sound');
             openBookingModal({
               eventId: item.eventId,
               eventName: item.eventName,
-              space: spaceName || item.spaces[0],
+              space: targetSpace,
               date: item.date,
               startTime: item.startTime,
               finishTime: item.finishTime,
-              role: 'Sound',
+              role: targetRole,
               status: 'pencil',
             });
           }
@@ -2398,6 +2852,10 @@ RMTP.views.rota = (function () {
               </div>
             </div>
 
+            <!-- Space Crew Specification & Required Disciplines Banner -->
+            <div id="b-space-crew-specs-box" class="p-2.5 rounded-lg bg-panel2/70 border border-line flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs shadow-2xs">
+            </div>
+
             <!-- Date & Hours -->
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
@@ -2428,12 +2886,16 @@ RMTP.views.rota = (function () {
                       ${ui.esc(auth.displayName(u))} (${ui.esc(u.position || 'Tech')})
                     </option>
                   `).join('')}
-                </optgroup>
-                <option value="__custom__" ${(!initialData.userId && initialData.userName && initialData.userName !== 'Unassigned') ? 'selected' : ''}>+ Other / External Freelancer (Type Name)</option>
+                <option value="__custom__" ${(!initialData.userId && initialData.userName && initialData.userName !== 'Unassigned' && !initialData.isNoTech) ? 'selected' : ''}>+ Other / External Freelancer (Type Name)</option>
+                <option value="__notech__" ${initialData.isNoTech ? 'selected' : ''}>No Tech Needed (Self-Service)</option>
               </select>
-              <div id="b-custom-wrap" class="${(!initialData.userId && initialData.userName && initialData.userName !== 'Unassigned') ? 'block' : 'hidden'} mt-2">
+              <label class="flex items-center gap-2 cursor-pointer mt-2 text-xs text-muted hover:text-ink">
+                <input type="checkbox" id="b-is-notech" class="rounded border-line" ${initialData.isNoTech ? 'checked' : ''} />
+                <span>Mark as Self-Service (No Tech Needed)</span>
+              </label>
+              <div id="b-custom-wrap" class="${(!initialData.userId && initialData.userName && initialData.userName !== 'Unassigned' && !initialData.isNoTech) ? 'block' : 'hidden'} mt-2">
                 <label class="block font-semibold text-muted mb-1">Freelancer Full Name</label>
-                <input id="b-custom-name" class="field" value="${ui.esc(initialData.userName && initialData.userName !== 'Unassigned' ? initialData.userName : '')}" placeholder="e.g. Alex Morgan (Freelance Sound)" />
+                <input id="b-custom-name" class="field" value="${ui.esc(initialData.userName && initialData.userName !== 'Unassigned' && !initialData.isNoTech ? initialData.userName : '')}" placeholder="e.g. Alex Morgan (Freelance Sound)" />
               </div>
               <p id="b-avail-details-text" class="text-[11px] text-muted mt-1 italic"></p>
             </div>
@@ -2501,6 +2963,28 @@ RMTP.views.rota = (function () {
       function updateAvailabilityCheck() {
         const uid = userSel.value;
         const dStr = dateInp.value;
+        const noTechCheck = m.root.querySelector('#b-is-notech');
+        const isNoTechActive = (noTechCheck && noTechCheck.checked) || uid === '__notech__';
+
+        if (isNoTechActive) {
+          if (customWrap) customWrap.classList.add('hidden');
+          tagEl.className = 'text-[11px] font-semibold px-2 py-0.5 rounded bg-panel2 border border-line text-emerald-400';
+          tagEl.textContent = 'Self-Service · No Tech';
+          detailsEl.textContent = 'No technical crew required. Crew shortfall alerts will be suppressed.';
+          detailsEl.className = 'text-[11px] text-muted mt-1 italic';
+          const roleSel = m.root.querySelector('#b-role');
+          if (roleSel) {
+            let opt = Array.from(roleSel.options).find(o => o.value === 'None');
+            if (!opt) {
+              opt = document.createElement('option');
+              opt.value = 'None';
+              opt.textContent = 'None';
+              roleSel.appendChild(opt);
+            }
+            roleSel.value = 'None';
+          }
+          return;
+        }
 
         if (uid === '__custom__') {
           if (customWrap) customWrap.classList.remove('hidden');
@@ -2539,9 +3023,88 @@ RMTP.views.rota = (function () {
         }
       }
 
-      userSel.addEventListener('change', updateAvailabilityCheck);
+      userSel.addEventListener('change', () => {
+        const noTechCheck = m.root.querySelector('#b-is-notech');
+        if (noTechCheck) {
+          noTechCheck.checked = (userSel.value === '__notech__');
+        }
+        updateAvailabilityCheck();
+      });
       dateInp.addEventListener('change', updateAvailabilityCheck);
+
+      const noTechCheck = m.root.querySelector('#b-is-notech');
+      if (noTechCheck) {
+        noTechCheck.addEventListener('change', () => {
+          if (noTechCheck.checked) {
+            userSel.value = '__notech__';
+          } else if (userSel.value === '__notech__') {
+            userSel.value = '';
+          }
+          updateAvailabilityCheck();
+        });
+      }
+
       updateAvailabilityCheck();
+
+      // Space Crew Specs Dynamic Display & Quick Discipline Selection
+      function updateSpaceSpecsBanner() {
+        const curSpace = spaceSel.value;
+        const specsBox = m.root.querySelector('#b-space-crew-specs-box');
+        if (!specsBox) return;
+        const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(curSpace) : { total: 1, disciplines: [{ role: 'Sound', count: 1 }], summary: '1x Sound' };
+
+        const pillsHtml = (specs.disciplines || []).map((d) => {
+          return `<button type="button" data-pick-spec-role="${ui.esc(d.role)}" class="px-2 py-0.5 rounded text-[10.5px] font-semibold border transition hover:opacity-85 flex items-center gap-1 bg-panel border-line text-ink hover:border-accent" title="Set shift role to ${ui.esc(d.role)}">
+            <span>${d.count}x ${ui.esc(d.role)}</span>
+          </button>`;
+        }).join('');
+
+        specsBox.innerHTML = `
+          <div class="flex items-center gap-2 flex-wrap min-w-0">
+            <span class="font-bold text-ink flex items-center gap-1 shrink-0">
+              ${ui.icon('users', 'w-3.5 h-3.5 text-accent')}
+              <span>${ui.esc(curSpace)} Specs:</span>
+            </span>
+            <span class="font-mono font-bold text-accent">${specs.total} Minimum Crew</span>
+            <span class="text-muted text-[11px]">(${ui.esc(specs.summary)})</span>
+          </div>
+          <div class="flex items-center gap-1.5 flex-wrap shrink-0">
+            <span class="text-[10px] text-muted uppercase font-bold tracking-wider mr-0.5">Required Disciplines:</span>
+            ${pillsHtml}
+          </div>
+        `;
+
+        specsBox.querySelectorAll('[data-pick-spec-role]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const r = btn.getAttribute('data-pick-spec-role');
+            const roleSel = m.root.querySelector('#b-role');
+            if (roleSel) {
+              let opt = Array.from(roleSel.options).find(o => o.value.toLowerCase() === r.toLowerCase());
+              if (!opt) {
+                const newOpt = document.createElement('option');
+                newOpt.value = r;
+                newOpt.textContent = r;
+                roleSel.appendChild(newOpt);
+                opt = newOpt;
+              }
+              roleSel.value = opt.value;
+              ui.toast(`Selected discipline: ${r}`, 'info');
+            }
+          });
+        });
+      }
+
+      spaceSel.addEventListener('change', () => {
+        updateSpaceSpecsBanner();
+        const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(spaceSel.value) : null;
+        if (specs && specs.rolesList && specs.rolesList.length) {
+          const roleSel = m.root.querySelector('#b-role');
+          if (roleSel && (!initialData.role || !specs.rolesList.includes(roleSel.value))) {
+            roleSel.value = specs.rolesList[0];
+          }
+        }
+      });
+      updateSpaceSpecsBanner();
 
       // If linking advancing event, auto-fill event name, space, date
       eventSel.addEventListener('change', () => {
@@ -2555,6 +3118,7 @@ RMTP.views.rota = (function () {
             if (ev.startTime) m.root.querySelector('#b-start').value = ev.startTime;
             if (ev.finishTime) m.root.querySelector('#b-end').value = ev.finishTime;
             updateAvailabilityCheck();
+            updateSpaceSpecsBanner();
           }
         }
       });
@@ -2563,6 +3127,8 @@ RMTP.views.rota = (function () {
       m.root.querySelector('#b-save').addEventListener('click', () => {
         const userId = userSel.value;
         const bookingDate = dateInp.value;
+        const noTechCheck = m.root.querySelector('#b-is-notech');
+        const isNoTechChecked = (noTechCheck && noTechCheck.checked) || userId === '__notech__';
 
         if (!bookingDate) {
           ui.toast('Date is required', 'danger');
@@ -2573,7 +3139,11 @@ RMTP.views.rota = (function () {
         let finalUserName = '';
         let isFreelancerFlag = false;
 
-        if (userId === '__custom__') {
+        if (isNoTechChecked) {
+          finalUserId = '';
+          finalUserName = 'No Tech Required';
+          isFreelancerFlag = false;
+        } else if (userId === '__custom__') {
           const cName = (customNameInp ? customNameInp.value : '').trim();
           if (!cName) {
             ui.toast('Please enter the freelancer\'s name', 'danger');
@@ -2602,11 +3172,12 @@ RMTP.views.rota = (function () {
           date: bookingDate,
           startTime: m.root.querySelector('#b-start').value || '17:00',
           finishTime: m.root.querySelector('#b-end').value || '23:30',
-          userId: finalUserId,
-          userName: finalUserName,
+          userId: isNoTechChecked ? '' : finalUserId,
+          userName: isNoTechChecked ? 'No Tech Required' : finalUserName,
           isFreelancer: isFreelancerFlag,
-          role: m.root.querySelector('#b-role').value || 'Sound',
-          status: m.root.querySelector('#b-status').value || 'pencil',
+          isNoTech: isNoTechChecked,
+          role: isNoTechChecked ? 'None' : (m.root.querySelector('#b-role').value || 'Sound'),
+          status: isNoTechChecked ? 'confirmed' : (m.root.querySelector('#b-status').value || 'pencil'),
           rate: m.root.querySelector('#b-rate').value.trim(),
           notes: m.root.querySelector('#b-notes').value.trim(),
           updatedAt: new Date().toISOString(),
@@ -2624,6 +3195,9 @@ RMTP.views.rota = (function () {
         if (record.eventId) {
           const advEv = store.find('advancing', record.eventId);
           if (advEv) {
+            if (isNoTechChecked) {
+              advEv.noTechNeeded = true;
+            }
             advEv.technicians = advEv.technicians || [];
             if (record.userId) {
               const existingTech = advEv.technicians.find((t) => t.userId === record.userId);
@@ -3081,6 +3655,12 @@ RMTP.views.rota = (function () {
         renderActiveTab();
       });
     });
+
+    // Listen for live venue crew specification updates from Venues and spaces
+    const onVenuesUpdated = () => {
+      renderActiveTab();
+    };
+    window.addEventListener('rmtp:venues-updated', onVenuesUpdated);
 
     // Initial render
     renderActiveTab();

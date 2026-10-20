@@ -369,6 +369,11 @@ RMTP.seed = {
       capacity: '350 standing / 180 seated',
       stageDimensions: '8m x 5m x 0.8m',
       inventory: '',
+      basicCrew: 2,
+      crewDisciplines: [
+        { role: 'Sound', count: 1 },
+        { role: 'Lighting', count: 1 }
+      ],
       audio: {
         inputChannels: 48,
         localInputChannels: 8,
@@ -389,6 +394,11 @@ RMTP.seed = {
       capacity: '140 standing / 90 seated',
       stageDimensions: '6m x 4m',
       inventory: '',
+      basicCrew: 2,
+      crewDisciplines: [
+        { role: 'Sound', count: 1 },
+        { role: 'Lighting', count: 1 }
+      ],
       audio: {
         inputChannels: 32,
         localInputChannels: 8,
@@ -409,6 +419,10 @@ RMTP.seed = {
       capacity: '100 standing / 50 seated',
       stageDimensions: '',
       inventory: '',
+      basicCrew: 1,
+      crewDisciplines: [
+        { role: 'Sound', count: 1 }
+      ],
       audio: {
         inputChannels: 16,
         localInputChannels: 8,
@@ -427,6 +441,10 @@ RMTP.seed = {
       capacity: '181 seats',
       stageDimensions: '',
       inventory: '',
+      basicCrew: 1,
+      crewDisciplines: [
+        { role: 'Cinema', count: 1 }
+      ],
       audio: {
         inputChannels: 16,
         localInputChannels: 4,
@@ -445,6 +463,10 @@ RMTP.seed = {
       capacity: '132 seats',
       stageDimensions: '',
       inventory: '',
+      basicCrew: 1,
+      crewDisciplines: [
+        { role: 'Cinema', count: 1 }
+      ],
       audio: {
         inputChannels: 16,
         localInputChannels: 4,
@@ -463,6 +485,10 @@ RMTP.seed = {
       capacity: '50 seats',
       stageDimensions: '',
       inventory: '',
+      basicCrew: 1,
+      crewDisciplines: [
+        { role: 'Cinema', count: 1 }
+      ],
       audio: {
         inputChannels: 16,
         localInputChannels: 4,

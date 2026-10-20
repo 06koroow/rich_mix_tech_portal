@@ -46,11 +46,12 @@ RMTP.MEDIA_TYPES = ['DCP', 'Laptop via HDMI', 'Blu-Ray', 'HDMI (Other)'];
 RMTP.isSpace = function (loc) { return RMTP.SPACES.indexOf(loc) > -1; };
 RMTP.slug = function (s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); };
 
-/* ---- Shift roles ----
+/* ---- Shift roles & Technical Disciplines ----
    Per-shift role a tagged technician is covering on an event —
    distinct from a user's job title (position). An event can carry
    several technicians, each with their own role for that shift. */
-RMTP.SHIFT_ROLES = ['Sound', 'Lighting', 'Cinema', 'AV', 'Support'];
+RMTP.SHIFT_ROLES = ['Sound', 'Lighting', 'Cinema', 'AV', 'Stage', 'Support', 'Duty Manager'];
+RMTP.DISCIPLINES = ['Sound', 'Lighting', 'Cinema', 'AV', 'Stage', 'Support', 'Duty Manager'];
 RMTP.BOOKING_STATUSES = ['pencil', 'confirmed', 'declined', 'cancelled'];
 RMTP.DAY_PARTS = [
   { id: 'all_day', label: 'All Day', start: '08:00', end: '23:30' },
@@ -59,6 +60,65 @@ RMTP.DAY_PARTS = [
   { id: 'evening', label: 'Evening', start: '18:00', end: '23:30' },
   { id: 'custom', label: 'Custom Hours', start: '', end: '' }
 ];
+
+/* Helper: Resolves minimum crew requirements and discipline breakdown for a room */
+RMTP.getSpaceCrewSpecs = function (spaceName) {
+  const defaultDisciplines = function (s) {
+    const str = String(s || '').toLowerCase();
+    if (str.includes('stage')) return [{ role: 'Sound', count: 1 }, { role: 'Lighting', count: 1 }];
+    if (str.includes('studio')) return [{ role: 'Sound', count: 1 }, { role: 'Lighting', count: 1 }];
+    if (str.includes('screen')) return [{ role: 'Cinema', count: 1 }];
+    if (str.includes('mix')) return [{ role: 'Sound', count: 1 }];
+    return [{ role: 'Sound', count: 1 }];
+  };
+
+  if (!spaceName) return { total: 1, disciplines: [{ role: 'Sound', count: 1 }], rolesList: ['Sound'], summary: '1x Sound' };
+
+  let disciplines = [];
+  const v = RMTP.store ? (RMTP.store.find('venues', spaceName) || (RMTP.store.all('venues') || []).find((x) => (x.name || x.id || '').trim().toLowerCase() === String(spaceName).trim().toLowerCase())) : null;
+
+  if (v && Array.isArray(v.crewDisciplines) && v.crewDisciplines.length > 0) {
+    disciplines = v.crewDisciplines.map((d) => ({
+      role: d.role || d.discipline || 'Sound',
+      count: Math.max(1, parseInt(d.count, 10) || 1),
+    }));
+  } else if (v && v.basicCrew !== undefined && v.basicCrew !== null && !isNaN(Number(v.basicCrew))) {
+    const total = Math.max(0, parseInt(v.basicCrew, 10));
+    const defs = defaultDisciplines(spaceName);
+    const defTotal = defs.reduce((a, b) => a + b.count, 0);
+    if (total === 0) {
+      disciplines = [];
+    } else if (total === defTotal) {
+      disciplines = defs;
+    } else if (total === 1) {
+      disciplines = [{ role: defs[0] ? defs[0].role : 'Sound', count: 1 }];
+    } else {
+      disciplines = defs.map((d) => ({ ...d }));
+      const diff = total - defTotal;
+      if (diff > 0) {
+        disciplines.push({ role: 'Support', count: diff });
+      } else if (diff < 0) {
+        disciplines = [{ role: defs[0] ? defs[0].role : 'Sound', count: total }];
+      }
+    }
+  } else {
+    disciplines = defaultDisciplines(spaceName);
+  }
+
+  const total = disciplines.reduce((sum, d) => sum + (parseInt(d.count, 10) || 0), 0);
+  const rolesList = [];
+  disciplines.forEach((d) => {
+    for (let i = 0; i < (parseInt(d.count, 10) || 1); i++) rolesList.push(d.role);
+  });
+  const summary = disciplines.map((d) => `${d.count}x ${d.role}`).join(', ');
+
+  return {
+    total: Math.max(0, total),
+    disciplines: disciplines,
+    rolesList: rolesList,
+    summary: summary || 'No crew required',
+  };
+};
 
 /* Normalises an event's tagged crew, falling back to the legacy
    single `techUserId` field so events saved before multi-tagging
@@ -79,6 +139,105 @@ RMTP.eventAssignedTo = function (ev, userId) {
   if (!userId || !ev) return false;
   if (RMTP.isAdvancingLead(ev, userId)) return true;
   return RMTP.eventTechnicians(ev).some((t) => t.userId === userId);
+};
+
+/* Auto-generate or sync draft rota shifts directly from event technical specs.
+   Carries through venue minimum crew disciplines and supports 'No Tech Needed'. */
+RMTP.syncAdvancingToRota = function (ev) {
+  if (!ev || !RMTP.store) return [];
+  const store = RMTP.store;
+  const existingBookings = (store.all('bookings') || []).filter((b) => b.eventId === ev.id);
+  const spaces = Array.isArray(ev.space) ? ev.space : [ev.space || 'The Stage'];
+  const createdShifts = [];
+
+  if (ev.noTechNeeded) {
+    existingBookings.forEach((b) => store.remove('bookings', b.id));
+    spaces.forEach((sp, idx) => {
+      const booking = {
+        id: 'b_notech_' + ev.id + '_' + idx,
+        eventId: ev.id,
+        eventName: ev.name || 'Self-Service Event',
+        space: sp,
+        date: ev.date,
+        startTime: ev.startTime || '18:00',
+        finishTime: ev.finishTime || '23:00',
+        userId: '',
+        userName: 'No Tech Required',
+        role: 'None',
+        status: 'confirmed',
+        isNoTech: true,
+        notes: ev.notes || ev.techInfo || 'No Tech Needed — Self-Service',
+      };
+      store.upsert('bookings', booking);
+      createdShifts.push(booking);
+    });
+    return createdShifts;
+  }
+
+  // Remove previous no-tech placeholder if switching to tech
+  existingBookings.filter((b) => b.isNoTech).forEach((b) => store.remove('bookings', b.id));
+
+  const techs = RMTP.eventTechnicians(ev);
+  if (techs.length > 0) {
+    techs.forEach((t, idx) => {
+      const isTechNoTech = !!t.isNoTech || t.role === 'None';
+      const existing = existingBookings.find((b) => b.id === 'b_' + ev.id + '_' + idx) || existingBookings[idx];
+      const allUsers = store.all('users') || [];
+      const userObj = allUsers.find((u) => u.id === t.userId);
+      const userName = isTechNoTech ? 'No Tech Required' : (t.freelancerName || (userObj ? (RMTP.auth ? RMTP.auth.displayName(userObj) : userObj.name) : (t.userId ? 'Tech' : 'Unassigned Tech')));
+      const booking = {
+        id: existing ? existing.id : 'b_' + ev.id + '_' + idx,
+        eventId: ev.id,
+        eventName: ev.name,
+        space: spaces[0] || 'The Stage',
+        date: ev.date,
+        startTime: t.startTime || ev.startTime || '18:00',
+        finishTime: t.finishTime || ev.finishTime || '23:00',
+        userId: isTechNoTech ? '' : (t.userId || ''),
+        userName: userName,
+        role: isTechNoTech ? 'None' : (t.role || 'Tech'),
+        status: isTechNoTech ? 'confirmed' : (t.bookingStatus || (t.userId ? 'confirmed' : 'pencil')),
+        isNoTech: isTechNoTech,
+        rate: t.rate || '',
+        notes: t.notes || ev.notes || ev.techInfo || '',
+      };
+      store.upsert('bookings', booking);
+      createdShifts.push(booking);
+    });
+  } else {
+    // Populate draft shifts directly from room minimum crew disciplines
+    spaces.forEach((sp) => {
+      const specs = RMTP.getSpaceCrewSpecs(sp);
+      const disciplines = specs.disciplines && specs.disciplines.length ? specs.disciplines : [{ role: 'Sound', count: 1 }];
+      let slotIdx = 0;
+      disciplines.forEach((d) => {
+        const count = parseInt(d.count, 10) || 1;
+        for (let i = 0; i < count; i++) {
+          const shiftId = 'b_' + ev.id + '_' + RMTP.slug(sp) + '_' + slotIdx;
+          const existing = existingBookings.find((b) => b.id === shiftId);
+          const booking = {
+            id: existing ? existing.id : shiftId,
+            eventId: ev.id,
+            eventName: ev.name,
+            space: sp,
+            date: ev.date,
+            startTime: ev.startTime || '18:00',
+            finishTime: ev.finishTime || '23:00',
+            userId: existing ? existing.userId : '',
+            userName: existing && existing.userName ? existing.userName : 'Unassigned Tech',
+            role: d.role || 'Tech',
+            status: 'pencil',
+            isNoTech: false,
+            notes: ev.notes || ev.techInfo || '',
+          };
+          store.upsert('bookings', booking);
+          createdShifts.push(booking);
+          slotIdx++;
+        }
+      });
+    });
+  }
+  return createdShifts;
 };
 
 /* Conditions at or below this are "poor" — such kit is struck through

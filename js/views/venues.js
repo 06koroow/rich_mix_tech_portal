@@ -72,6 +72,7 @@
 
   function saveVenueData() {
     store.upsert('venues', m.venueData);
+    window.dispatchEvent(new CustomEvent('rmtp:venues-updated', { detail: m.venueData }));
     ui.toast('Saved ' + m.venueData.name + ' specs', 'ok');
   }
 

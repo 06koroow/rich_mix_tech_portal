@@ -741,7 +741,7 @@ RMTP.views.advancing = function (el, params, query) {
                     '<div class="text-[11px] sm:text-xs font-semibold text-ink truncate hover:text-accent leading-snug">' + ui.esc(ev.name || 'Untitled') + '</div>' +
                     '<div class="flex items-center gap-1 mt-1 flex-wrap min-w-0">' +
                       '<span class="px-1 py-0.2 rounded text-[8px] sm:text-[9px] border font-medium truncate ' + spaceBadge + '">' + ui.esc(ev.space || 'Venue') + '</span>' +
-                      (techNames.length ? '<span class="text-[9px] sm:text-[10px] text-muted truncate max-w-[70px] sm:max-w-[85px]">' + ui.esc(techNames[0]) + (techNames.length > 1 ? ' +' + (techNames.length - 1) : '') + '</span>' : '<span class="text-[9px] sm:text-[10px] text-danger font-medium">Unassigned</span>') +
+                      (techNames.length ? '<span class="text-[9px] sm:text-[10px] text-muted truncate max-w-[70px] sm:max-w-[85px]">' + ui.esc(techNames[0]) + (techNames.length > 1 ? ' +' + (techNames.length - 1) : '') + '</span>' : (ev.noTechNeeded ? '<span class="text-[9px] sm:text-[10px] text-muted italic">Self-Service</span>' : '<span class="text-[9px] sm:text-[10px] text-danger font-medium">Unassigned</span>')) +
                     '</div>' +
                   '</div>'
                 );
@@ -1824,7 +1824,7 @@ RMTP.views.advancing = function (el, params, query) {
                 '<div class="flex items-center gap-1 flex-wrap">' + 
                   (techs.length 
                     ? techs.map(t => t === 'No Tech Needed' ? ui.pill(t, 'var(--muted)') : ui.pill(t, 'var(--info)')).join('')
-                    : ui.pill('Unassigned', 'var(--danger)')) + 
+                    : (ev.noTechNeeded ? ui.pill('Self-Service (No Tech)', 'var(--muted)') : ui.pill('Unassigned', 'var(--danger)'))) + 
                 '</div>' +
               '</div>' +
               
@@ -1909,7 +1909,7 @@ RMTP.views.advancing = function (el, params, query) {
              '<div class="flex items-center gap-1 flex-wrap">' + 
                 (techs.length 
                   ? techs.map(t => t === 'No Tech Needed' ? ui.pill(t, 'var(--muted)') : ui.pill(t, 'var(--info)')).join('')
-                  : ui.pill('Unassigned', 'var(--danger)')) + 
+                  : (e.noTechNeeded ? ui.pill('Self-Service (No Tech)', 'var(--muted)') : ui.pill('Unassigned', 'var(--danger)'))) + 
              '</div>' +
            '</div>' +
          '</div>'

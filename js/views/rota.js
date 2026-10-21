@@ -1090,6 +1090,7 @@ RMTP.views.rota = (function () {
 
       const weekEvents = allEv.filter((e) => e.date >= wStart && e.date <= wEnd);
       const unfilledEvents = weekEvents.filter((e) => {
+        if (e.noTechNeeded) return false;
         const assigned = allB.filter((b) => b.eventId === e.id && b.status !== 'cancelled');
         const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(e) : [];
         return assigned.length === 0 && evTechs.length === 0;

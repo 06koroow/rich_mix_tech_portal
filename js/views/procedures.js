@@ -19,27 +19,36 @@ RMTP.views.procedures = function (el, params) {
   const item = itemId && cat.items ? cat.items.find((i) => i.id === itemId) : null;
 
   const me = RMTP.auth.current();
-  const isAdmin = !!(me && me.admin);
+  const isAdmin = !me || me.admin || me.role === 'Admin' || (RMTP.auth.isAdmin && RMTP.auth.isAdmin(me)) || (RMTP.auth.isTechManager && RMTP.auth.isTechManager(me));
+  const emptyCats = cats.filter((c) => !c.items || c.items.length === 0);
 
   /* --- Left: category sub-nav (vertical on desktop, chips on mobile) --- */
-  const catNav = cats.map((c, cIdx) =>
-    '<div class="group/nav relative flex items-center justify-between rounded-lg ' + (c.id === cat.id ? 'bg-panel2 font-semibold text-accent' : 'text-muted hover:text-ink') + '">' +
-      '<a href="#/procedures/' + c.id + '" ' +
-        'class="nav-item flex-1 shrink-0 flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm ' +
-        (c.id === cat.id ? 'text-accent font-semibold' : 'text-muted hover:text-ink') + '" ' +
-        (c.id === cat.id ? 'aria-current="page"' : '') + '>' +
-        '<span class="text-accent">' + ui.icon(c.icon, 'w-4 h-4') + '</span>' +
-        '<span class="whitespace-nowrap truncate">' + ui.esc(c.name) + '</span>' +
-        '<span class="tabular text-xs text-muted ml-auto mr-1 hidden md:inline">' + (c.items ? c.items.length : 0) + '</span>' +
-      '</a>' +
-      (isAdmin ? (
-        '<div class="hidden md:flex items-center pr-1.5 opacity-80 md:opacity-0 group-hover/nav:opacity-100 transition-opacity no-print">' +
-          '<button type="button" data-cat-up="' + cIdx + '" class="btn btn-ghost !p-1 text-muted hover:text-accent" title="Move Category Up" ' + (cIdx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3.5 h-3.5') + '</button>' +
-          '<button type="button" data-cat-down="' + cIdx + '" class="btn btn-ghost !p-1 text-muted hover:text-accent" title="Move Category Down" ' + (cIdx === cats.length - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</button>' +
-        '</div>'
-      ) : '') +
-    '</div>'
-  ).join('');
+  const catNav = cats.map((c, cIdx) => {
+    const isCatEmpty = !c.items || c.items.length === 0;
+    return (
+      '<div class="group/nav relative flex items-center justify-between rounded-lg ' + (c.id === cat.id ? 'bg-panel2 font-semibold text-accent' : 'text-muted hover:text-ink') + '">' +
+        '<a href="#/procedures/' + c.id + '" ' +
+          'class="nav-item flex-1 shrink-0 flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm ' +
+          (c.id === cat.id ? 'text-accent font-semibold' : 'text-muted hover:text-ink') + '" ' +
+          (c.id === cat.id ? 'aria-current="page"' : '') + '>' +
+          '<span class="text-accent">' + ui.icon(c.icon, 'w-4 h-4') + '</span>' +
+          '<span class="whitespace-nowrap truncate">' + ui.esc(c.name) + '</span>' +
+          (isCatEmpty
+            ? '<span class="text-[10px] font-bold px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 ml-auto mr-1 hidden md:inline" title="Empty category (0 documents)">0</span>'
+            : '<span class="tabular text-xs text-muted ml-auto mr-1 hidden md:inline">' + c.items.length + '</span>') +
+        '</a>' +
+        (isAdmin ? (
+          '<div class="hidden md:flex items-center pr-1.5 opacity-80 md:opacity-0 group-hover/nav:opacity-100 transition-opacity no-print gap-0.5">' +
+            '<button type="button" data-cat-up="' + cIdx + '" class="btn btn-ghost !p-1 text-muted hover:text-accent" title="Move Category Up" ' + (cIdx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3.5 h-3.5') + '</button>' +
+            '<button type="button" data-cat-down="' + cIdx + '" class="btn btn-ghost !p-1 text-muted hover:text-accent" title="Move Category Down" ' + (cIdx === cats.length - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</button>' +
+            (cats.length > 1 ? (
+              '<button type="button" data-cat-del="' + c.id + '" class="btn btn-ghost !p-1 text-muted hover:text-danger ml-0.5" title="Delete Category \u201c' + ui.esc(c.name) + '\u201d">' + ui.icon('trash', 'w-3.5 h-3.5') + '</button>'
+            ) : '') +
+          '</div>'
+        ) : '') +
+      '</div>'
+    );
+  }).join('');
 
   /* --- Right: either an item detail or the category's item list --- */
   let content;
@@ -71,7 +80,31 @@ RMTP.views.procedures = function (el, params) {
             '</div>'
           );
         }).join('')
-      : ui.empty('book', 'No procedures in ' + cat.name + ' yet', isAdmin ? 'Add the first one to get started.' : 'No procedures have been added to this section yet.');
+      : (
+        '<div class="panel p-8 text-center flex flex-col items-center justify-center gap-3">' +
+          '<div class="w-12 h-12 rounded-xl bg-panel2 border border-line flex items-center justify-center text-muted">' +
+            ui.icon('book', 'w-6 h-6') +
+          '</div>' +
+          '<div>' +
+            '<h3 class="text-sm font-semibold text-ink">No procedures in ' + ui.esc(cat.name) + ' yet</h3>' +
+            '<p class="text-xs text-muted mt-1 max-w-sm">' +
+              (isAdmin ? 'This category is currently empty. You can add the first procedure, or delete this empty category tab.' : 'No procedures have been added to this section yet.') +
+            '</p>' +
+          '</div>' +
+          (isAdmin ? (
+            '<div class="flex items-center gap-2 mt-2 flex-wrap justify-center">' +
+              '<button type="button" id="empty-state-add-btn" class="btn btn-primary text-xs flex items-center gap-1.5 shadow-2xs">' +
+                ui.icon('plus', 'w-3.5 h-3.5') + '<span>Add First Procedure</span>' +
+              '</button>' +
+              (cats.length > 1 ? (
+                '<button type="button" id="empty-state-del-btn" class="btn btn-danger text-xs flex items-center gap-1.5 shadow-2xs">' +
+                  ui.icon('trash', 'w-3.5 h-3.5') + '<span>Delete This Empty Category</span>' +
+                '</button>'
+              ) : '') +
+            '</div>'
+          ) : '') +
+        '</div>'
+      );
     content = '<div class="grid gap-3">' + list + '</div>';
   }
 
@@ -81,6 +114,11 @@ RMTP.views.procedures = function (el, params) {
         '<div class="flex items-center gap-2 flex-wrap">' +
           '<button id="reorder-menu-btn" class="btn btn-ghost text-xs no-print flex items-center gap-1.5" title="Reorder menu categories">' + ui.icon('sliders', 'w-3.5 h-3.5') + '<span>Reorder Menu</span></button>' +
           '<button id="edit-tab-btn" class="btn btn-ghost text-xs no-print flex items-center gap-1.5">' + ui.icon('pen', 'w-3.5 h-3.5') + '<span>Edit Tab</span></button>' +
+          (cats.length > 1 ? (
+            '<button id="delete-tab-btn" class="btn btn-ghost text-xs text-danger hover:bg-danger/10 no-print flex items-center gap-1.5 border border-danger/30 shadow-2xs" title="Delete category tab ' + ui.esc(cat.name) + '">' +
+              ui.icon('trash', 'w-3.5 h-3.5') + '<span>Delete Category</span>' +
+            '</button>'
+          ) : '') +
           '<button id="add-proc" class="btn btn-primary text-xs no-print flex items-center gap-1.5">' + ui.icon('plus', 'w-3.5 h-3.5') + '<span>Add procedure</span></button>' +
         '</div>'
       ) : '');
@@ -88,7 +126,12 @@ RMTP.views.procedures = function (el, params) {
   const navHeader = isAdmin
     ? '<div class="hidden md:flex items-center justify-between px-2 pt-1 pb-2 border-b border-line/60 mb-1 text-[11px] font-semibold text-muted uppercase tracking-wider">' +
         '<span>Categories</span>' +
-        '<button id="nav-reorder-btn" class="btn btn-ghost !py-0.5 !px-1.5 text-[10px] text-accent font-bold" title="Reorder all menu tabs">Reorder ⇅</button>' +
+        '<div class="flex items-center gap-1">' +
+          (emptyCats.length > 0 ? (
+            '<button id="nav-purge-empty-btn" class="btn btn-ghost !py-0.5 !px-1.5 text-[10px] text-amber-400 hover:text-amber-300 font-bold" title="Delete all ' + emptyCats.length + ' empty categories">Purge Empty (' + emptyCats.length + ')</button>'
+          ) : '') +
+          '<button id="nav-reorder-btn" class="btn btn-ghost !py-0.5 !px-1.5 text-[10px] text-accent font-bold" title="Reorder all menu tabs">Reorder ⇅</button>' +
+        '</div>' +
       '</div>'
     : '';
 
@@ -109,11 +152,34 @@ RMTP.views.procedures = function (el, params) {
     const editTabBtn = el.querySelector('#edit-tab-btn');
     if (editTabBtn) editTabBtn.addEventListener('click', () => editTabModal(cat));
 
+    const delTabBtn = el.querySelector('#delete-tab-btn');
+    if (delTabBtn) delTabBtn.addEventListener('click', () => confirmDeleteCategory(cat));
+
+    const emptyDelBtn = el.querySelector('#empty-state-del-btn');
+    if (emptyDelBtn) emptyDelBtn.addEventListener('click', () => confirmDeleteCategory(cat));
+
+    const emptyAddBtn = el.querySelector('#empty-state-add-btn');
+    if (emptyAddBtn) emptyAddBtn.addEventListener('click', () => addProcedure(cat));
+
+    const navPurgeBtn = el.querySelector('#nav-purge-empty-btn');
+    if (navPurgeBtn) navPurgeBtn.addEventListener('click', () => purgeEmptyCategories());
+
     const reorderMenuBtn = el.querySelector('#reorder-menu-btn');
     if (reorderMenuBtn) reorderMenuBtn.addEventListener('click', () => reorderCatsModal());
 
     const navReorderBtn = el.querySelector('#nav-reorder-btn');
     if (navReorderBtn) navReorderBtn.addEventListener('click', () => reorderCatsModal());
+
+    // Category delete buttons from sub-nav
+    el.querySelectorAll('[data-cat-del]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const cId = btn.getAttribute('data-cat-del');
+        const targetCat = cats.find((c) => c.id === cId);
+        if (targetCat) confirmDeleteCategory(targetCat);
+      });
+    });
 
     // Category Up / Down buttons in navigation
     el.querySelectorAll('[data-cat-up]').forEach((btn) => {
@@ -521,6 +587,9 @@ RMTP.views.procedures = function (el, params) {
           '</div>' +
         '</div>',
       footer:
+        (cats.length > 1
+          ? '<button type="button" id="tab-del-btn" class="btn btn-danger mr-auto flex items-center gap-1.5 shadow-2xs">' + ui.icon('trash', 'w-3.5 h-3.5') + '<span>Delete Category</span></button>'
+          : '') +
         '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
         '<button class="btn btn-primary" data-save data-primary>Save Order</button>',
     });
@@ -528,6 +597,13 @@ RMTP.views.procedures = function (el, params) {
     renderTabItems();
 
     m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
+    const delBtn = m.root.querySelector('#tab-del-btn');
+    if (delBtn) {
+      delBtn.addEventListener('click', () => {
+        m.close();
+        confirmDeleteCategory(cat);
+      });
+    }
     m.root.querySelector('[data-save]').addEventListener('click', () => {
       const newName = m.root.querySelector('#tab-name').value.trim() || cat.name;
       cat.name = newName;
@@ -549,20 +625,28 @@ RMTP.views.procedures = function (el, params) {
     function renderCatsList() {
       const container = m.root.querySelector('#reorder-cats-list');
       if (!container) return;
-      container.innerHTML = catsCopy.map((c, idx) => (
-        '<div class="p-2.5 rounded-lg bg-panel2 border border-line flex items-center justify-between gap-2">' +
-          '<div class="flex items-center gap-2.5 min-w-0 flex-1">' +
-            '<span class="text-xs font-semibold text-muted font-mono w-6">#' + (idx + 1) + '</span>' +
-            '<span class="text-accent shrink-0">' + ui.icon(c.icon, 'w-4 h-4') + '</span>' +
-            '<span class="text-sm font-medium text-ink truncate">' + ui.esc(c.name) + '</span>' +
-            '<span class="text-xs text-muted shrink-0">(' + (c.items ? c.items.length : 0) + ' docs)</span>' +
-          '</div>' +
-          '<div class="flex items-center gap-1 shrink-0">' +
-            '<button type="button" data-rc-up="' + idx + '" class="btn btn-ghost !p-1 text-xs" title="Move Up" ' + (idx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3.5 h-3.5') + '</button>' +
-            '<button type="button" data-rc-down="' + idx + '" class="btn btn-ghost !p-1 text-xs" title="Move Down" ' + (idx === catsCopy.length - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</button>' +
-          '</div>' +
-        '</div>'
-      )).join('');
+      container.innerHTML = catsCopy.map((c, idx) => {
+        const isCatEmpty = !c.items || c.items.length === 0;
+        return (
+          '<div class="p-2.5 rounded-lg bg-panel2 border border-line flex items-center justify-between gap-2">' +
+            '<div class="flex items-center gap-2.5 min-w-0 flex-1">' +
+              '<span class="text-xs font-semibold text-muted font-mono w-6">#' + (idx + 1) + '</span>' +
+              '<span class="text-accent shrink-0">' + ui.icon(c.icon, 'w-4 h-4') + '</span>' +
+              '<span class="text-sm font-medium text-ink truncate">' + ui.esc(c.name) + '</span>' +
+              (isCatEmpty
+                ? '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 shrink-0">Empty</span>'
+                : '<span class="text-xs text-muted shrink-0">(' + c.items.length + ' docs)</span>') +
+            '</div>' +
+            '<div class="flex items-center gap-1 shrink-0">' +
+              '<button type="button" data-rc-up="' + idx + '" class="btn btn-ghost !p-1 text-xs" title="Move Up" ' + (idx === 0 ? 'disabled' : '') + '>' + ui.icon('arrowU', 'w-3.5 h-3.5') + '</button>' +
+              '<button type="button" data-rc-down="' + idx + '" class="btn btn-ghost !p-1 text-xs" title="Move Down" ' + (idx === catsCopy.length - 1 ? 'disabled' : '') + '>' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</button>' +
+              (catsCopy.length > 1 ? (
+                '<button type="button" data-rc-del="' + c.id + '" class="btn btn-ghost !p-1 text-xs text-muted hover:text-danger ml-0.5" title="Delete category ' + ui.esc(c.name) + '">' + ui.icon('trash', 'w-3.5 h-3.5') + '</button>'
+              ) : '') +
+            '</div>' +
+          '</div>'
+        );
+      }).join('');
 
       container.querySelectorAll('[data-rc-up]').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -586,14 +670,50 @@ RMTP.views.procedures = function (el, params) {
           }
         });
       });
+      container.querySelectorAll('[data-rc-del]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const cId = btn.getAttribute('data-rc-del');
+          const target = catsCopy.find((c) => c.id === cId);
+          if (!target) return;
+          if (catsCopy.length <= 1) {
+            ui.toast('Cannot delete the last remaining category', 'danger');
+            return;
+          }
+          if (!target.items || target.items.length === 0) {
+            store.remove('procedures', target.id);
+            catsCopy = catsCopy.filter((c) => c.id !== target.id);
+            renderCatsList();
+            ui.toast('Deleted empty category \u201c' + target.name + '\u201d', 'ok');
+            if (target.id === cat.id) {
+              const remaining = store.all('procedures');
+              if (remaining[0]) {
+                location.hash = '#/procedures/' + remaining[0].id;
+              }
+            }
+          } else {
+            m.close();
+            confirmDeleteCategory(target);
+          }
+        });
+      });
     }
+
+    const currentEmptyCount = catsCopy.filter((c) => !c.items || c.items.length === 0).length;
 
     const m = ui.modal({
       title: 'Reorder Menu Categories',
       size: 'md:max-w-md',
       body:
         '<div class="grid gap-3">' +
-          '<p class="text-xs text-muted">Rearrange category tabs in the navigation menu. Order updates immediately for all users upon save.</p>' +
+          '<p class="text-xs text-muted">Rearrange category tabs in the navigation menu, or delete unwanted categories.</p>' +
+          (currentEmptyCount > 0 ? (
+            '<div class="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-2 shadow-2xs">' +
+              '<span class="text-xs text-amber-300 font-medium">Found ' + currentEmptyCount + ' empty category tab(s)</span>' +
+              '<button type="button" id="rc-purge-empty" class="btn btn-danger !py-1 !px-2.5 text-xs flex items-center gap-1 font-semibold shadow-2xs">' +
+                ui.icon('trash', 'w-3 h-3') + '<span>Delete All Empty</span>' +
+              '</button>' +
+            '</div>'
+          ) : '') +
           '<div id="reorder-cats-list" class="grid gap-2 max-h-80 overflow-y-auto pr-1"></div>' +
         '</div>',
       footer:
@@ -603,12 +723,158 @@ RMTP.views.procedures = function (el, params) {
 
     renderCatsList();
 
+    const purgeEmptyBtn = m.root.querySelector('#rc-purge-empty');
+    if (purgeEmptyBtn) {
+      purgeEmptyBtn.addEventListener('click', () => {
+        m.close();
+        purgeEmptyCategories();
+      });
+    }
+
     m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
     m.root.querySelector('[data-save]').addEventListener('click', () => {
       store.write('procedures', catsCopy);
       m.close();
       ui.toast('Menu categories order saved', 'ok');
       RMTP.views.procedures(el, [cat.id]);
+    });
+  }
+
+  /* ---------- Category Deletion & Empty Tab Purging ---------- */
+  function confirmDeleteCategory(catObj) {
+    if (!isAdmin) {
+      ui.toast('Only Admins or Managers can delete categories.', 'danger');
+      return;
+    }
+    const allProcs = store.all('procedures');
+    if (allProcs.length <= 1) {
+      ui.toast('Cannot delete the only remaining category tab.', 'danger');
+      return;
+    }
+
+    const hasItems = catObj.items && catObj.items.length > 0;
+    const otherCats = allProcs.filter((c) => c.id !== catObj.id);
+
+    if (!hasItems) {
+      const m = ui.modal({
+        title: 'Delete Empty Category Tab',
+        size: 'md:max-w-md',
+        body:
+          '<div class="space-y-3">' +
+            '<p class="text-sm text-ink">Delete the empty category tab <strong>\u201c' + ui.esc(catObj.name) + '\u201d</strong>?</p>' +
+            '<p class="text-xs text-muted">This category contains 0 procedures and will be permanently removed.</p>' +
+          '</div>',
+        footer:
+          '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
+          '<button class="btn btn-danger flex items-center gap-1.5 shadow-2xs" id="del-cat-confirm-btn">' +
+            ui.icon('trash', 'w-3.5 h-3.5') + '<span>Delete Category</span>' +
+          '</button>',
+      });
+
+      m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
+      m.root.querySelector('#del-cat-confirm-btn').addEventListener('click', () => {
+        store.remove('procedures', catObj.id);
+        m.close();
+        ui.toast('Deleted category \u201c' + catObj.name + '\u201d', 'ok');
+        const remaining = store.all('procedures');
+        const nextCat = remaining[0];
+        location.hash = nextCat ? '#/procedures/' + nextCat.id : '#/procedures';
+        RMTP.views.procedures(el, nextCat ? [nextCat.id] : []);
+      });
+      return;
+    }
+
+    // Category with procedures: offer transfer or delete all
+    const m = ui.modal({
+      title: 'Delete Category \u00b7 ' + ui.esc(catObj.name),
+      size: 'md:max-w-md',
+      body:
+        '<div class="space-y-4 text-xs">' +
+          '<div class="p-3 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300 flex items-start gap-2.5">' +
+            ui.icon('warning', 'w-5 h-5 text-amber-400 shrink-0 mt-0.5') +
+            '<div>' +
+              '<p class="font-bold text-sm text-ink">Category contains ' + catObj.items.length + ' procedure(s)</p>' +
+              '<p class="text-xs text-muted mt-1">What would you like to do with the documents inside <strong>' + ui.esc(catObj.name) + '</strong>?</p>' +
+            '</div>' +
+          '</div>' +
+          '<div class="space-y-2">' +
+            '<label class="block font-semibold text-ink">Transfer procedures to:</label>' +
+            '<select id="del-transfer-dest" class="field text-xs font-medium">' +
+              otherCats.map((c) => '<option value="' + ui.esc(c.id) + '">Move to ' + ui.esc(c.name) + ' (' + (c.items ? c.items.length : 0) + ' docs)</option>').join('') +
+              '<option value="__purge__">\u26a0\ufe0f Delete category AND permanently delete all ' + catObj.items.length + ' procedure(s)</option>' +
+            '</select>' +
+          '</div>' +
+        '</div>',
+      footer:
+        '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
+        '<button class="btn btn-danger flex items-center gap-1.5 shadow-2xs" id="del-cat-confirm-btn">' +
+          ui.icon('trash', 'w-3.5 h-3.5') + '<span>Confirm Delete</span>' +
+        '</button>',
+    });
+
+    m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
+    m.root.querySelector('#del-cat-confirm-btn').addEventListener('click', () => {
+      const destId = m.root.querySelector('#del-transfer-dest').value;
+      if (destId !== '__purge__') {
+        const destCat = store.all('procedures').find((c) => c.id === destId);
+        if (destCat) {
+          destCat.items = (destCat.items || []).concat(catObj.items);
+          store.upsert('procedures', destCat);
+        }
+      }
+      store.remove('procedures', catObj.id);
+      m.close();
+      ui.toast('Deleted category \u201c' + catObj.name + '\u201d', 'ok');
+      const remaining = store.all('procedures');
+      const nextCat = (destId !== '__purge__' ? remaining.find((c) => c.id === destId) : null) || remaining[0];
+      location.hash = nextCat ? '#/procedures/' + nextCat.id : '#/procedures';
+      RMTP.views.procedures(el, nextCat ? [nextCat.id] : []);
+    });
+  }
+
+  function purgeEmptyCategories() {
+    if (!isAdmin) {
+      ui.toast('Only Admins or Managers can delete categories.', 'danger');
+      return;
+    }
+    const allProcs = store.all('procedures');
+    const emptyList = allProcs.filter((c) => !c.items || c.items.length === 0);
+    if (!emptyList.length) {
+      ui.toast('No empty categories found.', 'info');
+      return;
+    }
+    if (emptyList.length >= allProcs.length) {
+      ui.toast('Cannot delete all categories \u2014 at least one category must remain.', 'danger');
+      return;
+    }
+
+    const m = ui.modal({
+      title: 'Delete All Empty Categories',
+      size: 'md:max-w-md',
+      body:
+        '<div class="space-y-3 text-xs">' +
+          '<p class="text-sm text-ink">Found <strong>' + emptyList.length + ' empty category tab(s)</strong> with no procedures:</p>' +
+          '<div class="p-2.5 rounded-lg bg-panel2 border border-line text-muted max-h-40 overflow-y-auto font-mono text-[11px] leading-relaxed">' +
+            emptyList.map((c) => '\u2022 ' + ui.esc(c.name)).join('<br>') +
+          '</div>' +
+          '<p class="text-muted">Do you want to permanently delete all ' + emptyList.length + ' empty category tabs?</p>' +
+        '</div>',
+      footer:
+        '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
+        '<button class="btn btn-danger flex items-center gap-1.5 shadow-2xs" id="purge-confirm-btn">' +
+          ui.icon('trash', 'w-3.5 h-3.5') + '<span>Delete ' + emptyList.length + ' Empty Tabs</span>' +
+        '</button>',
+    });
+
+    m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
+    m.root.querySelector('#purge-confirm-btn').addEventListener('click', () => {
+      emptyList.forEach((c) => store.remove('procedures', c.id));
+      m.close();
+      ui.toast('Deleted ' + emptyList.length + ' empty categories', 'ok');
+      const remaining = store.all('procedures');
+      const nextCat = remaining[0];
+      location.hash = nextCat ? '#/procedures/' + nextCat.id : '#/procedures';
+      RMTP.views.procedures(el, nextCat ? [nextCat.id] : []);
     });
   }
 };

@@ -591,6 +591,8 @@ RMTP.views.rota = (function () {
           status: isBookingNoTech ? 'confirmed' : (b.status || 'pencil'),
           rate: b.rate,
           notes: b.notes,
+          splitFromId: b.splitFromId || '',
+          legIndex: b.legIndex || '',
           isUnfilled: false,
           isNoTech: isBookingNoTech,
         };
@@ -634,6 +636,8 @@ RMTP.views.rota = (function () {
               userName: tName,
               role: isNoTech ? 'None' : (t.role || 'Tech'),
               status: isSlotUnfilled ? 'unfilled' : (t.bookingStatus || 'confirmed'),
+              splitFromId: t.splitFromId || '',
+              legIndex: t.legIndex || '',
               notes: ev.notes || ev.techInfo || (ev.artifaxHistory && ev.artifaxHistory.length ? ev.artifaxHistory[ev.artifaxHistory.length - 1].notes : '') || ev.artifaxNotes || '',
               isUnfilled: isSlotUnfilled,
               isNoTech: isNoTech,
@@ -952,15 +956,29 @@ RMTP.views.rota = (function () {
       if (isCompact) {
         return `
           <div data-schedule-item="${item.key}" class="p-3 rounded-xl border border-l-[3.5px] ${spaceCls.bar} ${item.isUnfilled ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400' : 'border-line bg-panel2/80 hover:bg-panel2 hover:border-line/90'} transition shadow-2xs cursor-pointer group select-none flex flex-col gap-2 text-left relative">
-            <!-- Line 1: Space short tag & Status Indicator -->
+            <!-- Line 1: Space short tag, Leg indicator & Status -->
             <div class="flex items-center justify-between gap-1.5 text-[10px]">
-              <span class="font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider text-[9px] ${spaceCls.tag} truncate max-w-[120px]" title="${ui.esc(item.space)}">
-                ${ui.esc(spaceCls.short || item.space)}
-              </span>
-              <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] font-semibold border ${item.isUnfilled ? 'border-amber-500/30 bg-amber-500/10 text-amber-400' : 'border-line bg-panel text-muted'} shrink-0">
-                <span class="w-1.5 h-1.5 rounded-full ${statusMeta.dot}"></span>
-                <span>${statusMeta.label}</span>
-              </span>
+              <div class="flex items-center gap-1 min-w-0">
+                <span class="font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider text-[9px] ${spaceCls.tag} truncate max-w-[100px]" title="${ui.esc(item.space)}">
+                  ${ui.esc(spaceCls.short || item.space)}
+                </span>
+                ${(item.splitFromId || item.legIndex) ? `
+                  <span class="px-1.5 py-0.2 rounded text-[8.5px] font-mono font-bold bg-accent/20 text-accent border border-accent/40 shrink-0" title="Split Handover Shift">
+                    Leg ${item.legIndex || 1}
+                  </span>
+                ` : ''}
+              </div>
+              <div class="flex items-center gap-1 shrink-0">
+                ${!item.isNoTech ? `
+                  <button type="button" data-split-shift="${item.key}" class="p-1 rounded text-muted hover:text-accent hover:bg-panel transition" title="Split shift into 2 handover shifts (e.g. 6h + 6h)">
+                    ${ui.icon('split', 'w-3 h-3 text-accent')}
+                  </button>
+                ` : ''}
+                <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] font-semibold border ${item.isUnfilled ? 'border-amber-500/30 bg-amber-500/10 text-amber-400' : 'border-line bg-panel text-muted'} shrink-0">
+                  <span class="w-1.5 h-1.5 rounded-full ${statusMeta.dot}"></span>
+                  <span>${statusMeta.label}</span>
+                </span>
+              </div>
             </div>
 
             <!-- Line 2: Event Name -->
@@ -969,8 +987,8 @@ RMTP.views.rota = (function () {
             </div>
 
             <!-- Line 3: Dedicated Time Badge (Zero Clipping Guarantee) -->
-            <div class="flex items-center">
-              <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-panel border border-line/75 font-mono text-[10.5px] font-semibold text-ink/90 tabular-nums shadow-2xs">
+            <div class="flex items-center justify-between gap-1 text-[10.5px]">
+              <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-panel border border-line/75 font-mono font-semibold text-ink/90 tabular-nums shadow-2xs">
                 ${ui.icon('clock', 'w-3 h-3 text-muted shrink-0')}
                 <span class="whitespace-nowrap">${timeStr}</span>
               </div>
@@ -1006,15 +1024,31 @@ RMTP.views.rota = (function () {
 
       // Detailed Mode
       const initialLetter = ((item.userName || 'Tech')[0] || 'T').toUpperCase();
+      const durationHrs = RMTP.getShiftDurationHours ? RMTP.getShiftDurationHours(item.startTime, item.finishTime) : 0;
       return `
         <div data-schedule-item="${item.key}" class="p-3 rounded-xl border border-l-[4px] ${spaceCls.bar} ${item.isUnfilled ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400' : 'border-line bg-panel2/80 hover:bg-panel2 hover:border-line/90'} transition shadow-2xs cursor-pointer group select-none flex flex-col gap-2 text-left relative">
-          <!-- Line 1: Space & Status -->
+          <!-- Line 1: Space, Leg badge & Actions -->
           <div class="flex items-center justify-between gap-1.5">
-            <span class="font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider text-[9px] ${spaceCls.tag} truncate max-w-[120px]">${ui.esc(item.space)}</span>
-            <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] font-semibold border ${item.isUnfilled ? 'border-amber-500/30 bg-amber-500/10 text-amber-400' : 'border-line bg-panel text-ink'} shrink-0">
-              <span class="w-1.5 h-1.5 rounded-full ${statusMeta.dot}"></span>
-              <span>${statusMeta.label}</span>
-            </span>
+            <div class="flex items-center gap-1.5 min-w-0">
+              <span class="font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider text-[9px] ${spaceCls.tag} truncate max-w-[120px]">${ui.esc(item.space)}</span>
+              ${(item.splitFromId || item.legIndex) ? `
+                <span class="px-2 py-0.5 rounded text-[9px] font-mono font-bold bg-accent/15 text-accent border border-accent/30 shrink-0">
+                  Handover Leg ${item.legIndex || 1}
+                </span>
+              ` : ''}
+            </div>
+            <div class="flex items-center gap-1.5 shrink-0">
+              ${!item.isNoTech ? `
+                <button type="button" data-split-shift="${item.key}" class="px-2 py-0.5 rounded text-[10px] font-bold border border-accent/40 text-accent hover:bg-accent/10 transition flex items-center gap-1 shadow-2xs" title="Split shift into 2 handover shifts (e.g. 6h + 6h)">
+                  ${ui.icon('split', 'w-3 h-3 text-accent')}
+                  <span>Split</span>
+                </button>
+              ` : ''}
+              <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] font-semibold border ${item.isUnfilled ? 'border-amber-500/30 bg-amber-500/10 text-amber-400' : 'border-line bg-panel text-ink'} shrink-0">
+                <span class="w-1.5 h-1.5 rounded-full ${statusMeta.dot}"></span>
+                <span>${statusMeta.label}</span>
+              </span>
+            </div>
           </div>
 
           <!-- Line 2: Event Name -->
@@ -1023,11 +1057,12 @@ RMTP.views.rota = (function () {
           </div>
 
           <!-- Line 3: Dedicated Time Badge (Zero Clipping Guarantee) -->
-          <div class="flex items-center">
+          <div class="flex items-center gap-2 flex-wrap">
             <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-panel border border-line/80 font-mono text-xs font-bold text-ink tabular-nums shadow-2xs">
               ${ui.icon('clock', 'w-3.5 h-3.5 text-accent shrink-0')}
               <span class="whitespace-nowrap">${timeStr}</span>
             </div>
+            ${durationHrs > 0 ? `<span class="font-mono text-[10px] text-muted px-1.5 py-0.5 rounded bg-panel border border-line">${durationHrs}h</span>` : ''}
           </div>
 
           <!-- Line 4: Technician Profile & Assignment or Self-Service -->
@@ -1546,6 +1581,10 @@ RMTP.views.rota = (function () {
                     ${ui.icon('plus', 'w-3.5 h-3.5')}
                     <span>Add Shift</span>
                   </button>
+                  <button type="button" data-add-extra-staff="${ui.esc(spaceName)}" class="btn btn-ghost text-xs !py-1 !px-2.5 border border-accent/40 text-accent font-semibold flex items-center gap-1 hover:bg-accent/10 transition shadow-2xs" title="Add additional staff / extra crew member to ${ui.esc(spaceName)}">
+                    ${ui.icon('users', 'w-3.5 h-3.5 text-accent')}
+                    <span>+ Additional Tech</span>
+                  </button>
                 </div>
               </div>
 
@@ -1589,11 +1628,25 @@ RMTP.views.rota = (function () {
                     ${spaceItems.length === 0 ? `
                       <div class="col-span-full py-6 text-center text-xs text-muted/60 italic rounded-lg border border-dashed border-line/40 flex flex-col items-center justify-center gap-1.5">
                         <span>No shifts or events scheduled in ${ui.esc(spaceName)} on this date</span>
-                        <button type="button" data-add-space-shift="${ui.esc(spaceName)}" class="text-xs font-semibold text-accent hover:underline">
-                          + Schedule Shift
-                        </button>
+                        <div class="flex items-center gap-2">
+                          <button type="button" data-add-space-shift="${ui.esc(spaceName)}" class="text-xs font-semibold text-accent hover:underline">
+                            + Schedule Shift
+                          </button>
+                          <span>·</span>
+                          <button type="button" data-add-extra-staff="${ui.esc(spaceName)}" class="text-xs font-semibold text-accent hover:underline">
+                            + Add Tech
+                          </button>
+                        </div>
                       </div>
-                    ` : spaceItems.map((item) => renderCardHtml(item, spaceName)).join('')}
+                    ` : (spaceItems.map((item) => renderCardHtml(item, spaceName)).join('') + `
+                      <div class="rounded-xl border border-dashed border-line/70 hover:border-accent/60 bg-panel/30 hover:bg-panel2/50 p-4 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition text-muted hover:text-ink min-h-[110px] text-center group" data-add-extra-staff="${ui.esc(spaceName)}" title="Add extra staff or additional crew member to ${ui.esc(spaceName)}">
+                        <div class="w-6 h-6 rounded-full bg-accent/10 text-accent group-hover:bg-accent/20 flex items-center justify-center transition">
+                          ${ui.icon('plus', 'w-3.5 h-3.5')}
+                        </div>
+                        <span class="text-xs font-semibold text-ink group-hover:text-accent transition">+ Add Staff to ${ui.esc(spaceName)}</span>
+                        <span class="text-[10px] text-muted">Additional tech, stagehand or split handover</span>
+                      </div>
+                    `)}
                   </div>
                 </div>
               ` : `
@@ -2212,6 +2265,37 @@ RMTP.views.rota = (function () {
               status: item.status,
             });
           }
+        });
+      });
+
+      // Split Shift Action (Direct 1-Click trigger from Card)
+      tabContainer.querySelectorAll('[data-split-shift]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const key = btn.getAttribute('data-split-shift');
+          const item = allScheduleItemsMap.get(key);
+          if (item) {
+            openSplitShiftModal(item.booking || item);
+          }
+        });
+      });
+
+      // Quick Add Extra Staff / Additional Tech to Space
+      tabContainer.querySelectorAll('[data-add-extra-staff]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const sp = btn.getAttribute('data-add-extra-staff');
+          const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(sp) : null;
+          const defaultRole = (specs && specs.rolesList && specs.rolesList.length) ? specs.rolesList[0] : 'Sound';
+          openBookingModal({
+            space: sp,
+            role: defaultRole,
+            date: state.selectedDay || formatDate(new Date()),
+            startTime: '17:00',
+            finishTime: '23:30',
+            status: 'pencil',
+            notes: 'Additional Staff',
+          });
         });
       });
     }
@@ -2873,6 +2957,25 @@ RMTP.views.rota = (function () {
               </div>
             </div>
 
+            <!-- Shift Duration & Split Shift Actions -->
+            <div class="flex items-center justify-between p-2.5 rounded-lg bg-panel2/70 border border-line flex-wrap gap-2 shadow-2xs">
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-muted font-medium">Shift Duration:</span>
+                <span id="b-shift-duration-badge" class="font-mono font-bold text-accent px-2 py-0.5 rounded bg-panel border border-line text-xs">
+                  ${RMTP.getShiftDurationHours ? RMTP.getShiftDurationHours(initialData.startTime || '17:00', initialData.finishTime || '23:30') : 6.5}h
+                </span>
+                ${(initialData.splitFromId || initialData.legIndex) ? `
+                  <span class="text-[10px] px-2 py-0.5 rounded font-mono font-bold bg-accent/15 text-accent border border-accent/30">
+                    Handover Leg ${initialData.legIndex || 1}
+                  </span>
+                ` : ''}
+              </div>
+              <button type="button" id="b-btn-split-this-shift" class="px-2.5 py-1 rounded text-xs font-semibold border border-accent/50 text-accent hover:bg-accent/10 transition flex items-center gap-1.5 shadow-2xs cursor-pointer" title="Split this shift into 2 handover shifts (e.g. 6h + 6h with individual start/finish times)">
+                ${ui.icon('split', 'w-3.5 h-3.5')}
+                <span>Split Shift into Handover Legs</span>
+              </button>
+            </div>
+
             <!-- Technician Picker with LIVE AVAILABILITY STATUS -->
             <div>
               <div class="flex items-center justify-between mb-1">
@@ -2937,15 +3040,17 @@ RMTP.views.rota = (function () {
         `,
         footer: [
           ...(!isNew ? [
-            '<button type="button" id="b-delete" class="btn btn-danger mr-auto flex items-center gap-1.5">' + ui.icon('trash', 'w-4 h-4') + '<span>Delete Shift</span></button>'
+            '<button type="button" id="b-delete" class="btn btn-danger mr-auto flex items-center gap-1.5">' + ui.icon('trash', 'w-4 h-4') + '<span>Delete</span></button>'
           ] : []),
+          '<button type="button" id="b-modal-split-btn" class="btn btn-ghost border border-accent/40 text-accent hover:bg-accent/10 flex items-center gap-1.5">' + ui.icon('split', 'w-4 h-4') + '<span>Split Shift</span></button>',
           '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
           '<button type="button" id="b-save" class="btn btn-primary font-semibold flex items-center gap-1.5 shadow-sm" data-primary>' + ui.icon('check', 'w-4 h-4') + '<span>Save Booking</span></button>',
         ].join(''),
         actions: [
           ...(!isNew ? [
-            '<button type="button" id="b-delete" class="btn btn-danger mr-auto flex items-center gap-1.5">' + ui.icon('trash', 'w-4 h-4') + '<span>Delete Shift</span></button>'
+            '<button type="button" id="b-delete" class="btn btn-danger mr-auto flex items-center gap-1.5">' + ui.icon('trash', 'w-4 h-4') + '<span>Delete</span></button>'
           ] : []),
+          '<button type="button" id="b-modal-split-btn" class="btn btn-ghost border border-accent/40 text-accent hover:bg-accent/10 flex items-center gap-1.5">' + ui.icon('split', 'w-4 h-4') + '<span>Split Shift</span></button>',
           '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
           '<button type="button" id="b-save" class="btn btn-primary font-semibold flex items-center gap-1.5 shadow-sm" data-primary>' + ui.icon('check', 'w-4 h-4') + '<span>Save Booking</span></button>',
         ]
@@ -3118,10 +3223,47 @@ RMTP.views.rota = (function () {
             dateInp.value = ev.date;
             if (ev.startTime) m.root.querySelector('#b-start').value = ev.startTime;
             if (ev.finishTime) m.root.querySelector('#b-end').value = ev.finishTime;
+            updateDurationBadge();
             updateAvailabilityCheck();
             updateSpaceSpecsBanner();
           }
         }
+      });
+
+      function updateDurationBadge() {
+        const sTime = m.root.querySelector('#b-start')?.value || '17:00';
+        const eTime = m.root.querySelector('#b-end')?.value || '23:30';
+        const dur = RMTP.getShiftDurationHours ? RMTP.getShiftDurationHours(sTime, eTime) : 0;
+        const durBadge = m.root.querySelector('#b-shift-duration-badge');
+        if (durBadge) durBadge.textContent = dur + 'h';
+      }
+      m.root.querySelector('#b-start')?.addEventListener('change', updateDurationBadge);
+      m.root.querySelector('#b-end')?.addEventListener('change', updateDurationBadge);
+
+      function triggerSplitFromBooking() {
+        const currentFormShift = {
+          id: initialData.id,
+          eventId: eventSel.value || initialData.eventId,
+          eventName: eventNameInp.value.trim() || initialData.eventName || 'Venue Shift',
+          space: spaceSel.value,
+          date: dateInp.value,
+          startTime: m.root.querySelector('#b-start')?.value || initialData.startTime || '10:00',
+          finishTime: m.root.querySelector('#b-end')?.value || initialData.finishTime || '22:00',
+          userId: userSel.value && userSel.value !== '__custom__' && userSel.value !== '__notech__' ? userSel.value : '',
+          userName: userSel.value === '__custom__' ? (customNameInp?.value || '') : (userSel.value ? '' : initialData.userName),
+          role: m.root.querySelector('#b-role')?.value || initialData.role || 'Sound',
+          status: m.root.querySelector('#b-status')?.value || initialData.status || 'pencil',
+          rate: m.root.querySelector('#b-rate')?.value || '',
+          notes: m.root.querySelector('#b-notes')?.value || '',
+          splitFromId: initialData.splitFromId || '',
+          legIndex: initialData.legIndex || '',
+        };
+        m.close();
+        openSplitShiftModal(currentFormShift);
+      }
+
+      m.root.querySelectorAll('#b-btn-split-this-shift, #b-modal-split-btn').forEach((btn) => {
+        btn.addEventListener('click', triggerSplitFromBooking);
       });
 
       // Save
@@ -3257,6 +3399,479 @@ RMTP.views.rota = (function () {
           }
         });
       }
+    }
+
+    // ------------------------------------------------------------------------
+    // SPLIT SHIFT MODAL (Individual Start/Finish Times & Handover Management)
+    // ------------------------------------------------------------------------
+    function openSplitShiftModal(initialShift = {}) {
+      const allUsers = getAllUsers();
+      const events = getAllEvents();
+      const linkedEvent = initialShift.eventId ? store.find('advancing', initialShift.eventId) : null;
+      const space = initialShift.space || (linkedEvent && linkedEvent.space ? (Array.isArray(linkedEvent.space) ? linkedEvent.space[0] : linkedEvent.space) : 'The Stage');
+      const eventName = initialShift.eventName || (linkedEvent ? linkedEvent.name : 'Shift');
+      const date = initialShift.date || (linkedEvent ? linkedEvent.date : (state.selectedDay || formatDate(new Date())));
+      const origStart = initialShift.startTime || (linkedEvent ? linkedEvent.startTime : '10:00') || '10:00';
+      const origEnd = initialShift.finishTime || (linkedEvent ? linkedEvent.finishTime : '22:00') || '22:00';
+      const role = initialShift.role || 'Sound';
+      const originalDur = RMTP.getShiftDurationHours ? RMTP.getShiftDurationHours(origStart, origEnd) : 12;
+
+      // Calculate initial 50/50 split
+      const initCalc = RMTP.calculateSplitTimes ? RMTP.calculateSplitTimes(origStart, origEnd, 0.5, 0) : {
+        leg1Start: origStart,
+        leg1End: '16:00',
+        leg2Start: '16:00',
+        leg2End: origEnd,
+        leg1Hours: 6,
+        leg2Hours: 6,
+        totalHours: originalDur,
+        handoverTime: '16:00',
+      };
+
+      const m = ui.modal({
+        title: `Split Shift · ${ui.esc(space)} (${ui.esc(role)})`,
+        body: `
+          <div class="space-y-4 text-xs">
+            <!-- Shift Header & Context Banner -->
+            <div class="p-3 rounded-xl bg-panel2/80 border border-line flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+              <div class="space-y-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-bold text-ink text-sm truncate">${ui.esc(eventName)}</span>
+                  <span class="font-bold px-2 py-0.5 rounded text-[10px] bg-accent/15 text-accent border border-accent/30">${ui.esc(space)}</span>
+                  <span class="px-2 py-0.5 rounded text-[10px] bg-panel border border-line text-ink font-semibold">${ui.esc(role)}</span>
+                </div>
+                <div class="flex items-center gap-3 text-muted text-[11px] font-mono flex-wrap">
+                  <span>📅 ${formatDisplayDate(date)}</span>
+                  <span>⏰ Window: ${origStart} – ${origEnd}</span>
+                  <span class="font-bold text-accent">(${originalDur}h Total)</span>
+                  ${initialShift.userName && initialShift.userName !== 'Unassigned' && initialShift.userName !== 'No Tech Required' ? `<span class="text-ink font-sans">👤 Assigned: <b>${ui.esc(initialShift.userName)}</b></span>` : '<span class="text-amber-400 font-sans italic">Unassigned slot</span>'}
+                </div>
+              </div>
+              <div class="shrink-0 flex items-center gap-1.5">
+                <span class="text-[11px] px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/25 font-semibold flex items-center gap-1">
+                  ${ui.icon('split', 'w-3.5 h-3.5 text-accent')}
+                  <span>Long Shift Handover</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- Split Presets & Overlap Buffer -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-xl bg-panel border border-line/60">
+              <div>
+                <label class="block font-semibold text-muted mb-1.5">Quick Split Preset</label>
+                <div class="grid grid-cols-3 gap-1.5" id="split-preset-btns">
+                  <button type="button" data-split-preset="50-50" class="btn btn-ghost !p-1.5 text-center text-[11px] border border-accent/50 bg-accent/10 text-accent font-bold rounded">
+                    50 / 50<br><span class="text-[9.5px] font-normal opacity-80">Equal Half</span>
+                  </button>
+                  <button type="button" data-split-preset="60-40" class="btn btn-ghost !p-1.5 text-center text-[11px] border border-line hover:border-accent text-ink font-bold rounded">
+                    60 / 40<br><span class="text-[9.5px] font-normal opacity-80">Early Heavy</span>
+                  </button>
+                  <button type="button" data-split-preset="40-60" class="btn btn-ghost !p-1.5 text-center text-[11px] border border-line hover:border-accent text-ink font-bold rounded">
+                    40 / 60<br><span class="text-[9.5px] font-normal opacity-80">Late Heavy</span>
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label class="block font-semibold text-muted mb-1.5">Handover Overlap Briefing</label>
+                <select id="split-overlap" class="field text-xs font-semibold">
+                  <option value="0" selected>0 min (Direct Handover at split point)</option>
+                  <option value="15">15 min Overlap (Briefing debrief)</option>
+                  <option value="30">30 min Overlap (Rehearsal &amp; audio handover)</option>
+                  <option value="60">60 min Overlap (Full joint changeover)</option>
+                </select>
+                <p class="text-[10.5px] text-muted mt-1">Leg 1 finishes after handover briefing so both techs overlap on site.</p>
+              </div>
+            </div>
+
+            <!-- Two Handover Legs side-by-side or stacked -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              <!-- LEG 1 CARD -->
+              <div class="p-3.5 rounded-xl border-2 border-emerald-500/30 bg-emerald-500/[0.03] space-y-3 relative shadow-2xs">
+                <div class="flex items-center justify-between border-b border-line/50 pb-2">
+                  <div class="flex items-center gap-1.5">
+                    <span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+                    <span class="font-bold text-ink text-xs uppercase tracking-wide">Leg 1 · Opening Shift</span>
+                  </div>
+                  <span id="split-leg1-dur-badge" class="font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded text-[11px] border border-emerald-500/30">
+                    ${initCalc.leg1Hours}h
+                  </span>
+                </div>
+
+                <div class="grid grid-cols-2 gap-2">
+                  <div>
+                    <label class="block font-semibold text-muted mb-1 text-[11px]">Start Time</label>
+                    <input type="time" id="split-leg1-start" class="field font-mono text-xs" value="${initCalc.leg1Start}" />
+                  </div>
+                  <div>
+                    <label class="block font-semibold text-muted mb-1 text-[11px]">Finish Time</label>
+                    <input type="time" id="split-leg1-end" class="field font-mono text-xs" value="${initCalc.leg1End}" />
+                  </div>
+                </div>
+
+                <div>
+                  <label class="block font-semibold text-muted mb-1 text-[11px]">Technician / Freelancer</label>
+                  <select id="split-leg1-user" class="field font-medium text-xs">
+                    <option value="">Select Technician for Leg 1…</option>
+                    <optgroup label="Available Technicians">
+                      ${allUsers.map((u) => `
+                        <option value="${u.id}" ${u.id === initialShift.userId ? 'selected' : ''}>
+                          ${ui.esc(auth.displayName(u))} (${ui.esc(u.position || 'Tech')})
+                        </option>
+                      `).join('')}
+                    </optgroup>
+                    <option value="__custom__" ${(!initialShift.userId && initialShift.userName && initialShift.userName !== 'Unassigned Tech' && !initialShift.isNoTech) ? 'selected' : ''}>+ Other / External Freelancer</option>
+                  </select>
+                  <div id="split-leg1-custom-wrap" class="${(!initialShift.userId && initialShift.userName && initialShift.userName !== 'Unassigned Tech' && !initialShift.isNoTech) ? 'block' : 'hidden'} mt-1.5">
+                    <input id="split-leg1-custom-name" class="field text-xs" value="${ui.esc(initialShift.userName && initialShift.userName !== 'Unassigned Tech' ? initialShift.userName : '')}" placeholder="Freelancer Name for Leg 1" />
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-2">
+                  <div>
+                    <label class="block font-semibold text-muted mb-1 text-[11px]">Discipline Role</label>
+                    <select id="split-leg1-role" class="field text-xs">
+                      ${RMTP.SHIFT_ROLES.map((r) => `
+                        <option value="${r}" ${r === role ? 'selected' : ''}>${r}</option>
+                      `).join('')}
+                    </select>
+                  </div>
+                  <div>
+                    <label class="block font-semibold text-muted mb-1 text-[11px]">Status</label>
+                    <select id="split-leg1-status" class="field text-xs font-semibold">
+                      <option value="confirmed" ${initialShift.status === 'confirmed' ? 'selected' : ''}>Confirmed</option>
+                      <option value="pencil" ${initialShift.status === 'pencil' ? 'selected' : ''}>Pencil Hold</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label class="block font-semibold text-muted mb-1 text-[11px]">Shift Note / Responsibilities</label>
+                  <input id="split-leg1-notes" class="field text-xs" value="Leg 1: Get-in, rig, sound checks &amp; rehearsal" placeholder="e.g. Get-in, soundcheck" />
+                </div>
+              </div>
+
+              <!-- LEG 2 CARD -->
+              <div class="p-3.5 rounded-xl border-2 border-sky-500/30 bg-sky-500/[0.03] space-y-3 relative shadow-2xs">
+                <div class="flex items-center justify-between border-b border-line/50 pb-2">
+                  <div class="flex items-center gap-1.5">
+                    <span class="w-2.5 h-2.5 rounded-full bg-sky-400"></span>
+                    <span class="font-bold text-ink text-xs uppercase tracking-wide">Leg 2 · Closing Shift</span>
+                  </div>
+                  <span id="split-leg2-dur-badge" class="font-mono font-bold text-sky-400 bg-sky-500/10 px-2 py-0.5 rounded text-[11px] border border-sky-500/30">
+                    ${initCalc.leg2Hours}h
+                  </span>
+                </div>
+
+                <div class="grid grid-cols-2 gap-2">
+                  <div>
+                    <label class="block font-semibold text-muted mb-1 text-[11px]">Start Time</label>
+                    <input type="time" id="split-leg2-start" class="field font-mono text-xs" value="${initCalc.leg2Start}" />
+                  </div>
+                  <div>
+                    <label class="block font-semibold text-muted mb-1 text-[11px]">Finish Time</label>
+                    <input type="time" id="split-leg2-end" class="field font-mono text-xs" value="${initCalc.leg2End}" />
+                  </div>
+                </div>
+
+                <div>
+                  <label class="block font-semibold text-muted mb-1 text-[11px]">Technician / Freelancer</label>
+                  <select id="split-leg2-user" class="field font-medium text-xs">
+                    <option value="">Select Handover Tech for Leg 2…</option>
+                    <optgroup label="Available Technicians">
+                      ${allUsers.map((u) => `
+                        <option value="${u.id}">
+                          ${ui.esc(auth.displayName(u))} (${ui.esc(u.position || 'Tech')})
+                        </option>
+                      `).join('')}
+                    </optgroup>
+                    <option value="__custom__">+ Other / External Freelancer</option>
+                  </select>
+                  <div id="split-leg2-custom-wrap" class="hidden mt-1.5">
+                    <input id="split-leg2-custom-name" class="field text-xs" placeholder="Freelancer Name for Leg 2" />
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-2">
+                  <div>
+                    <label class="block font-semibold text-muted mb-1 text-[11px]">Discipline Role</label>
+                    <select id="split-leg2-role" class="field text-xs">
+                      ${RMTP.SHIFT_ROLES.map((r) => `
+                        <option value="${r}" ${r === role ? 'selected' : ''}>${r}</option>
+                      `).join('')}
+                    </select>
+                  </div>
+                  <div>
+                    <label class="block font-semibold text-muted mb-1 text-[11px]">Status</label>
+                    <select id="split-leg2-status" class="field text-xs font-semibold">
+                      <option value="confirmed">Confirmed</option>
+                      <option value="pencil" selected>Pencil Hold</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label class="block font-semibold text-muted mb-1 text-[11px]">Shift Note / Responsibilities</label>
+                  <input id="split-leg2-notes" class="field text-xs" value="Leg 2: Show operation, changeovers &amp; packdown" placeholder="e.g. Show running, packdown" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Total Coverage & Additional Tech Option -->
+            <div class="p-3 rounded-lg bg-panel2 border border-line flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+              <div id="split-coverage-summary" class="flex items-center gap-2 flex-wrap">
+                <span class="text-muted">Total Scheduled Coverage:</span>
+                <span id="split-total-dur-text" class="font-mono font-bold text-accent">${initCalc.totalHours}h total</span>
+                <span class="text-muted">· Handover at: <b id="split-handover-text" class="text-ink font-mono">${initCalc.handoverTime}</b></span>
+              </div>
+              <button type="button" id="split-btn-add-extra-tech" class="btn btn-ghost text-xs !py-1 !px-2.5 border border-accent/40 text-accent hover:bg-accent/10 font-semibold flex items-center gap-1.5 shadow-2xs">
+                ${ui.icon('plus', 'w-3.5 h-3.5')}
+                <span>+ Add Extra Tech to ${ui.esc(space)}</span>
+              </button>
+            </div>
+          </div>
+        `,
+        footer: [
+          '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
+          '<button type="button" id="split-confirm-btn" class="btn btn-primary font-semibold flex items-center gap-1.5 shadow-sm" data-primary>' +
+            ui.icon('split', 'w-4 h-4') +
+            '<span>Confirm Split into 2 Shifts</span>' +
+          '</button>',
+        ].join(''),
+        actions: [
+          '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
+          '<button type="button" id="split-confirm-btn" class="btn btn-primary font-semibold flex items-center gap-1.5 shadow-sm" data-primary>' +
+            ui.icon('split', 'w-4 h-4') +
+            '<span>Confirm Split into 2 Shifts</span>' +
+          '</button>',
+        ]
+      });
+
+      // Recalculation logic
+      const leg1StartInp = m.root.querySelector('#split-leg1-start');
+      const leg1EndInp = m.root.querySelector('#split-leg1-end');
+      const leg2StartInp = m.root.querySelector('#split-leg2-start');
+      const leg2EndInp = m.root.querySelector('#split-leg2-end');
+      const overlapSel = m.root.querySelector('#split-overlap');
+
+      function updateLegBadges() {
+        const d1 = RMTP.getShiftDurationHours ? RMTP.getShiftDurationHours(leg1StartInp.value, leg1EndInp.value) : 0;
+        const d2 = RMTP.getShiftDurationHours ? RMTP.getShiftDurationHours(leg2StartInp.value, leg2EndInp.value) : 0;
+        const badge1 = m.root.querySelector('#split-leg1-dur-badge');
+        const badge2 = m.root.querySelector('#split-leg2-dur-badge');
+        const totalText = m.root.querySelector('#split-total-dur-text');
+        const handoverText = m.root.querySelector('#split-handover-text');
+        if (badge1) badge1.textContent = d1 + 'h';
+        if (badge2) badge2.textContent = d2 + 'h';
+        if (totalText) totalText.textContent = Math.round((d1 + d2) * 10) / 10 + 'h combined';
+        if (handoverText) handoverText.textContent = leg2StartInp.value;
+      }
+
+      [leg1StartInp, leg1EndInp, leg2StartInp, leg2EndInp].forEach((inp) => {
+        inp?.addEventListener('change', updateLegBadges);
+      });
+
+      // Preset click handler
+      m.root.querySelectorAll('[data-split-preset]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          m.root.querySelectorAll('[data-split-preset]').forEach((b) => {
+            b.className = 'btn btn-ghost !p-1.5 text-center text-[11px] border border-line hover:border-accent text-ink font-bold rounded';
+          });
+          btn.className = 'btn btn-ghost !p-1.5 text-center text-[11px] border border-accent/50 bg-accent/10 text-accent font-bold rounded';
+
+          const preset = btn.getAttribute('data-split-preset');
+          const ratio = preset === '60-40' ? 0.6 : (preset === '40-60' ? 0.4 : 0.5);
+          const overlap = parseInt(overlapSel.value, 10) || 0;
+          const calc = RMTP.calculateSplitTimes ? RMTP.calculateSplitTimes(origStart, origEnd, ratio, overlap) : initCalc;
+
+          leg1StartInp.value = calc.leg1Start;
+          leg1EndInp.value = calc.leg1End;
+          leg2StartInp.value = calc.leg2Start;
+          leg2EndInp.value = calc.leg2End;
+          updateLegBadges();
+        });
+      });
+
+      overlapSel.addEventListener('change', () => {
+        const activePresetBtn = m.root.querySelector('[data-split-preset].text-accent');
+        const preset = activePresetBtn ? activePresetBtn.getAttribute('data-split-preset') : '50-50';
+        const ratio = preset === '60-40' ? 0.6 : (preset === '40-60' ? 0.4 : 0.5);
+        const overlap = parseInt(overlapSel.value, 10) || 0;
+        const calc = RMTP.calculateSplitTimes ? RMTP.calculateSplitTimes(origStart, origEnd, ratio, overlap) : initCalc;
+
+        leg1EndInp.value = calc.leg1End;
+        leg2StartInp.value = calc.leg2Start;
+        updateLegBadges();
+      });
+
+      // Custom freelancer toggles
+      const leg1UserSel = m.root.querySelector('#split-leg1-user');
+      const leg1CustomWrap = m.root.querySelector('#split-leg1-custom-wrap');
+      leg1UserSel.addEventListener('change', () => {
+        leg1CustomWrap.classList.toggle('hidden', leg1UserSel.value !== '__custom__');
+      });
+
+      const leg2UserSel = m.root.querySelector('#split-leg2-user');
+      const leg2CustomWrap = m.root.querySelector('#split-leg2-custom-wrap');
+      leg2UserSel.addEventListener('change', () => {
+        leg2CustomWrap.classList.toggle('hidden', leg2UserSel.value !== '__custom__');
+      });
+
+      // Quick Add Extra Tech to this event/space
+      m.root.querySelector('#split-btn-add-extra-tech')?.addEventListener('click', () => {
+        m.close();
+        openBookingModal({
+          space: space,
+          date: date,
+          startTime: origStart,
+          finishTime: origEnd,
+          role: role === 'Sound' ? 'Lighting' : 'Sound',
+          eventId: initialShift.eventId || '',
+          eventName: eventName,
+          status: 'pencil',
+          notes: 'Additional Crew Tech',
+        });
+      });
+
+      // Confirm Split and Create Both Shifts
+      m.root.querySelector('#split-confirm-btn').addEventListener('click', () => {
+        const leg1Start = leg1StartInp.value || origStart;
+        const leg1End = leg1EndInp.value || '16:00';
+        const leg2Start = leg2StartInp.value || '16:00';
+        const leg2End = leg2EndInp.value || origEnd;
+
+        // Resolve Leg 1 user
+        let u1Id = leg1UserSel.value;
+        let u1Name = 'Unassigned Tech';
+        let isFreelancer1 = false;
+        if (u1Id === '__custom__') {
+          u1Name = (m.root.querySelector('#split-leg1-custom-name')?.value || '').trim() || 'Freelancer';
+          u1Id = '';
+          isFreelancer1 = true;
+        } else if (u1Id) {
+          const uObj = allUsers.find((u) => u.id === u1Id);
+          u1Name = uObj ? auth.displayName(uObj) : 'Tech';
+          isFreelancer1 = uObj ? (uObj.position === 'Freelancer') : false;
+        } else if (initialShift.userName && initialShift.userName !== 'Unassigned' && initialShift.userName !== 'Unassigned Tech') {
+          u1Name = initialShift.userName;
+          u1Id = initialShift.userId || '';
+          isFreelancer1 = initialShift.isFreelancer || false;
+        }
+
+        // Resolve Leg 2 user
+        let u2Id = leg2UserSel.value;
+        let u2Name = 'Unassigned Tech';
+        let isFreelancer2 = false;
+        if (u2Id === '__custom__') {
+          u2Name = (m.root.querySelector('#split-leg2-custom-name')?.value || '').trim() || 'Freelancer';
+          u2Id = '';
+          isFreelancer2 = true;
+        } else if (u2Id) {
+          const uObj = allUsers.find((u) => u.id === u2Id);
+          u2Name = uObj ? auth.displayName(uObj) : 'Tech';
+          isFreelancer2 = uObj ? (uObj.position === 'Freelancer') : false;
+        }
+
+        const splitGroupId = initialShift.splitFromId || ('split_' + Date.now());
+        const leg1Role = m.root.querySelector('#split-leg1-role')?.value || role;
+        const leg2Role = m.root.querySelector('#split-leg2-role')?.value || role;
+        const leg1Status = m.root.querySelector('#split-leg1-status')?.value || 'confirmed';
+        const leg2Status = m.root.querySelector('#split-leg2-status')?.value || 'pencil';
+        const leg1Notes = m.root.querySelector('#split-leg1-notes')?.value || '';
+        const leg2Notes = m.root.querySelector('#split-leg2-notes')?.value || '';
+
+        // Save Leg 1 Booking
+        const leg1BookingId = initialShift.id || store.uid('book');
+        const bookingLeg1 = {
+          id: leg1BookingId,
+          eventId: initialShift.eventId || '',
+          eventName: eventName,
+          space: space,
+          date: date,
+          startTime: leg1Start,
+          finishTime: leg1End,
+          userId: u1Id,
+          userName: u1Name,
+          role: leg1Role,
+          status: leg1Status,
+          splitFromId: splitGroupId,
+          legIndex: 1,
+          isFreelancer: isFreelancer1,
+          isNoTech: false,
+          notes: leg1Notes,
+          rate: initialShift.rate || '',
+          updatedAt: new Date().toISOString(),
+        };
+        store.upsert('bookings', bookingLeg1);
+
+        // Save Leg 2 Booking
+        const leg2BookingId = store.uid('book');
+        const bookingLeg2 = {
+          id: leg2BookingId,
+          eventId: initialShift.eventId || '',
+          eventName: eventName,
+          space: space,
+          date: date,
+          startTime: leg2Start,
+          finishTime: leg2End,
+          userId: u2Id,
+          userName: u2Name,
+          role: leg2Role,
+          status: leg2Status,
+          splitFromId: splitGroupId,
+          legIndex: 2,
+          isFreelancer: isFreelancer2,
+          isNoTech: false,
+          notes: leg2Notes,
+          rate: initialShift.rate || '',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        store.upsert('bookings', bookingLeg2);
+
+        // Keep linked advancing event updated in store
+        if (initialShift.eventId) {
+          const advEv = store.find('advancing', initialShift.eventId);
+          if (advEv) {
+            advEv.technicians = advEv.technicians || [];
+            const leg1Tech = {
+              userId: u1Id,
+              freelancerName: isFreelancer1 ? u1Name : '',
+              isFreelancer: isFreelancer1,
+              role: leg1Role,
+              startTime: leg1Start,
+              finishTime: leg1End,
+              bookingStatus: leg1Status,
+              splitFromId: splitGroupId,
+              legIndex: 1,
+              notes: leg1Notes,
+            };
+            const leg2Tech = {
+              userId: u2Id,
+              freelancerName: isFreelancer2 ? u2Name : '',
+              isFreelancer: isFreelancer2,
+              role: leg2Role,
+              startTime: leg2Start,
+              finishTime: leg2End,
+              bookingStatus: leg2Status,
+              splitFromId: splitGroupId,
+              legIndex: 2,
+              notes: leg2Notes,
+            };
+
+            const matchIdx = advEv.technicians.findIndex((t) => (t.userId && t.userId === initialShift.userId) || (t.role === role));
+            if (matchIdx > -1) {
+              advEv.technicians.splice(matchIdx, 1, leg1Tech, leg2Tech);
+            } else {
+              advEv.technicians.push(leg1Tech, leg2Tech);
+            }
+            store.upsert('advancing', advEv);
+          }
+        }
+
+        ui.toast(`Split ${role} into 2 shifts: ${leg1Start}–${leg1End} and ${leg2Start}–${leg2End}`, 'ok');
+        m.close();
+        renderActiveTab();
+      });
     }
 
     // 2. Technician Availability Modal (Single Date)

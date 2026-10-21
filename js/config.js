@@ -198,12 +198,17 @@ RMTP.syncAdvancingToRota = function (ev) {
         role: isTechNoTech ? 'None' : (t.role || 'Tech'),
         status: isTechNoTech ? 'confirmed' : (t.bookingStatus || (t.userId ? 'confirmed' : 'pencil')),
         isNoTech: isTechNoTech,
+        splitFromId: t.splitFromId || '',
+        legIndex: t.legIndex || '',
         rate: t.rate || '',
         notes: t.notes || ev.notes || ev.techInfo || '',
       };
       store.upsert('bookings', booking);
       createdShifts.push(booking);
     });
+    if (existingBookings.length > techs.length) {
+      existingBookings.slice(techs.length).forEach((b) => store.remove('bookings', b.id));
+    }
   } else {
     // Populate draft shifts directly from room minimum crew disciplines
     spaces.forEach((sp) => {
@@ -238,6 +243,54 @@ RMTP.syncAdvancingToRota = function (ev) {
     });
   }
   return createdShifts;
+};
+
+/* --- Shift Timing & Split Handover Utilities --- */
+RMTP.parseMinutes = function (tStr) {
+  if (!tStr || typeof tStr !== 'string') return 0;
+  const parts = tStr.split(':').map(Number);
+  return (parts[0] || 0) * 60 + (parts[1] || 0);
+};
+
+RMTP.formatMinutes = function (totalMinutes) {
+  let m = Math.round(totalMinutes) % (24 * 60);
+  if (m < 0) m += 24 * 60;
+  const hh = Math.floor(m / 60);
+  const mm = m % 60;
+  return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+};
+
+RMTP.getShiftDurationHours = function (startTime, finishTime) {
+  const startM = RMTP.parseMinutes(startTime || '10:00');
+  let finishM = RMTP.parseMinutes(finishTime || '22:00');
+  if (finishM <= startM) finishM += 24 * 60;
+  return Math.round(((finishM - startM) / 60) * 10) / 10;
+};
+
+RMTP.calculateSplitTimes = function (startTime, finishTime, ratio = 0.5, overlapMinutes = 0) {
+  const startM = RMTP.parseMinutes(startTime || '10:00');
+  let finishM = RMTP.parseMinutes(finishTime || '22:00');
+  if (finishM <= startM) finishM += 24 * 60;
+
+  const totalM = finishM - startM;
+  const splitM = Math.round(startM + totalM * ratio);
+  const roundedSplitM = Math.round(splitM / 15) * 15;
+
+  const leg1Start = RMTP.formatMinutes(startM);
+  const leg1End = RMTP.formatMinutes(roundedSplitM + (overlapMinutes > 0 ? overlapMinutes : 0));
+  const leg2Start = RMTP.formatMinutes(roundedSplitM);
+  const leg2End = RMTP.formatMinutes(finishM);
+
+  return {
+    leg1Start,
+    leg1End,
+    leg2Start,
+    leg2End,
+    totalHours: Math.round((totalM / 60) * 10) / 10,
+    leg1Hours: Math.round(((roundedSplitM + (overlapMinutes > 0 ? overlapMinutes : 0) - startM) / 60) * 10) / 10,
+    leg2Hours: Math.round(((finishM - roundedSplitM) / 60) * 10) / 10,
+    handoverTime: RMTP.formatMinutes(roundedSplitM),
+  };
 };
 
 /* Conditions at or below this are "poor" — such kit is struck through

@@ -6735,7 +6735,11 @@ RMTP.views.advancing = function (el, params, query) {
             '<select data-t-status="' + i + '" class="field w-32 shrink-0 font-semibold">' +
               '<option value="confirmed" ' + (t.bookingStatus !== 'pencil' ? 'selected' : '') + '>Confirmed</option>' +
               '<option value="pencil" ' + (t.bookingStatus === 'pencil' ? 'selected' : '') + '>Pencil Hold</option>' +
-            '</select>';
+            '</select>' +
+            '<button type="button" data-t-split="' + i + '" class="btn btn-ghost !p-2 shrink-0 border border-accent/40 text-accent hover:bg-accent/10 transition" title="Split shift into 2 handover shifts (e.g. 6h + 6h)">' +
+              ui.icon('split', 'w-4 h-4') +
+              '<span class="text-[11px] font-semibold hidden md:inline ml-1">Split</span>' +
+            '</button>';
         }
         rowHtml += '<button type="button" data-t-remove="' + i + '" class="btn btn-danger !p-2 shrink-0" title="Remove">' + ui.icon('trash', 'w-4 h-4') + '</button>' +
           '</div>';
@@ -6745,23 +6749,57 @@ RMTP.views.advancing = function (el, params, query) {
         }
 
         if (!t.isNoTech) {
-          const placeholderStart = (m.root.querySelector('#e-start') ? m.root.querySelector('#e-start').value : ev.startTime) || '';
-          const placeholderEnd = (m.root.querySelector('#e-finish') ? m.root.querySelector('#e-finish').value : ev.finishTime) || '';
-          
-          rowHtml += '<div class="flex items-center gap-2 text-xs pt-1 border-t border-line/40">' +
-              '<span class="text-muted w-12 font-medium">Shift:</span>' +
-              '<input type="time" data-t-start="' + i + '" class="field !py-1 !px-2 flex-1 font-mono" value="' + (t.startTime || '') + '" placeholder="' + placeholderStart + '">' +
-              '<span class="text-muted">to</span>' +
-              '<input type="time" data-t-end="' + i + '" class="field !py-1 !px-2 flex-1 font-mono" value="' + (t.finishTime || '') + '" placeholder="' + placeholderEnd + '">' +
-              '<span class="text-muted italic text-[10px] ml-1">(Blank = event times)</span>' +
+          const placeholderStart = (m.root.querySelector('#e-start') ? m.root.querySelector('#e-start').value : ev.startTime) || '10:00';
+          const placeholderEnd = (m.root.querySelector('#e-finish') ? m.root.querySelector('#e-finish').value : ev.finishTime) || '22:00';
+          const curStart = t.startTime || placeholderStart;
+          const curEnd = t.finishTime || placeholderEnd;
+          const duration = RMTP.getShiftDurationHours ? RMTP.getShiftDurationHours(curStart, curEnd) : 0;
+          const isSplitLeg = !!t.splitFromId || !!t.legIndex;
+
+          rowHtml += '<div class="flex items-center justify-between gap-2 text-xs pt-1 border-t border-line/40 flex-wrap">' +
+              '<div class="flex items-center gap-2 flex-1 min-w-[220px]">' +
+                '<span class="text-muted w-12 font-medium">Shift:</span>' +
+                '<input type="time" data-t-start="' + i + '" class="field !py-1 !px-2 flex-1 font-mono" value="' + (t.startTime || '') + '" placeholder="' + placeholderStart + '">' +
+                '<span class="text-muted">to</span>' +
+                '<input type="time" data-t-end="' + i + '" class="field !py-1 !px-2 flex-1 font-mono" value="' + (t.finishTime || '') + '" placeholder="' + placeholderEnd + '">' +
+                (duration > 0 ? '<span class="text-accent font-mono font-bold px-1.5 py-0.5 rounded bg-panel border border-line text-[10.5px] tabular-nums shrink-0" title="Shift duration">' + duration + 'h</span>' : '') +
+              '</div>' +
+              '<div class="flex items-center gap-1.5 shrink-0">' +
+                (isSplitLeg ? '<span class="text-[10px] px-2 py-0.5 rounded font-mono font-bold bg-accent/15 text-accent border border-accent/30">Leg ' + (t.legIndex || 'Handover') + '</span>' : '') +
+                (duration >= 9 ? '<span class="text-[10.5px] text-amber-400 font-semibold flex items-center gap-1 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/25">' + ui.icon('alert', 'w-3 h-3 text-amber-400') + '<span>' + duration + 'h Shift · Split Recommended</span></span>' : '') +
+              '</div>' +
             '</div>';
         }
 
         rowHtml += '</div>';
         return rowHtml;
       }).join('');
-      return specsBanner + (rows ? '<div class="grid gap-2.5 mb-2">' + rows + '</div>' : '<p class="text-xs text-muted mb-2">No technicians tagged yet.</p>') +
-        '<button type="button" data-t-add class="btn btn-ghost">' + ui.icon('plus', 'w-4 h-4') + 'Add technician / freelancer</button>';
+
+      const staffControls = `
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1 border-t border-line/50">
+          <button type="button" data-t-add class="btn btn-ghost text-xs border border-line flex items-center gap-1.5 shadow-2xs hover:border-accent">
+            ${ui.icon('plus', 'w-4 h-4 text-accent')}
+            <span>Add Staff / Freelancer</span>
+          </button>
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <span class="text-[10.5px] text-muted font-bold uppercase tracking-wider mr-0.5">Quick Add Extra:</span>
+            <button type="button" data-t-quick-role="Sound" class="px-2 py-1 rounded text-[11px] font-semibold border bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20 transition flex items-center gap-1 shadow-2xs">
+              ${ui.icon('plus', 'w-3 h-3')} + Extra Sound
+            </button>
+            <button type="button" data-t-quick-role="Lighting" class="px-2 py-1 rounded text-[11px] font-semibold border bg-amber-500/10 text-amber-400 border-amber-500/30 hover:bg-amber-500/20 transition flex items-center gap-1 shadow-2xs">
+              ${ui.icon('plus', 'w-3 h-3')} + Extra Lights
+            </button>
+            <button type="button" data-t-quick-role="Stage" class="px-2 py-1 rounded text-[11px] font-semibold border bg-purple-500/10 text-purple-400 border-purple-500/30 hover:bg-purple-500/20 transition flex items-center gap-1 shadow-2xs">
+              ${ui.icon('plus', 'w-3 h-3')} + Stage Hand
+            </button>
+            <button type="button" data-t-quick-role="AV" class="px-2 py-1 rounded text-[11px] font-semibold border bg-sky-500/10 text-sky-400 border-sky-500/30 hover:bg-sky-500/20 transition flex items-center gap-1 shadow-2xs">
+              ${ui.icon('plus', 'w-3 h-3')} + Extra AV
+            </button>
+          </div>
+        </div>
+      `;
+
+      return specsBanner + (rows ? '<div class="grid gap-2.5 mb-2.5">' + rows + '</div>' : '<p class="text-xs text-muted mb-2">No technicians tagged yet.</p>') + staffControls;
     }
 
     function wireTechs() {
@@ -6823,6 +6861,68 @@ RMTP.views.advancing = function (el, params, query) {
             ui.toast(`Pushed ${generated.length} shift slot(s) directly to Rota!`, 'ok');
           });
         }
+
+        // Split Shift Handler (Splits single shift into 2 handover shifts with individual start and finish times)
+        area.querySelectorAll('[data-t-split]').forEach((btn) => btn.addEventListener('click', () => {
+          const idx = +btn.getAttribute('data-t-split');
+          const t = techs[idx];
+          if (!t) return;
+          const evStart = (m.root.querySelector('#e-start') ? m.root.querySelector('#e-start').value : ev.startTime) || '10:00';
+          const evEnd = (m.root.querySelector('#e-finish') ? m.root.querySelector('#e-finish').value : ev.finishTime) || '22:00';
+          const curStart = t.startTime || evStart;
+          const curEnd = t.finishTime || evEnd;
+
+          const splitCalc = RMTP.calculateSplitTimes ? RMTP.calculateSplitTimes(curStart, curEnd, 0.5, 0) : {
+            leg1Start: curStart, leg1End: '16:00', leg2Start: '16:00', leg2End: curEnd, leg1Hours: 6, leg2Hours: 6,
+          };
+
+          const splitGroupId = t.splitFromId || ('split_' + Date.now());
+
+          // Leg 1
+          t.startTime = splitCalc.leg1Start;
+          t.finishTime = splitCalc.leg1End;
+          t.legIndex = 1;
+          t.splitFromId = splitGroupId;
+          t.notes = (t.notes ? t.notes + ' ' : '') + `(Leg 1: ${splitCalc.leg1Start}–${splitCalc.leg1End})`;
+
+          // Leg 2 inserted directly after
+          const leg2 = {
+            userId: '',
+            role: t.role || 'Sound',
+            isFreelancer: false,
+            freelancerName: '',
+            startTime: splitCalc.leg2Start,
+            finishTime: splitCalc.leg2End,
+            bookingStatus: 'pencil',
+            legIndex: 2,
+            splitFromId: splitGroupId,
+            rate: t.rate || '',
+            notes: `(Leg 2 Handover: ${splitCalc.leg2Start}–${splitCalc.leg2End})`,
+          };
+          techs.splice(idx + 1, 0, leg2);
+
+          ui.toast(`Split ${t.role} into 2 handover shifts: ${splitCalc.leg1Start}–${splitCalc.leg1End} (${splitCalc.leg1Hours}h) & ${splitCalc.leg2Start}–${splitCalc.leg2End} (${splitCalc.leg2Hours}h)`, 'ok');
+          wireTechs();
+        }));
+
+        // Quick Add Extra Discipline Staff
+        area.querySelectorAll('[data-t-quick-role]').forEach((btn) => btn.addEventListener('click', () => {
+          const role = btn.getAttribute('data-t-quick-role');
+          const evStart = (m.root.querySelector('#e-start') ? m.root.querySelector('#e-start').value : ev.startTime) || '17:00';
+          const evEnd = (m.root.querySelector('#e-finish') ? m.root.querySelector('#e-finish').value : ev.finishTime) || '23:30';
+          techs.push({
+            userId: '',
+            role: role,
+            isFreelancer: false,
+            freelancerName: '',
+            startTime: evStart,
+            finishTime: evEnd,
+            bookingStatus: 'confirmed',
+            isAdditional: true,
+          });
+          ui.toast(`Added additional ${role} tech slot`, 'info');
+          wireTechs();
+        }));
 
         area.querySelectorAll('[data-t-user]').forEach((s) => s.addEventListener('change', () => {
           const val = s.value;

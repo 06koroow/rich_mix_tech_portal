@@ -115,16 +115,21 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   const me = auth.current();
-  const isAdmin = !!(me && me.admin);
-  const canManageEvents = auth.can('advancing.manage');
+  const isTMOrAdmin = auth.isTechManagerOrAdmin ? auth.isTechManagerOrAdmin(me) : (auth.isTechManager(me) || auth.isAdmin(me));
+  const isAdmin = isTMOrAdmin;
+  const canManageEvents = isTMOrAdmin;
   const canReport = auth.can('report.edit');
   const filters = (RMTP._advFilters = RMTP._advFilters || { space: '', date: '', tab: 'upcoming' });
   let mobileFiltersOpen = (RMTP._advMobileFiltersOpen !== undefined ? RMTP._advMobileFiltersOpen : false);
   const expandedEvents = (RMTP._expandedAdvEvents = RMTP._expandedAdvEvents || new Set());
   
-  // Bulk Delete State
-  let bulkDeleteMode = (RMTP._advBulkDeleteMode = RMTP._advBulkDeleteMode || false);
+  // Bulk Delete State (strictly Technical Managers & Admins only)
+  let bulkDeleteMode = canManageEvents ? (RMTP._advBulkDeleteMode = RMTP._advBulkDeleteMode || false) : false;
   const selectedForBulkDelete = (RMTP._advSelectedForBulkDelete = RMTP._advSelectedForBulkDelete || new Set());
+  if (!canManageEvents) {
+    selectedForBulkDelete.clear();
+    RMTP._advBulkDeleteMode = false;
+  }
 
   // Advancing view mode state ('list' | 'calendar')
   let advViewMode = (RMTP._advViewMode = RMTP._advViewMode || 'list');
@@ -657,13 +662,15 @@ RMTP.views.advancing = function (el, params, query) {
             '<button id="adv-today" class="btn btn-ghost !py-1 text-xs">Today</button>' +
           '</div>' +
           '<div class="flex items-center gap-4 flex-wrap">' +
-            '<label class="flex items-center gap-1.5 text-xs text-danger font-semibold cursor-pointer select-none">' +
-              '<input type="checkbox" id="adv-bulk-delete-toggle" class="w-3.5 h-3.5 rounded accent-[var(--danger)]" ' + (bulkDeleteMode ? 'checked' : '') + ' />' +
-              '<span>Bulk Delete Mode</span>' +
-            '</label>' +
-            (bulkDeleteMode && selectedForBulkDelete.size > 0
-              ? '<button type="button" id="adv-bulk-delete-btn" class="btn btn-danger !py-1 text-xs flex items-center gap-1">' + ui.icon('trash', 'w-3 h-3') + '<span>Delete Selected (' + selectedForBulkDelete.size + ')</span></button>'
-              : '') +
+            (canManageEvents ? (
+              '<label class="flex items-center gap-1.5 text-xs text-danger font-semibold cursor-pointer select-none">' +
+                '<input type="checkbox" id="adv-bulk-delete-toggle" class="w-3.5 h-3.5 rounded accent-[var(--danger)]" ' + (bulkDeleteMode ? 'checked' : '') + ' />' +
+                '<span>Bulk Delete Mode</span>' +
+              '</label>' +
+              (bulkDeleteMode && selectedForBulkDelete.size > 0
+                ? '<button type="button" id="adv-bulk-delete-btn" class="btn btn-danger !py-1 text-xs flex items-center gap-1">' + ui.icon('trash', 'w-3 h-3') + '<span>Delete Selected (' + selectedForBulkDelete.size + ')</span></button>'
+                : '')
+            ) : '') +
             (activeFilterCount > 0
               ? '<button id="adv-clear" class="btn btn-ghost !py-1 text-xs text-danger hover:border-danger flex items-center gap-1">' + ui.icon('x', 'w-3 h-3') + 'Reset all filters</button>'
               : '<span class="text-xs text-muted">Showing all matching records</span>'
@@ -1010,6 +1017,60 @@ RMTP.views.advancing = function (el, params, query) {
   bindSearch('adv-quick-search-desktop');
 
 
+  function showArtifaxSchemaFixModal(errorMsg) {
+    const sqlCmd = `ALTER TABLE public.advancing ADD COLUMN IF NOT EXISTS "artifaxHistory" jsonb default '[]'::jsonb;`;
+    const m = ui.modal({
+      title: 'Artifax Sync: Database Update Required',
+      body:
+        '<div class="grid gap-3 text-sm">' +
+          '<div class="p-3 rounded-lg bg-accent/10 border border-accent/30 text-ink">' +
+            '<div class="font-semibold text-accent flex items-center gap-1.5 mb-1">' +
+              ui.icon('warning', 'w-4 h-4') +
+              '<span>Supabase Schema Missing Column: artifaxHistory</span>' +
+            '</div>' +
+            '<p class="text-xs text-muted leading-relaxed">' +
+              'The Edge Function encountered an error during batch upsert because your Supabase <code class="font-mono bg-panel px-1 py-0.5 rounded">advancing</code> table does not have the <code class="font-mono bg-panel px-1 py-0.5 rounded text-accent">artifaxHistory</code> column yet.' +
+            '</p>' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-xs font-semibold text-muted mb-1">Quick Fix (run once in your Supabase SQL Editor):</label>' +
+            '<pre id="afx-sql-code" class="p-3 rounded bg-panel font-mono text-xs border border-line text-ink select-all overflow-x-auto whitespace-pre-wrap">' + ui.esc(sqlCmd) + '</pre>' +
+          '</div>' +
+          '<div class="text-xs text-muted space-y-1">' +
+            '<p><strong>How to resolve in 10 seconds:</strong></p>' +
+            '<ol class="list-decimal list-inside space-y-1 pl-1">' +
+              '<li>Click <strong>Copy SQL Fix</strong> below.</li>' +
+              '<li>Go to your <a href="https://supabase.com/dashboard" target="_blank" rel="noopener" class="text-accent underline font-semibold">Supabase Dashboard &rarr; SQL Editor</a>.</li>' +
+              '<li>Paste the SQL command and click <strong>Run</strong>.</li>' +
+              '<li>Return here and click <strong>Sync Artifax</strong> again!</li>' +
+            '</ol>' +
+            '<p class="mt-2 text-[11px] text-muted italic">Alternatively, redeploying the updated Edge Function code will also resolve this, as it now includes automatic fallback handling.</p>' +
+          '</div>' +
+        '</div>',
+      footer:
+        '<button type="button" id="copy-afx-sql-btn" class="btn btn-primary">' +
+          ui.icon('copy', 'w-4 h-4') + '<span id="copy-afx-sql-lbl">Copy SQL Fix</span>' +
+        '</button>' +
+        '<button type="button" class="btn btn-ghost" data-cancel>Close</button>'
+    });
+
+    const copyBtn = m.root.querySelector('#copy-afx-sql-btn');
+    const copyLbl = m.root.querySelector('#copy-afx-sql-lbl');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(sqlCmd).then(() => {
+          if (copyLbl) copyLbl.textContent = 'Copied to Clipboard!';
+          ui.toast('SQL command copied to clipboard!', 'ok');
+          setTimeout(() => { if (copyLbl) copyLbl.textContent = 'Copy SQL Fix'; }, 3000);
+        }).catch(() => {
+          ui.toast('Please copy manually from the box.', 'info');
+        });
+      });
+    }
+    const cancelBtn = m.root.querySelector('[data-cancel]');
+    if (cancelBtn) cancelBtn.addEventListener('click', m.close);
+  }
+
   RMTP.syncArtifax = async (silent = false) => {
     const afx = el.querySelector('#artifax-sync');
     if (afx) afx.disabled = true; 
@@ -1023,7 +1084,11 @@ RMTP.views.advancing = function (el, params, query) {
       const res = await RMTP.supabase.invokeFunction('artifax-sync');
       
       if (!res.ok) {
-        ui.toast('Edge Function Error: ' + res.message, 'danger'); 
+        if (res.message && (res.message.includes('artifaxHistory') || res.message.includes('column of \'advancing\' in the schema cache'))) {
+          showArtifaxSchemaFixModal(res.message);
+        } else {
+          ui.toast('Edge Function Error: ' + res.message, 'danger'); 
+        }
         if (afx) afx.disabled = false;
         return;
       }
@@ -1782,7 +1847,7 @@ RMTP.views.advancing = function (el, params, query) {
         '</div>'
       : ui.pill(ev.status, statusColour[ev.status] || 'var(--muted)');
       
-    const checkboxHtml = bulkDeleteMode ?
+    const checkboxHtml = (canManageEvents && bulkDeleteMode) ?
       '<div class="pr-3 flex items-center justify-center shrink-0" onclick="event.stopPropagation()">' +
         '<input type="checkbox" data-bulk-select="' + ev.id + '" class="w-4 h-4 rounded accent-[var(--danger)] cursor-pointer" ' + (selectedForBulkDelete.has(ev.id) ? 'checked' : '') + ' />' +
       '</div>' : '';
@@ -1886,7 +1951,7 @@ RMTP.views.advancing = function (el, params, query) {
     let reportsCount = 0;
     group.events.forEach(e => { reportsCount += reportsFor(e.id).length; });
 
-    const checkboxHtml = bulkDeleteMode ?
+    const checkboxHtml = (canManageEvents && bulkDeleteMode) ?
       '<div class="pr-3 flex items-center justify-center shrink-0" onclick="event.stopPropagation()">' +
         '<input type="checkbox" data-bulk-select-group="' + group.groupId + '|' + group.date + '" class="w-4 h-4 rounded accent-[var(--danger)] cursor-pointer" />' +
       '</div>' : '';
@@ -2625,8 +2690,8 @@ RMTP.views.advancing = function (el, params, query) {
     const footerHtml =
       '<div class="flex items-center justify-between w-full gap-2 flex-wrap">' +
         '<div class="flex items-center gap-2">' +
-          '<button id="modal-print-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
-            ui.icon('print', 'w-4 h-4') + '<span>Print PDF</span>' +
+          '<button id="modal-print-btn" class="btn btn-primary text-xs flex items-center gap-1.5 font-semibold shadow-2xs">' +
+            ui.icon('print', 'w-4 h-4') + '<span>Print Advance</span>' +
           '</button>' +
           '<button id="modal-reports-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
             ui.icon('clip', 'w-4 h-4') + '<span>Reports (' + reports.length + ')</span>' +
@@ -2649,12 +2714,12 @@ RMTP.views.advancing = function (el, params, query) {
                 ui.icon('trash', 'w-4 h-4') + '<span>Delete</span>' +
               '</button>')
           : '') +
-          '<button data-close class="btn btn-primary text-xs !px-4">Close</button>' +
+          '<button data-close class="btn ' + (canManageEvents ? 'btn-primary' : 'btn-ghost') + ' text-xs !px-4">Close</button>' +
         '</div>' +
       '</div>';
 
     const m = ui.modal({
-      title: ev.name || 'Event Advance Details',
+      title: (ev.name || 'Event Advance Details') + (!canManageEvents ? ' \u00b7 Read-Only Advance' : ''),
       body: bodyHtml,
       footer: footerHtml,
       size: 'md:max-w-3xl'
@@ -3895,6 +3960,11 @@ RMTP.views.advancing = function (el, params, query) {
 
   /* ---- Event form (Live vs Cinema Space Routing) ---- */
   function openForm(existing, group = null, initialSpaceIndex = 0) {
+    if (!canManageEvents) {
+      if (existing) openEventModal(existing);
+      else ui.toast('Event advancing and specs are managed by Technical Managers and Admins only.', 'info');
+      return;
+    }
     function findEventGroup(e, grp) {
       if (grp && Array.isArray(grp.events) && grp.events.length > 1) {
         return grp;
@@ -7747,6 +7817,10 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   async function del(ev) {
+    if (!canManageEvents) {
+      ui.toast('Deleting events is restricted to Technical Managers and Admins.', 'danger');
+      return;
+    }
     const ok = await ui.confirm('Move \u201c' + ev.name + '\u201d to Deleted Events?',
       { title: 'Delete event', confirmLabel: 'Delete', danger: true });
     if (ok) {
@@ -7760,6 +7834,10 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   async function reinstate(ev) {
+    if (!canManageEvents) {
+      ui.toast('Reinstating events is restricted to Technical Managers and Admins.', 'danger');
+      return;
+    }
     store.upsert('advancing', Object.assign({}, ev, { deleted: false }));
     const currentScroll = window.scrollY || document.documentElement.scrollTop;
     ui.toast('Event reinstated', 'ok'); 

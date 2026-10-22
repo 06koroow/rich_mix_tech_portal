@@ -22,30 +22,40 @@ RMTP.views.rota = (function () {
     const me = auth.current();
     const isAdmin = !!(me && (me.admin || (auth.isAdmin && auth.isAdmin(me))));
     const isTechManager = auth.isTechManager ? auth.isTechManager(me) : isAdmin;
+    const isTMOrAdmin = (isTechManager || isAdmin);
 
     // View state
     RMTP._rotaState = RMTP._rotaState || {
-      tab: 'board', // 'board' | 'my_avail' | 'team_matrix' | 'list'
+      tab: 'board', // 'board' | 'my_avail' | 'swaps' | 'team_matrix' | 'list'
       weekOffset: 0, // 0 = current week, +1 next week, etc.
-      boardView: 'timeline', // 'timeline' | 'week' | 'day' | 'agenda'
+      boardView: 'month', // 'month' | 'week' | 'timeline' | 'day' | 'agenda'
+      rotaMonth: new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0'),
       collapsedSpaces: new Set(),
       density: 'compact', // 'compact' | 'detailed'
       selectedDay: '',
       mobileDayFilter: 'all',
       unfilledOnly: false,
+      eventsFilter: isTMOrAdmin ? 'all' : 'all', // 'all' (all events inc gaps) | 'staffed' (staffed only)
       spaceFilter: '',
       roleFilter: '',
       statusFilter: '',
       techFilter: '',
+      searchQuery: '',
+      swapFilter: 'all',
       availMonth: new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0'),
       selectedUserForAvail: me ? me.id : 'user-3',
     };
     const state = RMTP._rotaState;
     if (state.density === undefined) state.density = 'compact';
-    if (state.boardView === undefined) state.boardView = 'timeline';
+    if (!state.boardView || state.boardView === 'timeline') state.boardView = 'month';
+    if (!state.rotaMonth) state.rotaMonth = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
     if (!state.collapsedSpaces) state.collapsedSpaces = new Set();
     if (!state.selectedDay) state.selectedDay = formatDate(new Date());
     if (state.mobileDayFilter === undefined) state.mobileDayFilter = 'all';
+    // Ensure Technical Managers and Admins default to 'all' events (including gaps)
+    if (state.eventsFilter === undefined || (isTMOrAdmin && state.eventsFilter !== 'staffed')) {
+      state.eventsFilter = 'all';
+    }
     if (me && !state.selectedUserForAvail) state.selectedUserForAvail = me.id;
 
     // Helpers
@@ -101,6 +111,23 @@ RMTP.views.rota = (function () {
     function getAllBookings() {
       return store.all('bookings') || [];
     }
+
+    function ensureSampleSwap() {
+      const allB = getAllBookings();
+      const hasSwap = allB.some((b) => b.swapRequested && b.status !== 'cancelled');
+      if (!hasSwap && allB.length > 0) {
+        const candidate = allB.find((b) => b.userId !== (me ? me.id : '')) || allB[0];
+        if (candidate) {
+          candidate.swapRequested = true;
+          candidate.swapOfferedBy = candidate.userId;
+          candidate.swapOfferedByName = candidate.userName || 'Maya Lin';
+          candidate.swapOfferedAt = new Date().toISOString();
+          candidate.swapReason = candidate.swapReason || 'Double-booked with rehearsals, looking for cover on this shift.';
+          store.upsert('bookings', candidate);
+        }
+      }
+    }
+    ensureSampleSwap();
 
     function getAllUsers() {
       return store.all('users') || [];
@@ -525,6 +552,7 @@ RMTP.views.rota = (function () {
         // Apply filters
         if (state.spaceFilter && !spaces.includes(state.spaceFilter)) return;
         if (state.unfilledOnly && isFullyStaffed) return;
+        if (state.eventsFilter === 'staffed' && !isFullyStaffed && totalCrewAssigned === 0) return;
         if (state.statusFilter) {
           const matchesStatus = (state.statusFilter === 'confirmed' && isFullyStaffed) ||
                                 (state.statusFilter === 'pencil' && !isFullyStaffed && totalCrewAssigned > 0) ||
@@ -534,6 +562,13 @@ RMTP.views.rota = (function () {
         if (state.techFilter) {
           const hasTech = spaceBreakdown.some((sb) => sb.assignedTechs.some((t) => t.id === state.techFilter));
           if (!hasTech) return;
+        }
+        if (state.searchQuery) {
+          const q = state.searchQuery.toLowerCase();
+          const match = (cl.name && cl.name.toLowerCase().includes(q)) ||
+                        spaces.some((s) => s.toLowerCase().includes(q)) ||
+                        spaceBreakdown.some((sb) => sb.assignedTechs.some((t) => (t.name || '').toLowerCase().includes(q) || (t.role || '').toLowerCase().includes(q)));
+          if (!match) return;
         }
 
         const primary = cl.primaryEvent;
@@ -570,6 +605,14 @@ RMTP.views.rota = (function () {
         if (state.statusFilter && b.status !== state.statusFilter) return;
         if (state.techFilter && b.userId !== state.techFilter) return;
         if (state.unfilledOnly) return;
+        if (state.searchQuery) {
+          const q = state.searchQuery.toLowerCase();
+          const match = (b.eventName && b.eventName.toLowerCase().includes(q)) ||
+                        (b.space && b.space.toLowerCase().includes(q)) ||
+                        (b.userName && b.userName.toLowerCase().includes(q)) ||
+                        (b.role && b.role.toLowerCase().includes(q));
+          if (!match) return;
+        }
 
         if (b.eventId) handledEventIds.add(b.eventId);
         const techObj = allUsers.find((u) => u.id === b.userId);
@@ -606,6 +649,14 @@ RMTP.views.rota = (function () {
         const spaceVal = Array.isArray(ev.space) ? ev.space[0] : (ev.space || 'Venue');
         if (state.spaceFilter && spaceVal !== state.spaceFilter) return;
 
+        if (state.searchQuery) {
+          const q = state.searchQuery.toLowerCase();
+          const match = (ev.name && ev.name.toLowerCase().includes(q)) ||
+                        (spaceVal && spaceVal.toLowerCase().includes(q)) ||
+                        ((ev.notes || ev.techInfo || '') && (ev.notes || ev.techInfo || '').toLowerCase().includes(q));
+          if (!match) return;
+        }
+
         const isEventNoTech = !!ev.noTechNeeded;
 
         const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(ev) : [];
@@ -620,6 +671,7 @@ RMTP.views.rota = (function () {
             const isNoTech = isEventNoTech || !!t.isNoTech || t.role === 'None';
             const hasAssigned = !!(t.userId || (t.freelancerName && t.freelancerName.trim()));
             const isSlotUnfilled = !isNoTech && !hasAssigned;
+            if (state.eventsFilter === 'staffed' && isSlotUnfilled) return;
             const tName = isNoTech ? 'No Tech Required' : (t.freelancerName || (techObj ? auth.displayName(techObj) : (t.userId ? 'Tech' : 'Unassigned')));
 
             const item = {
@@ -647,6 +699,7 @@ RMTP.views.rota = (function () {
           });
         } else if (isEventNoTech) {
           // Self-Service advancing event with zero crew needed
+          if (state.unfilledOnly) return;
           const item = {
             key: 'notech_' + ev.id,
             type: 'notech',
@@ -668,10 +721,15 @@ RMTP.views.rota = (function () {
           items.push(item);
           allScheduleItemsMap.set(item.key, item);
         } else {
-          // Unfilled advancing event
+          // Unfilled advancing event (Gap!)
+          // If specifically set to 'staffed' only, skip unfilled gaps
+          if (state.eventsFilter === 'staffed') return;
           if (state.roleFilter) return;
           if (state.techFilter) return;
           if (state.statusFilter && state.statusFilter !== 'unfilled') return;
+
+          const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(spaceVal) : { total: getSpaceBasicCrew(spaceVal), disciplines: [{ role: 'Sound', count: 1 }], summary: '1x Sound' };
+          const defaultRole = (specs.disciplines && specs.disciplines.length > 0) ? specs.disciplines[0].role : 'Tech';
 
           const item = {
             key: 'unfilled_' + ev.id,
@@ -685,7 +743,7 @@ RMTP.views.rota = (function () {
             finishTime: ev.finishTime || '23:00',
             userId: '',
             userName: 'Unassigned',
-            role: 'Tech',
+            role: defaultRole,
             status: 'unfilled',
             notes: ev.notes || ev.techInfo || (ev.artifaxHistory && ev.artifaxHistory.length ? ev.artifaxHistory[ev.artifaxHistory.length - 1].notes : '') || ev.artifaxNotes || '',
             isUnfilled: true,
@@ -1124,35 +1182,65 @@ RMTP.views.rota = (function () {
       const activeFreelancers = new Set(totalWeekBookings.map((b) => b.userId).filter(Boolean)).size;
 
       const weekEvents = allEv.filter((e) => e.date >= wStart && e.date <= wEnd);
-      const unfilledEvents = weekEvents.filter((e) => {
+      const unfilledWeekEvents = weekEvents.filter((e) => {
         if (e.noTechNeeded) return false;
         const assigned = allB.filter((b) => b.eventId === e.id && b.status !== 'cancelled');
         const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(e) : [];
         return assigned.length === 0 && evTechs.length === 0;
       });
 
-      // Update badge on Master Rota Board tab button
-      const boardCountBadge = el.querySelector('#rota-board-count');
-      if (boardCountBadge) {
-        boardCountBadge.textContent = `(${totalWeekBookings.length})`;
-      }
-      const listCountBadge = el.querySelector('#rota-list-count');
-      if (listCountBadge) {
-        listCountBadge.textContent = `(${allB.length})`;
+      // Update badge on tabs
+      const openSwaps = allB.filter((b) => b.swapRequested && b.status !== 'cancelled');
+      const myShifts = allB.filter((b) => me && b.userId === me.id && b.status !== 'cancelled');
+      const swapsBadge = el.querySelector('#rota-swaps-count');
+      if (swapsBadge) {
+        swapsBadge.textContent = openSwaps.length > 0 ? String(openSwaps.length) : '0';
+        swapsBadge.style.display = openSwaps.length > 0 ? 'inline-block' : 'none';
       }
 
       if (!stripEl) return;
 
-      const startDStr = parseDate(wStart).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-      const endDStr = parseDate(wEnd).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+      const now = new Date();
+      const currentMonthActive = (state.rotaMonth || formatDate(now).slice(0, 7));
+      const monthBookings = allB.filter((b) => b.date.startsWith(currentMonthActive) && b.status !== 'cancelled');
+      const monthShiftsCount = monthBookings.length;
+
+      // Calculate all advancing events for active month to detect gaps
+      const monthEvents = allEv.filter((e) => e.date.startsWith(currentMonthActive));
+      const monthUnfilledEvents = monthEvents.filter((e) => {
+        if (e.noTechNeeded) return false;
+        const assigned = allB.filter((b) => b.eventId === e.id && b.status !== 'cancelled');
+        const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(e) : [];
+        return assigned.length === 0 && evTechs.length === 0;
+      });
+      const activeGapsCount = state.boardView === 'month' ? monthUnfilledEvents.length : unfilledWeekEvents.length;
 
       stripEl.innerHTML = `
         <div class="flex items-center gap-2.5 flex-wrap">
           <span class="font-semibold text-ink flex items-center gap-1.5">
             ${ui.icon('calendar', 'w-4 h-4 text-accent')}
-            <span>Week Total (${startDStr}–${endDStr}):</span>
-            <span class="font-mono font-bold text-accent">${totalWeekBookings.length} shifts</span>
+            <span>${state.boardView === 'month' ? 'This Month:' : 'This Week:'}</span>
+            <span class="font-mono font-bold text-accent">${monthShiftsCount} venue shifts</span>
           </span>
+          <span class="text-line hidden sm:inline">|</span>
+          <span class="text-xs font-semibold ${myShifts.length > 0 ? 'text-accent' : 'text-muted'} flex items-center gap-1">
+            <span>⭐</span>
+            <span>${myShifts.length} shift${myShifts.length === 1 ? '' : 's'} assigned to you</span>
+          </span>
+          ${activeGapsCount > 0 ? `
+            <span class="text-line hidden sm:inline">|</span>
+            <button id="strip-unfilled-btn" class="flex items-center gap-1.5 px-2.5 py-0.5 rounded transition cursor-pointer ${state.unfilledOnly ? 'bg-rose-500/30 text-rose-300 font-bold border border-rose-500 shadow-2xs' : 'bg-rose-500/15 text-rose-300 font-semibold border border-rose-500/30 hover:bg-rose-500/25'}" title="Click to filter to staffing gaps">
+              <span class="w-2 h-2 rounded-full bg-rose-400 animate-pulse"></span>
+              <span>${activeGapsCount} Staffing Gap${activeGapsCount > 1 ? 's' : ''} (Unfilled)</span>
+            </button>
+          ` : ''}
+          ${openSwaps.length > 0 ? `
+            <span class="text-line hidden sm:inline">|</span>
+            <button id="strip-swaps-btn" class="flex items-center gap-1.5 px-2.5 py-0.5 rounded transition cursor-pointer bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40 hover:bg-amber-500/30">
+              <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+              <span>${openSwaps.length} Shift Swap${openSwaps.length > 1 ? 's' : ''} Available</span>
+            </button>
+          ` : ''}
           <span class="text-line hidden sm:inline">|</span>
           <button id="strip-confirmed" class="flex items-center gap-1.5 px-2 py-0.5 rounded transition cursor-pointer ${state.statusFilter === 'confirmed' ? 'bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/40' : 'text-muted hover:text-emerald-400'}">
             <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
@@ -1160,26 +1248,31 @@ RMTP.views.rota = (function () {
           </button>
           <button id="strip-pencil" class="flex items-center gap-1.5 px-2 py-0.5 rounded transition cursor-pointer ${state.statusFilter === 'pencil' ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : 'text-muted hover:text-amber-400'}">
             <span class="w-2 h-2 rounded-full bg-amber-400"></span>
-            <span>${pencilCount} Pencil Hold</span>
+            <span>${pencilCount} Pencil</span>
           </button>
-          ${unfilledEvents.length > 0 ? `
-            <button id="strip-unfilled" class="flex items-center gap-1.5 px-2 py-0.5 rounded border transition cursor-pointer ${state.unfilledOnly ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 font-bold' : 'bg-rose-500/10 text-rose-400 border-rose-500/30'}">
-              <span class="w-2 h-2 rounded-full bg-rose-400 animate-pulse"></span>
-              <span>${unfilledEvents.length} Unfilled Gap${unfilledEvents.length > 1 ? 's' : ''}</span>
-            </button>
-          ` : ''}
-          <span class="text-line hidden sm:inline">|</span>
-          <span class="text-muted flex items-center gap-1">
-            ${ui.icon('users', 'w-3.5 h-3.5')}
-            <span>${activeFreelancers} Active Techs</span>
-          </span>
         </div>
         <div class="text-[11px] text-muted font-mono hidden md:block">
-          Click any shift to edit · Click + to schedule on that date
+          ${isTMOrAdmin ? 'Tech Manager View: all events & gaps visible by default' : 'Month View: click any date or shift to view schedule'}
         </div>
       `;
 
       // Wire strip buttons
+      stripEl.querySelector('#strip-swaps-btn')?.addEventListener('click', () => {
+        state.tab = 'swaps';
+        el.querySelectorAll('[data-tab]').forEach((b) => {
+          b.className = 'shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 text-muted hover:text-ink hover:bg-panel2';
+        });
+        const swapTabBtn = el.querySelector('[data-tab="swaps"]');
+        if (swapTabBtn) {
+          swapTabBtn.className = 'shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 bg-accent text-accent-ink shadow-xs';
+        }
+        renderActiveTab();
+      });
+      stripEl.querySelector('#strip-unfilled-btn')?.addEventListener('click', () => {
+        state.unfilledOnly = !state.unfilledOnly;
+        state.statusFilter = '';
+        renderActiveTab();
+      });
       stripEl.querySelector('#strip-confirmed')?.addEventListener('click', () => {
         state.statusFilter = state.statusFilter === 'confirmed' ? '' : 'confirmed';
         state.unfilledOnly = false;
@@ -1188,11 +1281,6 @@ RMTP.views.rota = (function () {
       stripEl.querySelector('#strip-pencil')?.addEventListener('click', () => {
         state.statusFilter = state.statusFilter === 'pencil' ? '' : 'pencil';
         state.unfilledOnly = false;
-        renderActiveTab();
-      });
-      stripEl.querySelector('#strip-unfilled')?.addEventListener('click', () => {
-        state.unfilledOnly = !state.unfilledOnly;
-        state.statusFilter = '';
         renderActiveTab();
       });
     }
@@ -1208,27 +1296,29 @@ RMTP.views.rota = (function () {
               </span>
               <div>
                 <h1 class="text-lg sm:text-xl font-bold tracking-tight text-ink flex items-center gap-2">
-                  Freelancer Rota & Shift Scheduling
+                  Rota & Crew Availability
                 </h1>
                 <p class="text-xs text-muted">
-                  Live availability, shift bookings, pencils and master room rotas across Rich Mix
+                  Streamlined venue calendar, next-month availability & shift swap market
                 </p>
               </div>
             </div>
           </div>
           <div class="flex items-center gap-2 flex-wrap w-full sm:w-auto">
-            <button id="btn-submit-avail" class="btn btn-ghost text-xs flex-1 sm:flex-initial justify-center">
-              ${ui.icon('clock', 'w-4 h-4')}
-              <span>Log Availability</span>
-            </button>
-            <button id="btn-bulk-avail" class="btn btn-ghost text-xs flex-1 sm:flex-initial justify-center">
+            <button id="btn-bulk-avail" class="btn btn-primary text-xs flex-1 sm:flex-initial justify-center shadow-xs font-semibold">
               ${ui.icon('calendar', 'w-4 h-4')}
-              <span>Bulk Period</span>
+              <span>+ Add Availability (Next Month)</span>
             </button>
-            <button id="btn-add-booking" class="btn btn-primary text-xs flex-1 sm:flex-initial justify-center shadow-sm font-semibold">
-              ${ui.icon('plus', 'w-4 h-4')}
-              <span>+ Book Shift</span>
+            <button id="btn-quick-swap" class="btn btn-ghost text-xs flex-1 sm:flex-initial justify-center">
+              ${ui.icon('refresh', 'w-4 h-4')}
+              <span>Shift Swaps</span>
             </button>
+            ${(isTechManager || isAdmin) ? `
+              <button id="btn-add-booking" class="btn btn-ghost text-xs flex-1 sm:flex-initial justify-center">
+                ${ui.icon('plus', 'w-4 h-4')}
+                <span>+ Book Shift</span>
+              </button>
+            ` : ''}
           </div>
         </div>
 
@@ -1238,23 +1328,24 @@ RMTP.views.rota = (function () {
         <!-- Navigation Tabs -->
         <div class="flex items-center gap-1.5 border-b border-line pb-1 overflow-x-auto text-xs scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0">
           <button data-tab="board" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'board' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
-            ${ui.icon('grid', 'w-3.5 h-3.5')}
-            <span>Master Rota Board</span>
-            <span id="rota-board-count" class="text-[10px] opacity-75 font-mono"></span>
+            ${ui.icon('calendar', 'w-3.5 h-3.5')}
+            <span>Venue Rota</span>
           </button>
           <button data-tab="my_avail" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'my_avail' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
             ${ui.icon('user', 'w-3.5 h-3.5')}
-            <span>My Availability & Shifts</span>
+            <span>My Availability</span>
           </button>
-          <button data-tab="team_matrix" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'team_matrix' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
-            ${ui.icon('users', 'w-3.5 h-3.5')}
-            <span>Team Matrix</span>
+          <button data-tab="swaps" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'swaps' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
+            ${ui.icon('refresh', 'w-3.5 h-3.5')}
+            <span>Shift Swaps</span>
+            <span id="rota-swaps-count" class="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30"></span>
           </button>
-          <button data-tab="list" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'list' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
-            ${ui.icon('list', 'w-3.5 h-3.5')}
-            <span>Shift Bookings</span>
-            <span id="rota-list-count" class="text-[10px] opacity-75 font-mono"></span>
-          </button>
+          ${(isTechManager || isAdmin) ? `
+            <button data-tab="team_matrix" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'team_matrix' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
+              ${ui.icon('users', 'w-3.5 h-3.5')}
+              <span>Team Matrix & Shifts</span>
+            </button>
+          ` : ''}
         </div>
 
         <!-- TAB CONTENT CONTAINER -->
@@ -1271,8 +1362,10 @@ RMTP.views.rota = (function () {
       updateTopMetrics();
       if (state.tab === 'board') renderBoardTab();
       else if (state.tab === 'my_avail') renderMyAvailTab();
+      else if (state.tab === 'swaps') renderSwapsTab();
       else if (state.tab === 'team_matrix') renderTeamMatrixTab();
       else if (state.tab === 'list') renderListTab();
+      else renderBoardTab();
     }
 
     // ------------------------------------------------------------------------
@@ -1296,60 +1389,95 @@ RMTP.views.rota = (function () {
 
       const hasActiveFilters = !!(state.spaceFilter || state.roleFilter || state.statusFilter || state.techFilter || state.unfilledOnly);
 
+      const [curYStr, curMStr] = (state.rotaMonth || state.availMonth || formatDate(new Date()).slice(0, 7)).split('-');
+      const monthDateObj = new Date(parseInt(curYStr, 10), parseInt(curMStr, 10) - 1, 1);
+      const curMonthDisplay = monthDateObj.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+
       let out = `
         <div class="space-y-3">
           <!-- Unified Master Rota Toolbar -->
           <div class="p-3 rounded-xl bg-panel border border-line space-y-2.5">
-            <!-- Tier 1: Week Navigator + View Modes + Density Toggle -->
+            <!-- Tier 1: Month/Week Navigator + View Mode Switcher -->
             <div class="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
-              <!-- Left: Week Jumpers -->
-              <div class="flex items-center gap-1.5 flex-wrap">
-                <div class="flex items-center gap-1">
-                  <button id="week-prev" class="btn btn-ghost !p-1.5" title="Previous Week">
-                    ${ui.icon('chevL', 'w-4 h-4')}
-                  </button>
-                  <button id="week-today" class="btn btn-ghost text-xs ${state.weekOffset === 0 ? 'bg-panel2 border border-line font-bold text-accent' : ''}">
-                    This Week
-                  </button>
-                  <button id="week-next" class="btn btn-ghost !p-1.5" title="Next Week">
-                    ${ui.icon('chevR', 'w-4 h-4')}
-                  </button>
+              ${state.boardView === 'month' ? `
+                <!-- Month Jumpers -->
+                <div class="flex items-center gap-1.5 flex-wrap">
+                  <div class="flex items-center gap-1">
+                    <button id="month-board-prev" class="btn btn-ghost !p-1.5" title="Previous Month">
+                      ${ui.icon('chevL', 'w-4 h-4')}
+                    </button>
+                    <span class="text-xs font-bold text-ink px-2 font-mono tabular-nums whitespace-nowrap">
+                      ${curMonthDisplay}
+                    </span>
+                    <button id="month-board-next" class="btn btn-ghost !p-1.5" title="Next Month">
+                      ${ui.icon('chevR', 'w-4 h-4')}
+                    </button>
+                  </div>
+                  <div class="flex items-center gap-1 pl-1 border-l border-line/60">
+                    <button id="month-board-today" class="btn btn-ghost text-xs !py-1 !px-2">
+                      This Month
+                    </button>
+                    <button id="month-board-next-month" class="btn btn-ghost text-xs !py-1 !px-2 text-accent font-semibold">
+                      Next Month →
+                    </button>
+                  </div>
                 </div>
-                <span class="text-xs font-bold text-ink px-1.5 font-mono tabular-nums whitespace-nowrap">
-                  ${startD} – ${endD}
-                </span>
-              </div>
+              ` : `
+                <!-- Week Jumpers -->
+                <div class="flex items-center gap-1.5 flex-wrap">
+                  <div class="flex items-center gap-1">
+                    <button id="week-prev" class="btn btn-ghost !p-1.5" title="Previous Week">
+                      ${ui.icon('chevL', 'w-4 h-4')}
+                    </button>
+                    <button id="week-today" class="btn btn-ghost text-xs ${state.weekOffset === 0 ? 'bg-panel2 border border-line font-bold text-accent' : ''}">
+                      This Week
+                    </button>
+                    <button id="week-next" class="btn btn-ghost !p-1.5" title="Next Week">
+                      ${ui.icon('chevR', 'w-4 h-4')}
+                    </button>
+                  </div>
+                  <span class="text-xs font-bold text-ink px-1.5 font-mono tabular-nums whitespace-nowrap">
+                    ${startD} – ${endD}
+                  </span>
+                </div>
+              `}
 
-              <!-- Middle: Board View Switcher (Unified Timeline vs Week 7D vs Day Swimlanes vs Agenda) -->
+              <!-- Middle: View Switcher (Month View vs Week Grid vs Room Timeline) -->
               <div class="flex items-center gap-1 p-1 bg-panel2/80 rounded-lg border border-line self-start md:self-auto flex-wrap sm:flex-nowrap">
-                <button id="view-mode-timeline" class="px-2.5 py-1 text-xs font-semibold rounded-md transition ${state.boardView === 'timeline' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}" title="Unified multi-room timeline grid with collapsible space rows on one screen">
-                  Unified Multi-Room Grid
+                <button id="view-mode-month" class="px-2.5 py-1 text-xs font-semibold rounded-md transition ${state.boardView === 'month' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}" title="Full monthly rota calendar with personal shifts and open swap highlights">
+                  Month View
                 </button>
-                <button id="view-mode-week" class="px-2.5 py-1 text-xs font-semibold rounded-md transition ${state.boardView === 'week' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}">
+                <button id="view-mode-week" class="px-2.5 py-1 text-xs font-semibold rounded-md transition ${state.boardView === 'week' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}" title="7-day week swimlanes">
                   Week Grid (7D)
                 </button>
-                <button id="view-mode-day" class="px-2.5 py-1 text-xs font-semibold rounded-md transition ${state.boardView === 'day' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}">
-                  Day by Room
-                </button>
-                <button id="view-mode-agenda" class="px-2.5 py-1 text-xs font-semibold rounded-md transition ${state.boardView === 'agenda' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}">
-                  Timeline Agenda
+                <button id="view-mode-timeline" class="px-2.5 py-1 text-xs font-semibold rounded-md transition ${state.boardView === 'timeline' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}" title="Multi-room grid by space">
+                  Room Grid
                 </button>
               </div>
 
-              <!-- Right: Density Switcher -->
-              <div class="flex items-center gap-1 p-1 bg-panel2/60 rounded-lg border border-line self-start md:self-auto">
-                <button id="density-compact" class="px-2 py-0.5 text-[11px] font-semibold rounded transition ${state.density === 'compact' ? 'bg-panel text-ink shadow-2xs' : 'text-muted hover:text-ink'}" title="Glanceable high-density view">
-                  Glanceable
-                </button>
-                <button id="density-detailed" class="px-2 py-0.5 text-[11px] font-semibold rounded transition ${state.density === 'detailed' ? 'bg-panel text-ink shadow-2xs' : 'text-muted hover:text-ink'}" title="Detailed expanded view with notes">
-                  Detailed
-                </button>
+              <!-- Search Bar -->
+              <div class="relative">
+                <input id="flt-search" class="field !py-1 !pl-7 text-xs max-w-[200px]" placeholder="Search event, room, tech..." value="${ui.esc(state.searchQuery || '')}" />
+                <span class="absolute left-2 top-1.5 text-muted pointer-events-none">
+                  ${ui.icon('search', 'w-3.5 h-3.5')}
+                </span>
               </div>
             </div>
 
-            <!-- Tier 2: Filter Strip (Dropdowns & Quick Status Chips) -->
+            <!-- Tier 2: Filter Strip (Dropdowns, Event Scope & Quick Status Chips) -->
             <div class="pt-2 border-t border-line/60 flex flex-wrap items-center justify-between gap-2 text-xs">
               <div class="flex items-center gap-2 flex-wrap">
+                <!-- Events Scope Toggle: All Events (inc. Gaps) vs Staffed Only -->
+                <div class="flex items-center gap-1 p-0.5 bg-panel2/80 rounded-lg border border-line">
+                  <button id="flt-events-all" class="px-2.5 py-1 text-xs font-semibold rounded-md transition flex items-center gap-1.5 ${state.eventsFilter !== 'staffed' ? 'bg-accent text-accent-ink shadow-2xs font-bold' : 'text-muted hover:text-ink'}" title="Show all advancing events, including unstaffed shifts to spot gaps">
+                    <span>All Events (inc. Gaps)</span>
+                    ${isTMOrAdmin ? `<span class="px-1 py-0.2 rounded text-[9px] font-mono ${state.eventsFilter !== 'staffed' ? 'bg-black/20 text-accent-ink' : 'bg-panel text-muted'}">Default</span>` : ''}
+                  </button>
+                  <button id="flt-events-staffed" class="px-2.5 py-1 text-xs font-semibold rounded-md transition flex items-center gap-1.5 ${state.eventsFilter === 'staffed' ? 'bg-accent text-accent-ink shadow-2xs font-bold' : 'text-muted hover:text-ink'}" title="Show only events with booked or assigned technicians">
+                    <span>Staffed Only</span>
+                  </button>
+                </div>
+
                 <!-- Space Filter Dropdown -->
                 <select id="flt-space" class="field !py-1 text-xs max-w-[135px]">
                   <option value="">All Spaces</option>
@@ -1399,9 +1527,184 @@ RMTP.views.rota = (function () {
       `;
 
       // ----------------------------------------------------------------------
-      // SUB-VIEW 0: UNIFIED MULTI-ROOM TIMELINE GRID WITH COLLAPSIBLE SPACES
+      // SUB-VIEW 0: MONTH VIEW CALENDAR (DEFAULT)
       // ----------------------------------------------------------------------
-      if (state.boardView === 'timeline') {
+      if (state.boardView === 'month') {
+        const [yStr, mStr] = (state.rotaMonth || state.availMonth || formatDate(new Date()).slice(0, 7)).split('-');
+        const year = parseInt(yStr, 10);
+        const month = parseInt(mStr, 10) - 1; // 0-indexed
+        const firstDay = new Date(year, month, 1);
+        const lastDay = new Date(year, month + 1, 0);
+        const daysInMonth = lastDay.getDate();
+        const startDow = (firstDay.getDay() + 6) % 7; // Monday = 0
+        const monthTitle = firstDay.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+        const todayStr = formatDate(new Date());
+
+        out += `
+          <div class="p-3 sm:p-4 rounded-xl bg-panel border border-line space-y-3 shadow-2xs">
+            <div class="flex items-center justify-between pb-2 border-b border-line/60 flex-wrap gap-2">
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-bold text-ink flex items-center gap-1.5">
+                  ${ui.icon('calendar', 'w-4 h-4 text-accent')}
+                  <span>Venue Schedule · ${monthTitle}</span>
+                </span>
+                <span class="text-[11px] text-muted hidden sm:inline">(Click any date or shift to view details & cover options)</span>
+              </div>
+              <div class="flex items-center gap-3 text-[11px] flex-wrap">
+                <span class="flex items-center gap-1.5 font-medium"><span class="w-2.5 h-2.5 rounded bg-accent/40 border border-accent"></span> ⭐ My Shifts</span>
+                <span class="flex items-center gap-1.5 font-medium"><span class="w-2.5 h-2.5 rounded bg-amber-500/40 border border-amber-500"></span> 🔄 Cover Offered</span>
+                <span class="flex items-center gap-1.5 font-medium"><span class="w-2.5 h-2.5 rounded bg-rose-500/40 border border-rose-500"></span> ⚠️ Unstaffed Gaps</span>
+                <span class="flex items-center gap-1.5 font-medium"><span class="w-2.5 h-2.5 rounded bg-emerald-500/40 border border-emerald-500"></span> Confirmed</span>
+              </div>
+            </div>
+
+            <!-- Calendar Grid with scroll safety -->
+            <div class="overflow-x-auto scrollbar-hide">
+              <div class="min-w-[720px]">
+                <!-- Day Headers -->
+                <div class="grid grid-cols-7 gap-1.5 text-center text-[11px] font-bold text-muted uppercase tracking-wider py-1.5 border-b border-line/40">
+                  <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
+                </div>
+
+                <!-- Days Grid -->
+                <div class="grid grid-cols-7 gap-1.5 pt-1.5">
+        `;
+
+        // Blank padding days
+        for (let i = 0; i < startDow; i++) {
+          out += `<div class="p-1 min-h-[100px] rounded-lg bg-panel2/20 border border-transparent opacity-25"></div>`;
+        }
+
+        for (let dNum = 1; dNum <= daysInMonth; dNum++) {
+          const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(dNum).padStart(2, '0')}`;
+          const dayItems = getDaySchedule(dateStr);
+
+          const isToday = dateStr === todayStr;
+          const myShifts = dayItems.filter((i) => me && i.userId === me.id);
+          const swapShifts = dayItems.filter((i) => i.booking && i.booking.swapRequested);
+          const unfilledGaps = dayItems.filter((i) => i.isUnfilled && !i.isNoTech);
+          const otherStaffed = dayItems.filter((i) => !i.isUnfilled && !i.isNoTech && (!me || i.userId !== me.id) && (!i.booking || !i.booking.swapRequested));
+          const selfService = dayItems.filter((i) => i.isNoTech);
+
+          let cellBorder = 'border-line';
+          let cellBg = 'bg-panel2/40';
+
+          if (isToday) {
+            cellBorder = 'border-accent ring-1 ring-accent';
+            cellBg = 'bg-accent/5';
+          } else if (unfilledGaps.length > 0) {
+            cellBorder = 'border-rose-500/40 ring-1 ring-rose-500/20';
+            cellBg = 'bg-rose-500/5';
+          } else if (myShifts.length > 0) {
+            cellBorder = 'border-accent/40';
+            cellBg = 'bg-accent/5';
+          } else if (swapShifts.length > 0) {
+            cellBorder = 'border-amber-500/40';
+            cellBg = 'bg-amber-500/5';
+          }
+
+          out += `
+            <div data-cell-day="${dateStr}" class="p-1.5 min-h-[105px] rounded-lg border ${cellBorder} ${cellBg} hover:border-accent hover:shadow-xs transition flex flex-col justify-between cursor-pointer group">
+              <div>
+                <div class="flex items-center justify-between pb-1 mb-1 border-b border-line/30">
+                  <span class="text-xs font-mono font-bold ${isToday ? 'text-accent bg-accent/20 px-1.5 py-0.2 rounded' : 'text-ink'}">${dNum}</span>
+                  <div class="flex items-center gap-1">
+                    ${isToday ? '<span class="text-[9px] font-bold uppercase tracking-wider text-accent hidden sm:inline">Today</span>' : ''}
+                    ${unfilledGaps.length > 0 ? `<span class="text-[9px] font-mono font-bold text-rose-300 bg-rose-500/20 border border-rose-500/30 px-1 py-0.2 rounded" title="${unfilledGaps.length} staffing gap(s)">⚠️ ${unfilledGaps.length}</span>` : ''}
+                    ${dayItems.length > 0 ? `<span class="text-[10px] font-mono text-muted tabular-nums" title="${dayItems.length} total events / shifts">${dayItems.length}</span>` : ''}
+                  </div>
+                </div>
+
+                <!-- Shift Chips -->
+                <div class="space-y-1">
+          `;
+
+          // 1. My shifts first
+          myShifts.forEach((b) => {
+            out += `
+              <div data-click-booking="${b.id || (b.booking && b.booking.id) || ''}" class="p-1 rounded bg-accent/20 border border-accent/40 text-accent font-semibold text-[10px] leading-tight truncate flex items-center justify-between gap-1 shadow-2xs hover:bg-accent/30 transition" title="${ui.esc(b.eventName)} · ${ui.esc(b.space)}">
+                <span class="truncate">⭐ ${ui.esc(b.role || 'Tech')} · ${ui.esc(b.space)}</span>
+                <span class="font-mono text-[9px] opacity-80 shrink-0">${b.startTime}</span>
+              </div>
+            `;
+          });
+
+          // 2. Swap shifts (that are not mine)
+          swapShifts.filter((b) => !me || b.userId !== me.id).forEach((b) => {
+            out += `
+              <div data-click-booking="${b.id || (b.booking && b.booking.id) || ''}" class="p-1 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300 font-semibold text-[10px] leading-tight truncate flex items-center justify-between gap-1 hover:bg-amber-500/30 transition" title="Swap Offered: ${ui.esc(b.eventName)}">
+                <span class="truncate">🔄 Cover: ${ui.esc(b.role || 'Tech')}</span>
+                <span class="text-[9px] underline font-bold shrink-0">Claim</span>
+              </div>
+            `;
+          });
+
+          // 3. Unfilled Gaps (High visibility for Tech Managers!)
+          unfilledGaps.forEach((b) => {
+            out += `
+              <div data-click-unfilled="${b.key}" class="p-1 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 font-bold text-[10px] leading-tight truncate flex items-center justify-between gap-1 hover:bg-rose-500/30 transition shadow-2xs cursor-pointer" title="UNSTAFFED GAP: ${ui.esc(b.eventName)} (${ui.esc(b.space)} - ${ui.esc(b.role || 'Tech')}) · Click to assign tech">
+                <span class="truncate flex items-center gap-1">
+                  <span class="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse shrink-0"></span>
+                  <span class="truncate">⚠️ ${ui.esc(b.space)}: ${ui.esc(b.role || 'Tech')}</span>
+                </span>
+                <span class="font-mono text-[9px] underline shrink-0">+ Cover</span>
+              </div>
+            `;
+          });
+
+          // 4. Other staffed shifts (limit to remaining slots)
+          const priorityCount = myShifts.length + swapShifts.filter((b) => !me || b.userId !== me.id).length + unfilledGaps.length;
+          const remainingSlots = Math.max(0, 4 - priorityCount);
+          otherStaffed.slice(0, remainingSlots).forEach((b) => {
+            out += `
+              <div data-click-booking="${b.id || (b.booking && b.booking.id) || ''}" data-schedule-item="${b.key}" class="p-1 rounded bg-panel border border-line text-[10px] leading-tight truncate flex items-center justify-between gap-1 hover:border-ink/30 transition text-muted hover:text-ink cursor-pointer" title="${ui.esc(b.eventName)} (${ui.esc(b.space)})">
+                <span class="truncate font-medium">${ui.esc(b.space)}: ${ui.esc(b.role || 'Tech')}</span>
+                <span class="font-mono text-[9px] truncate max-w-[50px] shrink-0">${ui.esc(b.userName ? b.userName.split(' ')[0] : 'Staffed')}</span>
+              </div>
+            `;
+          });
+
+          // 5. Self-service events (if slots open)
+          if (remainingSlots > otherStaffed.length) {
+            const selfSlots = remainingSlots - otherStaffed.length;
+            selfService.slice(0, selfSlots).forEach((b) => {
+              out += `
+                <div data-schedule-item="${b.key}" class="p-1 rounded bg-panel2/60 border border-line/60 text-[9.5px] leading-tight truncate text-muted" title="${ui.esc(b.eventName)} · Self-Service">
+                  <span class="truncate italic">${ui.esc(b.space)}: Self-Service</span>
+                </div>
+              `;
+            });
+          }
+
+          const totalShown = priorityCount + Math.min(otherStaffed.length, remainingSlots) + Math.min(selfService.length, Math.max(0, remainingSlots - otherStaffed.length));
+          if (dayItems.length > totalShown) {
+            out += `
+              <div class="text-[9px] text-muted font-mono text-center pt-0.5">
+                +${dayItems.length - totalShown} more
+              </div>
+            `;
+          }
+
+          if (dayItems.length === 0) {
+            out += `<div class="text-[10px] text-muted/30 text-center py-2 font-mono select-none">-</div>`;
+          }
+
+          out += `
+                </div>
+              </div>
+              <div class="text-[9px] text-muted/0 group-hover:text-muted/70 text-right font-mono transition">View Day →</div>
+            </div>
+          `;
+        }
+
+        out += `
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      else if (state.boardView === 'timeline') {
         const selDayStr = state.selectedDay || weekDays[0].date;
         const selDayObj = parseDate(selDayStr);
         const selDayFormatted = selDayObj.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -1985,7 +2288,40 @@ RMTP.views.rota = (function () {
         updateTopMetrics();
       });
 
+      // Month View Navigator
+      tabContainer.querySelector('#month-board-prev')?.addEventListener('click', () => {
+        const [y, m] = (state.rotaMonth || state.availMonth || formatDate(new Date()).slice(0, 7)).split('-').map(Number);
+        const prevDate = new Date(y, m - 2, 1);
+        state.rotaMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+        renderBoardTab();
+        updateTopMetrics();
+      });
+      tabContainer.querySelector('#month-board-next')?.addEventListener('click', () => {
+        const [y, m] = (state.rotaMonth || state.availMonth || formatDate(new Date()).slice(0, 7)).split('-').map(Number);
+        const nextDate = new Date(y, m, 1);
+        state.rotaMonth = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}`;
+        renderBoardTab();
+        updateTopMetrics();
+      });
+      tabContainer.querySelector('#month-board-today')?.addEventListener('click', () => {
+        const now = new Date();
+        state.rotaMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        renderBoardTab();
+        updateTopMetrics();
+      });
+      tabContainer.querySelector('#month-board-next-month')?.addEventListener('click', () => {
+        const now = new Date();
+        const nextDate = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+        state.rotaMonth = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}`;
+        renderBoardTab();
+        updateTopMetrics();
+      });
+
       // View Mode Switcher
+      tabContainer.querySelector('#view-mode-month')?.addEventListener('click', () => {
+        state.boardView = 'month';
+        renderBoardTab();
+      });
       tabContainer.querySelector('#view-mode-timeline')?.addEventListener('click', () => {
         state.boardView = 'timeline';
         renderBoardTab();
@@ -2001,6 +2337,47 @@ RMTP.views.rota = (function () {
       tabContainer.querySelector('#view-mode-agenda')?.addEventListener('click', () => {
         state.boardView = 'agenda';
         renderBoardTab();
+      });
+
+      // Search Bar in Board View
+      tabContainer.querySelector('#flt-search')?.addEventListener('input', (e) => {
+        state.searchQuery = e.target.value;
+        renderBoardTab();
+      });
+
+      // Month View Calendar Cells & Chips
+      tabContainer.querySelectorAll('[data-cell-day]').forEach((cell) => {
+        cell.addEventListener('click', () => {
+          const dStr = cell.getAttribute('data-cell-day');
+          openDayScheduleModal(dStr);
+        });
+      });
+      tabContainer.querySelectorAll('[data-click-booking]').forEach((chip) => {
+        chip.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const bid = chip.getAttribute('data-click-booking');
+          const b = getAllBookings().find((x) => x.id === bid);
+          if (b) openShiftDetailModal(b);
+        });
+      });
+      tabContainer.querySelectorAll('[data-click-unfilled]').forEach((chip) => {
+        chip.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const key = chip.getAttribute('data-click-unfilled');
+          const item = allScheduleItemsMap.get(key);
+          if (item) {
+            openBookingModal({
+              eventId: item.eventId,
+              eventName: item.eventName,
+              space: item.space,
+              date: item.date,
+              startTime: item.startTime,
+              finishTime: item.finishTime,
+              role: item.role || 'Sound',
+              status: 'pencil',
+            });
+          }
+        });
       });
 
       // Density Switcher
@@ -2126,12 +2503,23 @@ RMTP.views.rota = (function () {
         renderBoardTab();
         updateTopMetrics();
       });
+      // Event Scope Toggles
+      tabContainer.querySelector('#flt-events-all')?.addEventListener('click', () => {
+        state.eventsFilter = 'all';
+        renderBoardTab();
+      });
+      tabContainer.querySelector('#flt-events-staffed')?.addEventListener('click', () => {
+        state.eventsFilter = 'staffed';
+        renderBoardTab();
+      });
       tabContainer.querySelector('#flt-clear')?.addEventListener('click', () => {
         state.spaceFilter = '';
         state.roleFilter = '';
         state.statusFilter = '';
         state.techFilter = '';
         state.unfilledOnly = false;
+        state.eventsFilter = isTMOrAdmin ? 'all' : 'all';
+        state.searchQuery = '';
         renderBoardTab();
         updateTopMetrics();
       });
@@ -2323,9 +2711,40 @@ RMTP.views.rota = (function () {
       const userBookings = getAllBookings().filter((b) => b.userId === selectedUserId && b.status !== 'cancelled');
 
       const monthName = firstDay.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+      const now = new Date();
+      const nextMonthFirst = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      const nextMonthName = nextMonthFirst.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+      const nextMonthKey = `${nextMonthFirst.getFullYear()}-${String(nextMonthFirst.getMonth() + 1).padStart(2, '0')}`;
 
       let out = `
         <div class="space-y-4">
+          <!-- Next Month Availability Priority Banner -->
+          <div class="p-3.5 rounded-xl bg-accent/10 border border-accent/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+            <div class="flex items-center gap-3">
+              <span class="w-9 h-9 rounded-xl bg-accent/20 text-accent font-bold flex items-center justify-center shrink-0">
+                ${ui.icon('calendar', 'w-5 h-5')}
+              </span>
+              <div>
+                <div class="text-xs font-bold text-ink flex items-center gap-2">
+                  <span>Next Month Availability · ${nextMonthName}</span>
+                  <span class="px-2 py-0.2 rounded-full text-[10px] font-bold bg-accent/20 text-accent border border-accent/30">Priority</span>
+                </div>
+                <div class="text-[11px] text-muted mt-0.5">
+                  Managers are scheduling shifts for next month. Set your availability in 1 click so you can be booked.
+                </div>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="btn-avail-add-next-month" class="btn btn-primary text-xs font-semibold shadow-xs flex items-center gap-1.5 whitespace-nowrap">
+                ${ui.icon('plus', 'w-3.5 h-3.5')}
+                <span>+ Add Availability (${nextMonthName})</span>
+              </button>
+              <button id="btn-jump-next-month" class="btn btn-ghost text-xs whitespace-nowrap">
+                View ${nextMonthName} Calendar →
+              </button>
+            </div>
+          </div>
+
           <!-- User Switcher & Month Navigation -->
           <div class="p-3.5 rounded-xl bg-panel border border-line flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
             <div class="flex items-center gap-3">
@@ -2491,18 +2910,27 @@ RMTP.views.rota = (function () {
                 <span class="font-mono tabular-nums">${b.startTime} – ${b.finishTime}</span>
               </div>
 
-              <div class="flex items-center justify-between text-[11px] pt-1">
+              <div class="flex items-center justify-between text-[11px] pt-1 flex-wrap gap-1">
                 <span class="px-1.5 py-0.2 rounded bg-panel border border-line text-ink font-semibold">${ui.esc(b.role || 'Tech')}</span>
-                ${b.status === 'pencil' ? `
-                  <div class="flex items-center gap-1">
+                <div class="flex items-center gap-1.5 flex-wrap">
+                  ${b.swapRequested ? `
+                    <span class="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">Cover Offered</span>
+                    <button data-cancel-my-swap="${b.id}" class="text-[10px] text-danger font-semibold hover:underline cursor-pointer">Cancel</button>
+                  ` : `
+                    <button data-offer-my-swap="${b.id}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-panel border border-line text-muted hover:text-amber-400 hover:border-amber-500/40 transition cursor-pointer flex items-center gap-1">
+                      ${ui.icon('refresh', 'w-3 h-3')}
+                      <span>Offer Swap</span>
+                    </button>
+                  `}
+                  ${b.status === 'pencil' ? `
                     <button data-tech-accept="${b.id}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20">
                       Accept
                     </button>
                     <button data-tech-decline="${b.id}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/30 hover:bg-rose-500/20">
                       Decline
                     </button>
-                  </div>
-                ` : ''}
+                  ` : ''}
+                </div>
               </div>
             </div>
           `;
@@ -2517,10 +2945,21 @@ RMTP.views.rota = (function () {
       `;
 
       tabContainer.innerHTML = out;
-      wireMyAvailEvents();
+      wireMyAvailEvents(nextMonthKey);
     }
 
-    function wireMyAvailEvents() {
+    function wireMyAvailEvents(nextMonthKey) {
+      // Banner buttons
+      tabContainer.querySelector('#btn-avail-add-next-month')?.addEventListener('click', () => {
+        openBulkPeriodModal();
+      });
+      tabContainer.querySelector('#btn-jump-next-month')?.addEventListener('click', () => {
+        if (nextMonthKey) {
+          state.availMonth = nextMonthKey;
+          renderMyAvailTab();
+        }
+      });
+
       tabContainer.querySelector('#avail-user-select')?.addEventListener('change', (e) => {
         state.selectedUserForAvail = e.target.value;
         renderMyAvailTab();
@@ -2554,6 +2993,28 @@ RMTP.views.rota = (function () {
             userId: userId,
             ...(existing || {})
           });
+        });
+      });
+
+      tabContainer.querySelectorAll('[data-offer-my-swap]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const id = btn.getAttribute('data-offer-my-swap');
+          const b = store.find('bookings', id);
+          if (b) openOfferSwapModal(b);
+        });
+      });
+
+      tabContainer.querySelectorAll('[data-cancel-my-swap]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const id = btn.getAttribute('data-cancel-my-swap');
+          const b = store.find('bookings', id);
+          if (b) {
+            b.swapRequested = false;
+            store.upsert('bookings', b);
+            ui.toast('Shift swap request cancelled', 'ok');
+            renderMyAvailTab();
+            updateTopMetrics();
+          }
         });
       });
 
@@ -2890,6 +3351,258 @@ RMTP.views.rota = (function () {
           const id = btn.getAttribute('data-cancel-booking');
           const b = store.find('bookings', id);
           if (b) openCancelShiftModal(b);
+        });
+      });
+    }
+
+    // ------------------------------------------------------------------------
+    // TAB 3: SHIFT SWAPS & COVER MARKET
+    // ------------------------------------------------------------------------
+    function renderSwapsTab() {
+      const allB = getAllBookings();
+      const openSwaps = allB.filter((b) => b.swapRequested && b.status !== 'cancelled');
+      const myId = me ? me.id : '';
+
+      state.swapFilter = state.swapFilter || 'all'; // 'all' | 'available' | 'my'
+
+      let filteredSwaps = openSwaps;
+      if (state.swapFilter === 'available') {
+        filteredSwaps = openSwaps.filter((b) => b.userId !== myId && b.swapOfferedBy !== myId);
+      } else if (state.swapFilter === 'my') {
+        filteredSwaps = openSwaps.filter((b) => b.userId === myId || b.swapOfferedBy === myId);
+      }
+
+      // Sort by date ascending
+      filteredSwaps.sort((a, b) => (a.date > b.date ? 1 : -1));
+
+      let out = `
+        <div class="space-y-4">
+          <!-- Banner & Action Strip -->
+          <div class="p-4 rounded-xl bg-panel border border-line flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 shadow-2xs">
+            <div class="flex items-center gap-3">
+              <span class="w-10 h-10 rounded-xl bg-amber-500/15 text-amber-400 font-bold flex items-center justify-center shrink-0 border border-amber-500/30">
+                ${ui.icon('refresh', 'w-5 h-5')}
+              </span>
+              <div>
+                <h2 class="text-sm font-bold text-ink flex items-center gap-2">
+                  <span>Shift Swaps & Cover Market</span>
+                  <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/40">
+                    ${openSwaps.length} Open Request${openSwaps.length === 1 ? '' : 's'}
+                  </span>
+                </h2>
+                <p class="text-xs text-muted mt-0.5">
+                  Pick up extra venue shifts offered by colleagues, or offer one of your shifts for cover.
+                </p>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-2 flex-wrap">
+              <button id="btn-post-new-swap" class="btn btn-primary text-xs flex items-center gap-1.5 shadow-xs font-semibold">
+                ${ui.icon('plus', 'w-4 h-4')}
+                <span>+ Offer a Shift for Swap</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Filter Strip -->
+          <div class="flex items-center justify-between gap-2 flex-wrap text-xs">
+            <div class="flex items-center gap-1.5 p-1 rounded-lg bg-panel border border-line">
+              <button data-swap-flt="all" class="px-2.5 py-1 font-semibold rounded-md transition ${state.swapFilter === 'all' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}">
+                All Open Swaps (${openSwaps.length})
+              </button>
+              <button data-swap-flt="available" class="px-2.5 py-1 font-semibold rounded-md transition ${state.swapFilter === 'available' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}">
+                Available to Pick Up (${openSwaps.filter((b) => b.userId !== myId).length})
+              </button>
+              <button data-swap-flt="my" class="px-2.5 py-1 font-semibold rounded-md transition ${state.swapFilter === 'my' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}">
+                My Swap Offers (${openSwaps.filter((b) => b.userId === myId).length})
+              </button>
+            </div>
+          </div>
+
+          <!-- Swaps Cards Grid -->
+          <div class="space-y-3">
+      `;
+
+      if (filteredSwaps.length === 0) {
+        out += `
+          <div class="p-12 text-center rounded-xl bg-panel border border-line space-y-3">
+            <div class="w-12 h-12 rounded-full bg-panel2 mx-auto flex items-center justify-center text-muted">
+              ${ui.icon('refresh', 'w-6 h-6')}
+            </div>
+            <div class="text-sm font-semibold text-ink">No shift swaps currently being offered</div>
+            <p class="text-xs text-muted max-w-md mx-auto">
+              ${state.swapFilter === 'my' 
+                ? 'You have not offered any of your shifts for cover. You can offer any upcoming shift from your schedule.' 
+                : 'All scheduled shifts are currently covered. If you need someone to cover your shift, click "+ Offer a Shift for Swap" above.'}
+            </p>
+            <div class="pt-2">
+              <button id="btn-post-new-swap-empty" class="btn btn-ghost text-xs">
+                ${ui.icon('plus', 'w-3.5 h-3.5')}
+                <span>Offer One of My Upcoming Shifts</span>
+              </button>
+            </div>
+          </div>
+        `;
+      } else {
+        out += `<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">`;
+        filteredSwaps.forEach((b) => {
+          const isMine = me && (b.userId === me.id || b.swapOfferedBy === me.id);
+          const dObj = parseDate(b.date);
+          const dateFormatted = dObj.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+
+          out += `
+            <div class="p-4 rounded-xl border bg-panel space-y-3 shadow-2xs hover:border-accent/40 transition flex flex-col justify-between ${isMine ? 'border-amber-500/40 bg-amber-500/5' : 'border-line'}">
+              <div class="space-y-2">
+                <div class="flex items-start justify-between gap-2">
+                  <div>
+                    <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-accent/15 text-accent border border-accent/30 uppercase tracking-wider">${ui.esc(b.space)}</span>
+                    <h3 class="text-sm font-bold text-ink mt-1.5">${ui.esc(b.eventName || 'Shift')}</h3>
+                  </div>
+                  ${isMine ? `
+                    <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                      Offered by You
+                    </span>
+                  ` : `
+                    <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                      Available to Pick Up
+                    </span>
+                  `}
+                </div>
+
+                <div class="flex items-center gap-2 text-xs text-muted font-mono pt-1 border-t border-line/40 flex-wrap">
+                  <span class="text-ink font-semibold">📅 ${dateFormatted}</span>
+                  <span>·</span>
+                  <span>⏰ ${b.startTime} – ${b.finishTime}</span>
+                </div>
+
+                <div class="p-2 rounded-lg bg-panel2 border border-line text-xs space-y-1">
+                  <div class="flex items-center justify-between text-muted">
+                    <span>Discipline / Role:</span>
+                    <strong class="text-ink">${ui.esc(b.role || 'Tech')}</strong>
+                  </div>
+                  <div class="flex items-center justify-between text-muted">
+                    <span>Currently Assigned:</span>
+                    <span class="font-medium text-ink">${ui.esc(b.swapOfferedByName || b.userName || 'Tech')}</span>
+                  </div>
+                </div>
+
+                ${b.swapReason ? `
+                  <div class="p-2.5 rounded-lg bg-panel2/60 border border-line/60 text-xs text-muted">
+                    <span class="font-semibold text-ink">Note from ${ui.esc(b.swapOfferedByName || b.userName || 'colleague')}:</span>
+                    <div class="italic mt-0.5 text-[11px]">“${ui.esc(b.swapReason)}”</div>
+                  </div>
+                ` : ''}
+              </div>
+
+              <div class="pt-2 border-t border-line/50 flex items-center justify-between gap-2">
+                ${isMine ? `
+                  <span class="text-[11px] text-amber-400 font-medium">Waiting for colleague</span>
+                  <button class="btn btn-ghost text-xs text-danger hover:bg-danger/10" data-cancel-swap-btn="${b.id}">
+                    Cancel Request
+                  </button>
+                ` : `
+                  <span class="text-[11px] text-muted font-mono">${b.startTime}–${b.finishTime}</span>
+                  <button class="btn btn-primary text-xs flex items-center gap-1.5 shadow-2xs font-semibold" data-claim-swap-btn="${b.id}">
+                    ${ui.icon('check', 'w-3.5 h-3.5')}
+                    <span>Claim Shift / Cover</span>
+                  </button>
+                `}
+              </div>
+            </div>
+          `;
+        });
+        out += `</div>`;
+      }
+
+      out += `
+        </div>
+      `;
+
+      tabContainer.innerHTML = out;
+
+      // Event listeners for swaps tab
+      tabContainer.querySelectorAll('[data-swap-flt]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.swapFilter = btn.getAttribute('data-swap-flt');
+          renderSwapsTab();
+        });
+      });
+
+      const onPostNewSwap = () => {
+        const myShifts = getAllBookings().filter((b) => b.userId === (me ? me.id : 'user-3') && b.status !== 'cancelled' && !b.swapRequested);
+        if (myShifts.length === 0) {
+          ui.toast('You have no upcoming assigned shifts to offer for swap.', 'info');
+          return;
+        }
+        const m = ui.modal({
+          title: 'Offer a Shift for Swap',
+          body: `
+            <div class="space-y-3.5 text-xs">
+              <p class="text-muted">Select which of your upcoming shifts you would like colleagues to cover:</p>
+              <div>
+                <label class="block font-semibold text-muted mb-1">Choose Shift</label>
+                <select id="sel-swap-shift" class="field">
+                  ${myShifts.map((b) => `
+                    <option value="${b.id}">
+                      ${formatDisplayDate(b.date)} (${b.startTime}–${b.finishTime}) · ${ui.esc(b.space)} · ${ui.esc(b.eventName || 'Shift')} (${ui.esc(b.role || 'Tech')})
+                    </option>
+                  `).join('')}
+                </select>
+              </div>
+              <div>
+                <label class="block font-semibold text-muted mb-1">Reason / Note for Colleagues</label>
+                <textarea id="swap-offer-reason" class="field" rows="3" placeholder="e.g. Clashing recording session, family event, happy to swap for Sunday..."></textarea>
+              </div>
+            </div>
+          `,
+          footer: [
+            '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
+            '<button type="button" id="confirm-post-swap" class="btn btn-primary" data-primary>Post Swap Offer</button>',
+          ].join(''),
+          actions: [
+            '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
+            '<button type="button" id="confirm-post-swap" class="btn btn-primary" data-primary>Post Swap Offer</button>',
+          ]
+        });
+
+        m.root.querySelector('#confirm-post-swap')?.addEventListener('click', () => {
+          const shiftId = m.root.querySelector('#sel-swap-shift')?.value;
+          const targetB = myShifts.find((b) => b.id === shiftId);
+          if (!targetB) return;
+          const reason = m.root.querySelector('#swap-offer-reason')?.value.trim();
+          targetB.swapRequested = true;
+          targetB.swapOfferedBy = me ? me.id : 'user-3';
+          targetB.swapOfferedByName = me ? auth.displayName(me) : (targetB.userName || 'Technician');
+          targetB.swapOfferedAt = new Date().toISOString();
+          targetB.swapReason = reason || 'Shift cover requested';
+          store.upsert('bookings', targetB);
+          ui.toast('Shift posted to the Shift Swaps board!', 'ok');
+          m.close();
+          renderActiveTab();
+        });
+      };
+
+      tabContainer.querySelector('#btn-post-new-swap')?.addEventListener('click', onPostNewSwap);
+      tabContainer.querySelector('#btn-post-new-swap-empty')?.addEventListener('click', onPostNewSwap);
+
+      tabContainer.querySelectorAll('[data-claim-swap-btn]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const bid = btn.getAttribute('data-claim-swap-btn');
+          const targetB = allB.find((b) => b.id === bid);
+          if (targetB) openClaimSwapModal(targetB);
+        });
+      });
+
+      tabContainer.querySelectorAll('[data-cancel-swap-btn]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const bid = btn.getAttribute('data-cancel-swap-btn');
+          const targetB = allB.find((b) => b.id === bid);
+          if (targetB) {
+            targetB.swapRequested = false;
+            store.upsert('bookings', targetB);
+            ui.toast('Shift swap request cancelled.', 'ok');
+            renderActiveTab();
+          }
         });
       });
     }
@@ -3874,6 +4587,452 @@ RMTP.views.rota = (function () {
       });
     }
 
+    // Shift Swap & Cover Helpers
+    function openOfferSwapModal(booking) {
+      if (!booking) return;
+      const m = ui.modal({
+        title: 'Offer Shift for Swap / Cover',
+        body: `
+          <div class="space-y-3.5 text-xs">
+            <div class="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300">
+              <div class="font-bold flex items-center gap-1.5 mb-1">
+                ${ui.icon('refresh', 'w-4 h-4')}
+                <span>Offer Shift to Colleagues</span>
+              </div>
+              <p class="text-[11px] opacity-90">
+                This shift will appear on the venue Shift Swaps board. Any colleague can claim it and take over the cover.
+              </p>
+            </div>
+
+            <div class="p-3 rounded-lg bg-panel2 border border-line space-y-1.5">
+              <div class="font-bold text-ink text-sm">${ui.esc(booking.eventName || 'Shift')}</div>
+              <div class="flex items-center gap-2 text-muted font-mono flex-wrap text-xs">
+                <span class="px-2 py-0.5 rounded bg-panel border border-line text-ink font-semibold">${ui.esc(booking.space)}</span>
+                <span>📅 ${formatDisplayDate(booking.date)}</span>
+                <span>·</span>
+                <span>⏰ ${booking.startTime} – ${booking.finishTime}</span>
+                <span>·</span>
+                <span class="text-accent font-semibold">${ui.esc(booking.role || 'Tech')}</span>
+              </div>
+            </div>
+
+            <div>
+              <label class="block font-semibold text-muted mb-1">Reason / Note for Colleagues</label>
+              <textarea id="swap-reason-input" class="field" rows="3" placeholder="e.g. Double booked with recording session, family event, happy to swap for Friday..."></textarea>
+            </div>
+          </div>
+        `,
+        footer: [
+          '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
+          '<button type="button" id="swap-confirm-btn" class="btn btn-primary" data-primary>Post Shift Swap Offer</button>',
+        ].join(''),
+        actions: [
+          '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
+          '<button type="button" id="swap-confirm-btn" class="btn btn-primary" data-primary>Post Shift Swap Offer</button>',
+        ]
+      });
+
+      m.root.querySelector('#swap-confirm-btn')?.addEventListener('click', () => {
+        const reason = m.root.querySelector('#swap-reason-input')?.value.trim();
+        booking.swapRequested = true;
+        booking.swapOfferedBy = me ? me.id : (booking.userId || 'user-3');
+        booking.swapOfferedByName = me ? auth.displayName(me) : (booking.userName || 'Technician');
+        booking.swapOfferedAt = new Date().toISOString();
+        booking.swapReason = reason || 'Shift cover requested';
+        store.upsert('bookings', booking);
+        ui.toast('Shift posted to the Shift Swaps board! Colleagues can now claim it.', 'ok');
+        m.close();
+        renderActiveTab();
+      });
+    }
+
+    function openClaimSwapModal(booking) {
+      if (!booking) return;
+      const m = ui.modal({
+        title: 'Claim Shift / Accept Cover',
+        body: `
+          <div class="space-y-3.5 text-xs">
+            <div class="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">
+              <div class="font-bold flex items-center gap-1.5 mb-1">
+                ${ui.icon('check', 'w-4 h-4')}
+                <span>Take Over This Shift</span>
+              </div>
+              <p class="text-[11px] opacity-90">
+                You are claiming this shift cover. It will be assigned to you and added to your schedule.
+              </p>
+            </div>
+
+            <div class="p-3 rounded-lg bg-panel2 border border-line space-y-1.5">
+              <div class="font-bold text-ink text-sm">${ui.esc(booking.eventName || 'Shift')}</div>
+              <div class="flex items-center gap-2 text-muted font-mono flex-wrap text-xs">
+                <span class="px-2 py-0.5 rounded bg-panel border border-line text-ink font-semibold">${ui.esc(booking.space)}</span>
+                <span>📅 ${formatDisplayDate(booking.date)}</span>
+                <span>·</span>
+                <span>⏰ ${booking.startTime} – ${booking.finishTime}</span>
+                <span>·</span>
+                <span class="text-accent font-semibold">${ui.esc(booking.role || 'Tech')}</span>
+              </div>
+              <div class="text-[11px] text-muted pt-1 border-t border-line/40">
+                Offered by: <strong class="text-ink">${ui.esc(booking.swapOfferedByName || booking.userName || 'Colleague')}</strong>
+                ${booking.swapReason ? `<div class="italic text-muted mt-0.5">“${ui.esc(booking.swapReason)}”</div>` : ''}
+              </div>
+            </div>
+          </div>
+        `,
+        footer: [
+          '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
+          '<button type="button" id="claim-confirm-btn" class="btn btn-primary" data-primary>Confirm & Claim Shift</button>',
+        ].join(''),
+        actions: [
+          '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
+          '<button type="button" id="claim-confirm-btn" class="btn btn-primary" data-primary>Confirm & Claim Shift</button>',
+        ]
+      });
+
+      m.root.querySelector('#claim-confirm-btn')?.addEventListener('click', () => {
+        const prevName = booking.swapOfferedByName || booking.userName || 'Colleague';
+        const myName = me ? auth.displayName(me) : 'You';
+        booking.userId = me ? me.id : 'user-3';
+        booking.userName = myName;
+        booking.swapRequested = false;
+        booking.swapClaimedBy = me ? me.id : 'user-3';
+        booking.swapClaimedByName = myName;
+        booking.swapClaimedAt = new Date().toISOString();
+        booking.status = 'confirmed';
+        booking.notes = (booking.notes ? booking.notes + ' | ' : '') + `Cover taken over by ${myName} (swapped from ${prevName})`;
+        store.upsert('bookings', booking);
+        ui.toast('Shift claimed successfully! It is now on your personal schedule.', 'ok');
+        m.close();
+        renderActiveTab();
+      });
+    }
+
+    function openShiftDetailModal(booking) {
+      if (!booking) return;
+      const isMine = me && booking.userId === me.id;
+      const isSwap = !!booking.swapRequested;
+      const m = ui.modal({
+        title: `Shift Details · ${ui.esc(booking.space || 'Venue')}`,
+        body: `
+          <div class="space-y-3.5 text-xs">
+            <div class="p-3.5 rounded-xl bg-panel2 border border-line space-y-2">
+              <div class="flex items-start justify-between gap-2">
+                <div>
+                  <div class="text-[10px] uppercase font-bold tracking-wider text-accent">${ui.esc(booking.space)}</div>
+                  <div class="text-sm font-bold text-ink">${ui.esc(booking.eventName || 'Shift')}</div>
+                </div>
+                ${renderStatusPill(booking.status)}
+              </div>
+              <div class="flex items-center gap-2 text-muted font-mono flex-wrap text-xs pt-1 border-t border-line/40">
+                <span>📅 ${formatDisplayDate(booking.date)}</span>
+                <span>·</span>
+                <span>⏰ ${booking.startTime} – ${booking.finishTime}</span>
+                <span>·</span>
+                <span class="text-accent font-semibold">${ui.esc(booking.role || 'Tech')}</span>
+              </div>
+              <div class="text-xs pt-1 border-t border-line/40 flex items-center justify-between">
+                <span class="text-muted">Assigned Tech:</span>
+                <span class="font-bold text-ink">${isMine ? '⭐ You (' + ui.esc(auth.displayName(me)) + ')' : ui.esc(booking.userName || 'Unassigned')}</span>
+              </div>
+              ${booking.notes ? `
+                <div class="text-[11px] text-muted bg-panel p-2 rounded border border-line">
+                  <strong>Notes:</strong> ${ui.esc(booking.notes)}
+                </div>
+              ` : ''}
+            </div>
+
+            ${isSwap ? `
+              <div class="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300">
+                <div class="font-semibold flex items-center gap-1.5">
+                  ${ui.icon('refresh', 'w-4 h-4')}
+                  <span>Shift Swap Offered</span>
+                </div>
+                <div class="text-[11px] mt-1 opacity-90">
+                  Offered by <strong>${ui.esc(booking.swapOfferedByName || booking.userName)}</strong>
+                  ${booking.swapReason ? ` — “${ui.esc(booking.swapReason)}”` : ''}
+                </div>
+              </div>
+            ` : ''}
+          </div>
+        `,
+        footer: `
+          <div class="flex items-center justify-between gap-2 w-full flex-wrap">
+            <div>
+              ${(isTechManager || isAdmin) ? `
+                <button type="button" id="sd-edit-btn" class="btn btn-ghost text-xs">Edit / Reassign</button>
+              ` : ''}
+            </div>
+            <div class="flex items-center gap-2">
+              <button type="button" class="btn btn-ghost" data-close>Close</button>
+              ${isMine && !isSwap ? `
+                <button type="button" id="sd-swap-btn" class="btn btn-primary text-xs flex items-center gap-1.5">
+                  ${ui.icon('refresh', 'w-3.5 h-3.5')}
+                  <span>Offer for Swap</span>
+                </button>
+              ` : ''}
+              ${isMine && isSwap ? `
+                <button type="button" id="sd-cancel-swap-btn" class="btn btn-danger text-xs">
+                  Cancel Swap Offer
+                </button>
+              ` : ''}
+              ${!isMine && isSwap ? `
+                <button type="button" id="sd-claim-btn" class="btn btn-primary text-xs flex items-center gap-1.5">
+                  ${ui.icon('check', 'w-3.5 h-3.5')}
+                  <span>Claim Shift Cover</span>
+                </button>
+              ` : ''}
+            </div>
+          </div>
+        `
+      });
+
+      m.root.querySelector('#sd-edit-btn')?.addEventListener('click', () => {
+        m.close();
+        openBookingModal(booking);
+      });
+      m.root.querySelector('#sd-swap-btn')?.addEventListener('click', () => {
+        m.close();
+        openOfferSwapModal(booking);
+      });
+      m.root.querySelector('#sd-cancel-swap-btn')?.addEventListener('click', () => {
+        booking.swapRequested = false;
+        store.upsert('bookings', booking);
+        ui.toast('Swap offer cancelled. You remain assigned to this shift.', 'ok');
+        m.close();
+        renderActiveTab();
+      });
+      m.root.querySelector('#sd-claim-btn')?.addEventListener('click', () => {
+        m.close();
+        openClaimSwapModal(booking);
+      });
+    }
+
+    function openDayScheduleModal(dateStr) {
+      const dObj = parseDate(dateStr);
+      const formattedDate = dObj.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+      const dayItems = getDaySchedule(dateStr);
+      const allB = getAllBookings().filter((b) => b.date === dateStr && b.status !== 'cancelled');
+      const gaps = dayItems.filter((i) => i.isUnfilled && !i.isNoTech);
+
+      const m = ui.modal({
+        title: `Venue Schedule · ${formattedDate}`,
+        body: `
+          <div class="space-y-3 text-xs">
+            ${gaps.length > 0 ? `
+              <div class="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <span class="w-2.5 h-2.5 rounded-full bg-rose-400 animate-pulse"></span>
+                  <span class="font-bold text-rose-300 text-xs">${gaps.length} Staffing Gap${gaps.length > 1 ? 's' : ''} on this Date</span>
+                </div>
+                <span class="text-[11px] text-muted font-mono hidden sm:inline">Click "+ Assign Freelancer" on any gap below</span>
+              </div>
+            ` : ''}
+
+            ${dayItems.length === 0 ? `
+              <div class="p-8 text-center text-muted italic bg-panel2 rounded-xl border border-line">
+                No events or technician shifts scheduled on this date.
+              </div>
+            ` : `
+              <div class="space-y-2 max-h-[440px] overflow-y-auto pr-1">
+                ${dayItems.map((item) => {
+                  if (item.isUnfilled && !item.isNoTech) {
+                    return `
+                      <div class="p-3 rounded-xl border border-rose-500/40 bg-rose-500/5 space-y-2 shadow-2xs">
+                        <div class="flex items-start justify-between gap-2">
+                          <div>
+                            <div class="flex items-center gap-1.5 flex-wrap">
+                              <span class="px-2 py-0.2 rounded bg-panel border border-line text-[10px] font-bold text-accent uppercase tracking-wider">${ui.esc(item.space)}</span>
+                              <span class="px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 font-bold text-[10px] border border-rose-500/30 flex items-center gap-1">
+                                <span class="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse"></span>
+                                <span>⚠️ Unstaffed Gap</span>
+                              </span>
+                            </div>
+                            <div class="font-bold text-ink text-sm mt-0.5">${ui.esc(item.eventName)}</div>
+                          </div>
+                          <span class="text-rose-400 font-bold text-xs bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">Needs ${ui.esc(item.role || 'Tech')}</span>
+                        </div>
+                        <div class="flex items-center justify-between text-muted font-mono text-[11px] pt-1 border-t border-line/40">
+                          <span>Required Discipline: <strong class="text-ink">${ui.esc(item.role || 'Tech')}</strong></span>
+                          <span>⏰ ${item.startTime} – ${item.finishTime}</span>
+                        </div>
+                        <div class="flex items-center justify-between text-xs pt-1 border-t border-line/40">
+                          <span class="text-rose-300 text-xs italic">No technician assigned yet</span>
+                          ${(isTechManager || isAdmin) ? `
+                            <button type="button" class="btn btn-primary text-xs !py-1 !px-2.5 font-semibold flex items-center gap-1 shadow-xs" data-day-assign-gap="${item.key}">
+                              ${ui.icon('plus', 'w-3.5 h-3.5')}
+                              <span>+ Assign Freelancer</span>
+                            </button>
+                          ` : ''}
+                        </div>
+                      </div>
+                    `;
+                  }
+
+                  if (item.isNoTech) {
+                    return `
+                      <div class="p-3 rounded-xl border border-line bg-panel2 space-y-1.5 opacity-80">
+                        <div class="flex items-start justify-between gap-2">
+                          <div>
+                            <span class="px-2 py-0.2 rounded bg-panel border border-line text-[10px] font-bold text-muted uppercase tracking-wider">${ui.esc(item.space)}</span>
+                            <div class="font-bold text-ink text-sm mt-0.5">${ui.esc(item.eventName)}</div>
+                          </div>
+                          <span class="text-muted font-medium text-xs bg-panel px-2 py-0.5 rounded border border-line">Self-Service</span>
+                        </div>
+                        <div class="flex items-center justify-between text-muted font-mono text-[11px] pt-1 border-t border-line/40">
+                          <span>Status: <strong class="text-ink">No Tech Required</strong></span>
+                          <span>⏰ ${item.startTime} – ${item.finishTime}</span>
+                        </div>
+                      </div>
+                    `;
+                  }
+
+                  if (item.type === 'takeover') {
+                    return `
+                      <div class="p-3 rounded-xl border border-amber-500/40 bg-amber-500/5 space-y-2">
+                        <div class="flex items-start justify-between gap-2">
+                          <div>
+                            <span class="px-2 py-0.2 rounded bg-panel border border-line text-[10px] font-bold text-amber-300 uppercase tracking-wider">Multi-Room Takeover</span>
+                            <div class="font-bold text-ink text-sm mt-0.5">${ui.esc(item.eventName)}</div>
+                            <div class="text-[11px] text-muted mt-0.5">Spaces: ${item.spaces.join(', ')}</div>
+                          </div>
+                          <span class="text-xs font-bold font-mono px-2 py-0.5 rounded ${item.isFullyStaffed ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}">
+                            ${item.totalCrewAssigned}/${item.totalCrewNeeded} Crew Assigned
+                          </span>
+                        </div>
+                        <div class="flex items-center justify-between text-xs pt-1 border-t border-line/40">
+                          <span class="text-muted font-mono text-[11px]">⏰ ${item.startTime} – ${item.finishTime}</span>
+                          ${(isTechManager || isAdmin) ? `
+                            <button type="button" class="btn btn-ghost text-xs !py-1 !px-2 text-accent font-semibold" data-day-assign-gap="${item.key}">
+                              ${ui.icon('plus', 'w-3.5 h-3.5')}
+                              <span>+ Book Takeover Shift</span>
+                            </button>
+                          ` : ''}
+                        </div>
+                      </div>
+                    `;
+                  }
+
+                  // Regular booking or adv_tech
+                  const b = item.booking || allB.find((x) => x.id === item.id) || item;
+                  const isMine = me && b.userId === me.id;
+                  const isSwap = !!b.swapRequested;
+                  return `
+                    <div class="p-3 rounded-xl border bg-panel2 space-y-2 ${isMine ? 'border-accent/50 bg-accent/5 shadow-2xs' : (isSwap ? 'border-amber-500/50 bg-amber-500/5 shadow-2xs' : 'border-line')}">
+                      <div class="flex items-start justify-between gap-2">
+                        <div>
+                          <div class="flex items-center gap-1.5 flex-wrap">
+                            <span class="px-2 py-0.2 rounded bg-panel border border-line text-[10px] font-bold text-accent uppercase tracking-wider">${ui.esc(b.space)}</span>
+                            ${isMine ? '<span class="px-1.5 py-0.2 rounded bg-accent text-accent-ink font-bold text-[10px]">⭐ My Shift</span>' : ''}
+                            ${isSwap ? '<span class="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-bold text-[10px] border border-amber-500/30">🔄 Cover Needed</span>' : ''}
+                          </div>
+                          <div class="font-bold text-ink text-sm mt-0.5">${ui.esc(b.eventName || 'Shift')}</div>
+                        </div>
+                        ${renderStatusPill(b.status)}
+                      </div>
+                      <div class="flex items-center justify-between text-muted font-mono text-[11px] pt-1 border-t border-line/40">
+                        <span>Role: <strong class="text-ink">${ui.esc(b.role || 'Tech')}</strong></span>
+                        <span>⏰ ${b.startTime} – ${b.finishTime}</span>
+                      </div>
+                      <div class="flex items-center justify-between text-xs pt-1 border-t border-line/40">
+                        <span class="text-muted">Tech: <strong class="text-ink">${isMine ? '⭐ You (' + ui.esc(auth.displayName(me)) + ')' : ui.esc(b.userName || 'Unassigned')}</strong></span>
+                        <div class="flex items-center gap-1.5">
+                          ${isMine && !isSwap ? `
+                            <button type="button" class="btn btn-ghost text-[10px] text-accent !py-0.5 !px-2 font-semibold" data-day-swap="${b.id}">Offer Swap</button>
+                          ` : ''}
+                          ${isMine && isSwap ? `
+                            <button type="button" class="btn btn-ghost text-[10px] text-danger !py-0.5 !px-2 font-semibold" data-day-cancel-swap="${b.id}">Cancel Swap</button>
+                          ` : ''}
+                          ${!isMine && isSwap ? `
+                            <button type="button" class="btn btn-primary text-[10px] !py-0.5 !px-2 font-semibold" data-day-claim="${b.id}">Claim Cover</button>
+                          ` : ''}
+                          ${(isTechManager || isAdmin) && b.id ? `
+                            <button type="button" class="btn btn-ghost text-[10px] !py-0.5 !px-2" data-day-edit="${b.id}">Edit</button>
+                          ` : ''}
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            `}
+          </div>
+        `,
+        footer: `
+          <div class="flex items-center justify-between w-full">
+            ${(isTechManager || isAdmin) ? `
+              <button type="button" id="day-add-shift-btn" class="btn btn-primary text-xs flex items-center gap-1.5">
+                ${ui.icon('plus', 'w-3.5 h-3.5')}
+                <span>+ Add Shift on this Date</span>
+              </button>
+            ` : '<div></div>'}
+            <button type="button" class="btn btn-ghost" data-close>Close</button>
+          </div>
+        `
+      });
+
+      m.root.querySelectorAll('[data-day-assign-gap]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const key = btn.getAttribute('data-day-assign-gap');
+          const item = allScheduleItemsMap.get(key);
+          m.close();
+          if (item) {
+            openBookingModal({
+              eventId: item.eventId,
+              eventName: item.eventName,
+              space: item.space,
+              date: item.date,
+              startTime: item.startTime,
+              finishTime: item.finishTime,
+              role: item.role || 'Sound',
+              status: 'pencil',
+            });
+          }
+        });
+      });
+
+      m.root.querySelectorAll('[data-day-swap]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const bid = btn.getAttribute('data-day-swap');
+          const b = allB.find((x) => x.id === bid);
+          m.close();
+          openOfferSwapModal(b);
+        });
+      });
+      m.root.querySelectorAll('[data-day-cancel-swap]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const bid = btn.getAttribute('data-day-cancel-swap');
+          const b = allB.find((x) => x.id === bid);
+          if (b) {
+            b.swapRequested = false;
+            store.upsert('bookings', b);
+            ui.toast('Swap offer cancelled.', 'ok');
+            m.close();
+            renderActiveTab();
+          }
+        });
+      });
+      m.root.querySelectorAll('[data-day-claim]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const bid = btn.getAttribute('data-day-claim');
+          const b = allB.find((x) => x.id === bid);
+          m.close();
+          openClaimSwapModal(b);
+        });
+      });
+      m.root.querySelectorAll('[data-day-edit]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const bid = btn.getAttribute('data-day-edit');
+          const b = allB.find((x) => x.id === bid);
+          m.close();
+          openBookingModal(b);
+        });
+      });
+      m.root.querySelector('#day-add-shift-btn')?.addEventListener('click', () => {
+        m.close();
+        openBookingModal({ date: dateStr, startTime: '17:00', finishTime: '23:30', status: 'pencil' });
+      });
+    }
+
     // 2. Technician Availability Modal (Single Date)
     function openAvailabilityModal(data = {}) {
       const allUsers = getAllUsers();
@@ -4046,35 +5205,65 @@ RMTP.views.rota = (function () {
       const targetUser = allUsers.find((u) => u.id === targetUserId);
       const targetName = targetUser ? auth.displayName(targetUser) : 'Technician';
 
-      const todayStr = formatDate(new Date());
-      const nextMonthObj = new Date();
-      nextMonthObj.setDate(nextMonthObj.getDate() + 28);
-      const defaultEndStr = formatDate(nextMonthObj);
+      const now = new Date();
+      // Next Month (Default):
+      const nextMonthFirst = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      const nextMonthLast = new Date(now.getFullYear(), now.getMonth() + 2, 0);
+      const nextMonthStartStr = formatDate(nextMonthFirst);
+      const nextMonthEndStr = formatDate(nextMonthLast);
+      const nextMonthName = nextMonthFirst.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+
+      // Current Month preset:
+      const curMonthFirst = new Date(now.getFullYear(), now.getMonth(), 1);
+      const curMonthLast = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      const curMonthStartStr = formatDate(curMonthFirst);
+      const curMonthEndStr = formatDate(curMonthLast);
+      const curMonthName = curMonthFirst.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 
       const m = ui.modal({
         title: `Bulk Availability Period · ${ui.esc(targetName)}`,
         body: `
-          <div class="space-y-4 text-xs">
-            <p class="text-muted">Quickly mark multiple upcoming dates across a range (e.g. all weekends or weekdays next month).</p>
+          <div class="space-y-3.5 text-xs">
+            <!-- Quick Month Selector Bar -->
+            <div class="p-2.5 rounded-xl bg-accent/10 border border-accent/30 flex items-center justify-between gap-2 flex-wrap">
+              <span class="text-[11px] font-bold text-accent">Defaulting to Next Month:</span>
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <button type="button" id="blk-btn-next-month" class="px-2.5 py-1 rounded-lg text-xs font-bold bg-accent text-accent-ink shadow-xs transition">
+                  ★ Next Month (${nextMonthName})
+                </button>
+                <button type="button" id="blk-btn-cur-month" class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-panel border border-line text-muted hover:text-ink transition">
+                  This Month (${curMonthName})
+                </button>
+              </div>
+            </div>
 
             <div class="grid grid-cols-2 gap-3">
               <div>
                 <label class="block font-semibold text-muted mb-1">Start Date</label>
-                <input type="date" id="blk-start-date" class="field font-mono" value="${todayStr}" />
+                <input type="date" id="blk-start-date" class="field font-mono" value="${nextMonthStartStr}" />
               </div>
               <div>
                 <label class="block font-semibold text-muted mb-1">End Date</label>
-                <input type="date" id="blk-end-date" class="field font-mono" value="${defaultEndStr}" />
+                <input type="date" id="blk-end-date" class="field font-mono" value="${nextMonthEndStr}" />
               </div>
             </div>
 
             <!-- Days of Week Filter -->
             <div>
-              <label class="block font-semibold text-muted mb-1.5">Apply to Days of Week</label>
+              <div class="flex items-center justify-between gap-2 mb-1.5">
+                <label class="block font-semibold text-muted">Apply to Days of Week</label>
+                <div class="flex items-center gap-1.5 text-[11px]">
+                  <button type="button" id="blk-dow-all" class="text-accent font-semibold hover:underline">All 7 Days</button>
+                  <span class="text-muted">·</span>
+                  <button type="button" id="blk-dow-weekdays" class="text-muted hover:text-ink">Weekdays</button>
+                  <span class="text-muted">·</span>
+                  <button type="button" id="blk-dow-weekends" class="text-muted hover:text-ink">Weekends</button>
+                </div>
+              </div>
               <div class="grid grid-cols-7 gap-1 text-center">
                 ${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d, i) => `
-                  <label class="p-2 rounded border border-line bg-panel2/60 cursor-pointer text-center select-none">
-                    <input type="checkbox" data-dow="${(i + 1) % 7}" class="w-3.5 h-3.5 accent-[var(--accent)] mx-auto block mb-1" ${i >= 4 ? 'checked' : ''} />
+                  <label class="p-2 rounded border border-line bg-panel2/60 cursor-pointer text-center select-none hover:border-accent/40 transition">
+                    <input type="checkbox" data-dow="${(i + 1) % 7}" class="w-3.5 h-3.5 accent-[var(--accent)] mx-auto block mb-1" checked />
                     <span class="text-[10px] font-bold text-ink">${d}</span>
                   </label>
                 `).join('')}
@@ -4086,8 +5275,8 @@ RMTP.views.rota = (function () {
               <div>
                 <label class="block font-semibold text-muted mb-1">Status</label>
                 <select id="blk-type" class="field font-semibold">
-                  <option value="available">Available</option>
-                  <option value="unavailable">Unavailable</option>
+                  <option value="available">Available for Work</option>
+                  <option value="unavailable">Unavailable (Off)</option>
                 </select>
               </div>
               <div>
@@ -4114,19 +5303,57 @@ RMTP.views.rota = (function () {
             </div>
 
             <div>
-              <label class="block font-semibold text-muted mb-1">Notes</label>
-              <input id="blk-notes" class="field" placeholder="e.g. Available for sound or lighting shifts" />
+              <label class="block font-semibold text-muted mb-1">Notes (Optional)</label>
+              <input id="blk-notes" class="field" placeholder="e.g. Free for Sound, Lighting or AV calls" />
             </div>
           </div>
         `,
         footer: [
           '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
-          '<button type="button" id="blk-submit" class="btn btn-primary" data-primary>Apply Period Availability</button>',
+          `<button type="button" id="blk-submit" class="btn btn-primary" data-primary>Save Availability for ${nextMonthName}</button>`,
         ].join(''),
         actions: [
           '<button type="button" class="btn btn-ghost" data-close>Cancel</button>',
-          '<button type="button" id="blk-submit" class="btn btn-primary" data-primary>Apply Period Availability</button>',
+          `<button type="button" id="blk-submit" class="btn btn-primary" data-primary>Save Availability for ${nextMonthName}</button>`,
         ]
+      });
+
+      const btnNextM = m.root.querySelector('#blk-btn-next-month');
+      const btnCurM = m.root.querySelector('#blk-btn-cur-month');
+      const sInput = m.root.querySelector('#blk-start-date');
+      const eInput = m.root.querySelector('#blk-end-date');
+      const submitBtn = m.root.querySelector('#blk-submit');
+
+      btnNextM?.addEventListener('click', () => {
+        sInput.value = nextMonthStartStr;
+        eInput.value = nextMonthEndStr;
+        btnNextM.className = 'px-2.5 py-1 rounded-lg text-xs font-bold bg-accent text-accent-ink shadow-xs transition';
+        btnCurM.className = 'px-2.5 py-1 rounded-lg text-xs font-semibold bg-panel border border-line text-muted hover:text-ink transition';
+        if (submitBtn) submitBtn.textContent = `Save Availability for ${nextMonthName}`;
+      });
+
+      btnCurM?.addEventListener('click', () => {
+        sInput.value = curMonthStartStr;
+        eInput.value = curMonthEndStr;
+        btnCurM.className = 'px-2.5 py-1 rounded-lg text-xs font-bold bg-accent text-accent-ink shadow-xs transition';
+        btnNextM.className = 'px-2.5 py-1 rounded-lg text-xs font-semibold bg-panel border border-line text-muted hover:text-ink transition';
+        if (submitBtn) submitBtn.textContent = `Save Availability for ${curMonthName}`;
+      });
+
+      m.root.querySelector('#blk-dow-all')?.addEventListener('click', () => {
+        m.root.querySelectorAll('[data-dow]').forEach((cb) => { cb.checked = true; });
+      });
+      m.root.querySelector('#blk-dow-weekdays')?.addEventListener('click', () => {
+        m.root.querySelectorAll('[data-dow]').forEach((cb) => {
+          const val = parseInt(cb.getAttribute('data-dow'), 10);
+          cb.checked = val >= 1 && val <= 5; // Mon-Fri
+        });
+      });
+      m.root.querySelector('#blk-dow-weekends')?.addEventListener('click', () => {
+        m.root.querySelectorAll('[data-dow]').forEach((cb) => {
+          const val = parseInt(cb.getAttribute('data-dow'), 10);
+          cb.checked = val === 6 || val === 0; // Sat, Sun
+        });
       });
 
       const dpSel = m.root.querySelector('#blk-daypart');
@@ -4254,6 +5481,18 @@ RMTP.views.rota = (function () {
 
     el.querySelector('#btn-bulk-avail')?.addEventListener('click', () => {
       openBulkPeriodModal();
+    });
+
+    el.querySelector('#btn-quick-swap')?.addEventListener('click', () => {
+      state.tab = 'swaps';
+      el.querySelectorAll('[data-tab]').forEach((b) => {
+        b.className = 'shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 text-muted hover:text-ink hover:bg-panel2';
+      });
+      const swapTab = el.querySelector('[data-tab="swaps"]');
+      if (swapTab) {
+        swapTab.className = 'shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 bg-accent text-accent-ink shadow-xs';
+      }
+      renderActiveTab();
     });
 
     el.querySelector('#btn-add-booking')?.addEventListener('click', () => {

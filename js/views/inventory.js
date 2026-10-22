@@ -11,10 +11,11 @@
 RMTP.views.inventory = function (el, params, query) {
   const ui = RMTP.ui, store = RMTP.store, qr = RMTP.qr, auth = RMTP.auth;
 
-  const canManage = auth.can('inventory.manage');
-  const canMove = auth.can('inventory.move');
   const me = auth.current();
-  const isAdmin = !!(me && me.admin);
+  const isTMOrAdmin = auth.isTechManagerOrAdmin ? auth.isTechManagerOrAdmin(me) : (auth.isTechManager(me) || auth.isAdmin(me));
+  const canManage = isTMOrAdmin;
+  const canMove = auth.can('inventory.move');
+  const isAdmin = isTMOrAdmin;
 
   function getCategories() {
     const baseCats = ['Sound - Consoles', 'Sound - PA/Speakers', 'Sound - Microphones', 'Sound - DI/Stands', 'Sound - Playback', 'Sound - Control', 'Backline', 'DJ Equipment', 'Lighting - Control', 'Lighting - Fixtures', 'Lighting - Rigging/Other', 'AV - Projection/Screens', 'Network - Projection/Screens', 'Power', 'Staging/Flooring', 'Other'];
@@ -1717,6 +1718,10 @@ RMTP.views.inventory = function (el, params, query) {
   }
 
   function openForm(existing) {
+    if (!canManage) {
+      ui.toast('Only Technical Managers and Admins can create or edit kit.', 'info');
+      return;
+    }
     const r = existing || {};
     const opt = (arr, val) => arr.map((v) => '<option ' + (v === val ? 'selected' : '') + '>' + v + '</option>').join('');
     const m = ui.modal({

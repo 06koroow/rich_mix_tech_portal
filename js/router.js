@@ -23,12 +23,30 @@ RMTP.router = (function () {
 
   function render() {
     const { view, params, query } = parse();
-    const id = RMTP.views[view] ? view : RMTP.HOME;
+    let id = RMTP.views[view] ? view : RMTP.HOME;
+
+    // Guard restricted views: Patch & Preset Manager and Venues & Spaces are Technical Manager and Admin only
+    if (id === 'presets' || id === 'venues') {
+      const isTMOrAdmin = RMTP.auth && (RMTP.auth.isTechManagerOrAdmin ? RMTP.auth.isTechManagerOrAdmin() : (RMTP.auth.isTechManager() || RMTP.auth.isAdmin()));
+      if (!isTMOrAdmin) {
+        if (RMTP.ui && RMTP.ui.toast) {
+          RMTP.ui.toast('Access to ' + (id === 'presets' ? 'Patch & Preset Manager' : 'Venues & Spaces') + ' is restricted to Technical Managers.', 'info');
+        }
+        location.replace('#/' + RMTP.HOME);
+        return;
+      }
+    }
+
     const content = document.getElementById('content');
     if (!content) return;
 
     RMTP._previousView = RMTP._currentView || null;
     RMTP._currentView = id;
+
+    // Update navigation to ensure correct items are visible and active
+    if (RMTP.shell && typeof RMTP.shell.renderNavigation === 'function') {
+      RMTP.shell.renderNavigation();
+    }
 
     content.innerHTML = '';
     try {

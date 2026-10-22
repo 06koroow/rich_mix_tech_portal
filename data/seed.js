@@ -683,9 +683,14 @@ RMTP.seed = {
       userId: 'user-5',
       userName: 'Maya Lin',
       role: 'Sound',
-      status: 'pencil',
-      penciledAt: new Date().toISOString(),
-      notes: 'Penciled for acoustic duo + evening DJ transition. Rate £240.'
+      status: 'confirmed',
+      confirmedAt: new Date().toISOString(),
+      notes: 'Acoustic duo + evening DJ transition. Rate £240.',
+      swapRequested: true,
+      swapOfferedBy: 'user-5',
+      swapOfferedByName: 'Maya Lin',
+      swapOfferedAt: new Date().toISOString(),
+      swapReason: 'Double-booked with touring rehearsals in Bristol — looking for Sound cover at The Mix console.'
     },
     {
       id: 'book-6',

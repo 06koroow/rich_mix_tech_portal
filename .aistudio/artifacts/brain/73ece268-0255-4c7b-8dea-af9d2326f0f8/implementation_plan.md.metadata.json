@@ -1,6 +1,6 @@
 {
-  "summary": "Comprehensive implementation plan for the Rich Mix Technical Portal to streamline advancing, venue staffing specs, 'No Tech Needed' handling, and a unified multi-room timeline grid with auto-generated shifts.",
-  "updatedAt": "2026-10-20T11:35:46.916301760Z",
-  "requestFeedback": true,
-  "userFacing": true
+  "summary":  "Comprehensive implementation plan for role-based access control, hiding restricted views (Patch & Preset Manager, Venues & Spaces) from Duty Techs and Freelancers, protecting event technical specs with read-only advance sheets, enabling safe inventory transfers, and presenting a clean crew contact directory.",
+  "updatedAt":  "2026-10-22T09:23:53.414068366Z",
+  "requestFeedback":  true,
+  "userFacing":  true
 }

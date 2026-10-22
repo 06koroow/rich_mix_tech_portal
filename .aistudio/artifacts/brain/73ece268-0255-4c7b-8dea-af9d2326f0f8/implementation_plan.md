@@ -1,153 +1,196 @@
-# Unified Rota Timeline, Venue Staffing Disciplines & Streamlined Advancing
+# Role-Based Permissions & View Streamlining for Duty Techs and Freelancers
 
-A comprehensive overhaul of shift management and event advancing for the Rich Mix Technical Portal: unifying venue-wide crew requirements into a single-page timeline with collapsible spaces, providing dedicated "No Tech Needed" self-service handling, and automating draft shift generation directly from event technical specs.
+A targeted access control and interface streamlining architecture that restricts Duty Technicians and Freelancers to essential operational views (Dashboard, Advancing, Rota & Shifts, Maintenance, Inventory, Procedures, Users), protects event technical specifications with a read-only Advance Sheet and print view, allows inventory transfers while preventing kit deletion, and provides a focused crew contact directory.
 
-### User Review & Critical Decisions
+## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> The following key decisions were confirmed with the user in Phase 1 and govern this architecture:
+> The following operational access rules and boundaries have been confirmed based on user requirements and clarifying decisions:
 
-- **Confirmed Decision 1: Single-Page Rota Architecture**: Instead of forcing users to switch tabs or filter room-by-room, the primary Rota & Shifts board will feature a **Unified Multi-Room Timeline Grid with Collapsible Space Rows**, giving technical managers and crew an instantaneous venue-wide view of all rooms, shifts, and staffing levels on one screen.
-- **Confirmed Decision 2: "No Tech Needed" Self-Service State**: When a room, shift, or advancing event is designated as "No Tech Needed", all missing-crew alerts and understaffing warnings are suppressed. The session is visually designated as **Self-Service / Dark Room** with clear visual quietness, keeping the technician rota focused on events that actually require physical staffing.
-- **Confirmed Decision 3: Advancing-to-Shift Workflow Streamlining**: Eliminate duplicate data entry by introducing an **Auto-Generate Draft Shifts** engine. Technical specifications agreed during advancing (roles, call times, and discipline breakdowns) can be converted directly into scheduled shift bookings with a single click, or synced automatically to the live rota.
-- **Confirmed Decision 4: Cross-Site Venue Discipline Enforcement**: The minimum crew headcount and discipline breakdowns configured on the Venues & Spaces page (Sound, Lighting, Cinema, AV, Stage, Support, Duty Manager) will carry through automatically to Advancing, the Booking Modal, and the Unified Timeline.
-
----
-
-### 1. Overview & Core Concept
-
-- **What It Does**: Provides technical managers, venue duty managers, and freelance technicians with an integrated, cohesive scheduling environment. Venues define exact baseline crew disciplines; advancing events inherit these specifications or customize them; the rota presents an all-in-one timeline across all spaces with collapsible rows; and shifts can be auto-generated without manual re-entry.
-- **Target Audience / Persona**:
-  - *Technical Managers*: Advancing complex productions, reviewing multi-room takeovers, monitoring crew gaps, and generating rosters.
-  - *Duty Engineers & Lead Techs*: Checking venue-wide staffing on the night, identifying who is on FOH sound or lighting in which room.
-  - *Freelancers & Technicians*: Viewing their scheduled call times and seeing room technical requirements in advance.
-- **Key Value**: Replaces fragmented multi-tab browsing and manual shift duplication with an automated, synchronized workflow where venue specifications dictate staffing needs and advancing directly populates the operational rota.
+- **Confirmed Decision 1 (Event Advance Protection)**: When Duty Techs and Freelancers click an event in Advancing or Rota, the system displays a dedicated **Read-Only Advance Sheet Modal** with full production schedules, timing runs, allocated kit, rider/file viewer, and a 1-click **Print Advance** button. All editing controls, file deletion buttons, and event deletion mechanisms are locked to prevent accidental data loss.
+- **Confirmed Decision 2 (Full Administrative Scope)**: Full editing rights for event advancing specs, Venues & Spaces management, and Patch & Preset Manager are strictly limited to **Technical Managers** and **Admins**.
+- **Confirmed Decision 3 (Inventory Transfer Control)**: In Inventory, Duty Techs and Freelancers have full permission to move equipment between spaces and stores and scan QR codes, but **Add Item**, **Edit Kit**, **Delete Equipment**, and **Category Setup** are hidden and locked.
+- **Confirmed Decision 4 (Users Tab Crew Directory)**: In the Users tab, Duty Techs and Freelancers see a clean, read-only **Crew Contact Directory** with direct email (`mailto:`) and phone (`tel:`) contact actions, completely removing administrative account management and training sign-off manipulation.
+- **Confirmed Decision 5 (View Navigation & URL Route Guarding)**: Navigation for Duty Techs and Freelancers only exposes the 7 allowed sections (Dashboard, Advancing, Rota & Shifts, Maintenance, Inventory, Procedures, Users). Both **Patch & Preset Manager** (`#/presets`) and **Venues & Spaces** (`#/venues`) are hidden from navigation and guarded by the router (redirecting to `#/dashboard` with a friendly notice if accessed directly).
 
 ---
 
-### 2. User Experience & Visual Design
+## 1. Overview & Core Concept
 
-#### Key User Flows
-1. **Configuring Room Minimum Crew (Venues & Spaces)**:
-   - Technical manager navigates to *Venues & Spaces*.
-   - In the *Minimum Crew & Disciplines* panel, manager selects baseline roles (e.g. The Stage: `1x Sound, 1x Lighting, 1x Stage`) using quick-add chips and steppers.
-   - Updates persist immediately across the application with visual tags in the venue list sidebar and summary pills.
-2. **Advancing an Event with Staffing Requirements**:
-   - Manager or producer opens an event in *Advancing*.
-   - A new staffing toolbar provides options: "Auto-Populate from Venue Specs", "+ Add Technician", or toggle **"No Tech Needed"**.
-   - If "No Tech Needed" is toggled, crew headcount warnings disappear, self-service notes appear, and the event is tagged as self-managed.
-   - For events with tech needs, a prominent action button **"Generate Rota Shifts from Tech Specs"** creates draft bookings for the rota in one step.
-3. **Managing the Unified Multi-Room Rota**:
-   - Manager navigates to *Rota & Shifts*.
-   - The default Master Board presents the **Unified Multi-Room Timeline Grid**:
-     - A pinned time ruler (e.g. 08:00 to 00:00) sits atop the grid.
-     - Each venue space (The Stage, Studio 1, Studio 2, Cinema 1, Cinema 2, Cinema 3, The Boardroom, Lower Cafe) is represented as a dedicated collapsible row.
-     - The row header displays the space name, color accent, minimum crew spec (e.g., `Min: 2 · Sound, Lighting`), and real-time fulfillment status (`Filled`, `1 Unfilled`, or `Self-Service`).
-     - Within the row, horizontal event blocks depict start and finish times, assigned crew members with their discipline chips, or a clean self-service badge.
-     - Clicking any unfilled slot or "+ Add Shift" in the row opens the Shift Booking Modal pre-populated with that room and its missing discipline.
-4. **Booking Modal with "No Tech Needed"**:
-   - In the Shift Booking Modal, a prominent toggle or technician selection item **"No Tech Needed (Self-Service)"** is available.
-   - Selecting this suppresses the need for an assigned technician and marks the shift as a self-managed venue block.
+### What It Does
+This architecture introduces role-sensitive layout rendering and granular permission gates across the Rich Mix Technical Portal. Depending on the authenticated user's role (or active Dev Override preview), the portal dynamically adapts its navigation menus, route access, event modals, and directory sheets:
+- **Duty Technicians & Freelancers** experience a clutter-free, non-destructive workflow focused purely on day-of-show operations: checking call times, printing advance sheets, logging maintenance, moving gear between rooms, reading SOP guides, and finding colleague contact details.
+- **Technical Managers & Admins** retain unrestricted administrative authority over event advancing specs, room configurations, patch presets, equipment catalogs, and user permissions.
 
-#### Visual Identity & Theme
-- **Aesthetic Direction**: High-density, utilitarian SaaS scheduling console following anti-slop visual discipline: clean hairline borders, single-elevation surfaces, and zero unnecessary decorative badges.
-- **Color Palette & Mood**:
-  - Dominant Neutral: Dark slate background (`#0B0F17` / `#131B2A`) and structured surface panels (`#1A2333` / `#222E42`).
-  - Text & Accents: Crisp white for primary text (`#F8FAFC`), subdued slate for labels (`#94A3B8`), and vibrant amber/cyan accents for active states (`#F59E0B` / `#06B6D4`).
-  - Semantic Status:
-    - *Filled / Nominal*: Emerald green (`#10B981`) text and subtle emerald border.
-    - *Unfilled Crew Gap*: Warm amber (`#F59E0B`) with subtle call-to-action button.
-    - *No Tech Needed / Self-Service*: Quiet muted slate (`#64748B`) with clear italicized text label (no alarmist warning colors).
-- **Typography & Hierarchy**:
-  - Display & Headers: Contemporary sans-serif (`Plus Jakarta Sans` / `Outfit`) for crisp section titles and room headers.
-  - Body & Form Controls: Legible prose at 12px–14px (`DM Sans`).
-  - Timeline & Metrics: Monospace tabular numerals (`font-mono tabular-nums`) for exact call times, shift durations, and crew totals.
-- **Zero-Pill Discipline**:
-  - Metadata (counts, times, room disciplines) rendered as clean unboxed text separated by subtle middots (`·`) rather than nested colored pills.
+### Target Audience / Persona
+- **Duty Techs & Freelance Crew**: Operating on-site across Rich Mix spaces (The Stage, The Studio, The Mix, Screens 1-3). Need immediate access to run sheets, shift timings, gear locations, and fault reporting without exposure to high-risk administrative settings.
+- **Technical Management**: Need peace of mind that touring riders, technical specifications, and room presets cannot be inadvertently altered or erased by shift technicians.
+
+### Key Value
+- **Zero Risk of Data Loss**: Eliminates accidental deletions of technical riders, event advance specs, or equipment entries.
+- **Cognitive Clarity**: Removes complex setup tabs (Presets, Venues) from technician viewports, reducing navigation noise.
+- **Immediate Operational Utility**: Fast, single-click access to print advances, swap shifts, transfer kit, and contact colleagues.
 
 ---
 
-### 3. Key Product Decisions & Trade-Offs
+## 2. User Experience & Visual Design
 
-- **Decision 1: Unified Timeline Grid vs. Tabbed Switching**:
-  - *Chosen Approach*: Replace the fragmented workflow (having to tab through individual days or toggle between spaces) with a unified multi-room timeline board where all spaces are visible simultaneously on a single master page, each collapsible on demand.
-  - *Why*: Eliminates context switching; technical managers can instantly spot scheduling clashes or unstaffed rooms across the entire venue at a single glance.
-  - *Alternatives Considered*: Multi-tab carousel was deemed cumbersome and prone to missing understaffed spaces in secondary rooms.
-- **Decision 2: Dedicated "No Tech Needed" Semantic Entity**:
-  - *Chosen Approach*: Treat "No Tech Needed" as a first-class status across advancing events, space rosters, and shift bookings rather than leaving fields blank.
-  - *Why*: In a live venue, an unassigned slot could either mean a critical staffing shortfall or an intentional dry hire / self-managed screening. Explicitly marking "No Tech Needed" disambiguates this and suppresses alarming red/amber warning badges.
-  - *Trade-off*: Requires small additions to the booking and technician schema, but provides 100% clarity.
-- **Decision 3: Direct Draft Shift Generation from Advancing**:
-  - *Chosen Approach*: Provide a 1-click generation tool that reads an advancing event's required disciplines and timings and creates matching draft bookings in the rota store.
-  - *Why*: Saves technical staff from re-entering the event name, date, start time, finish time, and required roles twice (once in advancing and once in shifts).
-  - *Safety Guard*: Generated shifts are marked as draft/pencil holds so technical managers can review and assign specific freelancers before publishing.
-- **Decision 4: Venue Staffing Discipline Inheritance**:
-  - *Chosen Approach*: `RMTP.getSpaceCrewSpecs(spaceName)` acts as the single source of truth across the entire app. If an event is created in "The Stage", it automatically defaults to The Stage's configured disciplines (`Sound`, `Lighting`, etc.) unless specifically customized.
+### Key User Flows
+
+#### Flow 1: Duty Tech Navigation & View Filtering
+```
+[User Signs In / Dev Preview as Duty Tech]
+   │
+   ├─► Sidebar & Mobile Drawer render only 7 permitted items:
+   │     1. Dashboard
+   │     2. Advancing
+   │     3. Rota & Shifts
+   │     4. Maintenance
+   │     5. Inventory
+   │     6. Procedures
+   │     7. Users
+   │
+   └─► Patch & Preset Manager (#/presets) and Venues & Spaces (#/venues) are hidden.
+         Direct URL hash navigation to restricted routes triggers clean route-guard fallback to #/dashboard.
+```
+
+#### Flow 2: Read-Only Event Advance & Printing
+```
+[Duty Tech clicks Event in Advancing / Calendar]
+   │
+   ▼
+[Read-Only Advance Sheet Modal]
+   ├─► Header: Event title, venue spaces, date, category, status pill
+   ├─► Production Timings: Load in, Soundcheck, Doors, Off stage, Curfew, Load out
+   ├─► Live Schedule & Set Pieces (Run of Day)
+   ├─► Allocated Equipment & Kit List
+   ├─► Technical Specifications & Attached Rider Documents (View / Download only; no remove buttons)
+   ├─► Lighting & Sound Notes
+   └─► Actions:
+         ├─► [Print PDF Advance] -> Triggers styled clean printable sheet
+         └─► [Close] -> Dismisses modal without mutation
+```
+
+#### Flow 3: Safe Inventory Kit Transfers
+```
+[Duty Tech views Inventory]
+   │
+   ├─► View catalog, filter by space, search equipment
+   ├─► "+ Add Item", "Categories", "Edit", and "Delete" buttons are hidden
+   ├─► "Move kit" button and QR scanner remain fully accessible
+   └─► Quick modal allows moving kit between spaces and store rooms with immediate state update
+```
+
+#### Flow 4: Read-Only Crew Contact Directory in Users Tab
+```
+[Duty Tech clicks "Users" tab]
+   │
+   ├─► Page Header: "Crew Directory"
+   ├─► Clean list of active technical staff sorted by role and name
+   ├─► Each row displays: Avatar/Initials, Full Name, Position, Email, Phone
+   ├─► 1-Click Quick Actions: "Call" (tel:) and "Email" (mailto:)
+   └─► Administrative access request panels and training signoff checkboxes are suppressed
+```
+
+### Visual Identity & Theme
+- **Theme Foundations**: Neutral slate surfaces (`bg-panel`, `bg-panel2`), clean borders (`border-line`), and purple accent highlight (`var(--accent)`).
+- **Anti-Slop Restraint**: Static metadata uses quiet inline text with typographic separators (`·`, `/`) instead of loud pill clusters. Interactive buttons use defined segmented button styling.
+- **Data Densities**: High-density typography with tabular numerals (`tabular-nums`, `font-mono`) for timings, shift call hours, and phone numbers.
+- **Print Optimization**: High-contrast, clean black-on-white layout with `@media print` rules hiding navigation, buttons, and browser chrome.
 
 ---
 
-### 4. Technical Architecture & Data Strategy
+## 3. Key Product Decisions & Trade-Offs
+
+### Decision 1: Role Detection & Dev Options Integration
+- **Chosen Approach**: Centralize role capabilities in `RMTP.auth.can(cap)` and role checks (`isTechManager`, `isAdmin`, `isDutyTechOrFreelancer`). The Dev Options simulation switcher already allows Technical Managers to toggle roles (`Technical Manager`, `Senior Tech`, `Duty Tech`, `Freelancer`) or preview as specific users.
+- **Why**: Allows instant live testing in the browser so the Technical Manager can verify exactly what Duty Techs and Freelancers see and interact with.
+- **Alternatives Considered**: Hardcoding checks per view file. Rejected because centralized auth ensures consistent policy across navigation, router, and view renderers.
+
+### Decision 2: Advance Sheet Modal vs Editing Modal
+- **Chosen Approach**: When `!canManageEvents`, clicking an event card directly renders the **Read-Only Advance Sheet Modal** with print support, rather than rendering the complex multi-tab form with disabled input fields.
+- **Why**: Technicians do not want to see disabled form inputs, save buttons, or complex input tabs. An advance sheet is clean, readable, matches the printed sheet, and eliminates any chance of form submission errors.
+- **Alternatives Considered**: Disabling inputs inside the existing `openEventModal`. Rejected because disabling hundreds of inputs across 7 tabs leaves cluttered form fields, file upload dropzones, and deletion buttons that clutter the view.
+
+### Decision 3: Route Guarding in `js/router.js`
+- **Chosen Approach**: In `router.js`, inspect the target route. If the route is `presets` or `venues` and the current user is not a Technical Manager or Admin, intercept navigation, display an informative toast (`"Access restricted to Technical Managers"`), and redirect to `#/dashboard`.
+- **Why**: Protects against bookmarks, browser history, or manual URL bar typing.
+
+### Decision 4: Users Tab Dual Presentation
+- **Chosen Approach**: For Technical Managers and Admins, `views/users.js` provides full user management and competency training signoffs. For Duty Techs and Freelancers, the view renders a streamlined **Crew Contact Directory** with quick phone and email links.
+- **Why**: Techs need phone numbers and emails to communicate during show shifts; they do not need access request approvals or training checklists.
+
+---
+
+## 4. Technical Architecture & Data Strategy
+
+### System Architecture & Permission Gates
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                        RICH MIX TECH PORTAL                            │
-├────────────────────────────────────────────────────────────────────────┤
-│                                                                        │
-│   [ Venues & Spaces ]           [ Advancing ]         [ Rota & Shifts] │
-│           │                           │                      │         │
-│   Define Minimum Crew        Specify Event Tech      Unified Timeline  │
-│   & Disciplines              & "No Tech Needed"      Collapsible Rows  │
-│           │                           │                      │         │
-│           └───────────────────────────┼──────────────────────┘         │
-│                                       ▼                                │
-│                     ┌───────────────────────────────────┐              │
-│                     │       RMTP Shared Services        │              │
-│                     │  ───────────────────────────────  │              │
-│                     │  • RMTP.getSpaceCrewSpecs(space)  │              │
-│                     │  • RMTP.syncAdvancingToRota(ev)   │              │
-│                     │  • RMTP.eventTechnicians(ev)      │              │
-│                     └───────────────────────────────────┘              │
-│                                       │                                │
-│                                       ▼                                │
-│                     ┌───────────────────────────────────┐              │
-│                     │       Client State & Store        │              │
-│                     │  ───────────────────────────────  │              │
-│                     │  • store.all('venues')            │              │
-│                     │  • store.all('advancing')         │              │
-│                     │  • store.all('bookings')          │              │
-│                     │  • store.all('availability')      │              │
-│                     └───────────────────────────────────┘              │
-└────────────────────────────────────────────────────────────────────────┘
+│                          RMTP.auth.current()                           │
+│  (Real user or Dev Options Override: TM / Senior Tech / Duty Tech / FL)│
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │
+         ┌─────────────────────────┴─────────────────────────┐
+         ▼                                                   ▼
+┌───────────────────────────────────┐       ┌────────────────────────────────────┐
+│      Technical Manager / Admin    │       │       Duty Tech / Freelancer       │
+└────────────────┬──────────────────┘       └────────────────┬───────────────────┘
+                 │                                           │
+                 ├─► Nav: All 9 sections                     ├─► Nav: 7 sections only
+                 │    (incl. Presets & Venues)               │    (Presets & Venues hidden)
+                 │                                           │
+                 ├─► Router: All routes                      ├─► Router: Guard presets & venues
+                 │                                           │    (Redirect to #/dashboard)
+                 │                                           │
+                 ├─► Advancing: Full Edit/Delete/Upload      ├─► Advancing: Read-Only Advance Sheet
+                 │    (openEventModal + bulk delete)         │    (printAdvance + view riders)
+                 │                                           │
+                 ├─► Rota: Admin scheduling & swaps          ├─► Rota: Month view, availability, swaps
+                 │                                           │
+                 ├─► Inventory: Add / Edit / Delete / Move   ├─► Inventory: Move kit only
+                 │                                           │
+                 ├─► Procedures: Edit / Reorder / Delete     ├─► Procedures: View & Print guides
+                 │                                           │
+                 └─► Users: Management & Sign-offs           └─► Users: Read-Only Contact Directory
 ```
 
-#### Detailed System Interactions & State Changes
+### Component & File Modifications
 
-1. **Venues Data Model (`store: 'venues'`)**:
-   - Entity: `{ id, name, basicCrew, crewDisciplines: [{ role: 'Sound', count: 1 }, { role: 'Lighting', count: 1 }], ... }`
-   - Real-time updates trigger custom event `rmtp:venues-updated`, notifying the rota and advancing modules to refresh cached room specs.
-
-2. **Advancing Data Model (`store: 'advancing'`)**:
-   - Added fields:
-     - `noTechNeeded: boolean` — when `true`, suppresses all staffing gap notifications.
-     - `technicians: [{ role, userId, freelancerName, startTime, finishTime, isNoTech }]`
-   - Added Action: `Generate Rota Shifts` — queries the event's technician requirements and creates matching entries in `store: 'bookings'`.
-
-3. **Rota Data Model & Unified Timeline (`store: 'bookings'`)**:
-   - Added support for `isNoTech: boolean` on bookings.
-   - Master View: **Unified Multi-Room Timeline Grid**:
-     - Space Rows: Sorted by venue footprint or custom order.
-     - Collapsible state persisted in `RMTP._rotaState.collapsedSpaces`.
-     - Timeline intervals calculated from min/max event hours or standard 08:00–00:00 range.
-     - Single-page view shows all rooms simultaneously with instant filter toggles (e.g. "Only Unfilled Gaps", "Hide Self-Service").
-   - Booking Modal:
-     - Includes "No Tech Needed (Self-Service)" option in the technician selector.
-     - Displays live room staffing requirements banner with 1-click discipline role assignment.
+| Component / File | Purpose & Changes |
+| :--- | :--- |
+| **`js/config.js`** | Add route capability tags to `RMTP.nav` items so views know their minimum role requirement (`presets` and `venues` marked for Technical Managers / Admins). |
+| **`js/auth.js`** | Add `isTechManagerOrAdmin(u)` helper and expand `auth.can()` capabilities (`events.edit`, `nav.view`, `inventory.manage`, `users.manage`). |
+| **`js/app.js`** | Filter desktop sidebar and mobile drawer navigation dynamically based on `auth.can('nav.view', navId)`. Refresh navigation on user change or dev preview toggle. |
+| **`js/router.js`** | Implement route guard: if user attempts to load `presets` or `venues` without management permissions, redirect to `#/dashboard` with a notification. |
+| **`js/views/advancing.js`** | If user is a Duty Tech or Freelancer, intercept event card clicks to open the clean **Read-Only Advance Sheet Modal** with print support; hide bulk delete checkboxes, sync buttons, and file deletion controls. |
+| **`js/views/inventory.js`** | Confirm add, edit, delete, and category configuration buttons remain hidden for non-managers, while the "Move kit" action and QR scanner remain fully enabled. |
+| **`js/views/procedures.js`** | Ensure category delete, tab edit, procedure add, and reorder controls are strictly restricted to Technical Managers and Admins; ensure Print Guide button remains visible to all. |
+| **`js/views/users.js`** | When accessed by Duty Techs or Freelancers, render a dedicated **Crew Contact Directory** layout featuring avatars, roles, clickable phone numbers (`tel:`), and email links (`mailto:`), omitting training management and access request approvals. |
 
 ---
 
-### 5. Implementation Stages & Verification Strategy
+## 5. Verification & Testing Strategy
 
-- **Stage 1**: Verify and finalize the cross-site propagation of venue crew specifications from `venues.js` and `config.js` into advancing and rota helpers.
-- **Stage 2**: Enhance `advancing.js` with the explicit "No Tech Needed" toggle and the "Generate Rota Shifts from Tech Specs" automation tool.
-- **Stage 3**: Build the **Unified Multi-Room Timeline Grid** in `rota.js` with collapsible space rows, replacing the need to tab through separate views, and integrate "No Tech Needed" self-service handling into the schedule items and booking modal.
-- **Stage 4**: Verify all interactive controls, state persistence, shift creation, and build integrity using `compile_applet`.
+1. **Dev Options Permutation Testing**:
+   - Use the **Dev Options** menu (available to Technical Manager in top right / identity menu) to switch between:
+     - `Technical Manager` (Full Access)
+     - `Duty Tech` (Restricted)
+     - `Freelancer` (Restricted)
+   - Verify that switching to `Duty Tech` or `Freelancer` immediately updates sidebar and drawer navigation to only show the 7 permitted views.
+2. **Route Guarding Verification**:
+   - In `Duty Tech` or `Freelancer` mode, type `#/presets` or `#/venues` in the browser URL bar.
+   - Verify redirection to `#/dashboard` with a clear toast notification.
+3. **Event Advance Protection Testing**:
+   - In Advancing, click any event card as a Duty Tech.
+   - Verify the Read-Only Advance Sheet modal opens with complete production timings, set pieces, allocated kit, and technical attachments.
+   - Verify that there are no inputs to edit technical specs, no delete buttons, and no file remove icons.
+   - Click **Print PDF Advance** to verify clean print preview generation.
+4. **Inventory Move Testing**:
+   - Verify that kit can be moved between spaces using the "Move kit" action.
+   - Verify that "+ Add Item" and "Delete" buttons do not appear.
+5. **Users Contact Directory Testing**:
+   - Open Users as a Duty Tech or Freelancer.
+   - Verify the clean Crew Contact Directory displays each team member with working phone and email links.
+   - Verify that training signoff checkboxes and pending request approvals are absent.

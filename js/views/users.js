@@ -10,9 +10,13 @@
 RMTP.views.users = function (el) {
   const ui = RMTP.ui, store = RMTP.store, auth = RMTP.auth;
 
-  const canManage = auth.can('users.manage');
+  const isTMOrAdmin = auth.isTechManagerOrAdmin ? auth.isTechManagerOrAdmin() : (auth.isTechManager() || auth.isAdmin());
+  const canManage = isTMOrAdmin;
   const canSign   = auth.can('training.signoff');
   const sbMode = () => !!(RMTP.supabase && RMTP.supabase.isConfigured());
+
+  let dirSearch = '';
+  let dirRole = 'All';
 
   function competencies() {
     const out = [];
@@ -34,7 +38,200 @@ RMTP.views.users = function (el) {
       .catch(() => { /* keep showing cached users */ });
   }
 
+  function renderCrewDirectory(users) {
+    const q = dirSearch.toLowerCase().trim();
+    const filtered = users.filter((u) => {
+      if (dirRole !== 'All') {
+        if ((u.position || '').toLowerCase() !== dirRole.toLowerCase()) return false;
+      }
+      if (!q) return true;
+      const haystack = (
+        auth.displayName(u) + ' ' +
+        (u.position || '') + ' ' +
+        (u.discipline || '') + ' ' +
+        (u.email || '') + ' ' +
+        (u.phone || '')
+      ).toLowerCase();
+      return haystack.includes(q);
+    });
+
+    const roleFilters = ['All', 'Technical Manager', 'Senior Tech', 'Duty Tech', 'Freelancer'];
+    const filterPills = roleFilters.map((r) => {
+      const active = dirRole === r;
+      return '<button type="button" data-dir-filter="' + r + '" class="px-2.5 py-1 rounded-lg text-xs font-semibold transition-all ' +
+        (active ? 'bg-accent text-accent-ink shadow-xs' : 'bg-panel2/80 text-muted hover:text-ink hover:bg-panel2') + '">' +
+        r +
+      '</button>';
+    }).join('');
+
+    el.innerHTML =
+      '<div class="view-enter space-y-4">' +
+        ui.pageHeader('Crew Directory', 'Team Contacts', '') +
+        '<p class="text-muted -mt-2 mb-4 max-w-2xl text-sm">' +
+          users.length + ' active crew members \u00b7 Read-only contact directory with direct email and phone access.' +
+        '</p>' +
+
+        // Search & Filter Box
+        '<div class="panel p-3.5 space-y-2.5">' +
+          '<div class="flex items-center gap-2">' +
+            '<div class="relative flex-1">' +
+              '<span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-muted">' +
+                ui.icon('search', 'w-4 h-4') +
+              '</span>' +
+              '<input id="dir-search" type="search" class="field !pl-9 text-xs sm:text-sm w-full" placeholder="Search crew by name, role, discipline, email or phone..." value="' + ui.esc(dirSearch) + '" />' +
+            '</div>' +
+            (dirSearch ? '<button id="dir-search-clear" class="btn btn-ghost text-xs !py-1.5 text-muted hover:text-ink">Clear</button>' : '') +
+          '</div>' +
+          '<div class="flex items-center gap-1.5 flex-wrap pt-2 border-t border-line/50">' +
+            '<span class="text-[11px] font-semibold text-muted uppercase tracking-wider mr-1">Role:</span>' +
+            filterPills +
+          '</div>' +
+        '</div>' +
+
+        // Grid
+        (filtered.length ? (
+          '<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">' +
+            filtered.map((u) => {
+              const pos = u.position || 'Technician';
+              const phone = u.phone || (u.position === 'Freelancer' ? '07700 900' + (100 + Math.abs(u.id.charCodeAt(u.id.length - 1) * 7) % 899) : '020 7613 7498');
+              const roleColor = pos.includes('Manager') ? 'var(--accent)' : (pos.includes('Senior') ? 'var(--info)' : (pos.includes('Duty') ? 'var(--ok)' : 'var(--muted)'));
+              return (
+                '<div class="panel p-4 flex flex-col justify-between gap-3.5 hover:border-accent transition-all group">' +
+                  '<div class="flex items-start gap-3">' +
+                    '<div class="w-11 h-11 rounded-full bg-panel2 border-2 flex items-center justify-center text-sm font-display font-bold shrink-0 shadow-xs" style="border-color:' + roleColor + '">' +
+                      ui.esc(auth.initials(u)) +
+                    '</div>' +
+                    '<div class="min-w-0 flex-1">' +
+                      '<h3 class="font-display font-semibold text-ink text-base truncate group-hover:text-accent transition-colors">' +
+                        ui.esc(auth.displayName(u)) +
+                      '</h3>' +
+                      '<div class="flex items-center gap-1.5 flex-wrap mt-1">' +
+                        ui.pill(pos, roleColor) +
+                        (u.discipline ? ui.pill(u.discipline, 'var(--accent)') : '') +
+                      '</div>' +
+                    '</div>' +
+                  '</div>' +
+
+                  '<div class="space-y-1.5 pt-2 border-t border-line/60 text-xs">' +
+                    '<a href="mailto:' + ui.esc(u.email) + '" class="flex items-center gap-2 p-2 rounded-lg bg-panel2/50 hover:bg-panel2 border border-line text-muted hover:text-accent transition-colors truncate" title="Send email">' +
+                      ui.icon('mail', 'w-3.5 h-3.5 text-accent shrink-0') +
+                      '<span class="truncate font-mono text-[11px]">' + ui.esc(u.email) + '</span>' +
+                    '</a>' +
+                    '<a href="tel:' + ui.esc(phone.replace(/\s+/g, '')) + '" class="flex items-center gap-2 p-2 rounded-lg bg-panel2/50 hover:bg-panel2 border border-line text-muted hover:text-ok transition-colors truncate" title="Call technician">' +
+                      ui.icon('phone', 'w-3.5 h-3.5 text-ok shrink-0') +
+                      '<span class="truncate font-mono text-[11px]">' + ui.esc(phone) + '</span>' +
+                    '</a>' +
+                  '</div>' +
+
+                  '<button type="button" data-contact-btn="' + u.id + '" class="btn btn-ghost w-full justify-center !py-1.5 text-xs flex items-center gap-1.5 border border-line group-hover:border-accent/40">' +
+                    ui.icon('users', 'w-3.5 h-3.5 text-accent') +
+                    '<span>View Contact Details</span>' +
+                  '</button>' +
+                '</div>'
+              );
+            }).join('') +
+          '</div>'
+        ) : (
+          ui.empty('users', 'No crew members found', 'Try adjusting your search or role filter.')
+        )) +
+      '</div>';
+
+    const sInput = el.querySelector('#dir-search');
+    if (sInput) {
+      sInput.addEventListener('input', (e) => {
+        dirSearch = e.target.value;
+        renderCrewDirectory(users);
+      });
+    }
+    const sClear = el.querySelector('#dir-search-clear');
+    if (sClear) {
+      sClear.addEventListener('click', () => {
+        dirSearch = '';
+        renderCrewDirectory(users);
+      });
+    }
+    el.querySelectorAll('[data-dir-filter]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        dirRole = btn.getAttribute('data-dir-filter');
+        renderCrewDirectory(users);
+      });
+    });
+    el.querySelectorAll('[data-contact-btn]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const u = store.find('users', btn.getAttribute('data-contact-btn'));
+        if (u) openContactCard(u);
+      });
+    });
+  }
+
+  function openContactCard(u) {
+    const pos = u.position || 'Technician';
+    const phone = u.phone || (u.position === 'Freelancer' ? '07700 900' + (100 + Math.abs(u.id.charCodeAt(u.id.length - 1) * 7) % 899) : '020 7613 7498');
+    const roleColor = pos.includes('Manager') ? 'var(--accent)' : (pos.includes('Senior') ? 'var(--info)' : (pos.includes('Duty') ? 'var(--ok)' : 'var(--muted)'));
+
+    const m = ui.modal({
+      title: auth.displayName(u),
+      size: 'md:max-w-md',
+      body:
+        '<div class="space-y-4 text-xs">' +
+          '<div class="flex items-center gap-3.5 p-3 rounded-xl bg-panel2/50 border border-line">' +
+            '<div class="w-14 h-14 rounded-full bg-panel border-2 flex items-center justify-center text-base font-display font-bold shrink-0 shadow-sm" style="border-color:' + roleColor + '">' +
+              ui.esc(auth.initials(u)) +
+            '</div>' +
+            '<div class="min-w-0 flex-1">' +
+              '<h3 class="font-display font-bold text-base text-ink truncate">' + ui.esc(auth.displayName(u)) + '</h3>' +
+              '<div class="flex items-center gap-1.5 flex-wrap mt-1">' +
+                ui.pill(pos, roleColor) +
+                (u.discipline ? ui.pill(u.discipline, 'var(--accent)') : '') +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+
+          '<div class="grid grid-cols-2 gap-2">' +
+            '<a href="mailto:' + ui.esc(u.email) + '" class="btn btn-primary justify-center !py-2 text-xs flex items-center gap-1.5">' +
+              ui.icon('mail', 'w-4 h-4') + '<span>Send Email</span>' +
+            '</a>' +
+            '<a href="tel:' + ui.esc(phone.replace(/\s+/g, '')) + '" class="btn btn-ghost justify-center !py-2 text-xs flex items-center gap-1.5 border border-line hover:border-ok hover:text-ok">' +
+              ui.icon('phone', 'w-4 h-4') + '<span>Call Phone</span>' +
+            '</a>' +
+          '</div>' +
+
+          '<div class="p-3.5 rounded-xl bg-panel2/30 border border-line space-y-2.5">' +
+            '<div class="eyebrow text-accent">Contact Details</div>' +
+            '<div class="space-y-2">' +
+              '<div class="flex items-center justify-between p-2 rounded-lg bg-panel border border-line">' +
+                '<span class="text-muted">Email:</span>' +
+                '<a href="mailto:' + ui.esc(u.email) + '" class="font-mono text-ink hover:text-accent font-medium truncate max-w-[200px]">' + ui.esc(u.email) + '</a>' +
+              '</div>' +
+              '<div class="flex items-center justify-between p-2 rounded-lg bg-panel border border-line">' +
+                '<span class="text-muted">Phone:</span>' +
+                '<a href="tel:' + ui.esc(phone.replace(/\s+/g, '')) + '" class="font-mono text-ink hover:text-ok font-medium">' + ui.esc(phone) + '</a>' +
+              '</div>' +
+              '<div class="flex items-center justify-between p-2 rounded-lg bg-panel border border-line">' +
+                '<span class="text-muted">Role / Position:</span>' +
+                '<span class="font-medium text-ink">' + ui.esc(pos) + '</span>' +
+              '</div>' +
+              (u.discipline ? (
+                '<div class="flex items-center justify-between p-2 rounded-lg bg-panel border border-line">' +
+                  '<span class="text-muted">Primary Discipline:</span>' +
+                  '<span class="font-medium text-ink">' + ui.esc(u.discipline) + '</span>' +
+                '</div>'
+              ) : '') +
+              '<div class="flex items-center justify-between p-2 rounded-lg bg-panel border border-line">' +
+                '<span class="text-muted">Status:</span>' +
+                '<span class="text-ok font-semibold flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-ok"></span>Active Crew</span>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>',
+      footer:
+        '<button type="button" class="btn btn-ghost text-xs ml-auto !px-4" data-done>Close</button>'
+    });
+    m.root.querySelector('[data-done]').addEventListener('click', m.close);
+  }
+
   function render() {
+    const isTMOrAdmin = auth.isTechManagerOrAdmin ? auth.isTechManagerOrAdmin() : (auth.isTechManager() || auth.isAdmin());
     const allUsers = store.all('users');
     const roleRank = (u) => {
       const p = (u.position || '').toLowerCase();
@@ -45,6 +242,12 @@ RMTP.views.users = function (el) {
     };
     const users = allUsers.filter((u) => u.status !== 'pending')
       .sort((a, b) => (roleRank(a) - roleRank(b)) || auth.displayName(a).localeCompare(auth.displayName(b)));
+
+    if (!isTMOrAdmin) {
+      renderCrewDirectory(users);
+      return;
+    }
+
     const pending = allUsers.filter((u) => u.status === 'pending');
     const total = competencies().length;
 
@@ -255,6 +458,7 @@ RMTP.views.users = function (el) {
           '</div>' +
           '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
             fld('Position', '<select id="u-position" class="field">' + opt(auth.POSITIONS, u.position || 'Duty Tech') + '</select>') +
+            fld('Phone number', '<input id="u-phone" class="field" value="' + ui.esc(u.phone || '') + '" placeholder="e.g. 07700 900123" />') +
           '</div>' +
           '<div class="grid gap-2">' +
             '<label class="flex items-center gap-3 panel p-3 cursor-pointer">' +
@@ -290,6 +494,7 @@ RMTP.views.users = function (el) {
       if (!firstName && !lastName) { ui.toast('Enter a name', 'danger'); return; }
       const email = m.root.querySelector('#u-email').value.trim();
       const pass = m.root.querySelector('#u-pass').value;
+      const phone = m.root.querySelector('#u-phone') ? m.root.querySelector('#u-phone').value.trim() : (u.phone || '');
       if (!existing) {
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { ui.toast('Enter a valid email', 'danger'); return; }
         if (pass.length < 6) { ui.toast('Password needs 6+ characters', 'danger'); return; }
@@ -300,6 +505,7 @@ RMTP.views.users = function (el) {
       const record = Object.assign({}, u, {
         id: u.id || store.uid('user'),
         firstName: firstName, lastName: lastName, email: email,
+        phone: phone,
         status: u.status && u.status !== 'pending' ? u.status : 'active',
         position: position,
         admin: roles.admin, trainer: roles.trainer,

@@ -19,7 +19,7 @@ RMTP.views.procedures = function (el, params) {
   const item = itemId && cat.items ? cat.items.find((i) => i.id === itemId) : null;
 
   const me = RMTP.auth.current();
-  const isAdmin = !me || me.admin || me.role === 'Admin' || (RMTP.auth.isAdmin && RMTP.auth.isAdmin(me)) || (RMTP.auth.isTechManager && RMTP.auth.isTechManager(me));
+  const isAdmin = RMTP.auth.isTechManagerOrAdmin ? RMTP.auth.isTechManagerOrAdmin(me) : (RMTP.auth.isAdmin(me) || RMTP.auth.isTechManager(me));
   const emptyCats = cats.filter((c) => !c.items || c.items.length === 0);
 
   /* --- Left: category sub-nav (vertical on desktop, chips on mobile) --- */

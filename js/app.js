@@ -23,19 +23,41 @@
     );
   }
 
-  const sideNav = RMTP.nav.map((n) =>
-    '<a href="#/' + n.id + '" data-nav="' + n.id + '" ' +
-      'class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-muted hover:text-ink">' +
-      ui.icon(n.icon, 'w-5 h-5') + '<span>' + n.label + '</span></a>'
-  ).join('');
+  function getVisibleNav() {
+    const isTMOrAdmin = auth.isTechManagerOrAdmin ? auth.isTechManagerOrAdmin() : (auth.isTechManager() || auth.isAdmin());
+    return RMTP.nav.filter((n) => {
+      if (n.id === 'presets' || n.id === 'venues') {
+        return isTMOrAdmin;
+      }
+      return true;
+    });
+  }
 
-  const tabNav = RMTP.nav.map((n) =>
-    '<a href="#/' + n.id + '" data-nav="' + n.id + '" ' +
-      'class="tab-item relative flex flex-col items-center justify-center gap-1 flex-1 py-2 text-muted">' +
-      '<span class="tab-dot absolute top-0 w-6 h-0.5 rounded-full bg-accent opacity-0 scale-50 transition-all"></span>' +
-      ui.icon(n.icon, 'w-5 h-5') +
-      '<span class="text-[10px] font-medium">' + n.label + '</span></a>'
-  ).join('');
+  function renderNavigation() {
+    const items = getVisibleNav();
+    const currentView = RMTP._currentView || (RMTP.router && RMTP.router.parse ? RMTP.router.parse().view : RMTP.HOME);
+
+    const navHtml = items.map((n) =>
+      '<a href="#/' + n.id + '" data-nav="' + n.id + '" ' +
+        (n.id === currentView ? 'aria-current="page" ' : '') +
+        'class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-muted hover:text-ink">' +
+        ui.icon(n.icon, 'w-5 h-5') + '<span>' + n.label + '</span></a>'
+    ).join('');
+
+    const desktopNav = document.getElementById('desktop-side-nav');
+    if (desktopNav) desktopNav.innerHTML = navHtml;
+
+    const drawerNav = document.getElementById('mobile-drawer-nav');
+    if (drawerNav) {
+      drawerNav.innerHTML = navHtml;
+      drawerNav.querySelectorAll('a').forEach((link) => {
+        link.addEventListener('click', () => {
+          const drawer = document.getElementById('mobile-nav-drawer');
+          if (drawer) drawer.classList.add('hidden');
+        });
+      });
+    }
+  }
 
   document.getElementById('app').innerHTML =
     '<div class="min-h-screen md:flex">' +
@@ -43,7 +65,7 @@
       // ---- Desktop sidebar ----
       '<aside class="hidden md:flex flex-col w-[var(--sidebar-w)] shrink-0 border-r border-line bg-panel/40 sticky top-0 h-screen">' +
         '<div class="px-4 h-16 flex items-center border-b border-line">' + brand(false) + '</div>' +
-        '<nav class="flex-1 p-3 space-y-1 overflow-y-auto">' + sideNav + '</nav>' +
+        '<nav id="desktop-side-nav" class="flex-1 p-3 space-y-1 overflow-y-auto"></nav>' +
         '<div id="sidebar-identity" class="p-3 border-t border-line"></div>' +
       '</aside>' +
 
@@ -58,7 +80,7 @@
                 ui.icon('x', 'w-5 h-5') +
               '</button>' +
             '</div>' +
-            '<nav id="mobile-drawer-nav" class="p-3 space-y-1">' + sideNav + '</nav>' +
+            '<nav id="mobile-drawer-nav" class="p-3 space-y-1"></nav>' +
           '</div>' +
           '<div id="mobile-drawer-identity" class="p-3 border-t border-line"></div>' +
         '</div>' +
@@ -66,6 +88,7 @@
 
       // ---- Main column ----
       '<div class="flex-1 min-w-0 flex flex-col min-h-screen">' +
+        '<div id="dev-preview-slot"></div>' +
         '<header class="app-topbar md:hidden sticky top-0 z-30 h-14 px-4 flex items-center justify-between border-b border-line bg-bg/90 backdrop-blur">' +
           '<div class="flex items-center gap-2">' +
             '<button id="mobile-menu-toggle" class="p-2 -ml-1.5 text-muted hover:text-ink rounded-lg hover:bg-panel2 transition-colors flex items-center justify-center" aria-label="Open navigation menu">' +
@@ -116,21 +139,53 @@
   function sidebarChip() {
     const u = auth.current();
     if (!u) return '<p class="text-xs text-muted">Not signed in</p>';
+    const isTM = auth.isRealTechManager && auth.isRealTechManager();
+    const override = isTM && auth.getDevOverride && auth.getDevOverride();
+
+    let devBtn = '';
+    if (isTM) {
+      devBtn =
+        '<div class="mt-2.5 pt-2.5 border-t border-line/60">' +
+          '<button type="button" class="dev-options-trigger w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg border ' +
+            (override ? 'border-purple-500 bg-purple-500/20 text-purple-200 shadow-sm ring-1 ring-purple-500/50' : 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20') +
+            ' text-xs font-semibold transition-all group">' +
+            '<span class="flex items-center gap-1.5">' +
+              '<span class="w-2 h-2 rounded-full ' + (override ? 'bg-purple-400 animate-pulse' : 'bg-purple-500') + '"></span>' +
+              '<span>Dev Sandbox</span>' +
+            '</span>' +
+            '<span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-purple-900/60 text-purple-200 border border-purple-500/40">' +
+              (override ? (override.label || 'Preview') : 'TM Tools') +
+            '</span>' +
+          '</button>' +
+        '</div>';
+    }
+
     return '<div class="flex items-center gap-2.5">' +
         '<span class="w-8 h-8 rounded-full bg-panel2 border border-line flex items-center justify-center text-xs font-display font-semibold shrink-0">' + ui.esc(auth.initials(u)) + '</span>' +
         '<span class="min-w-0 flex-1">' +
-          '<span class="block text-sm font-medium truncate">' + ui.esc(auth.displayName(u)) + '</span>' +
+          '<span class="block text-sm font-medium truncate flex items-center gap-1.5">' +
+            ui.esc(auth.displayName(u)) +
+            (override ? '<span class="text-[9px] px-1 py-0.2 rounded bg-purple-500/20 text-purple-300 font-mono font-bold">PREVIEW</span>' : '') +
+          '</span>' +
           '<span class="block text-[11px] text-muted truncate">' + ui.esc(u.position) + (u.admin ? ' \u00b7 Admin' : u.trainer ? ' \u00b7 Trainer' : '') + '</span>' +
         '</span>' +
         '<button id="switch-user" class="text-muted hover:text-ink p-1 shrink-0" title="Sign out" aria-label="Sign out">' + ui.icon('power', 'w-4 h-4') + '</button>' +
       '</div>' +
+      devBtn +
       '<p class="text-[10px] text-muted mt-2 tabular">v' + RMTP.meta.version + '</p>';
   }
+
   function mobileChip() {
     const u = auth.current();
-    return '<button id="switch-user-m" class="w-8 h-8 rounded-full bg-panel2 border border-line flex items-center justify-center text-[11px] font-display font-semibold" title="Sign out" aria-label="Sign out">' +
-      ui.esc(u ? auth.initials(u) : '?') + '</button>';
+    const isTM = auth.isRealTechManager && auth.isRealTechManager();
+    const override = isTM && auth.getDevOverride && auth.getDevOverride();
+    return '<div class="flex items-center gap-1.5">' +
+      (isTM ? '<button type="button" class="dev-options-trigger w-8 h-8 rounded-full border border-purple-500/40 bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 flex items-center justify-center text-xs" title="Dev Role Switcher">' + (override ? '⚡' : '🛠️') + '</button>' : '') +
+      '<button id="switch-user-m" class="w-8 h-8 rounded-full bg-panel2 border border-line flex items-center justify-center text-[11px] font-display font-semibold" title="Sign out" aria-label="Sign out">' +
+        ui.esc(u ? auth.initials(u) : '?') + '</button>' +
+    '</div>';
   }
+
   function refreshIdentity() {
     const s = document.getElementById('sidebar-identity');
     const mm = document.getElementById('mobile-identity');
@@ -150,8 +205,88 @@
       const swd = md.querySelector('#switch-user');
       if (swd) swd.addEventListener('click', () => auth.signOut());
     }
+
+    // Wire all Dev Options buttons
+    document.querySelectorAll('.dev-options-trigger').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (auth.openDevModal) auth.openDevModal();
+      });
+    });
+
+    // Render persistent Dev Preview banner if active
+    const slot = document.getElementById('dev-preview-slot');
+    if (slot) {
+      const isTM = auth.isRealTechManager && auth.isRealTechManager();
+      const override = isTM && auth.getDevOverride && auth.getDevOverride();
+      if (override) {
+        const cur = auth.current();
+        const curPos = cur ? cur.position : '';
+        const curAdm = cur ? !!cur.admin : false;
+        const curTrn = cur ? !!cur.trainer : false;
+        const label = override.label || curPos || 'Preview';
+
+        slot.innerHTML =
+          '<div class="bg-purple-950/95 border-b border-purple-500/40 text-purple-200 px-3 sm:px-4 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs sticky top-0 z-40 backdrop-blur shadow-md">' +
+            '<div class="flex items-center gap-2 min-w-0">' +
+              '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-500/30 text-purple-100 text-[10px] font-bold uppercase tracking-wider border border-purple-400/40 shrink-0">' +
+                '⚡ Dev Preview' +
+              '</span>' +
+              '<span class="text-purple-100 font-semibold truncate text-xs">' +
+                'Viewing as: <span class="underline decoration-purple-400 font-bold">' + ui.esc(label) + '</span>' +
+              '</span>' +
+              '<span class="text-purple-300/80 text-[11px] hidden sm:inline">' +
+                (curAdm ? 'Admin: ON' : 'Admin: OFF') + ' &middot; ' + (curTrn ? 'Trainer: ON' : 'Trainer: OFF') +
+              '</span>' +
+            '</div>' +
+            '<div class="flex items-center gap-1 shrink-0">' +
+              '<span class="text-[11px] text-purple-300/70 hidden lg:inline mr-1">Quick Swap:</span>' +
+              '<button type="button" id="dev-quick-duty" class="btn btn-xs border border-purple-400/40 bg-purple-900/60 hover:bg-purple-800 text-purple-100 !py-0.5 !px-2 text-[11px] ' + (curPos === 'Duty Tech' && !curAdm ? 'ring-1 ring-white font-bold bg-purple-800' : '') + '">' +
+                'Duty Tech' +
+              '</button>' +
+              '<button type="button" id="dev-quick-freelancer" class="btn btn-xs border border-purple-400/40 bg-purple-900/60 hover:bg-purple-800 text-purple-100 !py-0.5 !px-2 text-[11px] ' + (curPos === 'Freelancer' ? 'ring-1 ring-white font-bold bg-purple-800' : '') + '">' +
+                'Freelancer' +
+              '</button>' +
+              '<button type="button" id="dev-quick-senior" class="btn btn-xs border border-purple-400/40 bg-purple-900/60 hover:bg-purple-800 text-purple-100 !py-0.5 !px-2 text-[11px] ' + (curPos === 'Senior Tech' ? 'ring-1 ring-white font-bold bg-purple-800' : '') + '">' +
+                'Senior Tech' +
+              '</button>' +
+              '<button type="button" id="dev-banner-options" class="btn btn-xs border border-purple-400/40 bg-purple-900/60 hover:bg-purple-800 text-purple-100 !py-0.5 !px-2 text-[11px]" title="Open Dev Sandbox">' +
+                '⚙️ Sandbox' +
+              '</button>' +
+              '<button type="button" id="dev-banner-exit" class="btn btn-xs bg-purple-600 hover:bg-purple-500 text-white font-semibold !py-0.5 !px-2.5 text-[11px] shadow-sm ml-1" title="Exit Preview and Return to Technical Manager">' +
+                '✕ Exit Preview' +
+              '</button>' +
+            '</div>' +
+          '</div>';
+
+        const qDuty = slot.querySelector('#dev-quick-duty');
+        if (qDuty) qDuty.addEventListener('click', () => {
+          auth.setDevOverride({ type: 'preset', position: 'Duty Tech', admin: false, trainer: false, label: 'Duty Tech' });
+          ui.toast('Switched preview to Duty Tech (Staff Tech)', 'ok');
+        });
+        const qFree = slot.querySelector('#dev-quick-freelancer');
+        if (qFree) qFree.addEventListener('click', () => {
+          auth.setDevOverride({ type: 'preset', position: 'Freelancer', admin: false, trainer: false, label: 'Freelancer' });
+          ui.toast('Switched preview to Freelancer (Restricted)', 'ok');
+        });
+        const qSenior = slot.querySelector('#dev-quick-senior');
+        if (qSenior) qSenior.addEventListener('click', () => {
+          auth.setDevOverride({ type: 'preset', position: 'Senior Tech', admin: true, trainer: true, label: 'Senior Tech' });
+          ui.toast('Switched preview to Senior Tech', 'ok');
+        });
+        const bOpt = slot.querySelector('#dev-banner-options');
+        if (bOpt) bOpt.addEventListener('click', () => auth.openDevModal());
+        const bExit = slot.querySelector('#dev-banner-exit');
+        if (bExit) bExit.addEventListener('click', () => {
+          auth.clearDevOverride();
+          ui.toast('Exited preview mode \u2014 back to Technical Manager', 'ok');
+        });
+      } else {
+        slot.innerHTML = '';
+      }
+    }
+    renderNavigation();
   }
-  RMTP.shell = { refreshIdentity };
+  RMTP.shell = { refreshIdentity, renderNavigation };
 
   // Seed first-run data, establish identity, draw chips, then route.
   (async function boot() {

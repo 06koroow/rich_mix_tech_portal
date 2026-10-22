@@ -41,13 +41,101 @@ RMTP.auth = (function () {
     return (dn[0] || '?').toUpperCase();
   }
 
-  function currentId() { return RMTP.store.read(KEY, null); }
-  function current() {
-    const id = currentId();
+  const DEV_OVERRIDE_KEY = 'rmtp_dev_override';
+  let devOverride = null;
+  try {
+    const saved = sessionStorage.getItem(DEV_OVERRIDE_KEY);
+    if (saved) devOverride = JSON.parse(saved);
+  } catch (e) {}
+
+  function realCurrentId() { return RMTP.store.read(KEY, null); }
+  function realCurrent() {
+    const id = realCurrentId();
     const u = id ? RMTP.store.find('users', id) : null;
-    return u && u.status !== 'pending' ? u : null;   // pending/removed => not signed in
+    return u && u.status !== 'pending' ? u : null;
   }
-  function setCurrent(id) { RMTP.store.write(KEY, id); }
+
+  function isRealTechManager() {
+    const u = realCurrent();
+    if (!u) return false;
+    const pos = String(u.position || '').trim().toLowerCase();
+    const role = String(u.role || '').trim().toLowerCase();
+    const email = String(u.email || '').trim().toLowerCase();
+    return pos === 'technical manager' || pos === 'tech manager' ||
+           pos.includes('technical manager') || pos.includes('tech manager') ||
+           role === 'tech_manager' || role === 'technical_manager' ||
+           email.startsWith('admin@') ||
+           email.includes('okoronka') || email.includes('oscar.koronka');
+  }
+
+  function currentId() {
+    if (isRealTechManager() && devOverride && devOverride.type === 'user' && devOverride.userId) {
+      return devOverride.userId;
+    }
+    return realCurrentId();
+  }
+
+  function current() {
+    const real = realCurrent();
+    if (!real) return null;
+    if (!isRealTechManager() || !devOverride) {
+      return real;
+    }
+
+    if (devOverride.type === 'user' && devOverride.userId) {
+      const target = RMTP.store.find('users', devOverride.userId);
+      if (target && target.status !== 'pending') {
+        return Object.assign({}, target, {
+          _devPreview: true,
+          _devOverride: devOverride,
+          _realUser: real,
+          _previewLabel: displayName(target) + ' (' + (target.position || 'Tech') + ')'
+        });
+      }
+    }
+
+    const simulatedPos = devOverride.position || real.position || 'Duty Tech';
+    const simulatedAdmin = devOverride.admin !== undefined ? !!devOverride.admin : false;
+    const simulatedTrainer = devOverride.trainer !== undefined ? !!devOverride.trainer : false;
+
+    return Object.assign({}, real, {
+      position: simulatedPos,
+      role: simulatedPos,
+      admin: simulatedAdmin,
+      trainer: simulatedTrainer,
+      _devPreview: true,
+      _devOverride: devOverride,
+      _realUser: real,
+      _previewLabel: simulatedPos + (simulatedAdmin ? ' \u00b7 Admin' : '') + (simulatedTrainer ? ' \u00b7 Trainer' : '')
+    });
+  }
+
+  function getDevOverride() {
+    if (!isRealTechManager()) return null;
+    return devOverride;
+  }
+
+  function setDevOverride(override) {
+    if (!isRealTechManager()) return;
+    devOverride = override;
+    try {
+      if (override) sessionStorage.setItem(DEV_OVERRIDE_KEY, JSON.stringify(override));
+      else sessionStorage.removeItem(DEV_OVERRIDE_KEY);
+    } catch (e) {}
+    refreshShell();
+    if (RMTP.router && typeof RMTP.router.render === 'function') {
+      RMTP.router.render();
+    }
+  }
+
+  function clearDevOverride() {
+    setDevOverride(null);
+  }
+
+  function setCurrent(id) {
+    clearDevOverride();
+    RMTP.store.write(KEY, id);
+  }
 
   function byEmail(email) {
     const e = String(email || '').trim().toLowerCase();
@@ -97,6 +185,10 @@ RMTP.auth = (function () {
     const user = u || current();
     return !!(user && user.admin);
   }
+  function isTechManagerOrAdmin(u) {
+    const user = u || current();
+    return isTechManager(user) || isAdmin(user);
+  }
   function rolesForPosition(position, existingTrainer) {
     if (isAutoAdminPosition(position)) return { admin: true, trainer: true };
     return { admin: false, trainer: !!existingTrainer };
@@ -140,7 +232,7 @@ RMTP.auth = (function () {
     const u = current();
     if (!u) return false;
     if (cap === 'training.signoff') return !!u.trainer;   // ONLY trainers, even admins
-    if (u.admin) return true;
+    if (isTechManagerOrAdmin(u)) return true;
     switch (cap) {
       case 'inventory.move':
       case 'report.edit':
@@ -286,6 +378,196 @@ RMTP.auth = (function () {
     if (!current()) showLogin();
   }
 
+  function openDevModal() {
+    if (!isRealTechManager()) {
+      RMTP.ui.toast('Dev sandbox is restricted to Technical Managers.', 'danger');
+      return;
+    }
+    const real = realCurrent();
+    const cur = current();
+    const activeOverride = getDevOverride();
+    const allUsers = RMTP.store.all('users')
+      .filter((u) => u.status !== 'pending' && u.id !== real.id)
+      .sort((a, b) => displayName(a).localeCompare(displayName(b)));
+
+    const activeRole = cur.position || 'Technical Manager';
+    const isAdminActive = !!cur.admin;
+    const isTrainerActive = !!cur.trainer;
+
+    const m = RMTP.ui.modal({
+      title: 'Dev Sandbox: Role & Permission Switcher',
+      size: 'md:max-w-xl',
+      body:
+        '<div class="grid gap-4 text-xs">' +
+          '<div class="p-3 rounded-lg bg-purple-500/10 border border-purple-500/30 text-ink">' +
+            '<div class="flex items-center justify-between gap-2 mb-1">' +
+              '<span class="font-semibold text-purple-400 flex items-center gap-1.5 text-xs">' +
+                RMTP.ui.icon('gear', 'w-4 h-4') +
+                '<span>Technical Manager Dev Tools</span>' +
+              '</span>' +
+              (activeOverride
+                ? '<span class="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-200 font-mono text-[10px] uppercase font-bold tracking-wide border border-purple-400/40">Preview Active</span>'
+                : '<span class="px-2 py-0.5 rounded-full bg-panel text-muted font-mono text-[10px] uppercase font-medium border border-line">Actual Account</span>') +
+            '</div>' +
+            '<p class="text-muted leading-relaxed text-[11px]">' +
+              'Swap permissions and simulate the portal as duty technicians, freelancers, or specific crew members. Changes apply immediately to all views and menus.' +
+            '</p>' +
+          '</div>' +
+
+          // 1. Role Presets
+          '<div>' +
+            '<label class="block font-semibold text-ink mb-1.5 text-[11px] uppercase tracking-wider text-muted">1. Quick Role Presets</label>' +
+            '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2">' +
+              '<button type="button" data-preset="tm" class="p-2.5 rounded-lg border text-left flex flex-col justify-between transition-all ' + (!activeOverride ? 'border-purple-500 bg-purple-500/15 text-ink ring-1 ring-purple-500' : 'border-line hover:border-line2 bg-panel hover:bg-panel2') + '">' +
+                '<span class="font-bold text-xs text-ink flex items-center gap-1">' + RMTP.ui.icon('shield', 'w-3.5 h-3.5 text-purple-400') + 'Tech Manager</span>' +
+                '<span class="text-[10px] text-muted mt-1">Full Admin &middot; Lead</span>' +
+              '</button>' +
+              '<button type="button" data-preset="senior" class="p-2.5 rounded-lg border text-left flex flex-col justify-between transition-all ' + (activeOverride && activeOverride.position === 'Senior Tech' ? 'border-purple-500 bg-purple-500/15 text-ink ring-1 ring-purple-500' : 'border-line hover:border-line2 bg-panel hover:bg-panel2') + '">' +
+                '<span class="font-bold text-xs text-ink flex items-center gap-1">' + RMTP.ui.icon('check', 'w-3.5 h-3.5 text-blue-400') + 'Senior Tech</span>' +
+                '<span class="text-[10px] text-muted mt-1">Admin + Trainer</span>' +
+              '</button>' +
+              '<button type="button" data-preset="duty" class="p-2.5 rounded-lg border text-left flex flex-col justify-between transition-all ' + (activeOverride && activeOverride.position === 'Duty Tech' && !activeOverride.admin ? 'border-purple-500 bg-purple-500/15 text-ink ring-1 ring-purple-500' : 'border-line hover:border-line2 bg-panel hover:bg-panel2') + '">' +
+                '<span class="font-bold text-xs text-ink flex items-center gap-1">' + RMTP.ui.icon('wrench', 'w-3.5 h-3.5 text-amber-400') + 'Duty Tech</span>' +
+                '<span class="text-[10px] text-muted mt-1">Staff Tech &middot; Standard</span>' +
+              '</button>' +
+              '<button type="button" data-preset="freelancer" class="p-2.5 rounded-lg border text-left flex flex-col justify-between transition-all ' + (activeOverride && activeOverride.position === 'Freelancer' ? 'border-purple-500 bg-purple-500/15 text-ink ring-1 ring-purple-500' : 'border-line hover:border-line2 bg-panel hover:bg-panel2') + '">' +
+                '<span class="font-bold text-xs text-ink flex items-center gap-1">' + RMTP.ui.icon('users', 'w-3.5 h-3.5 text-emerald-400') + 'Freelancer</span>' +
+                '<span class="text-[10px] text-muted mt-1">Guest Tech &middot; Restricted</span>' +
+              '</button>' +
+            '</div>' +
+          '</div>' +
+
+          // 2. View As Specific User
+          '<div>' +
+            '<label class="block font-semibold text-ink mb-1.5 text-[11px] uppercase tracking-wider text-muted">2. View As Specific Crew Member</label>' +
+            '<div class="flex items-center gap-2">' +
+              '<select id="dev-user-select" class="field text-xs flex-1">' +
+                '<option value="">-- Select a registered technician or freelancer --</option>' +
+                allUsers.map((u) => {
+                  const isSel = activeOverride && activeOverride.type === 'user' && activeOverride.userId === u.id;
+                  return '<option value="' + RMTP.ui.esc(u.id) + '" ' + (isSel ? 'selected' : '') + '>' +
+                    RMTP.ui.esc(displayName(u)) + ' &mdash; ' + RMTP.ui.esc(u.position || 'Tech') + (u.admin ? ' (Admin)' : '') +
+                  '</option>';
+                }).join('') +
+              '</select>' +
+              '<button type="button" id="dev-user-apply-btn" class="btn border border-line bg-panel hover:bg-panel2 text-xs font-semibold shrink-0">Switch User</button>' +
+            '</div>' +
+          '</div>' +
+
+          // 3. Custom Permission Sandbox
+          '<div class="p-3 rounded-lg border border-line bg-panel2/30">' +
+            '<label class="block font-semibold text-ink mb-2 text-[11px] uppercase tracking-wider text-muted">3. Custom Permission Sandbox</label>' +
+            '<div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">' +
+              '<div>' +
+                '<label class="block text-[11px] text-muted mb-1 font-medium">Position / Role</label>' +
+                '<select id="dev-custom-pos" class="field text-xs">' +
+                  POSITIONS.map((p) => '<option value="' + p + '" ' + (activeRole === p ? 'selected' : '') + '>' + p + '</option>').join('') +
+                '</select>' +
+              '</div>' +
+              '<div class="space-y-1.5 pt-1 sm:pt-0">' +
+                '<label class="flex items-center gap-2 cursor-pointer">' +
+                  '<input type="checkbox" id="dev-custom-admin" class="w-4 h-4 rounded accent-purple-500" ' + (isAdminActive ? 'checked' : '') + ' />' +
+                  '<span class="text-xs font-medium text-ink">Admin Privileges</span>' +
+                '</label>' +
+                '<label class="flex items-center gap-2 cursor-pointer">' +
+                  '<input type="checkbox" id="dev-custom-trainer" class="w-4 h-4 rounded accent-purple-500" ' + (isTrainerActive ? 'checked' : '') + ' />' +
+                  '<span class="text-xs font-medium text-ink">Trainer Sign-off Rights</span>' +
+                '</label>' +
+              '</div>' +
+              '<div class="text-right">' +
+                '<button type="button" id="dev-custom-apply-btn" class="btn btn-primary !py-1.5 text-xs w-full sm:w-auto">Apply Permissions</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>',
+      footer:
+        (activeOverride
+          ? '<button type="button" id="dev-reset-btn" class="btn border border-purple-500/50 text-purple-300 hover:bg-purple-500/20 mr-auto text-xs">' +
+              RMTP.ui.icon('reset', 'w-3.5 h-3.5') + 'Reset to Technical Manager' +
+            '</button>'
+          : '') +
+        '<button type="button" class="btn btn-ghost text-xs" data-cancel>Close</button>'
+    });
+
+    const root = m.root;
+    root.querySelectorAll('[data-preset]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const p = btn.getAttribute('data-preset');
+        if (p === 'tm') {
+          clearDevOverride();
+          m.close();
+          RMTP.ui.toast('Reset to Technical Manager (Full Access)', 'ok');
+        } else if (p === 'senior') {
+          setDevOverride({ type: 'preset', position: 'Senior Tech', admin: true, trainer: true, label: 'Senior Tech' });
+          m.close();
+          RMTP.ui.toast('Switched preview to Senior Tech (Admin + Trainer)', 'ok');
+        } else if (p === 'duty') {
+          setDevOverride({ type: 'preset', position: 'Duty Tech', admin: false, trainer: false, label: 'Duty Tech' });
+          m.close();
+          RMTP.ui.toast('Switched preview to Duty Tech (Staff Tech)', 'ok');
+        } else if (p === 'freelancer') {
+          setDevOverride({ type: 'preset', position: 'Freelancer', admin: false, trainer: false, label: 'Freelancer' });
+          m.close();
+          RMTP.ui.toast('Switched preview to Freelancer (Restricted Access)', 'ok');
+        }
+      });
+    });
+
+    const uApplyBtn = root.querySelector('#dev-user-apply-btn');
+    if (uApplyBtn) {
+      uApplyBtn.addEventListener('click', () => {
+        const selId = root.querySelector('#dev-user-select').value;
+        if (!selId) {
+          RMTP.ui.toast('Please select a crew member from the list.', 'info');
+          return;
+        }
+        const target = RMTP.store.find('users', selId);
+        if (target) {
+          setDevOverride({
+            type: 'user',
+            userId: selId,
+            position: target.position || 'Duty Tech',
+            admin: !!target.admin,
+            trainer: !!target.trainer,
+            label: displayName(target) + ' (' + (target.position || 'Tech') + ')'
+          });
+          m.close();
+          RMTP.ui.toast('Now previewing portal as ' + displayName(target), 'ok');
+        }
+      });
+    }
+
+    const cApplyBtn = root.querySelector('#dev-custom-apply-btn');
+    if (cApplyBtn) {
+      cApplyBtn.addEventListener('click', () => {
+        const pos = root.querySelector('#dev-custom-pos').value;
+        const adm = root.querySelector('#dev-custom-admin').checked;
+        const trn = root.querySelector('#dev-custom-trainer').checked;
+        setDevOverride({
+          type: 'custom',
+          position: pos,
+          admin: adm,
+          trainer: trn,
+          label: pos + (adm ? ' \u00b7 Admin' : '') + (trn ? ' \u00b7 Trainer' : '')
+        });
+        m.close();
+        RMTP.ui.toast('Custom permissions applied (' + pos + ')', 'ok');
+      });
+    }
+
+    const rBtn = root.querySelector('#dev-reset-btn');
+    if (rBtn) {
+      rBtn.addEventListener('click', () => {
+        clearDevOverride();
+        m.close();
+        RMTP.ui.toast('Reset to Technical Manager', 'ok');
+      });
+    }
+
+    const cBtn = root.querySelector('[data-cancel]');
+    if (cBtn) cBtn.addEventListener('click', m.close);
+  }
+
   function refreshShell() {
     if (RMTP.shell && typeof RMTP.shell.refreshIdentity === 'function') RMTP.shell.refreshIdentity();
   }
@@ -295,8 +577,10 @@ RMTP.auth = (function () {
     displayName, initials, badges, hashPassword,
     rolesForPosition, isAutoAdminPosition,
     current, currentId, setCurrent, can,
+    realCurrent, realCurrentId, isRealTechManager,
+    getDevOverride, setDevOverride, clearDevOverride, openDevModal,
     login, signUp, signOut, signInEmail, showLogin, ensureSession,
     pendingUsers, approveUser, rejectUser, refreshShell,
-    isTechManager, isAdmin,
+    isTechManager, isAdmin, isTechManagerOrAdmin,
   };
 })();

@@ -459,8 +459,29 @@ Deno.serve(async (req) => {
 
     if (rowsToUpsert.length > 0) {
       // Chunk upserts if array is large (e.g. > 500) to be safe, but usually fine up to 1000s
-      const { error: upsertError } = await sb.from("advancing").upsert(rowsToUpsert, { onConflict: "id" });
-      if (upsertError) throw new Error(`Batch upsert failed: ${upsertError.message}`);
+      let currentRows = rowsToUpsert;
+      let lastError: any = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const { error: upsertError } = await sb.from("advancing").upsert(currentRows, { onConflict: "id" });
+        if (!upsertError) {
+          lastError = null;
+          break;
+        }
+        lastError = upsertError;
+        const missingMatch = upsertError.message?.match(/Could not find the '([^']+)' column/i);
+        const missingCol = missingMatch ? missingMatch[1] : (upsertError.message?.includes("artifaxHistory") ? "artifaxHistory" : null);
+        if (missingCol) {
+          console.warn(`[artifax-sync] Column '${missingCol}' missing from advancing schema cache. Retrying upsert without it (data safely preserved in production_package)...`);
+          currentRows = currentRows.map(r => {
+            const copy = { ...r };
+            delete copy[missingCol];
+            return copy;
+          });
+        } else {
+          break;
+        }
+      }
+      if (lastError) throw new Error(`Batch upsert failed: ${lastError.message}`);
     }
 
     return json({ ok: true, from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10), created, updated, skipped, instances: validBookings });

@@ -20,11 +20,12 @@ Artifax  →  artifax-sync (Edge Function, secret key)  →  Supabase `advancing
 - The Artifax **API docs** (endpoints + response fields) from the same page or
   from Artifax Support — you'll paste the exact endpoint into the function.
 
-## 1. Add the `artifaxId` column (existing databases)
+## 1. Add the `artifaxId` and `artifaxHistory` columns (existing databases)
 Fresh setups get it from `supabase-setup.sql`. If your `advancing` table already
-exists, run this once in the SQL Editor:
+exists, run this once in the Supabase SQL Editor:
 ```sql
 alter table public.advancing add column if not exists "artifaxId" text;
+alter table public.advancing add column if not exists "artifaxHistory" jsonb default '[]'::jsonb;
 create unique index if not exists advancing_artifax_uniq
   on public.advancing ("artifaxId") where "artifaxId" is not null;
 ```

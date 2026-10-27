@@ -119,6 +119,7 @@ RMTP.views.advancing = function (el, params, query) {
   const isAdmin = isTMOrAdmin;
   const canManageEvents = isTMOrAdmin;
   const canReport = auth.can('report.edit');
+  const isFreelancer = auth.isFreelancer ? auth.isFreelancer(me) : (me && me.position === 'Freelancer');
   const filters = (RMTP._advFilters = RMTP._advFilters || { space: '', date: '', tab: 'upcoming' });
   let mobileFiltersOpen = (RMTP._advMobileFiltersOpen !== undefined ? RMTP._advMobileFiltersOpen : false);
   const expandedEvents = (RMTP._expandedAdvEvents = RMTP._expandedAdvEvents || new Set());
@@ -1125,6 +1126,8 @@ RMTP.views.advancing = function (el, params, query) {
         "Screen One": "Screen One",
         "Cinema 1": "Screen One",
         "Cinema One": "Screen One",
+        "Cinema Bar / Gallery": "Screen One",
+        "Cinema Bar": "Screen One",
         "Screen 2": "Screen Two",
         "Screen Two": "Screen Two",
         "Cinema 2": "Screen Two",
@@ -1148,6 +1151,7 @@ RMTP.views.advancing = function (el, params, query) {
         if (ROOM_TO_SPACE[r]) return ROOM_TO_SPACE[r];
         
         const lower = r.toLowerCase();
+        if (lower.includes("cinema bar") || lower.includes("cinema gallery")) return "Screen One";
         if (lower.includes("screen 1") || lower.includes("cinema 1") || lower.includes("screen one") || lower.includes("cinema one")) return "Screen One";
         if (lower.includes("screen 2") || lower.includes("cinema 2") || lower.includes("screen two") || lower.includes("cinema two")) return "Screen Two";
         if (lower.includes("screen 3") || lower.includes("cinema 3") || lower.includes("screen three") || lower.includes("cinema three")) return "Screen Three";
@@ -1343,10 +1347,33 @@ RMTP.views.advancing = function (el, params, query) {
         const room = r.room ?? r.roomName ?? r.RoomName ?? r.room_name ?? "";
         const type = r.type ?? r.arrangementType ?? r.ArrangementType ?? r.arrangement_type_name ?? "";
         
+        // Safe date and time parsers for UK (DD/MM/YYYY) and ISO formats
+        const parseSafeDate = (raw) => {
+          if (!raw) return "";
+          const s = String(raw).trim();
+          if (!s) return "";
+          const dmyMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+          if (dmyMatch) return `${dmyMatch[3]}-${dmyMatch[2].padStart(2, '0')}-${dmyMatch[1].padStart(2, '0')}`;
+          const ymdMatch = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+          if (ymdMatch) return `${ymdMatch[1]}-${ymdMatch[2].padStart(2, '0')}-${ymdMatch[3].padStart(2, '0')}`;
+          const d = new Date(s);
+          return isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
+        };
+
+        const parseSafeTime = (raw) => {
+          if (!raw) return "";
+          const s = String(raw).trim();
+          if (!s) return "";
+          const m = s.match(/(\d{1,2}):(\d{2})/);
+          if (m) return `${m[1].padStart(2, '0')}:${m[2]}`;
+          const d = new Date(s);
+          return isNaN(d.getTime()) ? "" : d.toISOString().slice(11, 16);
+        };
+
         // Parse date and time directly if available (or fallback to datetime)
-        const dateStr = r.date ?? r.start ?? r.startDateTime ?? r.StartDateTime ?? r.start_date_time;
-        const start = r.start_time ?? r.start ?? r.startDateTime ?? r.StartDateTime ?? r.start_date_time;
-        const end = r.end_time ?? r.end ?? r.endDateTime ?? r.EndDateTime ?? r.end_date_time;
+        const rawDate = r.date ?? r.event_date ?? r.start_date ?? r.StartDate ?? r.Date ?? r.start ?? r.startDateTime ?? r.StartDateTime ?? r.start_date_time;
+        const rawStart = r.startTime ?? r.start_time ?? r.start_time_text ?? r.time_start ?? r.StartTime ?? r.start ?? r.startDateTime ?? r.StartDateTime ?? r.start_date_time;
+        const rawEnd = r.finishTime ?? r.end_time ?? r.end_time_text ?? r.time_end ?? r.EndTime ?? r.end ?? r.endDateTime ?? r.EndDateTime ?? r.end_date_time;
         
         const contact = r.contact ?? r.contactName ?? r.CustomerName ?? r.client_name ?? r.arrangement_contact_entity_full_name ?? "";
         
@@ -1369,27 +1396,9 @@ RMTP.views.advancing = function (el, params, query) {
         const existing = existingEvents.find(e => e.artifaxId === id);
 
         const space = resolveSpace(room);
-
-        const startDate = dateStr ? new Date(dateStr) : null;
-        
-        // Try to parse exact times
-        let startTimeStr = "";
-        let finishTimeStr = "";
-        
-        if (start && typeof start === 'string' && start.includes(':')) {
-           if (/^\d{2}:\d{2}/.test(start)) {
-             startTimeStr = start.slice(0, 5);
-           } else {
-             startTimeStr = new Date(start).toISOString().slice(11, 16);
-           }
-        }
-        if (end && typeof end === 'string' && end.includes(':')) {
-           if (/^\d{2}:\d{2}/.test(end)) {
-             finishTimeStr = end.slice(0, 5);
-           } else {
-             finishTimeStr = new Date(end).toISOString().slice(11, 16);
-           }
-        }
+        const dateIso = parseSafeDate(rawDate);
+        const startTimeStr = parseSafeTime(rawStart);
+        const finishTimeStr = parseSafeTime(rawEnd);
         
         // Comprehensive extraction of Artifax notes & forms
         const techInfoNotes = extractArtifaxNotes(r) || String(r.notes || r.description || '').trim();
@@ -1400,7 +1409,7 @@ RMTP.views.advancing = function (el, params, query) {
           name: title,
           category: toCategory(type),
           space: space,
-          date: startDate ? startDate.toISOString().slice(0, 10) : "",
+          date: dateIso || "",
           startTime: startTimeStr,
           finishTime: finishTimeStr,
           clientContact: contact,
@@ -1641,6 +1650,14 @@ RMTP.views.advancing = function (el, params, query) {
         openEventModal(item.events[0], item, 0);
       };
       if (card) card.addEventListener('click', openPop);
+
+      const printGrpBtn = q('[data-print-group="' + item.groupId + '|' + item.date + '"]');
+      if (printGrpBtn) {
+        printGrpBtn.addEventListener('click', (evt) => {
+          evt.stopPropagation();
+          printAdvance(item.events[0], item);
+        });
+      }
 
       const editGrpBtn = q('[data-edit-group="' + item.groupId + '|' + item.date + '"]');
       if (editGrpBtn) {
@@ -1989,7 +2006,12 @@ RMTP.views.advancing = function (el, params, query) {
             '<div class="flex items-center gap-2 flex-wrap mb-1.5">' +
               '<h3 class="font-display text-base sm:text-lg font-semibold text-ink group-hover:text-accent transition-colors break-words">' + ui.esc(group.name) + '</h3>' +
               ui.pill('Multi-Room Takeover', 'var(--warning)') +
-              (canManageEvents ? '<button type="button" data-edit-group="' + group.groupId + '|' + group.date + '" class="btn btn-ghost !py-1 !px-2.5 text-xs text-accent hover:bg-accent/10 ml-auto flex items-center gap-1.5 font-semibold border border-accent/20 bg-accent/5 rounded-lg" title="Edit All Spaces in Multi-Room Event">' + ui.icon('pen', 'w-3.5 h-3.5') + '<span>Edit Spaces</span></button>' : '') +
+              '<div class="flex items-center gap-1.5 ml-auto flex-wrap">' +
+                '<button type="button" data-print-group="' + group.groupId + '|' + group.date + '" class="btn btn-ghost !py-1 !px-2.5 text-xs text-ink hover:bg-accent/10 flex items-center gap-1.5 font-semibold border border-line bg-panel2/80 rounded-lg" title="Export Advances PDF">' +
+                  ui.icon('print', 'w-3.5 h-3.5 text-accent') + '<span>Export PDF</span>' +
+                '</button>' +
+                (canManageEvents ? '<button type="button" data-edit-group="' + group.groupId + '|' + group.date + '" class="btn btn-ghost !py-1 !px-2.5 text-xs text-accent hover:bg-accent/10 flex items-center gap-1.5 font-semibold border border-accent/20 bg-accent/5 rounded-lg" title="Edit All Spaces in Multi-Room Event">' + ui.icon('pen', 'w-3.5 h-3.5') + '<span>Edit Spaces</span></button>' : '') +
+              '</div>' +
             '</div>' +
             '<div class="flex flex-wrap items-center gap-x-4 gap-y-2.5 mt-1 text-xs mb-3">' +
               (group.date ? 
@@ -2323,6 +2345,7 @@ RMTP.views.advancing = function (el, params, query) {
     ) : '';
 
     // Cinema Checklist & DCP testing
+    const linkedDcp = isCinema ? (store.all('dcps').find(d => d.eventId === ev.id || d.id === 'dcp-' + ev.id)) : null;
     const cinemaDetailsHtml = isCinema ? (
       '<div class="grid gap-3">' +
         '<div class="p-3.5 rounded-xl bg-panel2/40 border border-line">' +
@@ -2332,8 +2355,8 @@ RMTP.views.advancing = function (el, params, query) {
               '<span class="text-xs font-semibold text-accent">Cinema Screening Checklist & Format</span>' +
             '</div>' +
             '<div class="flex items-center gap-2">' +
-              (filmDuration ? '<span class="text-xs font-semibold px-2 py-0.5 rounded bg-panel border border-line text-ink font-mono">Duration: ' + ui.esc(filmDuration) + '</span>' : '') +
-              (mediaType ? '<span class="text-xs font-semibold px-2 py-0.5 rounded bg-panel border border-accent/40 text-accent font-mono">Media: ' + ui.esc(mediaType) + '</span>' : '') +
+              (filmDuration || (linkedDcp && linkedDcp.duration) ? '<span class="text-xs font-semibold px-2 py-0.5 rounded bg-panel border border-line text-ink font-mono">Duration: ' + ui.esc(filmDuration || linkedDcp.duration) + '</span>' : '') +
+              (mediaType || (linkedDcp && linkedDcp.mediaType) ? '<span class="text-xs font-semibold px-2 py-0.5 rounded bg-panel border border-accent/40 text-accent font-mono">Media: ' + ui.esc(mediaType || linkedDcp.mediaType) + '</span>' : '<span class="text-xs px-2 py-0.5 rounded bg-panel border border-line text-muted">Media: Unspecified</span>') +
             '</div>' +
           '</div>' +
           '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">' +
@@ -2353,14 +2376,55 @@ RMTP.views.advancing = function (el, params, query) {
               );
             }).join('') +
           '</div>' +
+          (linkedDcp ? (
+            '<div class="p-3 rounded-lg bg-panel border border-line/80 space-y-2 mb-3">' +
+              '<div class="flex items-center justify-between text-xs pb-1.5 border-b border-line/50">' +
+                '<span class="font-bold text-ink flex items-center gap-1.5">' +
+                  ui.icon('sliders', 'w-3.5 h-3.5 text-accent') + '<span>Projection QC &amp; Server Specs</span>' +
+                '</span>' +
+                '<span class="font-mono text-[10px] px-2 py-0.5 rounded ' +
+                  (linkedDcp.qcStatus === 'Passed' ? 'bg-ok/15 text-ok border border-ok/30 font-bold' : (linkedDcp.qcStatus === 'Passed with Caveats' ? 'bg-warning/15 text-warning border border-warning/30 font-bold' : 'bg-panel2 text-muted border border-line font-medium')) + '">' +
+                  ui.esc(linkedDcp.qcStatus || 'Pending QC') +
+                '</span>' +
+              '</div>' +
+              '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">' +
+                '<div class="p-1.5 rounded bg-panel2/40 border border-line/50">' +
+                  '<div class="text-[10px] text-muted uppercase font-semibold">Aspect Ratio</div>' +
+                  '<div class="font-semibold text-ink mt-0.5 font-mono">' + ui.esc(linkedDcp.aspectRatio || 'Flat (1.85:1)') + '</div>' +
+                '</div>' +
+                '<div class="p-1.5 rounded bg-panel2/40 border border-line/50">' +
+                  '<div class="text-[10px] text-muted uppercase font-semibold">Resolution / FPS</div>' +
+                  '<div class="font-semibold text-ink mt-0.5 font-mono">' + ui.esc(linkedDcp.resolution || '2K') + ' \u00b7 ' + ui.esc(linkedDcp.frameRate || '24fps') + '</div>' +
+                '</div>' +
+                '<div class="p-1.5 rounded bg-panel2/40 border border-line/50">' +
+                  '<div class="text-[10px] text-muted uppercase font-semibold">Sound Fader Ref</div>' +
+                  '<div class="font-semibold text-ink mt-0.5 font-mono">Fader ' + ui.esc(linkedDcp.soundFaderLevel || '7.0') + ' (' + ui.esc(linkedDcp.audioFormat || '5.1') + ')</div>' +
+                '</div>' +
+                '<div class="p-1.5 rounded bg-panel2/40 border border-line/50">' +
+                  '<div class="text-[10px] text-muted uppercase font-semibold">Credit Cue</div>' +
+                  '<div class="font-semibold text-ink mt-0.5 font-mono">' + ui.esc(linkedDcp.creditOffset || 'Not set') + '</div>' +
+                '</div>' +
+              '</div>' +
+              (linkedDcp.dciTitle ? (
+                '<div class="text-[10px] font-mono text-muted truncate select-all pt-1" title="' + ui.esc(linkedDcp.dciTitle) + '">' +
+                  'DCI: ' + ui.esc(linkedDcp.dciTitle) +
+                '</div>'
+              ) : '') +
+              (linkedDcp.qcNotes ? (
+                '<div class="text-[11px] text-muted bg-panel2/30 p-2 rounded border border-line/40 italic">' +
+                  ui.esc(linkedDcp.qcNotes) +
+                '</div>'
+              ) : '') +
+            '</div>'
+          ) : '') +
           '<div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-line/50 text-xs">' +
             '<div class="p-2.5 rounded bg-panel border border-line/60 flex items-center justify-between">' +
               '<span class="text-muted">Testing Engineer:</span>' +
-              '<span class="font-semibold text-ink">' + (dcpTesterName ? ui.esc(dcpTesterName) : '<span class="text-muted italic">Unassigned</span>') + '</span>' +
+              '<span class="font-semibold text-ink">' + (dcpTesterName ? ui.esc(dcpTesterName) : (linkedDcp && linkedDcp.testedByUserName ? ui.esc(linkedDcp.testedByUserName) : '<span class="text-muted italic">Unassigned</span>')) + '</span>' +
             '</div>' +
             '<div class="p-2.5 rounded bg-panel border border-line/60 flex items-center justify-between">' +
               '<span class="text-muted">Scheduled DCP Test:</span>' +
-              '<span class="font-semibold text-ink font-mono">' + (dcpTestTimeStr ? ui.esc(dcpTestTimeStr) : '<span class="text-muted italic">Not scheduled</span>') + '</span>' +
+              '<span class="font-semibold text-ink font-mono">' + (dcpTestTimeStr ? ui.esc(dcpTestTimeStr) : (linkedDcp && linkedDcp.testDateTime ? ui.esc(new Date(linkedDcp.testDateTime).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' })) : '<span class="text-muted italic">Not scheduled</span>')) + '</span>' +
             '</div>' +
           '</div>' +
           (dcpTestEvent ? (
@@ -2696,6 +2760,10 @@ RMTP.views.advancing = function (el, params, query) {
           '<button id="modal-reports-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
             ui.icon('clip', 'w-4 h-4') + '<span>Reports (' + reports.length + ')</span>' +
           '</button>' +
+          (!isFreelancer && (isCinema || (ev.media_type || ev.mediaType) === 'DCP') ?
+            '<button id="modal-dcp-btn" class="btn btn-ghost text-xs flex items-center gap-1.5 text-accent border border-accent/20 bg-accent/5 hover:bg-accent/10">' +
+              ui.icon('film', 'w-4 h-4') + '<span>DCP QC Console</span>' +
+            '</button>' : '') +
         '</div>' +
         '<div class="flex items-center gap-2">' +
           (canManageEvents ?
@@ -2781,7 +2849,15 @@ RMTP.views.advancing = function (el, params, query) {
     });
 
     const printBtn = m.root.querySelector('#modal-print-btn');
-    if (printBtn) printBtn.addEventListener('click', () => printAdvance(ev));
+    if (printBtn) printBtn.addEventListener('click', () => printAdvance(ev, group));
+
+    const dcpBtn = m.root.querySelector('#modal-dcp-btn');
+    if (dcpBtn) {
+      dcpBtn.addEventListener('click', () => {
+        m.close();
+        window.location.hash = '#/dcp?id=dcp-' + ev.id;
+      });
+    }
 
     const dmxCsvBtn = m.root.querySelector('#modal-dmx-csv-btn');
     if (dmxCsvBtn) {
@@ -2997,10 +3073,78 @@ RMTP.views.advancing = function (el, params, query) {
     });
   }
 
-  /* ---- PDF Export / Print ---- */
-  function printAdvance(ev) {
-    const root = document.getElementById('print-root');
-    if (!root) return;
+  /* ---- PDF Export / Multi-Room Advance Engine ---- */
+
+  function resolveEventGroup(e, grp) {
+    if (grp && Array.isArray(grp.events) && grp.events.length > 1) {
+      return grp;
+    }
+    if (!e) return null;
+
+    // Handle multi-room array space inside single record
+    if (Array.isArray(e.space) && e.space.length > 1) {
+      const subEvs = e.space.map((sp, idx) => Object.assign({}, e, {
+        id: idx === 0 ? e.id : (e.id + '__space_' + idx),
+        space: sp,
+        _subIndex: idx
+      }));
+      return {
+        isGroup: true,
+        groupId: e.groupId || ('multi-' + e.id),
+        date: e.date,
+        name: e.name,
+        events: subEvs
+      };
+    }
+
+    // Check siblings in store sharing groupId, artifaxId, or matching (name, date)
+    const all = store.all('advancing').filter(x => !x.deleted);
+    let matches = [];
+    if (e.groupId) {
+      matches = all.filter(x => x.groupId === e.groupId);
+    } else if (e.artifaxId && e.name && e.name !== 'Untitled') {
+      matches = all.filter(x => x.artifaxId === e.artifaxId || (x.name && x.name.toLowerCase().trim() === e.name.toLowerCase().trim() && x.date === e.date));
+    } else if (e.name && e.name.trim() && e.name !== 'Untitled' && e.date) {
+      matches = all.filter(x => x.name && x.name.toLowerCase().trim() === e.name.toLowerCase().trim() && x.date === e.date);
+    }
+
+    const uniqueBySpace = [];
+    const seen = new Set();
+    matches.forEach(m => {
+      const sp = Array.isArray(m.space) ? m.space[0] : m.space;
+      if (sp && !seen.has(sp)) {
+        seen.add(sp);
+        uniqueBySpace.push(m);
+      }
+    });
+
+    if (uniqueBySpace.length > 1) {
+      const spaceOrder = {
+        'The Stage': 1, 'The Studio': 2, 'The Mix': 3, 
+        'Cinema 1': 4, 'Screen One': 4, 'Screen 1': 4,
+        'Cinema 2': 5, 'Screen Two': 5, 'Screen 2': 5,
+        'Cinema 3': 6, 'Screen Three': 6, 'Screen 3': 6,
+        'Bar & Kitchen': 7
+      };
+      uniqueBySpace.sort((a, b) => {
+        const sa = a.space || '';
+        const sb = b.space || '';
+        const wa = spaceOrder[sa] || 99;
+        const wb = spaceOrder[sb] || 99;
+        return wa !== wb ? wa - wb : sa.localeCompare(sb);
+      });
+      return {
+        isGroup: true,
+        groupId: e.groupId || ('implicit-' + (e.name || '').toLowerCase().trim().replace(/[^a-z0-9]/g, '-') + '-' + e.date),
+        date: e.date,
+        name: e.name,
+        events: uniqueBySpace
+      };
+    }
+    return null;
+  }
+
+  function buildSingleRoomPrintHtml(ev, isFirstPage = true) {
     const isCinema = isScreenSpace(ev.space);
     const mediaTypeVal = ev.media_type || ev.mediaType || '';
     const filmDurationVal = ev.film_duration || ev.filmDuration || '';
@@ -3099,13 +3243,13 @@ RMTP.views.advancing = function (el, params, query) {
                 
                 techReqParts.push('<div style="font-size:11px;display:flex;flex-direction:column;gap:6px;">' + parts.join('') + '</div>');
               }
-              let techReqDesc = techReqParts.length ? techReqParts.join('<div style="height:4px;"></div>') : '—';
+              let techReqDesc = techReqParts.length ? techReqParts.join('<div style="height:4px;"></div>') : '\u2014';
               return (
                 '<tr style="border-bottom:1px solid #e2e8f0;">' +
                   '<td style="padding:6px 8px;font-weight:600;">' + ui.esc(it.label || it.type) + '</td>' +
-                  '<td style="padding:6px 8px;font-weight:500;">' + ui.esc(it.customName || '—') + '</td>' +
-                  '<td style="padding:6px 8px;font-family:monospace;">' + ui.esc(it.time || '—') + '</td>' +
-                  '<td style="padding:6px 8px;font-family:monospace;">' + ui.esc(it.duration || '—') + '</td>' +
+                  '<td style="padding:6px 8px;font-weight:500;">' + ui.esc(it.customName || '\u2014') + '</td>' +
+                  '<td style="padding:6px 8px;font-family:monospace;">' + ui.esc(it.time || '\u2014') + '</td>' +
+                  '<td style="padding:6px 8px;font-family:monospace;">' + ui.esc(it.duration || '\u2014') + '</td>' +
                   '<td style="padding:6px 8px;">' + techReqDesc + '</td>' +
                 '</tr>'
               );
@@ -3156,12 +3300,12 @@ RMTP.views.advancing = function (el, params, query) {
                 channelInputs.map((ch, i) => (
                   '<tr style="border-bottom:1px solid #f1f5f9;">' +
                     '<td style="padding:3px 6px;font-weight:600;font-family:monospace;">Ch ' + (ch.channel || (i + 1)) + '</td>' +
-                    '<td style="padding:3px 6px;font-family:monospace;color:#64748b;font-size:10px;">' + ui.esc(ch.patch || '—') + '</td>' +
-                    '<td style="padding:3px 6px;font-weight:500;">' + ui.esc(ch.instrument || '—') + '</td>' +
-                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(ch.mic || '—') + '</td>' +
-                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(ch.stand || '—') + '</td>' +
-                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(ch.pos || '—') + '</td>' +
-                    '<td style="padding:3px 6px;font-family:monospace;' + (ch.phantom ? 'color:#dc2626;font-weight:700;' : 'color:#94a3b8;') + '">' + (ch.phantom ? '+48V' : '—') + '</td>' +
+                    '<td style="padding:3px 6px;font-family:monospace;color:#64748b;font-size:10px;">' + ui.esc(ch.patch || '\u2014') + '</td>' +
+                    '<td style="padding:3px 6px;font-weight:500;">' + ui.esc(ch.instrument || '\u2014') + '</td>' +
+                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(ch.mic || '\u2014') + '</td>' +
+                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(ch.stand || '\u2014') + '</td>' +
+                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(ch.pos || '\u2014') + '</td>' +
+                    '<td style="padding:3px 6px;font-family:monospace;' + (ch.phantom ? 'color:#dc2626;font-weight:700;' : 'color:#94a3b8;') + '">' + (ch.phantom ? '+48V' : '\u2014') + '</td>' +
                   '</tr>'
                 )).join('') +
               '</tbody>' +
@@ -3177,9 +3321,9 @@ RMTP.views.advancing = function (el, params, query) {
                 channelOutputs.map((out, i) => (
                   '<tr style="border-bottom:1px solid #f1f5f9;">' +
                     '<td style="padding:3px 6px;font-weight:600;font-family:monospace;">Out ' + (out.num || (i + 1)) + (out.stereo ? ' (St)' : '') + '</td>' +
-                    '<td style="padding:3px 6px;font-weight:500;">' + ui.esc(out.name || '—') + '</td>' +
-                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(out.type || '—') + '</td>' +
-                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(out.dest || '—') + '</td>' +
+                    '<td style="padding:3px 6px;font-weight:500;">' + ui.esc(out.name || '\u2014') + '</td>' +
+                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(out.type || '\u2014') + '</td>' +
+                    '<td style="padding:3px 6px;color:#64748b;">' + ui.esc(out.dest || '\u2014') + '</td>' +
                   '</tr>'
                 )).join('') +
               '</tbody>' +
@@ -3203,7 +3347,6 @@ RMTP.views.advancing = function (el, params, query) {
       '</div>'
     ) : '';
 
-    // Lighting & Production Package in Print Sheet
     const prod = getProductionPackage(ev);
     const hasLighting = !!(prod.lighting_notes && prod.lighting_notes.trim());
     const hasFloor = !!((prod.floor_package && prod.floor_package.trim()) || (prod.floor_tags && prod.floor_tags.length));
@@ -3270,18 +3413,26 @@ RMTP.views.advancing = function (el, params, query) {
       '</div>'
     ) : '';
 
-    root.innerHTML =
-      '<div class="adv-print-sheet">' +
-        '<div class="adv-print-header">' +
-          '<div>' +
-            '<div class="adv-print-brand">Rich Mix</div>' +
-            '<div class="adv-print-sub">Tech Portal / ' + ui.esc(ev.category || 'Event Advance') + '</div>' +
+    const sheetClass = 'adv-print-sheet' + (!isFirstPage ? ' adv-print-page-break' : '');
+
+    return (
+      '<div class="' + sheetClass + '">' +
+        '<div class="adv-print-header" style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #0f172a;padding-bottom:12px;margin-bottom:16px;">' +
+          '<div style="display:flex;align-items:center;gap:12px;">' +
+            '<img src="assets/rm-logo.jpg" alt="Rich Mix" class="adv-print-logo" style="width:44px;height:44px;border-radius:6px;object-fit:cover;border:1px solid #cbd5e1;flex-shrink:0;" />' +
+            '<div>' +
+              '<div class="adv-print-brand" style="font-family:\'Space Grotesk\',sans-serif;font-size:18px;font-weight:800;color:#0f172a;line-height:1.2;letter-spacing:-0.02em;">RICH MIX</div>' +
+              '<div class="adv-print-sub" style="font-family:\'IBM Plex Mono\',monospace;font-size:10px;color:#64748b;letter-spacing:0.08em;text-transform:uppercase;margin-top:2px;">Tech Portal \u00b7 ' + ui.esc(ev.category || 'Technical Advance') + '</div>' +
+            '</div>' +
           '</div>' +
-          '<div><span class="adv-print-badge">' + ui.esc(ev.status || 'Draft') + '</span></div>' +
+          '<div style="text-align:right;">' +
+            '<span class="adv-print-badge" style="display:inline-block;padding:3px 8px;border:1.5px solid #0f172a;border-radius:6px;font-weight:700;font-size:11px;text-transform:uppercase;background:#fafafa;">' + ui.esc(ev.status || 'Draft') + '</span>' +
+            '<div style="font-size:10px;font-family:\'IBM Plex Mono\',monospace;color:#64748b;margin-top:4px;">Space: <strong>' + ui.esc(ev.space || 'No Space') + '</strong></div>' +
+          '</div>' +
         '</div>' +
-        '<div class="adv-print-title">' + ui.esc(ev.name) + '</div>' +
+        '<div class="adv-print-title" style="margin-bottom:6px;">' + ui.esc(ev.name) + '</div>' +
         '<div style="font-size:13px;font-weight:600;color:#334155;margin-bottom:16px;">' +
-          ui.esc(ev.date ? ui.formatDate(ev.date) : 'TBC') + (times ? ' • ' + ui.esc(times) : '') + ' — ' + ui.esc(ev.space || 'No Space') +
+          ui.esc(ev.date ? ui.formatDate(ev.date) : 'TBC') + (times ? ' \u2022 ' + ui.esc(times) : '') + ' \u2014 ' + ui.esc(ev.space || 'No Space') +
         '</div>' +
         '<div class="adv-print-section">' +
           '<div class="adv-print-section-title">Crew & Contacts</div>' +
@@ -3322,11 +3473,497 @@ RMTP.views.advancing = function (el, params, query) {
         reportsHtml +
 
         '<div class="adv-print-footer">' +
-          '<span>Rich Mix Tech Portal \u00b7 Technical Advance Report</span>' +
+          '<span>Rich Mix Tech Portal \u00b7 Technical Advance Sheet (' + ui.esc(ev.space || 'General') + ')</span>' +
           '<span>Exported on ' + new Date().toLocaleString('en-GB') + '</span>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function buildWholeVenuePrintHtml(group, selectedRoomEvents = [], isFirstPage = true) {
+    const dateStr = group.date ? ui.formatDate(group.date) : 'TBC';
+    const spacesList = group.events.map(e => e.space || 'Space').join(', ');
+
+    // Primary Lead
+    let leadLabel = 'Unassigned';
+    for (const ge of group.events) {
+      const lid = RMTP.getAdvancingLeadId(ge);
+      if (lid) {
+        const u = store.find('users', lid);
+        if (u) {
+          leadLabel = auth.displayName(u) + (u.position ? ' (' + u.position + ')' : '');
+          break;
+        }
+      }
+    }
+
+    // Consolidated client contact
+    let clientContact = 'None listed';
+    for (const ge of group.events) {
+      if (ge.clientContact && ge.clientContact.trim()) {
+        clientContact = ge.clientContact.trim();
+        break;
+      }
+    }
+
+    // Consolidated distinct techs
+    const distinctTechs = [];
+    const techSeen = new Set();
+    group.events.forEach(ge => {
+      RMTP.eventTechnicians(ge).forEach(t => {
+        const lbl = techLabel(t);
+        if (lbl && !techSeen.has(lbl)) {
+          techSeen.add(lbl);
+          distinctTechs.push(lbl);
+        }
+      });
+    });
+
+    // Cross-room specials & hazards compilation
+    const specialsHazards = [
+      { key: 'hazer', label: 'Hazer / Fogger', rooms: [] },
+      { key: 'lasers', label: 'Lasers', rooms: [] },
+      { key: 'heavy_power', label: 'Heavy Power Drops (32A / 63A)', rooms: [] },
+      { key: 'video', label: 'Video Projection', rooms: [] },
+      { key: 'pyro', label: 'Pyrotechnics / Confetti', rooms: [] },
+    ];
+    const allFloorTags = [];
+    const specialNotesList = [];
+
+    group.events.forEach(ge => {
+      const sp = ge.space || 'Space';
+      const prod = getProductionPackage(ge);
+      const s = prod.specials || {};
+      if (s.hazer) specialsHazards[0].rooms.push(sp);
+      if (s.lasers) specialsHazards[1].rooms.push(sp);
+      if (s.heavy_power || (prod.floor_tags && prod.floor_tags.some(t => /32A|63A|3-Phase|Power/i.test(t)))) {
+        specialsHazards[2].rooms.push(sp);
+      }
+      if (s.video) specialsHazards[3].rooms.push(sp);
+      if (s.pyro) specialsHazards[4].rooms.push(sp);
+      if (Array.isArray(prod.floor_tags)) {
+        prod.floor_tags.forEach(t => { if (!allFloorTags.includes(t)) allFloorTags.push(t); });
+      }
+      if (prod.special_notes && prod.special_notes.trim()) {
+        specialNotesList.push('<strong>' + ui.esc(sp) + ':</strong> ' + ui.esc(prod.special_notes.trim()));
+      }
+    });
+
+    const hasAnyHazards = specialsHazards.some(sh => sh.rooms.length > 0) || allFloorTags.length > 0 || specialNotesList.length > 0;
+
+    // Master Chronological Schedule Compilation
+    const masterScheduleItems = [];
+    group.events.forEach(ge => {
+      const sp = ge.space || 'General';
+      const sItems = Array.isArray(ge.schedule_items) ? ge.schedule_items : (Array.isArray(ge.scheduleItems) ? ge.scheduleItems : []);
+      sItems.forEach(it => {
+        masterScheduleItems.push({
+          time: it.time || '\u2014',
+          space: sp,
+          label: it.customName || it.label || it.type || 'Item',
+          type: it.type || 'act',
+          duration: it.duration || '\u2014',
+          techNotes: it.techNotes || ''
+        });
+      });
+      if (isScreenSpace(sp) && (ge.screening_starts || ge.startTime)) {
+        masterScheduleItems.push({
+          time: ge.screening_starts || ge.startTime || '\u2014',
+          space: sp,
+          label: ge.name + ' (Film Screening)',
+          type: 'screening',
+          duration: ge.film_duration || ge.filmDuration || '\u2014',
+          techNotes: (ge.media_type ? 'Format: ' + ge.media_type : '') + (ge.qa ? ' \u00b7 Q&A' : '') + (ge.intermission ? ' \u00b7 Intermission' : '')
+        });
+      }
+    });
+
+    masterScheduleItems.sort((a, b) => {
+      if (!a.time || a.time === '\u2014') return 1;
+      if (!b.time || b.time === '\u2014') return -1;
+      return a.time.localeCompare(b.time);
+    });
+
+    const sheetClass = 'adv-print-sheet' + (!isFirstPage ? ' adv-print-page-break' : '');
+
+    return (
+      '<div class="' + sheetClass + '">' +
+        '<div class="adv-print-header" style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #0f172a;padding-bottom:12px;margin-bottom:16px;">' +
+          '<div style="display:flex;align-items:center;gap:12px;">' +
+            '<img src="assets/rm-logo.jpg" alt="Rich Mix" class="adv-print-logo" style="width:44px;height:44px;border-radius:6px;object-fit:cover;border:1px solid #cbd5e1;flex-shrink:0;" />' +
+            '<div>' +
+              '<div class="adv-print-brand" style="font-family:\'Space Grotesk\',sans-serif;font-size:18px;font-weight:800;color:#0f172a;line-height:1.2;letter-spacing:-0.02em;">RICH MIX</div>' +
+              '<div class="adv-print-sub" style="font-family:\'IBM Plex Mono\',monospace;font-size:10px;color:#64748b;letter-spacing:0.08em;text-transform:uppercase;margin-top:2px;">Tech Portal \u00b7 Whole Venue Technical Advance</div>' +
+            '</div>' +
+          '</div>' +
+          '<div style="text-align:right;">' +
+            '<span class="adv-print-badge" style="display:inline-block;padding:3px 8px;border:1.5px solid #d97706;border-radius:6px;font-weight:700;font-size:11px;text-transform:uppercase;background:#fef3c7;color:#92400e;">Master Takeover Brief</span>' +
+            '<div style="font-size:10px;font-family:\'IBM Plex Mono\',monospace;color:#64748b;margin-top:4px;">Date: <strong>' + ui.esc(dateStr) + '</strong></div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="adv-print-title" style="margin-bottom:4px;font-size:24px;">' + ui.esc(group.name) + '</div>' +
+        '<div style="font-size:13px;font-weight:600;color:#334155;margin-bottom:14px;">' +
+          ui.esc(dateStr) + ' \u2014 Whole Venue Takeover \u00b7 ' + group.events.length + ' Spaces (' + ui.esc(spacesList) + ')' +
+        '</div>' +
+
+        '<div class="adv-print-section">' +
+          '<div class="adv-print-section-title">Master Executive Brief & Contacts</div>' +
+          '<div class="adv-print-grid">' +
+            '<div class="adv-print-field" style="grid-column: span 2;">' +
+              '<div class="adv-print-label">Lead Advancing Technician</div>' +
+              '<div class="adv-print-val" style="color:#0284c7;font-weight:700;">' + ui.esc(leadLabel) + '</div>' +
+            '</div>' +
+            '<div class="adv-print-field">' +
+              '<div class="adv-print-label">Total Stationed Technicians</div>' +
+              '<div class="adv-print-val">' + distinctTechs.length + ' Tech' + (distinctTechs.length === 1 ? '' : 's') + '</div>' +
+            '</div>' +
+            '<div class="adv-print-field" style="grid-column: span 2;">' +
+              '<div class="adv-print-label">Client / Promoter Contact</div>' +
+              '<div class="adv-print-val">' + ui.esc(clientContact) + '</div>' +
+            '</div>' +
+            '<div class="adv-print-field">' +
+              '<div class="adv-print-label">Active Spaces</div>' +
+              '<div class="adv-print-val">' + group.events.length + ' Rooms In Use</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="adv-print-section">' +
+          '<div class="adv-print-section-title">Cross-Venue Timings & Operations Matrix</div>' +
+          '<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:4px;">' +
+            '<thead>' +
+              '<tr style="border-bottom:1.5px solid #cbd5e1;text-align:left;color:#475569;font-size:10px;text-transform:uppercase;">' +
+                '<th style="padding:4px 6px;">Space / Room</th>' +
+                '<th style="padding:4px 6px;">Discipline</th>' +
+                '<th style="padding:4px 6px;">Event Times</th>' +
+                '<th style="padding:4px 6px;">Load In</th>' +
+                '<th style="padding:4px 6px;">Soundcheck</th>' +
+                '<th style="padding:4px 6px;">Doors</th>' +
+                '<th style="padding:4px 6px;">Curfew</th>' +
+                '<th style="padding:4px 6px;">Load Out</th>' +
+                '<th style="padding:4px 6px;">Crew Stationed</th>' +
+              '</tr>' +
+            '</thead>' +
+            '<tbody>' +
+              group.events.map(ge => {
+                const isCin = isScreenSpace(ge.space);
+                const times = [ge.startTime, ge.finishTime].filter(Boolean).join(' \u2013 ');
+                const geTechs = RMTP.eventTechnicians(ge).map(techLabel).filter(Boolean);
+                const geTechStr = geTechs.length ? geTechs.join(', ') : 'Unassigned';
+                return (
+                  '<tr style="border-bottom:1px solid #e2e8f0;">' +
+                    '<td style="padding:5px 6px;font-weight:700;color:#0f172a;">' + ui.esc(ge.space || 'Room') + '</td>' +
+                    '<td style="padding:5px 6px;color:#475569;">' + ui.esc(ge.category || (isCin ? 'Cinema' : 'Live')) + '</td>' +
+                    '<td style="padding:5px 6px;font-family:monospace;font-weight:600;">' + ui.esc(times || 'TBC') + '</td>' +
+                    '<td style="padding:5px 6px;font-family:monospace;">' + ui.esc(ge.load_in || ge.loadIn || '\u2014') + '</td>' +
+                    '<td style="padding:5px 6px;font-family:monospace;">' + ui.esc(ge.soundcheck || ge.screening_starts || '\u2014') + '</td>' +
+                    '<td style="padding:5px 6px;font-family:monospace;">' + ui.esc(ge.doors || '\u2014') + '</td>' +
+                    '<td style="padding:5px 6px;font-family:monospace;">' + ui.esc(ge.curfew || '\u2014') + '</td>' +
+                    '<td style="padding:5px 6px;font-family:monospace;">' + ui.esc(ge.load_out || ge.loadOut || '\u2014') + '</td>' +
+                    '<td style="padding:5px 6px;font-size:10px;color:#334155;">' + ui.esc(geTechStr) + '</td>' +
+                  '</tr>'
+                );
+              }).join('') +
+            '</tbody>' +
+          '</table>' +
+        '</div>' +
+
+        (hasAnyHazards ? (
+          '<div class="adv-print-section">' +
+            '<div class="adv-print-section-title" style="background:#fff7ed;border-color:#fed7aa;border-left:4px solid #ea580c;color:#9a3412;">Venue-Wide Production Specials & Hazards Alert</div>' +
+            '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;margin-top:4px;">' +
+              '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">' +
+                specialsHazards.map(sh => (
+                  '<span style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:4px;' +
+                    (sh.rooms.length ? 'background:#fee2e2;color:#991b1b;border:1px solid #f87171;' : 'background:#f1f5f9;color:#94a3b8;border:1px solid #e2e8f0;') + '">' +
+                    ui.esc(sh.label) + ': ' + (sh.rooms.length ? 'YES (' + ui.esc(sh.rooms.join(', ')) + ')' : 'NO') +
+                  '</span>'
+                )).join('') +
+              '</div>' +
+              (allFloorTags.length ? (
+                '<div style="font-size:11px;color:#334155;margin-top:4px;display:flex;align-items:center;gap:4px;flex-wrap:wrap;">' +
+                  '<strong>Active Production Tags:</strong> ' +
+                  allFloorTags.map(t => '<span style="font-size:10px;font-weight:600;background:#e0e7ff;color:#3730a3;padding:1px 5px;border-radius:4px;">' + ui.esc(t) + '</span>').join('') +
+                '</div>'
+              ) : '') +
+              (specialNotesList.length ? (
+                '<div style="font-size:11px;color:#0f172a;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:4px;">' +
+                  specialNotesList.join(' \u00b7 ') +
+                '</div>'
+              ) : '') +
+            '</div>' +
+          '</div>'
+        ) : '') +
+
+        (masterScheduleItems.length ? (
+          '<div class="adv-print-section">' +
+            '<div class="adv-print-section-title">Aggregated Master Stage & Screening Schedule</div>' +
+            '<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:4px;">' +
+              '<thead>' +
+                '<tr style="border-bottom:1.5px solid #cbd5e1;text-align:left;color:#475569;font-size:10px;text-transform:uppercase;">' +
+                  '<th style="padding:4px 6px;width:70px;">Time</th>' +
+                  '<th style="padding:4px 6px;width:95px;">Space</th>' +
+                  '<th style="padding:4px 6px;">Item / Performance</th>' +
+                  '<th style="padding:4px 6px;width:80px;">Type</th>' +
+                  '<th style="padding:4px 6px;width:60px;">Duration</th>' +
+                  '<th style="padding:4px 6px;">Technical Notes</th>' +
+                '</tr>' +
+              '</thead>' +
+              '<tbody>' +
+                masterScheduleItems.map(it => (
+                  '<tr style="border-bottom:1px solid #f1f5f9;">' +
+                    '<td style="padding:4px 6px;font-weight:700;font-family:monospace;color:#0f172a;">' + ui.esc(it.time) + '</td>' +
+                    '<td style="padding:4px 6px;font-weight:600;color:#0284c7;">' + ui.esc(it.space) + '</td>' +
+                    '<td style="padding:4px 6px;font-weight:500;color:#0f172a;">' + ui.esc(it.label) + '</td>' +
+                    '<td style="padding:4px 6px;color:#64748b;text-transform:capitalize;">' + ui.esc(it.type) + '</td>' +
+                    '<td style="padding:4px 6px;font-family:monospace;color:#64748b;">' + ui.esc(it.duration) + '</td>' +
+                    '<td style="padding:4px 6px;color:#334155;font-size:10px;">' + (it.techNotes ? ui.esc(it.techNotes) : '\u2014') + '</td>' +
+                  '</tr>'
+                )).join('') +
+              '</tbody>' +
+            '</table>' +
+          '</div>'
+        ) : '') +
+
+        '<div class="adv-print-section">' +
+          '<div class="adv-print-section-title">Space-by-Space Technical Summaries</div>' +
+          '<div style="display:flex;flex-direction:column;gap:8px;">' +
+            group.events.map(ge => {
+              const geTechs = RMTP.eventTechnicians(ge).map(techLabel).filter(Boolean);
+              const geTechStr = geTechs.length ? geTechs.join(', ') : 'Unassigned';
+              const isCin = isScreenSpace(ge.space);
+              const tReqs = ge.tech_requirements || ge.techRequirements || {};
+              const inLen = (tReqs.channel_list && Array.isArray(tReqs.channel_list.inputs)) ? tReqs.channel_list.inputs.length : 0;
+              const outLen = (tReqs.channel_list && Array.isArray(tReqs.channel_list.outputs)) ? tReqs.channel_list.outputs.length : 0;
+              const prod = getProductionPackage(ge);
+              const notes = (ge.techInfo || ge.notes || ge.artifaxNotes || '').trim();
+
+              return (
+                '<div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;padding:8px 10px;font-size:11px;">' +
+                  '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;border-bottom:1px solid #e2e8f0;padding-bottom:4px;">' +
+                    '<span style="font-weight:800;font-size:12px;color:#0f172a;">' + ui.esc(ge.space || 'Room') + ' \u2014 ' + ui.esc(ge.category || (isCin ? 'Cinema' : 'Live Music')) + '</span>' +
+                    '<span style="color:#64748b;font-size:10px;">Crew: <strong>' + ui.esc(geTechStr) + '</strong></span>' +
+                  '</div>' +
+                  (notes ? '<div style="white-space:pre-wrap;color:#334155;margin-bottom:4px;font-size:11px;background:#ffffff;padding:4px 6px;border-radius:4px;border:1px solid #e2e8f0;">' + ui.esc(notes) + '</div>' : '<div style="color:#94a3b8;font-style:italic;margin-bottom:4px;">No custom room notes.</div>') +
+                  '<div style="display:flex;gap:12px;font-size:10px;color:#64748b;flex-wrap:wrap;">' +
+                    (inLen || outLen ? '<span><strong>Patch:</strong> ' + inLen + ' Inputs, ' + outLen + ' Outputs</span>' : '') +
+                    (prod.lighting_notes ? '<span><strong>Lighting:</strong> ' + ui.esc(prod.lighting_notes.substring(0, 40)) + (prod.lighting_notes.length > 40 ? '\u2026' : '') + '</span>' : '') +
+                    (prod.floor_package ? '<span><strong>Touring Floor:</strong> ' + ui.esc(prod.floor_package.substring(0, 40)) + (prod.floor_package.length > 40 ? '\u2026' : '') + '</span>' : '') +
+                  '</div>' +
+                '</div>'
+              );
+            }).join('') +
+          '</div>' +
+        '</div>' +
+
+        '<div class="adv-print-footer">' +
+          '<span>Rich Mix Tech Portal \u00b7 Whole Venue Advance Master Briefing</span>' +
+          '<span>Exported on ' + new Date().toLocaleString('en-GB') + '</span>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function openExportAdvanceModal(group, currentEv) {
+    if (!group || !Array.isArray(group.events) || !group.events.length) return;
+
+    const spacesList = group.events.map(e => e.space || 'Space').join(', ');
+    const dateStr = group.date ? ui.formatDate(group.date) : 'TBC';
+
+    const roomCheckboxesHtml = group.events.map((e) => {
+      const times = [e.startTime, e.finishTime].filter(Boolean).join(' \u2013 ');
+      const techs = RMTP.eventTechnicians(e).map(techLabel).filter(Boolean);
+      const techStr = techs.length ? techs.join(', ') : 'Unassigned';
+      const isCinema = isScreenSpace(e.space);
+      const isCurrent = currentEv && (currentEv.id === e.id || currentEv.space === e.space);
+
+      return (
+        '<label class="flex items-start gap-3 p-3 rounded-lg border border-line bg-panel2/40 hover:bg-panel2 cursor-pointer transition select-none">' +
+          '<input type="checkbox" class="exp-room-cb mt-0.5 w-4 h-4 rounded accent-[var(--accent)] cursor-pointer" data-room-id="' + ui.esc(e.id) + '" checked />' +
+          '<div class="min-w-0 flex-1">' +
+            '<div class="flex items-center gap-2 flex-wrap mb-0.5">' +
+              '<span class="font-semibold text-sm text-ink">' + ui.esc(e.space) + '</span>' +
+              (isCinema ? '<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-accent/15 text-accent border border-accent/30 font-semibold">Cinema</span>' : '<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-info/15 text-info border border-info/30 font-semibold">Live Space</span>') +
+              (isCurrent ? '<span class="text-[10px] font-mono text-muted">(Current Room)</span>' : '') +
+            '</div>' +
+            '<div class="text-xs text-muted flex items-center gap-3 flex-wrap">' +
+              (times ? '<span class="flex items-center gap-1 font-mono">' + ui.icon('clock', 'w-3 h-3 text-accent') + ui.esc(times) + '</span>' : '') +
+              '<span class="flex items-center gap-1">' + ui.icon('wrench', 'w-3 h-3 text-muted') + ui.esc(techStr) + '</span>' +
+            '</div>' +
+          '</div>' +
+        '</label>'
+      );
+    }).join('');
+
+    const modalBody =
+      '<div class="space-y-4 text-xs">' +
+        '<div class="p-3.5 rounded-xl bg-panel2/60 border border-line flex items-center gap-3">' +
+          '<img src="assets/rm-logo.jpg" alt="Rich Mix" class="w-11 h-11 rounded-lg object-cover border border-line shrink-0" />' +
+          '<div class="min-w-0 flex-1">' +
+            '<div class="font-display text-sm sm:text-base font-bold text-ink truncate">' + ui.esc(group.name) + '</div>' +
+            '<div class="text-muted text-[11px] mt-0.5 flex items-center gap-2 flex-wrap">' +
+              '<span class="font-medium text-ink">' + dateStr + '</span>' +
+              '<span>\u00b7</span>' +
+              '<span class="text-accent font-semibold">' + group.events.length + ' Spaces in Takeover</span>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="p-3.5 rounded-xl border border-accent/40 bg-accent/5 space-y-1.5">' +
+          '<label class="flex items-start gap-3 cursor-pointer select-none">' +
+            '<input type="checkbox" id="exp-opt-whole-venue" checked class="mt-0.5 w-4 h-4 rounded accent-[var(--accent)] cursor-pointer" />' +
+            '<div class="min-w-0 flex-1">' +
+              '<div class="font-semibold text-sm text-ink flex items-center gap-2 flex-wrap">' +
+                '<span>Whole Venue Advance (Master Brief)</span>' +
+                '<span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-accent/20 text-accent font-bold">Recommended</span>' +
+              '</div>' +
+              '<p class="text-[11px] text-muted mt-1 leading-relaxed">' +
+                'Cross-room master schedule matrix, consolidated crew allocation, venue-wide production specials (hazers, power drops, pyro) and executive technical notes.' +
+              '</p>' +
+            '</div>' +
+          '</label>' +
+        '</div>' +
+
+        '<div>' +
+          '<div class="flex items-center justify-between mb-2">' +
+            '<span class="eyebrow text-ink font-semibold">Individual Room Advance Sheets</span>' +
+            '<div class="flex items-center gap-2 text-[11px]">' +
+              '<button type="button" id="exp-select-all" class="text-accent hover:underline font-semibold cursor-pointer">Select All</button>' +
+              '<span class="text-muted">\u00b7</span>' +
+              '<button type="button" id="exp-select-none" class="text-muted hover:text-ink cursor-pointer">Clear All</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="grid gap-2">' +
+            roomCheckboxesHtml +
+          '</div>' +
+        '</div>' +
+
+        '<div class="p-3 rounded-lg bg-panel border border-line text-[11px] font-mono text-muted flex items-center justify-between">' +
+          '<span>Export Plan:</span>' +
+          '<span id="exp-summary-text" class="text-ink font-semibold">Whole Venue Master + ' + group.events.length + ' Room Sheet' + (group.events.length > 1 ? 's' : '') + '</span>' +
         '</div>' +
       '</div>';
 
+    const m = ui.modal({
+      title: 'Export Multi-Room Advances',
+      size: 'max-w-lg',
+      body: modalBody,
+      footer:
+        '<div class="flex items-center justify-between w-full gap-2">' +
+          '<button type="button" class="btn btn-ghost" data-cancel>Cancel</button>' +
+          '<button type="button" id="exp-trigger-print-btn" class="btn btn-primary font-semibold flex items-center gap-1.5 shadow-2xs">' +
+            ui.icon('print', 'w-4 h-4') + '<span>Print / Save PDF</span>' +
+          '</button>' +
+        '</div>'
+    });
+
+    const chkWhl = m.root.querySelector('#exp-opt-whole-venue');
+    const roomCbs = m.root.querySelectorAll('.exp-room-cb');
+    const summaryText = m.root.querySelector('#exp-summary-text');
+    const btnPrint = m.root.querySelector('#exp-trigger-print-btn');
+
+    function updateSummary() {
+      const isWhl = chkWhl && chkWhl.checked;
+      let checkedRooms = 0;
+      roomCbs.forEach(cb => { if (cb.checked) checkedRooms++; });
+
+      if (!isWhl && checkedRooms === 0) {
+        if (summaryText) summaryText.textContent = 'None selected (select at least 1 sheet)';
+        if (btnPrint) btnPrint.disabled = true;
+        return;
+      }
+      if (btnPrint) btnPrint.disabled = false;
+
+      let parts = [];
+      if (isWhl) parts.push('Whole Venue Master');
+      if (checkedRooms > 0) parts.push(checkedRooms + ' Room Sheet' + (checkedRooms > 1 ? 's' : ''));
+      if (summaryText) summaryText.textContent = parts.join(' + ');
+    }
+
+    if (chkWhl) chkWhl.addEventListener('change', updateSummary);
+    roomCbs.forEach(cb => cb.addEventListener('change', updateSummary));
+
+    const btnAll = m.root.querySelector('#exp-select-all');
+    if (btnAll) btnAll.addEventListener('click', () => {
+      roomCbs.forEach(cb => { cb.checked = true; });
+      updateSummary();
+    });
+
+    const btnNone = m.root.querySelector('#exp-select-none');
+    if (btnNone) btnNone.addEventListener('click', () => {
+      roomCbs.forEach(cb => { cb.checked = false; });
+      updateSummary();
+    });
+
+    const btnCancel = m.root.querySelector('[data-cancel]');
+    if (btnCancel) btnCancel.addEventListener('click', m.close);
+
+    if (btnPrint) {
+      btnPrint.addEventListener('click', () => {
+        const isWhl = chkWhl && chkWhl.checked;
+        const selectedIds = [];
+        roomCbs.forEach(cb => {
+          if (cb.checked) selectedIds.push(cb.getAttribute('data-room-id'));
+        });
+
+        if (!isWhl && !selectedIds.length) {
+          ui.toast('Please select at least one advance sheet to export', 'warning');
+          return;
+        }
+
+        const selectedEvents = group.events.filter(e => selectedIds.includes(e.id));
+        const root = document.getElementById('print-root');
+        if (!root) return;
+
+        let compiledHtml = '';
+        let isFirst = true;
+
+        if (isWhl) {
+          compiledHtml += buildWholeVenuePrintHtml(group, selectedEvents, isFirst);
+          isFirst = false;
+        }
+
+        selectedEvents.forEach((roomEv) => {
+          compiledHtml += buildSingleRoomPrintHtml(roomEv, isFirst);
+          isFirst = false;
+        });
+
+        root.innerHTML = compiledHtml;
+
+        const originalTitle = document.title;
+        const fileDate = group.date ? group.date.slice(0, 10) : 'TBC';
+        const spaceDescr = isWhl ? 'Whole Venue Advance' : selectedEvents.map(e => e.space).join(', ');
+        document.title = `${fileDate} - ${group.name || 'Event'} - Rich Mix: Technical Advance - ${spaceDescr}`;
+
+        document.body.classList.add('is-printing');
+        window.print();
+
+        const cleanup = () => {
+          document.title = originalTitle;
+          document.body.classList.remove('is-printing');
+          window.removeEventListener('afterprint', cleanup);
+        };
+        window.addEventListener('afterprint', cleanup);
+        setTimeout(cleanup, 2500);
+
+        m.close();
+      });
+    }
+  }
+
+  function printAdvance(ev, group = null) {
+    const root = document.getElementById('print-root');
+    if (!root) return;
+
+    const grp = resolveEventGroup(ev, group);
+    if (grp && Array.isArray(grp.events) && grp.events.length > 1) {
+      openExportAdvanceModal(grp, ev);
+      return;
+    }
+
+    // Single room event: print directly
+    root.innerHTML = buildSingleRoomPrintHtml(ev, true);
     const originalTitle = document.title;
     const fileDate = ev.date ? ev.date.slice(0, 10) : 'TBC';
     const fileSpace = ev.space || 'No Space';
@@ -3340,7 +3977,7 @@ RMTP.views.advancing = function (el, params, query) {
       window.removeEventListener('afterprint', cleanup);
     };
     window.addEventListener('afterprint', cleanup);
-    setTimeout(cleanup, 1500);
+    setTimeout(cleanup, 2500);
   }
 
   function formatShiftReportEmail(ev, r) {
@@ -3965,71 +4602,7 @@ RMTP.views.advancing = function (el, params, query) {
       else ui.toast('Event advancing and specs are managed by Technical Managers and Admins only.', 'info');
       return;
     }
-    function findEventGroup(e, grp) {
-      if (grp && Array.isArray(grp.events) && grp.events.length > 1) {
-        return grp;
-      }
-      if (!e) return null;
-
-      // Handle multi-room array space inside single record
-      if (Array.isArray(e.space) && e.space.length > 1) {
-        const subEvs = e.space.map((sp, idx) => Object.assign({}, e, {
-          id: idx === 0 ? e.id : (e.id + '__space_' + idx),
-          space: sp,
-          _subIndex: idx
-        }));
-        return {
-          isGroup: true,
-          groupId: e.groupId || ('multi-' + e.id),
-          date: e.date,
-          name: e.name,
-          events: subEvs
-        };
-      }
-
-      // Check siblings in store sharing groupId, artifaxId, or matching (name, date)
-      const all = store.all('advancing').filter(x => !x.deleted);
-      let matches = [];
-      if (e.groupId) {
-        matches = all.filter(x => x.groupId === e.groupId);
-      } else if (e.artifaxId && e.name && e.name !== 'Untitled') {
-        matches = all.filter(x => x.artifaxId === e.artifaxId || (x.name && x.name.toLowerCase().trim() === e.name.toLowerCase().trim() && x.date === e.date));
-      } else if (e.name && e.name.trim() && e.name !== 'Untitled' && e.date) {
-        matches = all.filter(x => x.name && x.name.toLowerCase().trim() === e.name.toLowerCase().trim() && x.date === e.date);
-      }
-
-      const uniqueBySpace = [];
-      const seen = new Set();
-      matches.forEach(m => {
-        const sp = Array.isArray(m.space) ? m.space[0] : m.space;
-        if (sp && !seen.has(sp)) {
-          seen.add(sp);
-          uniqueBySpace.push(m);
-        }
-      });
-
-      if (uniqueBySpace.length > 1) {
-        const spaceOrder = {
-          'The Stage': 1, 'The Studio': 2, 'The Mix': 3, 
-          'Screen One': 4, 'Screen Two': 5, 'Screen Three': 6
-        };
-        uniqueBySpace.sort((a, b) => {
-          const sa = a.space || '';
-          const sb = b.space || '';
-          const wa = spaceOrder[sa] || 99;
-          const wb = spaceOrder[sb] || 99;
-          return wa !== wb ? wa - wb : sa.localeCompare(sb);
-        });
-        return {
-          isGroup: true,
-          groupId: e.groupId || ('implicit-' + (e.name || '').toLowerCase().trim().replace(/[^a-z0-9]/g, '-') + '-' + e.date),
-          date: e.date,
-          name: e.name,
-          events: uniqueBySpace
-        };
-      }
-      return null;
-    }
+    const findEventGroup = resolveEventGroup;
 
     function createDraftFromEvent(e) {
       const tList = RMTP.eventTechnicians(e).map((t) => ({ 
@@ -7621,6 +8194,7 @@ RMTP.views.advancing = function (el, params, query) {
       store.upsert('advancing', record);
       syncPatchSheetForRecord(record, processedScheduleItems);
       syncShiftBookingsForEvent(record);
+      if (RMTP.syncAdvanceToDcp) RMTP.syncAdvanceToDcp(record);
 
       draft.isDirty = false;
       if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
@@ -7694,6 +8268,7 @@ RMTP.views.advancing = function (el, params, query) {
         store.upsert('advancing', record);
         syncPatchSheetForRecord(record, processedScheduleItems);
         syncShiftBookingsForEvent(record);
+        if (RMTP.syncAdvanceToDcp) RMTP.syncAdvanceToDcp(record);
       }
 
       if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();

@@ -1,6 +1,6 @@
 {
-  "summary":  "Comprehensive implementation plan for role-based access control, hiding restricted views (Patch & Preset Manager, Venues & Spaces) from Duty Techs and Freelancers, protecting event technical specs with read-only advance sheets, enabling safe inventory transfers, and presenting a clean crew contact directory.",
-  "updatedAt":  "2026-10-22T09:23:53.414068366Z",
+  "summary":  "Implementation plan for the cinema Digital Cinema Package (DCP) Tracker with top-level navigation, auto-sync from cinema events, manual package entry, and comprehensive QC/KDM modal inspection.",
+  "updatedAt":  "2026-10-23T09:37:37.751990147Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

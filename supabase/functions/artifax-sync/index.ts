@@ -52,6 +52,8 @@ const ROOM_TO_SPACE: Record<string, string> = {
   "Screen One": "Screen One",
   "Cinema 1": "Screen One",
   "Cinema One": "Screen One",
+  "Cinema Bar / Gallery": "Screen One",
+  "Cinema Bar": "Screen One",
   "Screen 2": "Screen Two",
   "Screen Two": "Screen Two",
   "Cinema 2": "Screen Two",
@@ -75,6 +77,7 @@ function resolveSpace(roomName: string): string {
   if (ROOM_TO_SPACE[r]) return ROOM_TO_SPACE[r];
   
   const lower = r.toLowerCase();
+  if (lower.includes("cinema bar") || lower.includes("cinema gallery")) return "Screen One";
   if (lower.includes("screen 1") || lower.includes("cinema 1") || lower.includes("screen one") || lower.includes("cinema one")) return "Screen One";
   if (lower.includes("screen 2") || lower.includes("cinema 2") || lower.includes("screen two") || lower.includes("cinema two")) return "Screen Two";
   if (lower.includes("screen 3") || lower.includes("cinema 3") || lower.includes("screen three") || lower.includes("cinema three")) return "Screen Three";
@@ -258,14 +261,63 @@ const cors = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 
+function parseSafeDate(rawDate: any): string {
+  if (!rawDate) return "";
+  const s = String(rawDate).trim();
+  if (!s) return "";
+  
+  // Format 1: DD/MM/YYYY or DD-MM-YYYY (e.g. 27/10/2026 as shown in Artifax UK UI)
+  const dmyMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (dmyMatch) {
+    const day = dmyMatch[1].padStart(2, "0");
+    const month = dmyMatch[2].padStart(2, "0");
+    const year = dmyMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+
+  // Format 2: ISO YYYY-MM-DD
+  const ymdMatch = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (ymdMatch) {
+    const year = ymdMatch[1];
+    const month = ymdMatch[2].padStart(2, "0");
+    const day = ymdMatch[3].padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  // Fallback: new Date()
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) {
+    return d.toISOString().slice(0, 10);
+  }
+  return "";
+}
+
+function parseSafeTime(rawTime: any): string {
+  if (!rawTime) return "";
+  const s = String(rawTime).trim();
+  if (!s) return "";
+  
+  const m = s.match(/(\d{1,2}):(\d{2})/);
+  if (m) {
+    return `${m[1].padStart(2, "0")}:${m[2]}`;
+  }
+  
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) {
+    return d.toISOString().slice(11, 16);
+  }
+  return "";
+}
+
 interface ArtifaxInstance {
   id: string;            // stable Artifax instance id
   groupId?: string;      // arrangement id / group id for multi-room takeovers
   title: string;
   room: string;          // room/space name
   type?: string;         // booking type / arrangement type
-  start: string;         // ISO datetime
-  end?: string;          // ISO datetime
+  date: string;          // YYYY-MM-DD
+  startTime: string;     // HH:MM
+  finishTime: string;    // HH:MM
   contact?: string;      // primary contact name/org
   notes?: string;        // full technical and custom field notes
   status?: string;       // e.g. Confirmed / Tentative / Cancelled
@@ -305,14 +357,19 @@ async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInsta
     const groupId = String(r.arrangement_id || r.arrangementId || r.ArrangementId || r.groupId || r.GroupId || r.event_id || r.EventId || title);
     const combinedStatus = String(r.status || r.Status || r.event_status_name || r.sales_process_stage_name || "Confirmed");
     
+    const rawDate = r.date ?? r.event_date ?? r.start_date ?? r.StartDate ?? r.Date ?? r.start ?? r.startDateTime ?? r.StartDateTime ?? r.start_date_time;
+    const rawStart = r.start_time ?? r.start_time_text ?? r.time_start ?? r.StartTime ?? r.start ?? r.startDateTime ?? r.StartDateTime ?? r.start_date_time;
+    const rawEnd = r.end_time ?? r.end_time_text ?? r.time_end ?? r.EndTime ?? r.end ?? r.endDateTime ?? r.EndDateTime ?? r.end_date_time;
+
     return {
       id: String(r.id || r.instanceId || r.InstanceId || r.event_id),
       groupId: groupId,
       title: title,
       room: String(r.room || r.roomName || r.RoomName || r.room_name || ""),
       type: String(r.type || r.arrangementType || r.ArrangementType || r.arrangement_type_name || ""),
-      start: String(r.start || r.startDateTime || r.StartDateTime || r.start_date_time || ""),
-      end: String(r.end || r.endDateTime || r.EndDateTime || r.end_date_time || ""),
+      date: parseSafeDate(rawDate),
+      startTime: parseSafeTime(rawStart),
+      finishTime: parseSafeTime(rawEnd),
       contact: String(r.contact || r.contactName || r.CustomerName || r.client_name || r.arrangement_contact_entity_full_name || ""),
       notes: extractArtifaxNotes(r),
       status: resolveStatus(combinedStatus),
@@ -323,18 +380,15 @@ async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInsta
 // Artifax instance → advancing row format
 function mapInstance(i: ArtifaxInstance) {
   const space = resolveSpace(i.room);
-  const start = i.start ? new Date(i.start) : null;
-  const end = i.end ? new Date(i.end) : null;
-  const hhmm = (d: Date | null) => (d ? d.toISOString().slice(11, 16) : "");
   return {
     artifaxId: i.id,
     groupId: i.groupId || null,
     name: i.title,
     category: toCategory(i.type || ""),
     space,
-    date: start ? start.toISOString().slice(0, 10) : "",
-    startTime: hhmm(start),
-    finishTime: hhmm(end),
+    date: i.date || "",
+    startTime: i.startTime || "",
+    finishTime: i.finishTime || "",
     clientContact: i.contact || "",
     status: i.status || "Confirmed",
     notes: i.notes || "",
@@ -346,7 +400,8 @@ function mapInstance(i: ArtifaxInstance) {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
-    const from = new Date();
+    // 7-day lookback so current day and recently started events are never excluded
+    const from = new Date(Date.now() - 7 * 864e5);
     const to = new Date(Date.now() + HORIZON_DAYS * 864e5);
     const instances = await fetchArtifaxInstances(from, to);
 

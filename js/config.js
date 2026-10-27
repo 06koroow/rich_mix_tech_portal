@@ -20,6 +20,7 @@ RMTP.meta = {
 RMTP.nav = [
   { id: 'dashboard',   label: 'Dashboard',   icon: 'grid'  },
   { id: 'advancing',   label: 'Advancing',   icon: 'clip'  },
+  { id: 'dcp',         label: 'DCP Tracker', icon: 'film'  },
   { id: 'rota',        label: 'Rota & Shifts', icon: 'calendar' },
   { id: 'presets',     label: 'Patch & Preset Manager', icon: 'sliders' },
   { id: 'venues',      label: 'Venues & Spaces', icon: 'mapPin' },

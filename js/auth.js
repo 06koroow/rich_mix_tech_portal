@@ -189,6 +189,18 @@ RMTP.auth = (function () {
     const user = u || current();
     return isTechManager(user) || isAdmin(user);
   }
+  function isFreelancer(u) {
+    const user = u || current();
+    if (!user) return false;
+    const pos = String(user.position || '').trim().toLowerCase();
+    const role = String(user.role || '').trim().toLowerCase();
+    return pos === 'freelancer' || pos.includes('freelancer') || role === 'freelancer';
+  }
+  function canViewDcp(u) {
+    const user = u || current();
+    if (!user) return false;
+    return !isFreelancer(user);
+  }
   function rolesForPosition(position, existingTrainer) {
     if (isAutoAdminPosition(position)) return { admin: true, trainer: true };
     return { admin: false, trainer: !!existingTrainer };
@@ -582,5 +594,6 @@ RMTP.auth = (function () {
     login, signUp, signOut, signInEmail, showLogin, ensureSession,
     pendingUsers, approveUser, rejectUser, refreshShell,
     isTechManager, isAdmin, isTechManagerOrAdmin,
+    isFreelancer, canViewDcp,
   };
 })();

@@ -25,9 +25,13 @@
 
   function getVisibleNav() {
     const isTMOrAdmin = auth.isTechManagerOrAdmin ? auth.isTechManagerOrAdmin() : (auth.isTechManager() || auth.isAdmin());
+    const isFreelancer = auth.isFreelancer ? auth.isFreelancer() : (auth.current() && auth.current().position === 'Freelancer');
     return RMTP.nav.filter((n) => {
       if (n.id === 'presets' || n.id === 'venues') {
         return isTMOrAdmin;
+      }
+      if (n.id === 'dcp') {
+        return !isFreelancer;
       }
       return true;
     });

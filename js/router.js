@@ -37,6 +37,18 @@ RMTP.router = (function () {
       }
     }
 
+    // Guard DCP Tracker: viewable by everyone except Freelancers
+    if (id === 'dcp') {
+      const isFreelancer = RMTP.auth && (RMTP.auth.isFreelancer ? RMTP.auth.isFreelancer() : (RMTP.auth.current() && RMTP.auth.current().position === 'Freelancer'));
+      if (isFreelancer) {
+        if (RMTP.ui && RMTP.ui.toast) {
+          RMTP.ui.toast('Access to the DCP Tracker & Cinema QC Console is restricted to staff technicians.', 'info');
+        }
+        location.replace('#/' + RMTP.HOME);
+        return;
+      }
+    }
+
     const content = document.getElementById('content');
     if (!content) return;
 

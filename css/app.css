@@ -137,15 +137,35 @@ select.field { appearance: none; background-image: url("data:image/svg+xml,%3Csv
   .panel { border-color: #ccc; }
 }
 
-/* --- QR label sheet ---
+/* --- QR label sheet & Advance PDF Export ---
    #print-root is hidden on screen; when body.is-printing is set it becomes
-   the only visible thing in the print output (see js/qr.js printLabels). */
+   the only visible thing in the print output (see js/qr.js and js/views/advancing.js). */
 #print-root { display: none; }
 @media print {
+  body.is-printing {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+    background: #ffffff !important;
+  }
   body.is-printing #app,
   body.is-printing #modal-layer,
   body.is-printing #toast-layer { display: none !important; }
   body.is-printing #print-root { display: block !important; }
+}
+
+.adv-print-page-break {
+  break-before: page !important;
+  page-break-before: always !important;
+}
+
+.adv-print-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid #cbd5e1;
 }
 .qr-sheet-head {
   display: flex; justify-content: space-between; align-items: baseline;

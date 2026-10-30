@@ -25,8 +25,8 @@ const ARTIFAX_PASSWORD = (Deno.env.get("ARTIFAX_PASSWORD") ?? "").trim();
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-// How far ahead to sync.
-const HORIZON_DAYS = 120;
+// How far ahead to sync (6 months).
+const HORIZON_DAYS = 180;
 
 // ---- Artifax room name → Tech Portal space. Comprehensive alias map. ----
 const ROOM_TO_SPACE: Record<string, string> = {
@@ -247,10 +247,12 @@ function extractArtifaxNotes(r: any): string {
 }
 
 // ---- Artifax booking type/label → advancing category ----
-function toCategory(type: string): string {
-  const t = (type || "").toLowerCase();
-  if (/cinema|film|screening|dcp/.test(t)) return "Cinema";
-  if (/hire|private|wedding|corporate|conference|launch/.test(t)) return "Private Hires";
+function toCategory(type: string, title = "", room = ""): string {
+  const combined = `${type || ""} ${title || ""} ${room || ""}`.toLowerCase();
+  if (/cinema|film|screening|dcp|premiere|q&a/.test(combined) || /screen (one|two|three|1|2|3)|cinema (1|2|3|one|two|three)/.test(combined)) {
+    return "Cinema";
+  }
+  if (/hire|private|wedding|corporate|conference|launch/.test(combined)) return "Private Hires";
   return "Programme";
 }
 
@@ -328,31 +330,77 @@ async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInsta
     throw new Error("ARTIFAX credentials not fully set — see docs/ARTIFAX-EDGE-FUNCTION.md");
   }
   
-  const params = new URLSearchParams({
-    date: 'between',
-    start_date: from.toISOString().slice(0, 10),
-    end_date: to.toISOString().slice(0, 10),
-    schedule_output: "1",
-  });
-  
   const baseUrl = ARTIFAX_URL.replace(/\/api\/?$/, '').replace(/\/$/, '');
-  const endpoint = `${baseUrl}/api/arrangements/event?${params}`;
   const basicAuth = 'Basic ' + btoa(ARTIFAX_USERNAME + ':' + ARTIFAX_PASSWORD);
 
-  const res = await fetch(endpoint, {
-    method: 'GET',
-    headers: { 
-      "X-API-Key": ARTIFAX_API_KEY,
-      "Authorization": basicAuth,
-      "Accept": "application/json" 
-    },
-  });
-  if (!res.ok) throw new Error(`Artifax responded ${res.status}: ${await res.text()}`);
-  const data = await res.json();
+  const allRawItems: any[] = [];
+  const seenIds = new Set<string>();
+
+  // Slice horizon into 28-day windows so that even if Artifax enforces a 500-item hard cap
+  // and ignores page parameters, no window ever exceeds 500 events.
+  const SLICE_DAYS = 28;
+  const totalDays = Math.ceil((to.getTime() - from.getTime()) / 864e5);
+  const numSlices = Math.max(1, Math.ceil(totalDays / SLICE_DAYS));
+
+  for (let s = 0; s < numSlices; s++) {
+    const sliceFrom = new Date(from.getTime() + s * SLICE_DAYS * 864e5);
+    const sliceTo = new Date(Math.min(to.getTime(), from.getTime() + (s + 1) * SLICE_DAYS * 864e5));
+    
+    let page = 1;
+    const maxPagesPerSlice = 5;
+
+    while (page <= maxPagesPerSlice) {
+      const params = new URLSearchParams({
+        date: 'between',
+        start_date: sliceFrom.toISOString().slice(0, 10),
+        end_date: sliceTo.toISOString().slice(0, 10),
+        schedule_output: "1",
+        page_size: "500",
+        page: String(page),
+        offset: String((page - 1) * 500),
+      });
+
+      const endpoint = `${baseUrl}/api/arrangements/event?${params}`;
+      const res = await fetch(endpoint, {
+        method: 'GET',
+        headers: { 
+          "X-API-Key": ARTIFAX_API_KEY,
+          "Authorization": basicAuth,
+          "Accept": "application/json" 
+        },
+      });
+
+      if (!res.ok) {
+        if (page > 1 && (res.status === 404 || res.status === 400)) {
+          break;
+        }
+        throw new Error(`Artifax responded ${res.status}: ${await res.text()}`);
+      }
+
+      const data = await res.json();
+      const list: any[] = Array.isArray(data) ? data : (data.instances ?? data.results ?? data.events ?? []);
+      if (!list || list.length === 0) break;
+
+      let newItemsInThisRequest = 0;
+      for (const r of list) {
+        const id = String(r.id || r.instanceId || r.InstanceId || r.event_id || '');
+        const key = id || `${r.arrangement_id || ''}-${r.room || ''}-${r.date || ''}-${r.start_time || ''}`;
+        if (key && seenIds.has(key)) continue;
+        if (key) seenIds.add(key);
+        allRawItems.push(r);
+        newItemsInThisRequest++;
+      }
+
+      // If fewer than 500 returned or no new items added (API repeated page), advance to next slice
+      if (list.length < 500 || newItemsInThisRequest === 0) {
+        break;
+      }
+      page++;
+    }
+  }
 
   // --- Map Artifax's response fields to ArtifaxInstance with comprehensive note extraction ---
-  const list: any[] = Array.isArray(data) ? data : (data.instances ?? data.results ?? data.events ?? []);
-  return list.map((r) => {
+  return allRawItems.map((r) => {
     const title = String(r.title || r.name || r.EventName || r.arrangement_description || r.arrangement_name || "Untitled");
     const groupId = String(r.arrangement_id || r.arrangementId || r.ArrangementId || r.groupId || r.GroupId || r.event_id || r.EventId || title);
     const combinedStatus = String(r.status || r.Status || r.event_status_name || r.sales_process_stage_name || "Confirmed");
@@ -381,10 +429,13 @@ async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInsta
 function mapInstance(i: ArtifaxInstance) {
   const space = resolveSpace(i.room);
   return {
+    id: i.id,
     artifaxId: i.id,
     groupId: i.groupId || null,
     name: i.title,
-    category: toCategory(i.type || ""),
+    title: i.title,
+    category: toCategory(i.type || "", i.title, space),
+    room: i.room,
     space,
     date: i.date || "",
     startTime: i.startTime || "",
@@ -418,19 +469,23 @@ Deno.serve(async (req) => {
       return json({ ok: true, from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10), created, updated, skipped });
     }
 
-    // Batch fetch existing events to preserve Portal fields
+    // Batch fetch existing events to preserve Portal fields (chunked in 150s to avoid PostgREST URI limits)
     const artifaxIds = validBookings.map(b => b.artifaxId);
-    
-    // We might have more than 1000 instances, so chunk the select if necessary, 
-    // but typically HORIZON_DAYS=120 won't exceed PostgREST limits for `in`.
-    const { data: existingData, error: fetchError } = await sb
-      .from("advancing")
-      .select("*")
-      .in("artifaxId", artifaxIds);
+    const existingMap = new Map<string, any>();
+    const CHUNK_SIZE = 150;
 
-    if (fetchError) throw new Error(`Batch select failed: ${fetchError.message}`);
+    for (let i = 0; i < artifaxIds.length; i += CHUNK_SIZE) {
+      const chunk = artifaxIds.slice(i, i + CHUNK_SIZE);
+      const { data: chunkData, error: fetchError } = await sb
+        .from("advancing")
+        .select("*")
+        .in("artifaxId", chunk);
 
-    const existingMap = new Map((existingData || []).map(r => [r.artifaxId, r]));
+      if (fetchError) throw new Error(`Batch select failed: ${fetchError.message}`);
+      for (const row of (chunkData || [])) {
+        if (row.artifaxId) existingMap.set(row.artifaxId, row);
+      }
+    }
     const rowsToUpsert = [];
 
     for (const booking of validBookings) {
@@ -485,6 +540,8 @@ Deno.serve(async (req) => {
         // Clean out extra properties that are not columns in standard advancing SQL schema
         delete row.notes;
         delete row.artifaxNotes;
+        delete row.title;
+        delete row.room;
 
         rowsToUpsert.push(row);
         updated++;
@@ -506,6 +563,8 @@ Deno.serve(async (req) => {
         };
         delete row.notes;
         delete row.artifaxNotes;
+        delete row.title;
+        delete row.room;
 
         rowsToUpsert.push(row);
         created++;
@@ -513,33 +572,35 @@ Deno.serve(async (req) => {
     }
 
     if (rowsToUpsert.length > 0) {
-      // Chunk upserts if array is large (e.g. > 500) to be safe, but usually fine up to 1000s
-      let currentRows = rowsToUpsert;
-      let lastError: any = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const { error: upsertError } = await sb.from("advancing").upsert(currentRows, { onConflict: "id" });
-        if (!upsertError) {
-          lastError = null;
-          break;
+      const UPSERT_CHUNK = 150;
+      for (let i = 0; i < rowsToUpsert.length; i += UPSERT_CHUNK) {
+        let chunkRows = rowsToUpsert.slice(i, i + UPSERT_CHUNK);
+        let lastError: any = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const { error: upsertError } = await sb.from("advancing").upsert(chunkRows, { onConflict: "id" });
+          if (!upsertError) {
+            lastError = null;
+            break;
+          }
+          lastError = upsertError;
+          const missingMatch = upsertError.message?.match(/Could not find the '([^']+)' column/i);
+          const missingCol = missingMatch ? missingMatch[1] : (upsertError.message?.includes("artifaxHistory") ? "artifaxHistory" : null);
+          if (missingCol) {
+            console.warn(`[artifax-sync] Column '${missingCol}' missing from advancing schema cache. Retrying upsert without it...`);
+            chunkRows = chunkRows.map(r => {
+              const copy = { ...r };
+              delete copy[missingCol];
+              return copy;
+            });
+          } else {
+            break;
+          }
         }
-        lastError = upsertError;
-        const missingMatch = upsertError.message?.match(/Could not find the '([^']+)' column/i);
-        const missingCol = missingMatch ? missingMatch[1] : (upsertError.message?.includes("artifaxHistory") ? "artifaxHistory" : null);
-        if (missingCol) {
-          console.warn(`[artifax-sync] Column '${missingCol}' missing from advancing schema cache. Retrying upsert without it (data safely preserved in production_package)...`);
-          currentRows = currentRows.map(r => {
-            const copy = { ...r };
-            delete copy[missingCol];
-            return copy;
-          });
-        } else {
-          break;
-        }
+        if (lastError) throw new Error(`Batch upsert failed: ${lastError.message}`);
       }
-      if (lastError) throw new Error(`Batch upsert failed: ${lastError.message}`);
     }
 
-    return json({ ok: true, from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10), created, updated, skipped, instances: validBookings });
+    return json({ ok: true, from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10), created, updated, skipped, total: validBookings.length, instances: validBookings });
   } catch (e) {
     return json({ ok: false, error: String((e as Error).message ?? e) }, 500);
   }

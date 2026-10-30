@@ -1318,14 +1318,17 @@ RMTP.views.advancing = function (el, params, query) {
         return parts.join('\n').trim();
       };
 
-      const toCategory = (type) => {
-        const t = (type || "").toLowerCase();
-        if (/cinema|film|screening|dcp/.test(t)) return "Cinema";
-        if (/hire|private|wedding|corporate|conference|launch/.test(t)) return "Private Hires";
+      const toCategory = (type, title = '', room = '') => {
+        const combined = ((type || '') + ' ' + (title || '') + ' ' + (room || '')).toLowerCase();
+        if (/cinema|film|screening|dcp|premiere|q&a|preview|docu|movie/.test(combined) || /screen (one|two|three|1|2|3)|cinema (1|2|3|one|two|three)/.test(combined)) {
+          return "Cinema";
+        }
+        if (/hire|private|wedding|corporate|conference|launch/.test(combined)) return "Private Hires";
         return "Programme";
       };
 
       let created = 0, updated = 0, skipped = 0;
+      store.remove('advancing', 'evt-afx-undefined');
       const existingEvents = store.all('advancing');
 
       if (data && data.created !== undefined && list.length === 0) {
@@ -1341,11 +1344,15 @@ RMTP.views.advancing = function (el, params, query) {
       }
 
       for (const r of list) {
-        const id = String(r.id ?? r.instanceId ?? r.InstanceId ?? r.event_id);
-        const groupId = String(r.arrangement_id ?? r.arrangementId ?? r.ArrangementId ?? r.groupId ?? r.GroupId ?? "");
-        const title = r.title ?? r.name ?? r.EventName ?? r.arrangement_description ?? r.arrangement_name ?? "Untitled";
-        const room = r.room ?? r.roomName ?? r.RoomName ?? r.room_name ?? "";
-        const type = r.type ?? r.arrangementType ?? r.ArrangementType ?? r.arrangement_type_name ?? "";
+        const id = String(r.artifaxId ?? r.id ?? r.instanceId ?? r.InstanceId ?? r.event_id ?? '').trim();
+        if (!id || id === 'undefined' || id === 'null') continue;
+
+        const groupId = String(r.groupId ?? r.arrangement_id ?? r.arrangementId ?? r.ArrangementId ?? r.GroupId ?? '');
+        const title = r.name ?? r.title ?? r.EventName ?? r.arrangement_description ?? r.arrangement_name ?? 'Untitled';
+        const room = r.room ?? r.roomName ?? r.RoomName ?? r.room_name ?? r.space ?? '';
+        const space = resolveSpace(r.space || room);
+        const type = r.category ?? r.type ?? r.arrangementType ?? r.ArrangementType ?? r.arrangement_type_name ?? '';
+        const category = toCategory(type, title, space);
         
         // Safe date and time parsers for UK (DD/MM/YYYY) and ISO formats
         const parseSafeDate = (raw) => {
@@ -1375,7 +1382,7 @@ RMTP.views.advancing = function (el, params, query) {
         const rawStart = r.startTime ?? r.start_time ?? r.start_time_text ?? r.time_start ?? r.StartTime ?? r.start ?? r.startDateTime ?? r.StartDateTime ?? r.start_date_time;
         const rawEnd = r.finishTime ?? r.end_time ?? r.end_time_text ?? r.time_end ?? r.EndTime ?? r.end ?? r.endDateTime ?? r.EndDateTime ?? r.end_date_time;
         
-        const contact = r.contact ?? r.contactName ?? r.CustomerName ?? r.client_name ?? r.arrangement_contact_entity_full_name ?? "";
+        const contact = r.clientContact ?? r.contact ?? r.contactName ?? r.CustomerName ?? r.client_name ?? r.arrangement_contact_entity_full_name ?? "";
         
         // Status can be in multiple places depending on the API output
         const eventStatus = (r.status ?? r.Status ?? r.event_status_name ?? "").toLowerCase();
@@ -1393,12 +1400,11 @@ RMTP.views.advancing = function (el, params, query) {
         // Do NOT drop tentative/enquiry events! Map their status cleanly so nothing is silently lost.
         const resolvedStatus = isCancelled ? "Cancelled" : (isTentative ? "Tentative" : "Confirmed");
 
-        const existing = existingEvents.find(e => e.artifaxId === id);
+        const existing = existingEvents.find(e => e.artifaxId === id || e.id === 'evt-afx-' + id);
 
-        const space = resolveSpace(room);
-        const dateIso = parseSafeDate(rawDate);
-        const startTimeStr = parseSafeTime(rawStart);
-        const finishTimeStr = parseSafeTime(rawEnd);
+        const dateIso = parseSafeDate(rawDate) || r.date || "";
+        const startTimeStr = parseSafeTime(rawStart) || r.startTime || "";
+        const finishTimeStr = parseSafeTime(rawEnd) || r.finishTime || "";
         
         // Comprehensive extraction of Artifax notes & forms
         const techInfoNotes = extractArtifaxNotes(r) || String(r.notes || r.description || '').trim();
@@ -1407,7 +1413,7 @@ RMTP.views.advancing = function (el, params, query) {
           artifaxId: id,
           groupId: groupId || null,
           name: title,
-          category: toCategory(type),
+          category: category,
           space: space,
           date: dateIso || "",
           startTime: startTimeStr,
@@ -1480,6 +1486,13 @@ RMTP.views.advancing = function (el, params, query) {
         }
         
         store.upsert('advancing', row);
+        if (RMTP.syncAdvanceToDcp) {
+          try { RMTP.syncAdvanceToDcp(row); } catch (err) { /* ignore */ }
+        }
+      }
+
+      if (RMTP.syncAdvancingToDcps) {
+        try { RMTP.syncAdvancingToDcps(); } catch (err) { /* ignore */ }
       }
 
       if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
@@ -2380,39 +2393,48 @@ RMTP.views.advancing = function (el, params, query) {
             '<div class="p-3 rounded-lg bg-panel border border-line/80 space-y-2 mb-3">' +
               '<div class="flex items-center justify-between text-xs pb-1.5 border-b border-line/50">' +
                 '<span class="font-bold text-ink flex items-center gap-1.5">' +
-                  ui.icon('sliders', 'w-3.5 h-3.5 text-accent') + '<span>Projection QC &amp; Server Specs</span>' +
+                  ui.icon('film', 'w-3.5 h-3.5 text-accent') + '<span>Pre-Screening Verification Status</span>' +
                 '</span>' +
                 '<span class="font-mono text-[10px] px-2 py-0.5 rounded ' +
-                  (linkedDcp.qcStatus === 'Passed' ? 'bg-ok/15 text-ok border border-ok/30 font-bold' : (linkedDcp.qcStatus === 'Passed with Caveats' ? 'bg-warning/15 text-warning border border-warning/30 font-bold' : 'bg-panel2 text-muted border border-line font-medium')) + '">' +
-                  ui.esc(linkedDcp.qcStatus || 'Pending QC') +
+                  (linkedDcp.outcome === 'Passed' ? 'bg-ok/15 text-ok border border-ok/30 font-bold' : (linkedDcp.outcome === 'Passed with Caveats' ? 'bg-warning/15 text-warning border border-warning/30 font-bold' : (linkedDcp.outcome === 'Failed' ? 'bg-danger/15 text-danger border border-danger/30 font-bold' : 'bg-panel2 text-muted border border-line font-medium'))) + '">' +
+                  ui.esc(linkedDcp.outcome || 'Pending') +
                 '</span>' +
               '</div>' +
-              '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">' +
-                '<div class="p-1.5 rounded bg-panel2/40 border border-line/50">' +
-                  '<div class="text-[10px] text-muted uppercase font-semibold">Aspect Ratio</div>' +
-                  '<div class="font-semibold text-ink mt-0.5 font-mono">' + ui.esc(linkedDcp.aspectRatio || 'Flat (1.85:1)') + '</div>' +
+              '<div class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">' +
+                '<div class="flex items-center justify-between p-1.5 rounded bg-panel2/40 border border-line/50">' +
+                  '<span class="text-muted">Media Rcvd:</span>' +
+                  '<span class="font-semibold ' + (linkedDcp.mediaReceived ? 'text-ok' : 'text-muted') + '">' + (linkedDcp.mediaReceived ? 'Yes' : 'No') + '</span>' +
                 '</div>' +
-                '<div class="p-1.5 rounded bg-panel2/40 border border-line/50">' +
-                  '<div class="text-[10px] text-muted uppercase font-semibold">Resolution / FPS</div>' +
-                  '<div class="font-semibold text-ink mt-0.5 font-mono">' + ui.esc(linkedDcp.resolution || '2K') + ' \u00b7 ' + ui.esc(linkedDcp.frameRate || '24fps') + '</div>' +
+                '<div class="flex items-center justify-between p-1.5 rounded bg-panel2/40 border border-line/50">' +
+                  '<span class="text-muted">KDM / CPL:</span>' +
+                  '<span class="font-semibold ' + (linkedDcp.kdmCplReceived ? 'text-ok' : 'text-muted') + '">' + (linkedDcp.kdmCplReceived ? 'Yes' : 'No') + '</span>' +
                 '</div>' +
-                '<div class="p-1.5 rounded bg-panel2/40 border border-line/50">' +
-                  '<div class="text-[10px] text-muted uppercase font-semibold">Sound Fader Ref</div>' +
-                  '<div class="font-semibold text-ink mt-0.5 font-mono">Fader ' + ui.esc(linkedDcp.soundFaderLevel || '7.0') + ' (' + ui.esc(linkedDcp.audioFormat || '5.1') + ')</div>' +
+                '<div class="flex items-center justify-between p-1.5 rounded bg-panel2/40 border border-line/50">' +
+                  '<span class="text-muted">Playlist Made:</span>' +
+                  '<span class="font-semibold ' + (linkedDcp.playlistMade ? 'text-ok' : 'text-muted') + '">' + (linkedDcp.playlistMade ? 'Yes' : 'No') + '</span>' +
                 '</div>' +
-                '<div class="p-1.5 rounded bg-panel2/40 border border-line/50">' +
-                  '<div class="text-[10px] text-muted uppercase font-semibold">Credit Cue</div>' +
-                  '<div class="font-semibold text-ink mt-0.5 font-mono">' + ui.esc(linkedDcp.creditOffset || 'Not set') + '</div>' +
+                '<div class="flex items-center justify-between p-1.5 rounded bg-panel2/40 border border-line/50">' +
+                  '<span class="text-muted">Tested in Booth:</span>' +
+                  '<span class="font-semibold ' + (linkedDcp.tested ? 'text-ok' : 'text-muted') + '">' + (linkedDcp.tested ? 'Yes' : 'No') + '</span>' +
+                '</div>' +
+                '<div class="flex items-center justify-between p-1.5 rounded bg-panel2/40 border border-line/50">' +
+                  '<span class="text-muted">Holding Slides:</span>' +
+                  '<span class="font-semibold ' + (linkedDcp.holdingSlidesReady ? 'text-ok' : 'text-muted') + '">' + (linkedDcp.holdingSlidesReady ? 'Yes' : 'No') + '</span>' +
+                '</div>' +
+                '<div class="flex items-center justify-between p-1.5 rounded bg-panel2/40 border border-line/50">' +
+                  '<span class="text-muted">A/V Lip-Sync:</span>' +
+                  '<span class="font-semibold ' + (linkedDcp.subsAudioSync ? 'text-ok' : 'text-muted') + '">' + (linkedDcp.subsAudioSync ? 'Yes' : 'No') + '</span>' +
                 '</div>' +
               '</div>' +
-              (linkedDcp.dciTitle ? (
-                '<div class="text-[10px] font-mono text-muted truncate select-all pt-1" title="' + ui.esc(linkedDcp.dciTitle) + '">' +
-                  'DCI: ' + ui.esc(linkedDcp.dciTitle) +
+              (linkedDcp.issuesNoted ? (
+                '<div class="text-[11px] text-muted bg-panel2/40 p-2 rounded border border-line/50">' +
+                  '<strong class="text-ink">Issues Noted:</strong> ' + ui.esc(linkedDcp.issuesNoted) +
                 '</div>'
               ) : '') +
-              (linkedDcp.qcNotes ? (
-                '<div class="text-[11px] text-muted bg-panel2/30 p-2 rounded border border-line/40 italic">' +
-                  ui.esc(linkedDcp.qcNotes) +
+              (linkedDcp.furtherAction ? (
+                '<div class="text-[11px] text-amber-300 bg-amber-500/10 p-2 rounded border border-amber-500/30 flex items-center justify-between">' +
+                  '<div><strong>Follow-up Action:</strong> ' + ui.esc(linkedDcp.furtherAction) + '</div>' +
+                  (linkedDcp.linkedTaskId ? '<a href="#/maintenance" class="btn btn-ghost !py-0.5 !px-1.5 text-[10px] text-accent">View Task \u2192</a>' : '') +
                 '</div>'
               ) : '') +
             '</div>'
@@ -2760,9 +2782,9 @@ RMTP.views.advancing = function (el, params, query) {
           '<button id="modal-reports-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
             ui.icon('clip', 'w-4 h-4') + '<span>Reports (' + reports.length + ')</span>' +
           '</button>' +
-          (!isFreelancer && (isCinema || (ev.media_type || ev.mediaType) === 'DCP') ?
-            '<button id="modal-dcp-btn" class="btn btn-ghost text-xs flex items-center gap-1.5 text-accent border border-accent/20 bg-accent/5 hover:bg-accent/10">' +
-              ui.icon('film', 'w-4 h-4') + '<span>DCP QC Console</span>' +
+          (!isFreelancer && (isCinema || (ev.media_type || ev.mediaType) || ev.dcp_received || ev.checks_completed) ?
+            '<button id="modal-dcp-btn" class="btn btn-ghost text-xs flex items-center gap-1.5 text-accent border border-accent/20 bg-accent/5 hover:bg-accent/10" title="Open Pre-Screening Tracker for this event">' +
+              ui.icon('film', 'w-4 h-4') + '<span>Pre-Screening Tracker</span>' +
             '</button>' : '') +
         '</div>' +
         '<div class="flex items-center gap-2">' +

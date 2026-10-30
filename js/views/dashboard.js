@@ -7,6 +7,10 @@ RMTP.views.dashboard = function (el) {
   const cards = [
     { id: 'advancing',   desc: 'Gather show info, assign techs and file shift reports.',
       stat: () => store.all('advancing').filter(e => !e.deleted).length, unit: 'events' },
+    { id: 'dcp',         desc: 'Pre-screening checklists, media ingest, KDMs and projection QC.',
+      stat: () => (store.all('dcps') || []).length, unit: 'screenings' },
+    { id: 'tasks',       desc: 'Full-page assignable jobs, pre-screening actions & team tasks.',
+      stat: () => (store.all('tasks') || []).filter(t => t.status !== 'Completed').length, unit: 'open jobs' },
     { id: 'inventory',   desc: 'Scan kit in and out; track where everything lives.',
       stat: () => store.all('inventory').filter((r) => r.status === 'out').length, unit: 'signed out' },
     { id: 'maintenance', desc: 'Log faults and track repairs across the venue.',

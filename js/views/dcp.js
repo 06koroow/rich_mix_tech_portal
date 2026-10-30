@@ -86,40 +86,81 @@ RMTP.views.dcp = function (el, params, query) {
     return HARDWARE_MEDIA_BLOCKS[raw] ? raw : 'Screen One';
   }
 
-  /* ---- Create / Link Task in Maintenance Queue ---- */
+  /* ---- Create / Link Task in Jobs List ---- */
   function createOrUpdateFollowUpTask(screening, actionText) {
     if (!screening || !actionText || !actionText.trim()) return null;
     const text = actionText.trim();
     let task = null;
 
     if (screening.linkedTaskId) {
-      task = store.find('maintenance', screening.linkedTaskId);
+      task = store.find('tasks', screening.linkedTaskId);
+      // Fallback migration if previous record was in maintenance
+      if (!task) {
+        const legacyMaint = store.find('maintenance', screening.linkedTaskId);
+        if (legacyMaint) {
+          task = {
+            id: 'task-' + legacyMaint.id.replace('fault-', ''),
+            title: (screening.filmTitle || screening.eventName || 'Cinema') + ' — Pre-Screening Follow-up',
+            description: text + (screening.issuesNoted ? '\n\nIssues noted: ' + screening.issuesNoted.trim() : ''),
+            category: 'Cinema & DCP',
+            space: screening.screen || 'Screen One',
+            priority: screening.outcome === 'Failed' ? 'Urgent' : (screening.outcome === 'Passed with Caveats' ? 'High' : 'Medium'),
+            status: 'Pending',
+            assignedTechId: screening.testedByUserId || '',
+            assignedTechName: screening.testedByUserName || '',
+            reportedBy: auth.displayName(auth.current()) || 'Cinema Tech',
+            source: 'dcp_test',
+            linkedScreeningId: screening.id,
+            linkedEventId: screening.eventId || '',
+            filmTitle: screening.filmTitle || screening.eventName || '',
+            screen: screening.screen || 'Screen One',
+            dueDate: screening.eventDate || '',
+            dueTime: screening.eventStartTime || '',
+            mediaType: screening.mediaType || '',
+            createdAt: legacyMaint.createdAt || Date.now(),
+            updatedAt: Date.now()
+          };
+          store.upsert('tasks', task);
+          screening.linkedTaskId = task.id;
+        }
+      }
     }
 
     if (task) {
       task.description = text + (screening.issuesNoted ? '\n\nIssues noted: ' + screening.issuesNoted.trim() : '');
       task.space = screening.screen || 'Screen One';
+      task.filmTitle = screening.filmTitle || screening.eventName || '';
+      task.screen = screening.screen || 'Screen One';
+      task.dueDate = screening.eventDate || '';
+      task.dueTime = screening.eventStartTime || '';
+      task.priority = screening.outcome === 'Failed' ? 'Urgent' : (screening.outcome === 'Passed with Caveats' ? 'High' : 'Medium');
       task.updatedAt = Date.now();
-      store.upsert('maintenance', task);
+      store.upsert('tasks', task);
     } else {
-      const taskId = store.uid('fault');
+      const taskId = store.uid('task');
       task = {
         id: taskId,
-        status: 'Open',
-        taskType: 'action',
-        equipment: (screening.filmTitle || screening.eventName || 'Cinema') + ' — Pre-Screening Follow-up',
-        category: 'AV',
-        priority: screening.outcome === 'Failed' ? 'High' : 'Medium',
+        title: (screening.filmTitle || screening.eventName || 'Cinema') + ' — Pre-Screening Follow-up',
+        description: text + (screening.issuesNoted ? '\n\nIssues noted: ' + screening.issuesNoted.trim() : ''),
+        category: 'Cinema & DCP',
         space: screening.screen || 'Screen One',
-        reportedBy: auth.displayName(auth.current()) || 'Cinema Tech',
+        priority: screening.outcome === 'Failed' ? 'Urgent' : (screening.outcome === 'Passed with Caveats' ? 'High' : 'Medium'),
+        status: 'Pending',
         assignedTechId: screening.testedByUserId || '',
         assignedTechName: screening.testedByUserName || '',
-        description: text + (screening.issuesNoted ? '\n\nIssues noted: ' + screening.issuesNoted.trim() : ''),
+        reportedBy: auth.displayName(auth.current()) || 'Cinema Tech',
+        source: 'dcp_test',
         linkedScreeningId: screening.id,
         linkedEventId: screening.eventId || '',
-        createdAt: Date.now()
+        filmTitle: screening.filmTitle || screening.eventName || '',
+        screen: screening.screen || 'Screen One',
+        dueDate: screening.eventDate || '',
+        dueTime: screening.eventStartTime || '',
+        mediaType: screening.mediaType || '',
+        createdAt: Date.now(),
+        updatedAt: Date.now()
       };
-      store.upsert('maintenance', task);
+      store.upsert('tasks', task);
       screening.linkedTaskId = taskId;
     }
 
@@ -756,13 +797,13 @@ RMTP.views.dcp = function (el, params, query) {
     // Task display
     let taskHtml = '';
     if (dcp.linkedTaskId) {
-      const task = store.find('maintenance', dcp.linkedTaskId);
-      const isResolved = task && task.status === 'Resolved';
+      const task = store.find('tasks', dcp.linkedTaskId) || store.find('maintenance', dcp.linkedTaskId);
+      const isResolved = task && (task.status === 'Completed' || task.status === 'Resolved');
       taskHtml =
         '<div class="space-y-1">' +
-          '<a href="#/maintenance" class="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded font-semibold ' +
-            (isResolved ? 'bg-ok/15 text-ok border border-ok/30' : 'bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:underline') + '" title="View linked task in Maintenance">' +
-            ui.icon('wrench', 'w-3 h-3') + '<span>Task #' + ui.esc(dcp.linkedTaskId.slice(0, 10)) + (isResolved ? ' (Done)' : ' (Open)') + '</span>' +
+          '<a href="#/tasks" class="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded font-semibold ' +
+            (isResolved ? 'bg-ok/15 text-ok border border-ok/30' : 'bg-accent/15 text-accent border border-accent/30 hover:underline') + '" title="View linked task in Jobs & Tasks">' +
+            ui.icon('list', 'w-3 h-3') + '<span>Job #' + ui.esc(dcp.linkedTaskId.slice(0, 10)) + (isResolved ? ' (Done)' : ' (Open)') + '</span>' +
           '</a>' +
           (dcp.furtherAction ? '<div class="text-[11px] text-muted truncate max-w-[170px]" title="' + ui.esc(dcp.furtherAction) + '">' + ui.esc(dcp.furtherAction) + '</div>' : '') +
         '</div>';
@@ -773,7 +814,7 @@ RMTP.views.dcp = function (el, params, query) {
             ui.esc(dcp.furtherAction) +
           '</div>' +
           '<button type="button" data-log-task="' + dcp.id + '" class="btn btn-ghost !py-0.5 !px-1.5 text-[10px] text-accent flex items-center gap-1 hover:underline">' +
-            ui.icon('plus', 'w-3 h-3') + '<span>Convert to Task</span>' +
+            ui.icon('plus', 'w-3 h-3') + '<span>Add to Jobs List</span>' +
           '</button>' +
         '</div>';
     } else {
@@ -1182,12 +1223,12 @@ RMTP.views.dcp = function (el, params, query) {
         '<div class="p-4 rounded-xl bg-panel2/40 border border-line space-y-3.5">' +
           '<div class="flex items-center justify-between">' +
             '<div class="eyebrow text-accent flex items-center gap-1.5">' +
-              ui.icon('wrench', 'w-3.5 h-3.5') + '<span>Any Further Action? (Creates a Task with Follow-up Action)</span>' +
+              ui.icon('list', 'w-3.5 h-3.5') + '<span>Any Further Action? (Creates a Task in the Jobs List)</span>' +
             '</div>' +
             (item.linkedTaskId ? (
-              '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-ok/15 text-ok border border-ok/30 flex items-center gap-1">' +
-                ui.icon('check', 'w-3 h-3') + 'Task Logged in Maintenance' +
-              '</span>'
+              '<a href="#/tasks" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-accent/15 text-accent border border-accent/30 flex items-center gap-1 hover:underline" onclick="event.stopPropagation()">' +
+                ui.icon('list', 'w-3 h-3') + 'View in Jobs List \u2192' +
+              '</a>'
             ) : '') +
           '</div>' +
 
@@ -1198,10 +1239,10 @@ RMTP.views.dcp = function (el, params, query) {
 
           '<div id="further-action-fields" class="' + (item.hasFurtherAction || item.furtherAction ? '' : 'hidden') + ' space-y-2 pt-1">' +
             '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider">Required Follow-up Action *</label>' +
-            '<textarea id="m-further-action" rows="2" placeholder="e.g. Request distributor re-send KDM for Screen Two; Swap audio balun at lectern; Adjust lens preset macro..." class="field !text-xs w-full">' + ui.esc(item.furtherAction || '') + '</textarea>' +
+            '<textarea id="m-further-action" rows="2" placeholder="e.g. Request distributor re-send KDM for Screen Two; Ingest supplemental subtitle pack; Calibrate optical port..." class="field !text-xs w-full">' + ui.esc(item.furtherAction || '') + '</textarea>' +
             '<div class="p-2.5 rounded-lg bg-panel border border-line text-[11px] text-muted flex items-start gap-2">' +
-              ui.icon('wrench', 'w-4 h-4 text-accent shrink-0 mt-0.5') +
-              '<span>Saving will automatically create an <strong>Open Maintenance &amp; Action Task</strong> linked to this screening and notify on-duty technicians.</span>' +
+              ui.icon('list', 'w-4 h-4 text-accent shrink-0 mt-0.5') +
+              '<span>Saving will automatically create an <strong>Assignable Task in the Jobs List</strong> linked directly to this screening.</span>' +
             '</div>' +
           '</div>' +
         '</div>' +
@@ -1351,7 +1392,7 @@ RMTP.views.dcp = function (el, params, query) {
           item.hasFurtherAction = true;
           item.furtherAction = furtherActionText;
           createOrUpdateFollowUpTask(item, furtherActionText);
-          ui.toast('Screening saved and Follow-up Task created in Maintenance!', 'ok');
+          ui.toast('Screening saved and Follow-up Task created in Jobs List!', 'ok');
         } else {
           item.hasFurtherAction = false;
           item.furtherAction = '';

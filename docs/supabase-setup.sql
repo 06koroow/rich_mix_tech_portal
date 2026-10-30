@@ -635,6 +635,71 @@ create policy rw_all_dmx_personalities on public.dmx_personalities for all to au
 drop policy if exists rw_all_dmx_patches on public.dmx_patches;
 create policy rw_all_dmx_patches on public.dmx_patches for all to authenticated, anon using (true) with check (true);
 
+-- ---------- Tasks (Jobs List) ----------
+create table if not exists public.tasks (
+  "id" text primary key,
+  "title" text not null,
+  "description" text default '',
+  "category" text default 'General',
+  "space" text default '',
+  "priority" text default 'Medium',
+  "status" text default 'Pending',
+  "assignedTechId" text default '',
+  "assignedTechName" text default '',
+  "reportedBy" text default '',
+  "source" text default 'manual',
+  "linkedScreeningId" text default '',
+  "linkedEventId" text default '',
+  "filmTitle" text default '',
+  "screen" text default '',
+  "dueDate" text default '',
+  "dueTime" text default '',
+  "mediaType" text default '',
+  "completedBy" text default '',
+  "completedAt" text default null,
+  "createdAt" bigint,
+  "updatedAt" bigint
+);
+
+alter table public.tasks enable row level security;
+drop policy if exists rw_all_tasks on public.tasks;
+create policy rw_all_tasks on public.tasks for all to authenticated, anon using (true) with check (true);
+
+-- ---------- DCPs & Pre-Screenings ----------
+create table if not exists public.dcps (
+  "id" text primary key,
+  "eventId" text default '',
+  "eventName" text default '',
+  "filmTitle" text default '',
+  "mediaType" text default '',
+  "eventDate" text default '',
+  "eventStartTime" text default '',
+  "eventFinishTime" text default '',
+  "screen" text default '',
+  "targetHardware" text default '',
+  "mediaReceived" boolean default false,
+  "kdmCplReceived" boolean default false,
+  "playlistMade" boolean default false,
+  "tested" boolean default false,
+  "holdingSlidesReady" boolean default false,
+  "subsAudioSync" boolean default false,
+  "issuesNoted" text default '',
+  "outcome" text default 'Pending',
+  "hasFurtherAction" boolean default false,
+  "furtherAction" text default '',
+  "linkedTaskId" text default '',
+  "testedByUserId" text default '',
+  "testedByUserName" text default '',
+  "testDateTime" text default '',
+  "createdAt" text default '',
+  "updatedAt" text default ''
+);
+
+alter table public.dcps enable row level security;
+drop policy if exists rw_all_dcps on public.dcps;
+create policy rw_all_dcps on public.dcps for all to authenticated, anon using (true) with check (true);
+
+
 insert into public.dmx_personalities ("id", "manufacturer", "model", "mode", "channels", "category", "isFactory", "createdAt", "updatedAt")
 values
   ('fix-robe-spiider-27', 'Robe', 'Spiider', 'Mode 1 (Standard Wash/Beam)', 27, 'Moving Wash / Beam', true, 1700000000000, 1700000000000),

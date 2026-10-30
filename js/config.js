@@ -21,6 +21,7 @@ RMTP.nav = [
   { id: 'dashboard',   label: 'Dashboard',   icon: 'grid'  },
   { id: 'advancing',   label: 'Advancing',   icon: 'clip'  },
   { id: 'dcp',         label: 'Pre-Screening Tracker', icon: 'film'  },
+  { id: 'tasks',       label: 'Jobs & Tasks', icon: 'list' },
   { id: 'rota',        label: 'Rota & Shifts', icon: 'calendar' },
   { id: 'presets',     label: 'Patch & Preset Manager', icon: 'sliders' },
   { id: 'venues',      label: 'Venues & Spaces', icon: 'mapPin' },

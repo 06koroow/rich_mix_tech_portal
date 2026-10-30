@@ -7,7 +7,7 @@
     "dev": "npx serve -p $PORT .",
     "start": "npx serve -p $PORT .",
     "build": "echo 'No build step required'",
-    "lint": "node -c js/sync-supabase.js js/supabase.js js/supabase-config.js js/app.js js/router.js js/views/advancing.js js/views/dcp.js js/views/rota.js js/views/dashboard.js js/views/inventory.js js/views/maintenance.js js/views/presets.js js/views/procedures.js js/views/users.js js/views/venues.js"
+    "lint": "node -c js/sync-supabase.js js/supabase.js js/supabase-config.js js/app.js js/router.js js/views/advancing.js js/views/dcp.js js/views/tasks.js js/views/rota.js js/views/dashboard.js js/views/inventory.js js/views/maintenance.js js/views/presets.js js/views/procedures.js js/views/users.js js/views/venues.js"
   },
   "dependencies": {
     "express": "^4.19.2",

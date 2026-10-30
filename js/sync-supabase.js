@@ -2,7 +2,7 @@
 window.RMTP = window.RMTP || {};
 RMTP.syncSb = (function () {
   const store = RMTP.store, sb = RMTP.supabase;
-  const COLLS = ['advancing', 'reports', 'venues', 'users', 'signoffs', 'inventory', 'maintenance', 'procedures', 'patch_presets', 'patch_sheets', 'dmx_personalities', 'dmx_patches', 'availability', 'bookings'];
+  const COLLS = ['advancing', 'reports', 'venues', 'users', 'signoffs', 'inventory', 'maintenance', 'procedures', 'patch_presets', 'patch_sheets', 'dmx_personalities', 'dmx_patches', 'availability', 'bookings', 'dcps', 'tasks'];
   
   let unsupportedCols = {};
   try {
@@ -27,7 +27,8 @@ RMTP.syncSb = (function () {
       maintenance: 'maintenance', procedures: 'procedures',
       patch_presets: 'patch_presets', patch_sheets: 'patch_sheets',
       dmx_personalities: 'dmx_personalities', dmx_patches: 'dmx_patches',
-      availability: 'availability', bookings: 'bookings'
+      availability: 'availability', bookings: 'bookings',
+      dcps: 'dcps', tasks: 'tasks'
     };
   }
 

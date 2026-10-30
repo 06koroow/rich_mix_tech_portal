@@ -23,10 +23,12 @@ RMTP.views.rota = (function () {
     const isAdmin = !!(me && (me.admin || (auth.isAdmin && auth.isAdmin(me))));
     const isTechManager = auth.isTechManager ? auth.isTechManager(me) : isAdmin;
     const isTMOrAdmin = (isTechManager || isAdmin);
+    const isFreelance = auth.isFreelancer ? auth.isFreelancer(me) : false;
 
     // View state
     RMTP._rotaState = RMTP._rotaState || {
-      tab: 'board', // 'board' | 'my_avail' | 'swaps' | 'team_matrix' | 'list'
+      tab: isFreelance ? 'my_avail' : 'board', // Freelancers land directly on My Availability calendar
+      _hasUserSwitchedTab: false,
       weekOffset: 0, // 0 = current week, +1 next week, etc.
       boardView: 'month', // 'month' | 'week' | 'timeline' | 'day' | 'agenda'
       rotaMonth: new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0'),
@@ -46,6 +48,9 @@ RMTP.views.rota = (function () {
       selectedUserForAvail: me ? me.id : 'user-3',
     };
     const state = RMTP._rotaState;
+    if (isFreelance && !state._hasUserSwitchedTab && state.tab === 'board') {
+      state.tab = 'my_avail';
+    }
     if (state.density === undefined) state.density = 'compact';
     if (!state.boardView || state.boardView === 'timeline') state.boardView = 'month';
     if (!state.rotaMonth) state.rotaMonth = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
@@ -1307,7 +1312,7 @@ RMTP.views.rota = (function () {
           <div class="flex items-center gap-2 flex-wrap w-full sm:w-auto">
             <button id="btn-bulk-avail" class="btn btn-primary text-xs flex-1 sm:flex-initial justify-center shadow-xs font-semibold">
               ${ui.icon('calendar', 'w-4 h-4')}
-              <span>+ Add Availability (Next Month)</span>
+              <span>+ Add Availability</span>
             </button>
             <button id="btn-quick-swap" class="btn btn-ghost text-xs flex-1 sm:flex-initial justify-center">
               ${ui.icon('refresh', 'w-4 h-4')}
@@ -2718,7 +2723,7 @@ RMTP.views.rota = (function () {
 
       let out = `
         <div class="space-y-4">
-          <!-- Next Month Availability Priority Banner -->
+          <!-- Calendar Availability Guidance Banner -->
           <div class="p-3.5 rounded-xl bg-accent/10 border border-accent/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
             <div class="flex items-center gap-3">
               <span class="w-9 h-9 rounded-xl bg-accent/20 text-accent font-bold flex items-center justify-center shrink-0">
@@ -2726,21 +2731,21 @@ RMTP.views.rota = (function () {
               </span>
               <div>
                 <div class="text-xs font-bold text-ink flex items-center gap-2">
-                  <span>Next Month Availability · ${nextMonthName}</span>
-                  <span class="px-2 py-0.2 rounded-full text-[10px] font-bold bg-accent/20 text-accent border border-accent/30">Priority</span>
+                  <span>Freelancer Availability Calendar · ${monthName}</span>
+                  <span class="px-2 py-0.2 rounded-full text-[10px] font-bold bg-accent/20 text-accent border border-accent/30">Calendar View</span>
                 </div>
                 <div class="text-[11px] text-muted mt-0.5">
-                  Managers are scheduling shifts for next month. Set your availability in 1 click so you can be booked.
+                  Click the <strong class="text-ink">[+ Add]</strong> pill on any day below to quickly log <strong>All Day</strong> or a <strong>Specific Time Range</strong>.
                 </div>
               </div>
             </div>
-            <div class="flex items-center gap-2">
-              <button id="btn-avail-add-next-month" class="btn btn-primary text-xs font-semibold shadow-xs flex items-center gap-1.5 whitespace-nowrap">
+            <div class="flex items-center gap-2 flex-wrap">
+              <button id="btn-avail-add-today" class="btn btn-primary text-xs font-semibold shadow-xs flex items-center gap-1.5 whitespace-nowrap">
                 ${ui.icon('plus', 'w-3.5 h-3.5')}
-                <span>+ Add Availability (${nextMonthName})</span>
+                <span>+ Add Today's Availability</span>
               </button>
               <button id="btn-jump-next-month" class="btn btn-ghost text-xs whitespace-nowrap">
-                View ${nextMonthName} Calendar →
+                View ${nextMonthName} →
               </button>
             </div>
           </div>
@@ -2791,13 +2796,13 @@ RMTP.views.rota = (function () {
             <div class="lg:col-span-2 p-4 rounded-xl bg-panel border border-line space-y-3">
               <div class="flex items-center justify-between pb-2 border-b border-line/60 flex-wrap gap-2">
                 <div class="text-xs font-semibold text-ink flex items-center gap-2">
-                  <span>Interactive Availability Calendar</span>
-                  <span class="text-[11px] text-muted hidden sm:inline">(Click any date to set or update)</span>
+                  <span>Availability Calendar</span>
+                  <span class="text-[11px] text-muted hidden sm:inline">(Click "+ Add" on any date to set availability)</span>
                 </div>
                 <div class="flex items-center gap-2.5 text-[11px] flex-wrap">
                   <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-400"></span> Available</span>
                   <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-rose-400"></span> Unavailable</span>
-                  <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-400"></span> Booked</span>
+                  <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-400"></span> Booked Shift</span>
                 </div>
               </div>
 
@@ -2815,7 +2820,7 @@ RMTP.views.rota = (function () {
 
           // Blank padding days
           for (let i = 0; i < startingDayOfWeek; i++) {
-            out += `<div class="p-1 sm:p-2 min-h-[52px] sm:min-h-[72px] rounded-lg bg-panel2/20 border border-transparent opacity-30"></div>`;
+            out += `<div class="p-1 sm:p-2 min-h-[58px] sm:min-h-[80px] rounded-lg bg-panel2/20 border border-transparent opacity-30"></div>`;
           }
 
           // Actual month days
@@ -2843,158 +2848,217 @@ RMTP.views.rota = (function () {
             }
 
             out += `
-              <div data-cell-date="${dateStr}" class="p-1 sm:p-1.5 min-h-[54px] sm:min-h-[76px] rounded-lg border ${statusBorder} ${statusBg} ${isToday ? 'ring-1 ring-accent' : ''} hover:border-accent cursor-pointer transition flex flex-col justify-between">
+              <div data-cell-date="${dateStr}" class="p-1 sm:p-1.5 min-h-[62px] sm:min-h-[82px] rounded-lg border ${statusBorder} ${statusBg} ${isToday ? 'ring-1 ring-accent' : ''} hover:border-accent cursor-pointer transition flex flex-col justify-between group">
                 <div class="flex items-center justify-between">
                   <span class="text-xs font-mono font-bold ${isToday ? 'text-accent' : 'text-ink'}">${dayNum}</span>
-              ${avail ? `
-                <span class="w-1.5 h-1.5 rounded-full ${avail.type === 'available' ? 'bg-emerald-400' : 'bg-rose-400'}"></span>
-              ` : ''}
-            </div>
-
-            <!-- Avail Tag -->
-            <div class="space-y-1">
-              ${avail ? `
-                <div class="text-[10px] leading-tight px-1 py-0.5 rounded font-medium truncate ${avail.type === 'available' ? 'text-emerald-400 bg-emerald-500/10' : 'text-rose-400 bg-rose-500/10'}">
-                  ${avail.type === 'available' ? (avail.dayPart === 'custom' ? `${avail.startTime || ''}-${avail.finishTime || ''}` : (avail.dayPart || 'All Day')) : 'Unavailable'}
+                  ${isToday ? `<span class="px-1 py-0.2 rounded text-[8.5px] font-bold bg-accent text-accent-ink uppercase tracking-wider leading-none">Today</span>` : (avail ? `
+                    <span class="w-1.5 h-1.5 rounded-full ${avail.type === 'available' ? 'bg-emerald-400' : 'bg-rose-400'}"></span>
+                  ` : '')}
                 </div>
-              ` : ''}
 
-              <!-- Bookings Tag -->
-              ${dayBookings.map((b) => `
-                <div class="text-[9px] leading-tight px-1 py-0.5 rounded font-semibold truncate bg-amber-500/15 text-amber-400 border border-amber-500/30">
-                  ${ui.esc(b.space || 'Shift')}: ${b.status}
-                </div>
-              `).join('')}
-            </div>
-          </div>
-        `;
-      }
-
-      out += `
-              </div>
-            </div>
-
-            <!-- 1-col: Personal Assigned Shifts Log -->
-            <div class="p-4 rounded-xl bg-panel border border-line space-y-3">
-              <div class="flex items-center justify-between pb-2 border-b border-line/60">
-                <span class="text-xs font-semibold text-ink flex items-center gap-1.5">
-                  ${ui.icon('clip', 'w-3.5 h-3.5 text-accent')}
-                  <span>Upcoming Venue Shifts</span>
-                </span>
-                <span class="text-[11px] font-mono text-muted tabular-nums">${userBookings.length} assigned</span>
-              </div>
-
-              <div class="space-y-2.5 max-h-[500px] overflow-y-auto pr-1">
-      `;
-
-      if (userBookings.length === 0) {
-        out += `
-          <div class="p-6 text-center text-xs text-muted italic">
-            No upcoming shifts booked for this technician.
-          </div>
-        `;
-      } else {
-        userBookings.sort((a, b) => (a.date > b.date ? 1 : -1)).forEach((b) => {
-          out += `
-            <div class="p-3 rounded-lg border bg-panel2/60 space-y-2 ${b.status === 'confirmed' ? 'border-emerald-500/30' : 'border-amber-500/30'}">
-              <div class="flex items-start justify-between gap-1.5">
-                <div>
-                  <span class="text-[10px] font-semibold text-accent uppercase tracking-wider block">${ui.esc(b.space)}</span>
-                  <span class="text-xs font-bold text-ink block">${ui.esc(b.eventName || 'Shift')}</span>
-                </div>
-                ${renderStatusPill(b.status)}
-              </div>
-
-              <div class="flex items-center justify-between text-xs text-muted pt-1 border-t border-line/40">
-                <span class="font-mono text-ink">${formatDisplayDate(b.date)}</span>
-                <span class="font-mono tabular-nums">${b.startTime} – ${b.finishTime}</span>
-              </div>
-
-              <div class="flex items-center justify-between text-[11px] pt-1 flex-wrap gap-1">
-                <span class="px-1.5 py-0.2 rounded bg-panel border border-line text-ink font-semibold">${ui.esc(b.role || 'Tech')}</span>
-                <div class="flex items-center gap-1.5 flex-wrap">
-                  ${b.swapRequested ? `
-                    <span class="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">Cover Offered</span>
-                    <button data-cancel-my-swap="${b.id}" class="text-[10px] text-danger font-semibold hover:underline cursor-pointer">Cancel</button>
+                <!-- Availability Pill (Pill with + sign if unset, or formatted status pill if set) -->
+                <div class="my-1">
+                  ${avail ? `
+                    ${avail.type === 'available' ? `
+                      <button type="button" data-edit-avail-date="${dateStr}" class="w-full inline-flex items-center justify-between gap-1 py-1 px-2 rounded-full text-[10.5px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/35 hover:bg-emerald-500/25 transition shadow-2xs group/pill cursor-pointer" title="Available ${avail.dayPart === 'custom' ? `${avail.startTime || ''}–${avail.finishTime || ''}` : (avail.dayPart === 'all_day' ? 'All Day' : (avail.dayPart || 'All Day'))} (Click to edit)">
+                        <span class="flex items-center gap-1 truncate">
+                          <span class="text-xs leading-none">${avail.dayPart === 'custom' ? '⏱' : '☀️'}</span>
+                          <span class="truncate font-medium">${avail.dayPart === 'custom' ? `${avail.startTime || '17:00'}–${avail.finishTime || '23:30'}` : (avail.dayPart === 'all_day' ? 'All Day' : (avail.dayPart || 'All Day'))}</span>
+                        </span>
+                        <span class="text-[9.5px] opacity-60 group-hover/pill:opacity-100 font-mono">✎</span>
+                      </button>
+                    ` : `
+                      <button type="button" data-edit-avail-date="${dateStr}" class="w-full inline-flex items-center justify-between gap-1 py-1 px-2 rounded-full text-[10.5px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/35 hover:bg-rose-500/25 transition shadow-2xs group/pill cursor-pointer" title="Unavailable (Click to edit)">
+                        <span class="flex items-center gap-1 truncate">
+                          <span class="text-xs leading-none">✕</span>
+                          <span class="truncate font-medium">Unavailable</span>
+                        </span>
+                        <span class="text-[9.5px] opacity-60 group-hover/pill:opacity-100 font-mono">✎</span>
+                      </button>
+                    `}
                   ` : `
-                    <button data-offer-my-swap="${b.id}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-panel border border-line text-muted hover:text-amber-400 hover:border-amber-500/40 transition cursor-pointer flex items-center gap-1">
-                      ${ui.icon('refresh', 'w-3 h-3')}
-                      <span>Offer Swap</span>
+                    <button type="button" data-add-avail-date="${dateStr}" class="w-full inline-flex items-center justify-center gap-1 py-1 px-2 rounded-full text-[10.5px] font-semibold bg-panel/90 hover:bg-accent hover:text-accent-ink text-muted hover:border-accent border border-dashed border-line transition shadow-2xs group/btn cursor-pointer" title="Add availability for ${formatDisplayDate(dateStr)}">
+                      <span class="w-3.5 h-3.5 rounded-full bg-accent/20 group-hover/btn:bg-accent-ink group-hover/btn:text-accent text-accent flex items-center justify-center text-xs font-bold leading-none">+</span>
+                      <span>Add</span>
                     </button>
                   `}
-                  ${b.status === 'pencil' ? `
-                    <button data-tech-accept="${b.id}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20">
-                      Accept
-                    </button>
-                    <button data-tech-decline="${b.id}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/30 hover:bg-rose-500/20">
-                      Decline
-                    </button>
-                  ` : ''}
+                </div>
+
+                <!-- Bookings Tag -->
+                <div class="space-y-1">
+                  ${dayBookings.map((b) => `
+                    <div class="text-[9px] leading-tight px-1 py-0.5 rounded font-semibold truncate bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center justify-between gap-1" title="${ui.esc(b.space || 'Shift')}: ${b.startTime}–${b.finishTime}">
+                      <span class="truncate">${ui.esc(b.space || 'Shift')}</span>
+                      <span class="font-mono text-[8px] opacity-75 shrink-0">${b.startTime}</span>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            `;
+          }
+
+          out += `
+                  </div>
+                </div>
+
+                <!-- 1-col: Personal Assigned Shifts Log -->
+                <div class="p-4 rounded-xl bg-panel border border-line space-y-3">
+                  <div class="flex items-center justify-between pb-2 border-b border-line/60">
+                    <span class="text-xs font-semibold text-ink flex items-center gap-1.5">
+                      ${ui.icon('clip', 'w-3.5 h-3.5 text-accent')}
+                      <span>Upcoming Venue Shifts</span>
+                    </span>
+                    <span class="text-[11px] font-mono text-muted tabular-nums">${userBookings.length} assigned</span>
+                  </div>
+
+                  <div class="space-y-2.5 max-h-[500px] overflow-y-auto pr-1">
+          `;
+
+          if (userBookings.length === 0) {
+            out += `
+              <div class="p-6 text-center text-xs text-muted italic">
+                No upcoming shifts booked for this technician.
+              </div>
+            `;
+          } else {
+            userBookings.sort((a, b) => (a.date > b.date ? 1 : -1)).forEach((b) => {
+              out += `
+                <div class="p-3 rounded-lg border bg-panel2/60 space-y-2 ${b.status === 'confirmed' ? 'border-emerald-500/30' : 'border-amber-500/30'}">
+                  <div class="flex items-start justify-between gap-1.5">
+                    <div>
+                      <span class="text-[10px] font-semibold text-accent uppercase tracking-wider block">${ui.esc(b.space)}</span>
+                      <span class="text-xs font-bold text-ink block">${ui.esc(b.eventName || 'Shift')}</span>
+                    </div>
+                    ${renderStatusPill(b.status)}
+                  </div>
+
+                  <div class="flex items-center justify-between text-xs text-muted pt-1 border-t border-line/40">
+                    <span class="font-mono text-ink">${formatDisplayDate(b.date)}</span>
+                    <span class="font-mono tabular-nums">${b.startTime} – ${b.finishTime}</span>
+                  </div>
+
+                  <div class="flex items-center justify-between text-[11px] pt-1 flex-wrap gap-1">
+                    <span class="px-1.5 py-0.2 rounded bg-panel border border-line text-ink font-semibold">${ui.esc(b.role || 'Tech')}</span>
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                      ${b.swapRequested ? `
+                        <span class="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">Cover Offered</span>
+                        <button data-cancel-my-swap="${b.id}" class="text-[10px] text-danger font-semibold hover:underline cursor-pointer">Cancel</button>
+                      ` : `
+                        <button data-offer-my-swap="${b.id}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-panel border border-line text-muted hover:text-amber-400 hover:border-amber-500/40 transition cursor-pointer flex items-center gap-1">
+                          ${ui.icon('refresh', 'w-3 h-3')}
+                          <span>Offer Swap</span>
+                        </button>
+                      `}
+                      ${b.status === 'pencil' ? `
+                        <button data-tech-accept="${b.id}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20">
+                          Accept
+                        </button>
+                        <button data-tech-decline="${b.id}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/30 hover:bg-rose-500/20">
+                          Decline
+                        </button>
+                      ` : ''}
+                    </div>
+                  </div>
+                </div>
+              `;
+            });
+          }
+
+          out += `
+                  </div>
                 </div>
               </div>
             </div>
           `;
-        });
-      }
 
-      out += `
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-
-      tabContainer.innerHTML = out;
-      wireMyAvailEvents(nextMonthKey);
-    }
-
-    function wireMyAvailEvents(nextMonthKey) {
-      // Banner buttons
-      tabContainer.querySelector('#btn-avail-add-next-month')?.addEventListener('click', () => {
-        openBulkPeriodModal();
-      });
-      tabContainer.querySelector('#btn-jump-next-month')?.addEventListener('click', () => {
-        if (nextMonthKey) {
-          state.availMonth = nextMonthKey;
-          renderMyAvailTab();
+          tabContainer.innerHTML = out;
+          wireMyAvailEvents(nextMonthKey);
         }
-      });
 
-      tabContainer.querySelector('#avail-user-select')?.addEventListener('change', (e) => {
-        state.selectedUserForAvail = e.target.value;
-        renderMyAvailTab();
-      });
-
-      tabContainer.querySelector('#month-prev')?.addEventListener('click', () => {
-        const [yStr, mStr] = state.availMonth.split('-');
-        let y = parseInt(yStr, 10);
-        let m = parseInt(mStr, 10) - 1;
-        if (m < 1) { m = 12; y -= 1; }
-        state.availMonth = `${y}-${String(m).padStart(2, '0')}`;
-        renderMyAvailTab();
-      });
-
-      tabContainer.querySelector('#month-next')?.addEventListener('click', () => {
-        const [yStr, mStr] = state.availMonth.split('-');
-        let y = parseInt(yStr, 10);
-        let m = parseInt(mStr, 10) + 1;
-        if (m > 12) { m = 1; y += 1; }
-        state.availMonth = `${y}-${String(m).padStart(2, '0')}`;
-        renderMyAvailTab();
-      });
-
-      tabContainer.querySelectorAll('[data-cell-date]').forEach((cell) => {
-        cell.addEventListener('click', () => {
-          const d = cell.getAttribute('data-cell-date');
-          const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
-          const existing = getUserAvailability(userId, d);
-          openAvailabilityModal({
-            date: d,
-            userId: userId,
-            ...(existing || {})
+        function wireMyAvailEvents(nextMonthKey) {
+          // Banner buttons
+          tabContainer.querySelector('#btn-avail-add-today')?.addEventListener('click', () => {
+            const todayStr = formatDate(new Date());
+            const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
+            const existing = getUserAvailability(userId, todayStr);
+            openAvailabilityModal({
+              date: todayStr,
+              userId: userId,
+              ...(existing || {})
+            });
           });
-        });
-      });
+          tabContainer.querySelector('#btn-jump-next-month')?.addEventListener('click', () => {
+            if (nextMonthKey) {
+              state.availMonth = nextMonthKey;
+              renderMyAvailTab();
+            }
+          });
+
+          tabContainer.querySelector('#avail-user-select')?.addEventListener('change', (e) => {
+            state.selectedUserForAvail = e.target.value;
+            renderMyAvailTab();
+          });
+
+          tabContainer.querySelector('#month-prev')?.addEventListener('click', () => {
+            const [yStr, mStr] = state.availMonth.split('-');
+            let y = parseInt(yStr, 10);
+            let m = parseInt(mStr, 10) - 1;
+            if (m < 1) { m = 12; y -= 1; }
+            state.availMonth = `${y}-${String(m).padStart(2, '0')}`;
+            renderMyAvailTab();
+          });
+
+          tabContainer.querySelector('#month-next')?.addEventListener('click', () => {
+            const [yStr, mStr] = state.availMonth.split('-');
+            let y = parseInt(yStr, 10);
+            let m = parseInt(mStr, 10) + 1;
+            if (m > 12) { m = 1; y += 1; }
+            state.availMonth = `${y}-${String(m).padStart(2, '0')}`;
+            renderMyAvailTab();
+          });
+
+          // Click pill with + sign to add availability
+          tabContainer.querySelectorAll('[data-add-avail-date]').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const d = btn.getAttribute('data-add-avail-date');
+              const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
+              openAvailabilityModal({
+                date: d,
+                userId: userId,
+              });
+            });
+          });
+
+          // Click existing pill to edit availability
+          tabContainer.querySelectorAll('[data-edit-avail-date]').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const d = btn.getAttribute('data-edit-avail-date');
+              const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
+              const existing = getUserAvailability(userId, d);
+              openAvailabilityModal({
+                date: d,
+                userId: userId,
+                ...(existing || {})
+              });
+            });
+          });
+
+          // Click cell anywhere
+          tabContainer.querySelectorAll('[data-cell-date]').forEach((cell) => {
+            cell.addEventListener('click', (e) => {
+              if (e.target.closest('button')) return;
+              const d = cell.getAttribute('data-cell-date');
+              const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
+              const existing = getUserAvailability(userId, d);
+              openAvailabilityModal({
+                date: d,
+                userId: userId,
+                ...(existing || {})
+              });
+            });
+          });
 
       tabContainer.querySelectorAll('[data-offer-my-swap]').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -5033,7 +5097,7 @@ RMTP.views.rota = (function () {
       });
     }
 
-    // 2. Technician Availability Modal (Single Date)
+    // 2. Technician Availability Modal (Single Date: All Day vs Specific Time Range)
     function openAvailabilityModal(data = {}) {
       const allUsers = getAllUsers();
       const isNew = !data.id;
@@ -5041,65 +5105,154 @@ RMTP.views.rota = (function () {
       const targetUser = allUsers.find((u) => u.id === targetUserId);
       const targetName = targetUser ? auth.displayName(targetUser) : 'Technician';
 
-      let currentDayPart = data.dayPart || 'all_day';
-      let currentType = data.type || 'available';
+      // Determine initial mode: 'all_day' | 'custom' | 'unavailable'
+      let currentMode = 'all_day';
+      if (data.type === 'unavailable') {
+        currentMode = 'unavailable';
+      } else if (data.dayPart === 'custom' || (data.startTime && (data.startTime !== '08:00' || data.finishTime !== '23:30'))) {
+        currentMode = 'custom';
+      } else if (data.dayPart === 'morning' || data.dayPart === 'afternoon' || data.dayPart === 'evening') {
+        currentMode = 'custom';
+      } else {
+        currentMode = 'all_day';
+      }
+
+      let currentStart = data.startTime || (data.dayPart === 'morning' ? '08:00' : (data.dayPart === 'afternoon' ? '13:00' : '17:00'));
+      let currentEnd = data.finishTime || (data.dayPart === 'morning' ? '13:00' : (data.dayPart === 'afternoon' ? '18:00' : '23:30'));
+      const initialDate = data.date || formatDate(new Date());
+
+      function computeHours(start, end) {
+        if (!start || !end) return 0;
+        const [sh, sm] = start.split(':').map(Number);
+        const [eh, em] = end.split(':').map(Number);
+        let diff = (eh * 60 + em) - (sh * 60 + sm);
+        if (diff < 0) diff += 24 * 60;
+        return Math.round((diff / 60) * 10) / 10;
+      }
 
       const m = ui.modal({
         title: `Set Availability · ${ui.esc(targetName)}`,
         body: `
           <div class="space-y-4 text-xs">
-            <div>
-              <label class="block font-semibold text-muted mb-1">Date</label>
-              <input type="date" id="av-date" class="field font-mono" value="${data.date || formatDate(new Date())}" />
+            <!-- Date Banner -->
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 rounded-xl bg-panel2/70 border border-line">
+              <div class="flex-1">
+                <label class="block text-[11px] font-semibold text-muted mb-1">Calendar Date</label>
+                <input type="date" id="av-date" class="field font-mono text-xs py-1.5" value="${initialDate}" />
+              </div>
+              <div id="av-date-display" class="text-xs font-bold text-accent sm:text-right pt-1 sm:pt-0 sm:pl-3">
+                ${formatDisplayDate(initialDate)}
+              </div>
             </div>
 
-            <!-- Status Choice: Available vs Unavailable -->
+            <!-- Primary Availability Mode Choice -->
             <div>
-              <label class="block font-semibold text-muted mb-1.5">Availability Status</label>
-              <div class="grid grid-cols-2 gap-2">
-                <button type="button" id="av-btn-avail" class="p-2.5 rounded-lg border font-semibold flex items-center justify-center gap-1.5 transition ${currentType === 'available' ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400' : 'bg-panel border-line text-muted'}">
-                  ${ui.icon('check', 'w-4 h-4')}
-                  <span>Available for Work</span>
+              <label class="block font-semibold text-muted mb-1.5">Availability Option</label>
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <!-- Option 1: All Day -->
+                <button type="button" id="av-mode-allday" class="p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${currentMode === 'all_day' ? 'bg-emerald-500/15 border-emerald-500 text-ink shadow-xs ring-1 ring-emerald-500/50' : 'bg-panel border-line text-muted hover:border-line/90 hover:text-ink'}">
+                  <div>
+                    <div class="flex items-center justify-between gap-1 mb-1.5">
+                      <span class="text-lg">☀️</span>
+                      <span class="av-check ${currentMode === 'all_day' ? 'inline-flex' : 'hidden'} px-1.5 py-0.2 rounded-full text-[9.5px] font-bold bg-emerald-500/25 text-emerald-400 border border-emerald-500/40">Active</span>
+                    </div>
+                    <div class="font-bold text-xs text-ink">All Day</div>
+                    <div class="text-[10.5px] text-muted mt-0.5 leading-snug">08:00 – 23:30 (full day coverage)</div>
+                  </div>
                 </button>
-                <button type="button" id="av-btn-unavail" class="p-2.5 rounded-lg border font-semibold flex items-center justify-center gap-1.5 transition ${currentType === 'unavailable' ? 'bg-rose-500/15 border-rose-500/40 text-rose-400' : 'bg-panel border-line text-muted'}">
-                  ${ui.icon('x', 'w-4 h-4')}
-                  <span>Unavailable</span>
+
+                <!-- Option 2: Specific Time Range -->
+                <button type="button" id="av-mode-custom" class="p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${currentMode === 'custom' ? 'bg-accent/15 border-accent text-ink shadow-xs ring-1 ring-accent/50' : 'bg-panel border-line text-muted hover:border-line/90 hover:text-ink'}">
+                  <div>
+                    <div class="flex items-center justify-between gap-1 mb-1.5">
+                      <span class="text-lg">⏱️</span>
+                      <span class="av-check ${currentMode === 'custom' ? 'inline-flex' : 'hidden'} px-1.5 py-0.2 rounded-full text-[9.5px] font-bold bg-accent/25 text-accent border border-accent/40">Active</span>
+                    </div>
+                    <div class="font-bold text-xs text-ink">Specific Time Range</div>
+                    <div class="text-[10.5px] text-muted mt-0.5 leading-snug">Choose exact From / Till hours</div>
+                  </div>
+                </button>
+
+                <!-- Option 3: Unavailable -->
+                <button type="button" id="av-mode-unavail" class="p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${currentMode === 'unavailable' ? 'bg-rose-500/15 border-rose-500 text-ink shadow-xs ring-1 ring-rose-500/50' : 'bg-panel border-line text-muted hover:border-line/90 hover:text-ink'}">
+                  <div>
+                    <div class="flex items-center justify-between gap-1 mb-1.5">
+                      <span class="text-lg">✕</span>
+                      <span class="av-check ${currentMode === 'unavailable' ? 'inline-flex' : 'hidden'} px-1.5 py-0.2 rounded-full text-[9.5px] font-bold bg-rose-500/25 text-rose-400 border border-rose-500/40">Active</span>
+                    </div>
+                    <div class="font-bold text-xs text-ink">Unavailable</div>
+                    <div class="text-[10.5px] text-muted mt-0.5 leading-snug">Off duty / not accepting shifts</div>
+                  </div>
                 </button>
               </div>
             </div>
 
-            <!-- Day-Part Blocks (visible when available) -->
-            <div id="av-daypart-area" class="${currentType === 'available' ? 'block' : 'hidden'} space-y-2">
-              <label class="block font-semibold text-muted mb-1">Day-Part Block</label>
-              <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                ${RMTP.DAY_PARTS.map((dp) => `
-                  <button type="button" data-dp="${dp.id}" class="p-2 rounded-lg border text-center transition font-medium ${currentDayPart === dp.id ? 'bg-accent text-accent-ink border-accent font-semibold' : 'bg-panel border-line text-ink hover:border-line/80'}">
-                    <div class="text-xs">${dp.label}</div>
-                    ${dp.start ? `<div class="text-[10px] opacity-70 font-mono">${dp.start}–${dp.end}</div>` : ''}
+            <!-- All Day Details Banner -->
+            <div id="av-allday-info" class="${currentMode === 'all_day' ? 'block' : 'hidden'} p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center gap-3 text-xs text-emerald-300">
+              <span class="text-2xl shrink-0">☀️</span>
+              <div>
+                <div class="font-bold text-ink">All-Day Availability (08:00 – 23:30)</div>
+                <div class="text-[11px] text-muted mt-0.5">You are available for any morning, afternoon, or evening shifts on this day.</div>
+              </div>
+            </div>
+
+            <!-- Specific Time Range Settings -->
+            <div id="av-timerange-area" class="${currentMode === 'custom' ? 'block' : 'hidden'} space-y-3 p-3.5 rounded-xl bg-panel2/60 border border-line">
+              <div class="flex items-center justify-between">
+                <span class="font-semibold text-ink text-xs flex items-center gap-1.5">
+                  ${ui.icon('clock', 'w-3.5 h-3.5 text-accent')}
+                  <span>Shift Availability Timing</span>
+                </span>
+                <span id="av-duration-badge" class="font-mono text-xs font-bold px-2 py-0.5 rounded bg-panel border border-line text-accent">
+                  ${computeHours(currentStart, currentEnd)}h total
+                </span>
+              </div>
+
+              <!-- From & Till inputs -->
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="block text-[11px] font-semibold text-muted mb-1">From (Start Time)</label>
+                  <input type="time" id="av-start" class="field font-mono text-xs" value="${currentStart}" />
+                </div>
+                <div>
+                  <label class="block text-[11px] font-semibold text-muted mb-1">Till (Finish Time)</label>
+                  <input type="time" id="av-end" class="field font-mono text-xs" value="${currentEnd}" />
+                </div>
+              </div>
+
+              <!-- Quick Presets -->
+              <div>
+                <div class="text-[10.5px] text-muted font-semibold mb-1.5">Quick Presets:</div>
+                <div class="flex flex-wrap gap-1.5">
+                  <button type="button" data-preset="17:00|23:30" class="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-panel border border-line hover:border-accent hover:text-accent transition cursor-pointer">
+                    🌆 Evening (17:00 – 23:30)
                   </button>
-                `).join('')}
-              </div>
-
-              <!-- Custom Hours Expandable -->
-              <div id="av-custom-hours" class="${currentDayPart === 'custom' ? 'block' : 'hidden'} p-3 rounded-lg bg-panel2/60 border border-line space-y-2 mt-2">
-                <div class="font-semibold text-ink text-[11px]">Exact From / Till Timing</div>
-                <div class="grid grid-cols-2 gap-2">
-                  <div>
-                    <label class="block text-[10px] text-muted mb-1">From (Start)</label>
-                    <input type="time" id="av-start" class="field font-mono" value="${data.startTime || '16:30'}" />
-                  </div>
-                  <div>
-                    <label class="block text-[10px] text-muted mb-1">Till (Finish)</label>
-                    <input type="time" id="av-end" class="field font-mono" value="${data.finishTime || '23:30'}" />
-                  </div>
+                  <button type="button" data-preset="08:00|16:30" class="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-panel border border-line hover:border-accent hover:text-accent transition cursor-pointer">
+                    ☀️ Daytime (08:00 – 16:30)
+                  </button>
+                  <button type="button" data-preset="13:00|21:00" class="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-panel border border-line hover:border-accent hover:text-accent transition cursor-pointer">
+                    🎬 Afternoon (13:00 – 21:00)
+                  </button>
+                  <button type="button" data-preset="18:00|00:00" class="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-panel border border-line hover:border-accent hover:text-accent transition cursor-pointer">
+                    🌙 Late Show (18:00 – 00:00)
+                  </button>
                 </div>
               </div>
             </div>
 
-            <!-- Notes -->
+            <!-- Unavailable Info Banner -->
+            <div id="av-unavail-info" class="${currentMode === 'unavailable' ? 'block' : 'hidden'} p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center gap-3 text-xs text-rose-300">
+              <span class="text-2xl shrink-0">✕</span>
+              <div>
+                <div class="font-bold text-ink">Marked as Unavailable</div>
+                <div class="text-[11px] text-muted mt-0.5">Managers will see that you are unavailable for shifts on this day.</div>
+              </div>
+            </div>
+
+            <!-- Optional Notes -->
             <div>
               <label class="block font-semibold text-muted mb-1">Optional Notes</label>
-              <input id="av-notes" class="field" value="${ui.esc(data.notes || '')}" placeholder="e.g. Free for sound or lighting, has car, traveling after 23:00" />
+              <input id="av-notes" class="field text-xs" value="${ui.esc(data.notes || '')}" placeholder="e.g. Cinema / sound preferred, traveling by train, available earlier if needed" />
             </div>
           </div>
         `,
@@ -5119,36 +5272,75 @@ RMTP.views.rota = (function () {
         ]
       });
 
-      const daypartArea = m.root.querySelector('#av-daypart-area');
-      const customHours = m.root.querySelector('#av-custom-hours');
+      const btnAllDay = m.root.querySelector('#av-mode-allday');
+      const btnCustom = m.root.querySelector('#av-mode-custom');
+      const btnUnavail = m.root.querySelector('#av-mode-unavail');
 
-      m.root.querySelector('#av-btn-avail').addEventListener('click', () => {
-        currentType = 'available';
-        m.root.querySelector('#av-btn-avail').className = 'p-2.5 rounded-lg border font-semibold flex items-center justify-center gap-1.5 transition bg-emerald-500/15 border-emerald-500/40 text-emerald-400';
-        m.root.querySelector('#av-btn-unavail').className = 'p-2.5 rounded-lg border font-semibold flex items-center justify-center gap-1.5 transition bg-panel border-line text-muted';
-        daypartArea.classList.remove('hidden');
-      });
+      const allDayInfo = m.root.querySelector('#av-allday-info');
+      const timeRangeArea = m.root.querySelector('#av-timerange-area');
+      const unavailInfo = m.root.querySelector('#av-unavail-info');
 
-      m.root.querySelector('#av-btn-unavail').addEventListener('click', () => {
-        currentType = 'unavailable';
-        m.root.querySelector('#av-btn-avail').className = 'p-2.5 rounded-lg border font-semibold flex items-center justify-center gap-1.5 transition bg-panel border-line text-muted';
-        m.root.querySelector('#av-btn-unavail').className = 'p-2.5 rounded-lg border font-semibold flex items-center justify-center gap-1.5 transition bg-rose-500/15 border-rose-500/40 text-rose-400';
-        daypartArea.classList.add('hidden');
-      });
+      const avStart = m.root.querySelector('#av-start');
+      const avEnd = m.root.querySelector('#av-end');
+      const durationBadge = m.root.querySelector('#av-duration-badge');
 
-      m.root.querySelectorAll('[data-dp]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          currentDayPart = btn.getAttribute('data-dp');
-          m.root.querySelectorAll('[data-dp]').forEach((b) => {
-            b.className = 'p-2 rounded-lg border text-center transition font-medium bg-panel border-line text-ink hover:border-line/80';
-          });
-          btn.className = 'p-2 rounded-lg border text-center transition font-medium bg-accent text-accent-ink border-accent font-semibold';
-          if (currentDayPart === 'custom') {
-            customHours.classList.remove('hidden');
-          } else {
-            customHours.classList.add('hidden');
-          }
+      function updateDurationBadge() {
+        if (durationBadge && avStart && avEnd) {
+          const hrs = computeHours(avStart.value, avEnd.value);
+          durationBadge.textContent = `${hrs}h total`;
+        }
+      }
+
+      function switchMode(newMode) {
+        currentMode = newMode;
+        // Mode buttons styling
+        btnAllDay.className = `p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${currentMode === 'all_day' ? 'bg-emerald-500/15 border-emerald-500 text-ink shadow-xs ring-1 ring-emerald-500/50' : 'bg-panel border-line text-muted hover:border-line/90 hover:text-ink'}`;
+        btnCustom.className = `p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${currentMode === 'custom' ? 'bg-accent/15 border-accent text-ink shadow-xs ring-1 ring-accent/50' : 'bg-panel border-line text-muted hover:border-line/90 hover:text-ink'}`;
+        btnUnavail.className = `p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${currentMode === 'unavailable' ? 'bg-rose-500/15 border-rose-500 text-ink shadow-xs ring-1 ring-rose-500/50' : 'bg-panel border-line text-muted hover:border-line/90 hover:text-ink'}`;
+
+        btnAllDay.querySelector('.av-check').className = `av-check ${currentMode === 'all_day' ? 'inline-flex' : 'hidden'} px-1.5 py-0.2 rounded-full text-[9.5px] font-bold bg-emerald-500/25 text-emerald-400 border border-emerald-500/40`;
+        btnCustom.querySelector('.av-check').className = `av-check ${currentMode === 'custom' ? 'inline-flex' : 'hidden'} px-1.5 py-0.2 rounded-full text-[9.5px] font-bold bg-accent/25 text-accent border border-accent/40`;
+        btnUnavail.querySelector('.av-check').className = `av-check ${currentMode === 'unavailable' ? 'inline-flex' : 'hidden'} px-1.5 py-0.2 rounded-full text-[9.5px] font-bold bg-rose-500/25 text-rose-400 border border-rose-500/40`;
+
+        // Content panels
+        if (currentMode === 'all_day') {
+          allDayInfo.classList.remove('hidden');
+          timeRangeArea.classList.add('hidden');
+          unavailInfo.classList.add('hidden');
+        } else if (currentMode === 'custom') {
+          allDayInfo.classList.add('hidden');
+          timeRangeArea.classList.remove('hidden');
+          unavailInfo.classList.add('hidden');
+          updateDurationBadge();
+        } else {
+          allDayInfo.classList.add('hidden');
+          timeRangeArea.classList.add('hidden');
+          unavailInfo.classList.remove('hidden');
+        }
+      }
+
+      btnAllDay.addEventListener('click', () => switchMode('all_day'));
+      btnCustom.addEventListener('click', () => switchMode('custom'));
+      btnUnavail.addEventListener('click', () => switchMode('unavailable'));
+
+      avStart?.addEventListener('input', updateDurationBadge);
+      avEnd?.addEventListener('input', updateDurationBadge);
+
+      // Presets
+      m.root.querySelectorAll('[data-preset]').forEach((presetBtn) => {
+        presetBtn.addEventListener('click', () => {
+          const [s, e] = presetBtn.getAttribute('data-preset').split('|');
+          if (avStart) avStart.value = s;
+          if (avEnd) avEnd.value = e;
+          updateDurationBadge();
         });
+      });
+
+      // Date change
+      m.root.querySelector('#av-date')?.addEventListener('change', (e) => {
+        const val = e.target.value;
+        const disp = m.root.querySelector('#av-date-display');
+        if (disp && val) disp.textContent = formatDisplayDate(val);
       });
 
       // Save
@@ -5156,15 +5348,26 @@ RMTP.views.rota = (function () {
         const dStr = m.root.querySelector('#av-date').value;
         if (!dStr) { ui.toast('Date is required', 'danger'); return; }
 
+        let type = 'available';
+        let dayPart = 'all_day';
         let startTime = '08:00';
         let finishTime = '23:30';
 
-        if (currentDayPart === 'morning') { startTime = '08:00'; finishTime = '13:00'; }
-        else if (currentDayPart === 'afternoon') { startTime = '13:00'; finishTime = '18:00'; }
-        else if (currentDayPart === 'evening') { startTime = '18:00'; finishTime = '23:30'; }
-        else if (currentDayPart === 'custom') {
-          startTime = m.root.querySelector('#av-start').value || '16:30';
-          finishTime = m.root.querySelector('#av-end').value || '23:30';
+        if (currentMode === 'all_day') {
+          type = 'available';
+          dayPart = 'all_day';
+          startTime = '08:00';
+          finishTime = '23:30';
+        } else if (currentMode === 'custom') {
+          type = 'available';
+          dayPart = 'custom';
+          startTime = (avStart && avStart.value) || '17:00';
+          finishTime = (avEnd && avEnd.value) || '23:30';
+        } else if (currentMode === 'unavailable') {
+          type = 'unavailable';
+          dayPart = 'all_day';
+          startTime = '';
+          finishTime = '';
         }
 
         const record = {
@@ -5172,16 +5375,19 @@ RMTP.views.rota = (function () {
           userId: targetUserId,
           userName: targetName,
           date: dStr,
-          type: currentType,
-          dayPart: currentType === 'available' ? currentDayPart : 'all_day',
-          startTime: currentType === 'available' ? startTime : '',
-          finishTime: currentType === 'available' ? finishTime : '',
+          type: type,
+          dayPart: dayPart,
+          startTime: startTime,
+          finishTime: finishTime,
           notes: m.root.querySelector('#av-notes').value.trim(),
           updatedAt: new Date().toISOString(),
         };
 
         store.upsert('availability', record);
-        ui.toast('Availability updated', 'ok');
+        if (RMTP.syncSb && typeof RMTP.syncSb.drain === 'function') {
+          try { RMTP.syncSb.drain(); } catch (e) {}
+        }
+        ui.toast(`Availability updated for ${formatDisplayDate(dStr)}`, 'ok');
         m.close();
         renderActiveTab();
       });
@@ -5191,6 +5397,9 @@ RMTP.views.rota = (function () {
       if (delBtn) {
         delBtn.addEventListener('click', () => {
           store.remove('availability', data.id);
+          if (RMTP.syncSb && typeof RMTP.syncSb.drain === 'function') {
+            try { RMTP.syncSb.drain(); } catch (e) {}
+          }
           ui.toast('Availability entry cleared', 'info');
           m.close();
           renderActiveTab();
@@ -5480,10 +5689,18 @@ RMTP.views.rota = (function () {
     });
 
     el.querySelector('#btn-bulk-avail')?.addEventListener('click', () => {
-      openBulkPeriodModal();
+      const todayStr = formatDate(new Date());
+      const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
+      const existing = getUserAvailability(userId, todayStr);
+      openAvailabilityModal({
+        date: todayStr,
+        userId: userId,
+        ...(existing || {})
+      });
     });
 
     el.querySelector('#btn-quick-swap')?.addEventListener('click', () => {
+      state._hasUserSwitchedTab = true;
       state.tab = 'swaps';
       el.querySelectorAll('[data-tab]').forEach((b) => {
         b.className = 'shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 text-muted hover:text-ink hover:bg-panel2';
@@ -5502,6 +5719,7 @@ RMTP.views.rota = (function () {
     // Wire Main Navigation Tabs
     el.querySelectorAll('[data-tab]').forEach((tabBtn) => {
       tabBtn.addEventListener('click', () => {
+        state._hasUserSwitchedTab = true;
         state.tab = tabBtn.getAttribute('data-tab');
         el.querySelectorAll('[data-tab]').forEach((b) => {
           b.className = 'px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 text-muted hover:text-ink hover:bg-panel2';

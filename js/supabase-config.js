@@ -35,5 +35,9 @@ RMTP.supabaseConfig = {
     dmx_personalities: 'dmx_personalities',
     dmx_patches:       'dmx_patches',
     venues:            'venues',
+    availability:      'availability',
+    bookings:          'bookings',
+    dcps:              'dcps',
+    tasks:             'tasks',
   },
 };

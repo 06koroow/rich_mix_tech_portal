@@ -265,5 +265,99 @@ RMTP.ui = (function () {
     return Math.floor(h / 24) + 'd ago';
   }
 
-  return { esc, icon, toast, modal, confirm, pill, empty, pageHeader, formatDate, timeAgo };
+  /* --- Prompt for downstream change impact confirmation --- */
+  function promptChangeImpact(opts) {
+    return new Promise((resolve) => {
+      opts = opts || {};
+      const items = Array.isArray(opts.affectedItems) ? opts.affectedItems : [];
+      if (items.length === 0) {
+        resolve({ confirmed: true, selectedItems: [], selectedIds: [] });
+        return;
+      }
+
+      const itemsHtml = items.map((it, idx) => {
+        const isChecked = it.checkedByDefault !== false;
+        let typeBadge = '';
+        if (it.type === 'shift') {
+          typeBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-500/15 text-sky-400 border border-sky-500/30 flex items-center gap-1 shrink-0">' + icon('clock', 'w-3 h-3') + 'Rota Shift</span>';
+        } else if (it.type === 'task') {
+          typeBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30 flex items-center gap-1 shrink-0">' + icon('list', 'w-3 h-3') + 'Operational Job</span>';
+        } else if (it.type === 'screening') {
+          typeBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 shrink-0">' + icon('film', 'w-3 h-3') + 'Cinema QC</span>';
+        } else {
+          typeBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-panel2 border border-line text-muted flex items-center gap-1 shrink-0">' + esc(it.type || 'Record') + '</span>';
+        }
+
+        return (
+          '<label class="flex items-start gap-2.5 p-3 rounded-lg border border-line bg-panel2/40 hover:bg-panel2 cursor-pointer transition text-xs">' +
+            '<input type="checkbox" data-impact-idx="' + idx + '" class="w-4 h-4 mt-0.5 rounded accent-[var(--accent)] shrink-0 cursor-pointer" ' + (isChecked ? 'checked' : '') + ' />' +
+            '<div class="min-w-0 flex-1">' +
+              '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+                '<div class="flex items-center gap-1.5 min-w-0">' +
+                  typeBadge +
+                  '<span class="font-semibold text-ink truncate">' + esc(it.label || '') + '</span>' +
+                '</div>' +
+              '</div>' +
+              (it.detail ? '<div class="text-[11px] text-muted mt-1 leading-relaxed">' + esc(it.detail) + '</div>' : '') +
+            '</div>' +
+          '</label>'
+        );
+      }).join('');
+
+      const m = modal({
+        title: opts.title || 'Review Downstream Operational Updates',
+        size: 'md:max-w-xl',
+        body:
+          '<div class="grid gap-3.5 text-xs">' +
+            '<div class="p-3 rounded-lg bg-accent/10 border border-accent/30 text-ink leading-relaxed">' +
+              '<div class="font-bold text-accent mb-0.5 flex items-center gap-1.5">' +
+                icon('alert', 'w-4 h-4 text-accent') +
+                '<span>Upstream Change Detected</span>' +
+              '</div>' +
+              '<p class="text-ink/90 font-medium">' + esc(opts.upstreamChange || '') + '</p>' +
+            '</div>' +
+            '<div>' +
+              '<div class="flex items-center justify-between mb-1.5">' +
+                '<span class="font-bold uppercase tracking-wider text-[10px] text-muted">Affected Linked Records (' + items.length + ')</span>' +
+                '<span class="text-[10px] text-muted">Select records to update automatically</span>' +
+              '</div>' +
+              '<div class="grid gap-2 max-h-60 overflow-y-auto pr-1">' + itemsHtml + '</div>' +
+            '</div>' +
+          '</div>',
+        footer:
+          '<div class="flex items-center justify-between w-full gap-2">' +
+            '<button type="button" id="btn-impact-cancel" class="btn btn-ghost text-xs">Keep Existing Schedules</button>' +
+            '<button type="button" id="btn-impact-confirm" class="btn btn-primary text-xs flex items-center gap-1.5 font-semibold">' +
+              icon('check', 'w-3.5 h-3.5') +
+              '<span>Update Selected Records</span>' +
+            '</button>' +
+          '</div>'
+      });
+
+      m.root.querySelector('#btn-impact-cancel')?.addEventListener('click', () => {
+        m.close();
+        resolve({ confirmed: false, selectedItems: [], selectedIds: [] });
+      });
+
+      m.root.querySelector('#btn-impact-confirm')?.addEventListener('click', () => {
+        const selected = [];
+        const selectedIds = [];
+        m.root.querySelectorAll('[data-impact-idx]').forEach(chk => {
+          if (chk.checked) {
+            const idx = parseInt(chk.getAttribute('data-impact-idx'), 10);
+            if (items[idx]) {
+              selected.push(items[idx]);
+              if (items[idx].id) selectedIds.push(items[idx].id);
+            }
+          }
+        });
+        m.close();
+        resolve({ confirmed: true, selectedItems: selected, selectedIds: selectedIds });
+      });
+    });
+  }
+
+  RMTP.promptChangeImpact = promptChangeImpact;
+
+  return { esc, icon, toast, modal, confirm, pill, empty, pageHeader, formatDate, timeAgo, promptChangeImpact };
 })();

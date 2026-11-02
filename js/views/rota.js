@@ -1758,6 +1758,10 @@ RMTP.views.rota = (function () {
                 ${filledTechCount > 0 ? `<span class="px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-semibold">${filledTechCount} Staffed</span>` : ''}
                 ${noTechCount > 0 ? `<span class="px-2 py-0.5 rounded bg-panel2 border border-line text-muted">${noTechCount} Self-Service</span>` : ''}
                 ${unfilledCount > 0 ? `<span class="px-2 py-0.5 rounded bg-rose-500/15 border border-rose-500/30 text-rose-300 font-bold">⚠️ ${unfilledCount} Unfilled</span>` : ''}
+                ${(() => {
+                  const dayTasks = (store.all('tasks') || []).filter(t => t.dueDate === selDayStr && t.status !== 'Completed');
+                  return dayTasks.length > 0 ? `<a href="#/tasks" class="px-2 py-0.5 rounded bg-accent/15 border border-accent/30 text-accent font-semibold hover:bg-accent/25 flex items-center gap-1">${ui.icon('list', 'w-3 h-3')} ${dayTasks.length} Venue Task${dayTasks.length > 1 ? 's' : ''}</a>` : '';
+                })()}
               </div>
             </div>
 
@@ -3680,6 +3684,77 @@ RMTP.views.rota = (function () {
       const isNew = !initialData.id;
       const events = getAllEvents();
       const allUsers = getAllUsers();
+      const initialDate = initialData.date || formatDate(new Date());
+
+      function getUserOptionsHtml(selectedUserId, targetDate) {
+        const dStr = targetDate || formatDate(new Date());
+        const available = [];
+        const booked = [];
+        const unavailable = [];
+        const general = [];
+
+        allUsers.forEach((u) => {
+          const live = getTechLiveStatus(u.id, dStr);
+          if (live.booked) {
+            booked.push({ u, live });
+          } else if (live.available === true) {
+            available.push({ u, live });
+          } else if (live.available === false) {
+            unavailable.push({ u, live });
+          } else {
+            general.push({ u, live });
+          }
+        });
+
+        let html = '<option value="">Select a technician / freelancer…</option>';
+
+        if (available.length) {
+          html += '<optgroup label="✓ Available on this Date (' + available.length + ')">';
+          available.forEach(({ u, live }) => {
+            html += `<option value="${u.id}" ${u.id === selectedUserId ? 'selected' : ''}>` +
+              `✓ ${ui.esc(auth.displayName(u))} — ${ui.esc(live.details || 'Available')} (${ui.esc(u.position || 'Tech')})` +
+            `</option>`;
+          });
+          html += '</optgroup>';
+        }
+
+        if (general.length) {
+          html += '<optgroup label="Other Registered Technicians (' + general.length + ')">';
+          general.forEach(({ u }) => {
+            html += `<option value="${u.id}" ${u.id === selectedUserId ? 'selected' : ''}>` +
+              `${ui.esc(auth.displayName(u))} (${ui.esc(u.position || 'Tech')})` +
+            `</option>`;
+          });
+          html += '</optgroup>';
+        }
+
+        if (booked.length) {
+          html += '<optgroup label="⚠️ Already Booked on Another Shift (' + booked.length + ')">';
+          booked.forEach(({ u, live }) => {
+            html += `<option value="${u.id}" ${u.id === selectedUserId ? 'selected' : ''}>` +
+              `⚠️ ${ui.esc(auth.displayName(u))} — ${ui.esc(live.label)}` +
+            `</option>`;
+          });
+          html += '</optgroup>';
+        }
+
+        if (unavailable.length) {
+          html += '<optgroup label="✕ Marked Unavailable (' + unavailable.length + ')">';
+          unavailable.forEach(({ u, live }) => {
+            html += `<option value="${u.id}" ${u.id === selectedUserId ? 'selected' : ''}>` +
+              `✕ ${ui.esc(auth.displayName(u))} — ${ui.esc(live.label)}` +
+            `</option>`;
+          });
+          html += '</optgroup>';
+        }
+
+        html += '<optgroup label="Custom / Other">';
+        html += `<option value="__custom__" ${(!selectedUserId && initialData.userName && initialData.userName !== 'Unassigned' && !initialData.isNoTech) ? 'selected' : ''}>+ Other / External Freelancer (Type Name)</option>`;
+        html += `<option value="__notech__" ${initialData.isNoTech ? 'selected' : ''}>No Tech Needed (Self-Service)</option>`;
+        html += '</optgroup>';
+
+        return html;
+      }
 
       const m = ui.modal({
         title: isNew ? 'Book Shift / Freelancer' : 'Edit Shift Booking',
@@ -3760,15 +3835,7 @@ RMTP.views.rota = (function () {
                 <span id="b-avail-status-tag" class="text-[11px] font-semibold px-2 py-0.5 rounded border">Live Availability</span>
               </div>
               <select id="b-user" class="field font-medium">
-                <option value="">Select a technician / freelancer…</option>
-                <optgroup label="Registered Technicians &amp; Freelancers">
-                  ${allUsers.map((u) => `
-                    <option value="${u.id}" ${u.id === initialData.userId ? 'selected' : ''}>
-                      ${ui.esc(auth.displayName(u))} (${ui.esc(u.position || 'Tech')})
-                    </option>
-                  `).join('')}
-                <option value="__custom__" ${(!initialData.userId && initialData.userName && initialData.userName !== 'Unassigned' && !initialData.isNoTech) ? 'selected' : ''}>+ Other / External Freelancer (Type Name)</option>
-                <option value="__notech__" ${initialData.isNoTech ? 'selected' : ''}>No Tech Needed (Self-Service)</option>
+                ${getUserOptionsHtml(initialData.userId, initialDate)}
               </select>
               <label class="flex items-center gap-2 cursor-pointer mt-2 text-xs text-muted hover:text-ink">
                 <input type="checkbox" id="b-is-notech" class="rounded border-line" ${initialData.isNoTech ? 'checked' : ''} />
@@ -3913,7 +3980,11 @@ RMTP.views.rota = (function () {
         }
         updateAvailabilityCheck();
       });
-      dateInp.addEventListener('change', updateAvailabilityCheck);
+      dateInp.addEventListener('change', () => {
+        const curVal = userSel.value;
+        userSel.innerHTML = getUserOptionsHtml(curVal, dateInp.value);
+        updateAvailabilityCheck();
+      });
 
       const noTechCheck = m.root.querySelector('#b-is-notech');
       if (noTechCheck) {

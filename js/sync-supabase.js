@@ -127,17 +127,59 @@ RMTP.syncSb = (function () {
     }
     
     rows.forEach(r => {
-      if (coll === 'advancing') {
-        const existing = store.find ? store.find(coll, r.id) : (store.get ? store.get(coll, r.id) : null);
+      const existing = store.find ? store.find(coll, r.id) : (store.get ? store.get(coll, r.id) : null);
+
+      if (coll === 'advancing' && existing) {
+        // Field-level merge protection: safeguard technician-enriched data from being wiped by Artifax sync
+        const enrichedKeys = [
+          'techRequirements', 'tech_requirements',
+          'scheduleItems', 'schedule_items',
+          'allocatedKit', 'allocated_kit',
+          'linked_task_ids', 'linked_maintenance_ids',
+          'dcp_notes', 'qc_status', 'dcp_qc_status',
+          'further_action', 'furtherAction',
+          'techSpec', 'tech_spec',
+          'channel_list', 'dcp_tester_user_id', 'dcp_test_datetime'
+        ];
+        enrichedKeys.forEach(k => {
+          if (existing[k] !== undefined && existing[k] !== null) {
+            if (r[k] === undefined || r[k] === null || (Array.isArray(r[k]) && !r[k].length && existing[k].length)) {
+              r[k] = existing[k];
+            }
+          }
+        });
+
         if (!r.artifaxHistory || !r.artifaxHistory.length) {
           if (r.production_package && Array.isArray(r.production_package.artifaxHistory) && r.production_package.artifaxHistory.length) {
             r.artifaxHistory = r.production_package.artifaxHistory;
-          } else if (existing && Array.isArray(existing.artifaxHistory) && existing.artifaxHistory.length) {
+          } else if (Array.isArray(existing.artifaxHistory) && existing.artifaxHistory.length) {
             r.artifaxHistory = existing.artifaxHistory;
           }
         }
+      } else if (coll === 'tasks' && existing) {
+        // If local task was completed or updated more recently, keep local state
+        const localTime = existing.updatedAt || existing.createdAt || 0;
+        const remoteTime = r.updatedAt || r.createdAt || 0;
+        if (localTime > remoteTime && existing.status === 'Completed' && r.status !== 'Completed') {
+          r.status = existing.status;
+          r.completedAt = existing.completedAt;
+          r.completedBy = existing.completedBy;
+        }
+      } else if (coll === 'dcps' && existing) {
+        // If local pre-screening check has testing completed, retain local outcomes
+        if (existing.tested && !r.tested) {
+          r.tested = existing.tested;
+          r.outcome = existing.outcome || r.outcome;
+          r.kdmCplReceived = existing.kdmCplReceived !== undefined ? existing.kdmCplReceived : r.kdmCplReceived;
+          r.playlistMade = existing.playlistMade !== undefined ? existing.playlistMade : r.playlistMade;
+          r.subsAudioSync = existing.subsAudioSync !== undefined ? existing.subsAudioSync : r.subsAudioSync;
+          r.holdingSlidesReady = existing.holdingSlidesReady !== undefined ? existing.holdingSlidesReady : r.holdingSlidesReady;
+          r.issuesNoted = existing.issuesNoted || r.issuesNoted;
+          r.furtherAction = existing.furtherAction || r.furtherAction;
+        }
       }
-      store.write(coll, store.all(coll).filter(existing => existing.id !== r.id).concat(r));
+
+      store.write(coll, store.all(coll).filter(curr => curr.id !== r.id).concat(r));
     });
   }
 

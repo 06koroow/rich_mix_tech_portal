@@ -655,11 +655,20 @@ create table if not exists public.tasks (
   "dueDate" text default '',
   "dueTime" text default '',
   "mediaType" text default '',
+  "linkedFaultId" text default '',
+  "linkedReportId" text default '',
+  "taggedUserIds" jsonb default '[]'::jsonb,
+  "taggedUserNames" jsonb default '[]'::jsonb,
   "completedBy" text default '',
   "completedAt" text default null,
   "createdAt" bigint,
   "updatedAt" bigint
 );
+
+alter table public.tasks add column if not exists "linkedFaultId" text default '';
+alter table public.tasks add column if not exists "linkedReportId" text default '';
+alter table public.tasks add column if not exists "taggedUserIds" jsonb default '[]'::jsonb;
+alter table public.tasks add column if not exists "taggedUserNames" jsonb default '[]'::jsonb;
 
 alter table public.tasks enable row level security;
 drop policy if exists rw_all_tasks on public.tasks;

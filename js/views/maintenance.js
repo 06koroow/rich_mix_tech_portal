@@ -1243,6 +1243,24 @@ RMTP.views.maintenance = function (el, params, query) {
       const quickRecBtn = qSel('[data-quick-receive="' + r.id + '"]');
       if (quickRecBtn) quickRecBtn.addEventListener('click', () => setStatus(r, 'Resolved'));
 
+      const dispatchJobBtn = qSel('[data-dispatch-job="' + r.id + '"]');
+      if (dispatchJobBtn) {
+        dispatchJobBtn.addEventListener('click', () => {
+          if (RMTP.tasks && RMTP.tasks.openModal) {
+            RMTP.tasks.openModal(null, {
+              title: 'Fix: ' + (r.equipment || r.description || 'Equipment Fault'),
+              category: 'Maintenance',
+              space: r.space || 'Screen One',
+              priority: r.priority || 'Medium',
+              linkedFaultId: r.id,
+              description: r.description || ''
+            }, () => {
+              renderView();
+            });
+          }
+        });
+      }
+
       const imgBtn = qSel('[data-img="' + r.id + '"]');
       if (imgBtn) imgBtn.addEventListener('click', () => files.open(r.image));
 
@@ -1286,7 +1304,20 @@ RMTP.views.maintenance = function (el, params, query) {
       return ids.includes(r.id);
     });
 
-    const shiftBadgesHtml = linkedShifts.length ? (
+    // Find linked tasks from Jobs List
+    const linkedJobs = (RMTP.tasks && RMTP.tasks.forMaintenance) ? RMTP.tasks.forMaintenance(r.id) : [];
+    const jobBadgeHtml = linkedJobs.length ? (
+      '<a href="#/tasks?event=' + encodeURIComponent(r.equipment || '') + '" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-purple-500/15 text-purple-300 border border-purple-500/30 hover:bg-purple-500/25 transition-colors" title="View linked task in Jobs List">' +
+        ui.icon('list', 'w-3.5 h-3.5 text-purple-400') +
+        '<span>Job: ' + ui.esc(linkedJobs[0].status) + '</span>' +
+      '</a>'
+    ) : (
+      '<button type="button" data-dispatch-job="' + r.id + '" class="btn btn-secondary !py-1 !px-2.5 text-xs flex items-center gap-1.5 text-accent hover:bg-accent/10" title="Dispatch this fault to the Jobs List">' +
+        ui.icon('list', 'w-3.5 h-3.5') + '<span>Dispatch as Job</span>' +
+      '</button>'
+    );
+
+    const shiftBadgesHtml = (linkedShifts.length ? (
       '<div class="mt-2.5 pt-2 border-t border-line/50 flex flex-wrap gap-2 items-center">' +
         linkedShifts.map((s) => {
           const leadUser = s.technicians && s.technicians[0] && s.technicians[0].userId ? store.find('users', s.technicians[0].userId) : null;
@@ -1307,14 +1338,16 @@ RMTP.views.maintenance = function (el, params, query) {
         '<button type="button" data-add-shift="' + r.id + '" class="text-[11px] text-accent hover:underline flex items-center gap-1 ml-1" title="Add to another shift">' +
           ui.icon('plus', 'w-3 h-3') + '<span>Add to another shift</span>' +
         '</button>' +
+        jobBadgeHtml +
       '</div>'
     ) : (
-      '<div class="mt-2 pt-2 border-t border-line/40 flex items-center gap-2">' +
+      '<div class="mt-2 pt-2 border-t border-line/40 flex items-center gap-2 flex-wrap">' +
         '<button type="button" data-add-shift="' + r.id + '" class="btn btn-secondary !py-1 !px-2.5 text-xs flex items-center gap-1.5 text-accent hover:bg-accent/10">' +
           ui.icon('clock', 'w-3.5 h-3.5 text-accent') + '<span>Add to Maintenance Shift</span>' +
         '</button>' +
+        jobBadgeHtml +
       '</div>'
-    );
+    ));
 
     const consumableChecklistHtml = (isConsumables && Array.isArray(r.consumableItems) && r.consumableItems.length) ? (
       '<div class="mt-2.5 p-2.5 rounded-lg bg-purple-500/10 border border-purple-500/25 grid gap-1.5 text-xs">' +

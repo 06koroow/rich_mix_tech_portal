@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan for the cinema Digital Cinema Package (DCP) Tracker with top-level navigation, auto-sync from cinema events, manual package entry, and comprehensive QC/KDM modal inspection.",
-  "updatedAt":  "2026-10-23T09:37:37.751990147Z",
+  "summary":  "Comprehensive systems architecture and data flow optimization plan. Maps all 10 venue operational processes, audits duplication and redundant data entry across Advancing, Rota, Cinema QC, Maintenance, Inventory, and Jobs, and establishes automated two-way synchronization between Artifax, Supabase, and local state with user-confirmed change cascades.",
+  "updatedAt":  "2026-11-02T09:49:29.796307469Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

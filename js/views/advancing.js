@@ -2434,11 +2434,23 @@ RMTP.views.advancing = function (el, params, query) {
               (linkedDcp.furtherAction ? (
                 '<div class="text-[11px] text-amber-300 bg-amber-500/10 p-2 rounded border border-amber-500/30 flex items-center justify-between">' +
                   '<div><strong>Follow-up Action:</strong> ' + ui.esc(linkedDcp.furtherAction) + '</div>' +
-                  (linkedDcp.linkedTaskId ? '<a href="#/maintenance" class="btn btn-ghost !py-0.5 !px-1.5 text-[10px] text-accent">View Task \u2192</a>' : '') +
+                  (linkedDcp.linkedTaskId ? '<a href="#/tasks" class="btn btn-ghost !py-0.5 !px-1.5 text-[10px] text-accent">View Job (' + ui.esc(linkedDcp.linkedTaskId) + ') \u2192</a>' : '') +
                 '</div>'
               ) : '') +
+              '<div class="flex items-center gap-2 pt-2 border-t border-line/40">' +
+                '<a href="#/dcp?id=' + encodeURIComponent(linkedDcp.id) + '" class="btn btn-ghost !py-1 !px-2.5 text-xs text-accent border border-accent/20 bg-accent/5 hover:bg-accent/10 flex items-center gap-1.5 font-medium">' +
+                  ui.icon('film', 'w-3.5 h-3.5') + '<span>Open Pre-Screening Console</span>' +
+                '</a>' +
+              '</div>' +
             '</div>'
-          ) : '') +
+          ) : (
+            '<div class="p-3 rounded-lg bg-panel border border-dashed border-line text-xs flex items-center justify-between gap-3 mb-3">' +
+              '<span class="text-muted">No pre-screening verification logged yet for this cinema screening.</span>' +
+              '<a href="#/dcp?id=dcp-' + encodeURIComponent(ev.id) + '" class="btn btn-secondary !py-1 !px-2.5 text-xs text-accent flex items-center gap-1.5 shrink-0">' +
+                ui.icon('film', 'w-3.5 h-3.5') + '<span>Open Pre-Screening Tracker</span>' +
+              '</a>' +
+            '</div>'
+          )) +
           '<div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-line/50 text-xs">' +
             '<div class="p-2.5 rounded bg-panel border border-line/60 flex items-center justify-between">' +
               '<span class="text-muted">Testing Engineer:</span>' +
@@ -4505,6 +4517,24 @@ RMTP.views.advancing = function (el, params, query) {
           fld('Crew / shift', '<input id="r-crew" class="field" value="' + ui.esc(r.crew || '') + '" placeholder="e.g. Show, Get-out, Night Shift" />') +
           fld('How did the shift go? (Summary)', '<textarea id="r-summary" class="field" rows="3" placeholder="Overview of the event / night\u2026">' + ui.esc(r.summary || '') + '</textarea>') +
           fld('Issues / equipment faults', '<textarea id="r-issues" class="field" rows="2" placeholder="Anything that broke, glitches, or equipment needing repair\u2026">' + ui.esc(r.issues || '') + '</textarea>') +
+          '<div class="p-3 rounded-lg bg-panel2/60 border border-line grid gap-2">' +
+            '<label class="flex items-center gap-2 text-xs font-semibold cursor-pointer text-amber-400">' +
+              '<input type="checkbox" id="r-auto-dispatch-fault" class="w-4 h-4 accent-amber-500" checked />' +
+              '<span>Auto-log Equipment Fault in Maintenance &amp; dispatch to Jobs queue</span>' +
+            '</label>' +
+            '<div id="r-fault-options" class="grid grid-cols-2 gap-2 pt-1 border-t border-line/40 text-xs">' +
+              '<div><label class="text-[10px] uppercase font-bold text-muted block mb-0.5">Category</label>' +
+                '<select id="r-fault-cat" class="field !py-1 text-xs">' +
+                  ['Sound', 'Lighting', 'AV', 'Cinema', 'Stage', 'Building'].map(c => '<option value="' + c + '">' + c + '</option>').join('') +
+                '</select>' +
+              '</div>' +
+              '<div><label class="text-[10px] uppercase font-bold text-muted block mb-0.5">Priority</label>' +
+                '<select id="r-fault-prio" class="field !py-1 text-xs font-semibold">' +
+                  ['Medium', 'High', 'Urgent', 'Low'].map(p => '<option value="' + p + '">' + p + '</option>').join('') +
+                '</select>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
           maintTasksSection +
           fld('Handover / follow-up actions', '<textarea id="r-follow" class="field" rows="2" placeholder="Tasks or notes for the next shift or Technical Management\u2026">' + ui.esc(r.followUp || '') + '</textarea>') +
           '<div class="panel bg-panel2/50 p-3 rounded-lg border border-line">' +
@@ -4542,6 +4572,7 @@ RMTP.views.advancing = function (el, params, query) {
       const issues = m.root.querySelector('#r-issues').value.trim();
       const followUp = m.root.querySelector('#r-follow').value.trim();
       const shouldEmail = m.root.querySelector('#r-auto-email') ? m.root.querySelector('#r-auto-email').checked : true;
+      const autoDispatchFault = m.root.querySelector('#r-auto-dispatch-fault') ? m.root.querySelector('#r-auto-dispatch-fault').checked : false;
 
       if (!summary && !issues && !followUp) { ui.toast('Add at least a summary', 'danger'); return; }
       const meNow = auth.current();
@@ -4559,6 +4590,62 @@ RMTP.views.advancing = function (el, params, query) {
         ? Object.assign({}, r, base, { updatedAt: now, updatedBy: auth.displayName(meNow) })
         : Object.assign(base, { authorId: meNow ? meNow.id : null, author: auth.displayName(meNow) || 'Technician', submittedAt: now, updatedAt: now });
       store.upsert('reports', record);
+
+      // Automatic Fault Logging & Operational Job Dispatch from End-of-Shift report
+      if (autoDispatchFault && issues) {
+        const faultCat = (m.root.querySelector('#r-fault-cat') ? m.root.querySelector('#r-fault-cat').value : (isScreenSpace(ev.space) ? 'Cinema' : 'Sound')) || 'Sound';
+        const faultPrio = (m.root.querySelector('#r-fault-prio') ? m.root.querySelector('#r-fault-prio').value : 'Medium') || 'Medium';
+        const faultId = store.uid('maint');
+        const taskId = store.uid('task');
+
+        const faultRecord = {
+          id: faultId,
+          equipment: (ev.space ? (Array.isArray(ev.space) ? ev.space[0] : ev.space) + ': ' : '') + issues.slice(0, 50),
+          category: faultCat,
+          priority: faultPrio,
+          status: 'Open',
+          description: 'Reported on ' + (ev.date || 'shift') + ' by ' + (auth.displayName(meNow) || 'Tech') + ' during ' + (ev.name || 'shift') + ':\n' + issues,
+          reportedBy: auth.displayName(meNow) || 'Technician',
+          reportedAt: now,
+          space: Array.isArray(ev.space) ? ev.space[0] : (ev.space || 'The Stage'),
+          eventId: ev.id,
+          jobId: taskId,
+          taskType: 'fault'
+        };
+        store.upsert('maintenance', faultRecord);
+
+        const taskRecord = {
+          id: taskId,
+          title: 'Repair: ' + issues.slice(0, 60),
+          description: 'Fault flagged in shift report for ' + (ev.name || 'Event') + ' (' + (Array.isArray(ev.space) ? ev.space[0] : (ev.space || 'Venue')) + '):\n\n' + issues,
+          category: (faultCat === 'Cinema' ? 'Cinema & DCP' : 'Maintenance'),
+          priority: faultPrio,
+          status: 'Pending',
+          space: Array.isArray(ev.space) ? ev.space[0] : (ev.space || 'Venue'),
+          linkedEventId: ev.id,
+          filmTitle: ev.name || '',
+          linkedFaultId: faultId,
+          dueDate: ev.date || '',
+          reportedBy: auth.displayName(meNow) || 'Technician',
+          taggedUserIds: meNow ? [meNow.id] : [],
+          taggedUserNames: meNow ? [auth.displayName(meNow)] : [],
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        };
+        store.upsert('tasks', taskRecord);
+
+        // Link fault back to the event
+        const freshEv = store.find('advancing', ev.id);
+        if (freshEv) {
+          const lmf = Array.isArray(freshEv.linked_maintenance_ids) ? freshEv.linked_maintenance_ids.slice() : [];
+          if (!lmf.includes(faultId)) {
+            lmf.push(faultId);
+            freshEv.linked_maintenance_ids = lmf;
+            freshEv.linkedMaintenanceIds = lmf;
+            store.upsert('advancing', freshEv);
+          }
+        }
+      }
 
       // Persist any updates to tagged maintenance tickets
       linkedFaults.forEach((f) => {
@@ -5363,6 +5450,23 @@ RMTP.views.advancing = function (el, params, query) {
               '</button>' +
 
               '<div id="sec-5-content" class="hidden p-4 pt-3 border-t border-line/60 bg-panel2/30 grid gap-4">' +
+                /* Linked Event Jobs & Tasks */
+                '<div id="section-event-jobs" class="p-4 rounded-xl bg-panel border border-accent/30 grid gap-3 shadow-xs">' +
+                  '<div class="flex items-center justify-between pb-2 border-b border-line/60 flex-wrap gap-2">' +
+                    '<div class="flex items-center gap-1.5">' +
+                      ui.icon('list', 'w-4 h-4 text-accent') +
+                      '<span class="text-xs font-semibold text-accent">Event Jobs &amp; Operational Tasks</span>' +
+                    '</div>' +
+                    '<div class="flex items-center gap-2">' +
+                      '<a href="#/tasks?event=' + encodeURIComponent(ev.name || '') + '" class="text-[11px] text-accent hover:underline flex items-center gap-1 font-semibold">Open in Jobs List \u2192</a>' +
+                      '<button type="button" id="btn-add-event-job" class="btn btn-primary !py-1 !px-2.5 text-xs font-semibold flex items-center gap-1">' +
+                        ui.icon('plus', 'w-3.5 h-3.5') + '<span>Add Job</span>' +
+                      '</button>' +
+                    '</div>' +
+                  '</div>' +
+                  '<div id="event-jobs-list-container" class="grid gap-2 max-h-56 overflow-y-auto pr-1"></div>' +
+                '</div>' +
+
                 /* Linked Maintenance Tasks */
                 '<div id="section-maintenance-advancing" class="' + (ev.category === 'Maintenance' || ev.category === 'Maintenance Shift' || linkedMaintIds.length ? '' : 'hidden') + ' p-4 rounded-xl bg-panel border border-warning/30 grid gap-3 shadow-xs">' +
                   '<div class="flex items-center justify-between pb-2 border-b border-line/60">' +
@@ -5473,6 +5577,8 @@ RMTP.views.advancing = function (el, params, query) {
       const sec5Pill = m.root.querySelector('#sec-5-pill');
       if (sec5Pill) {
         const parts = [];
+        const evJobs = (RMTP.tasks && RMTP.tasks.forEvent) ? RMTP.tasks.forEvent(ev.id) : [];
+        if (evJobs.length) parts.push(evJobs.length + ' Job' + (evJobs.length === 1 ? '' : 's'));
         if (linkedMaintIds.length) parts.push(linkedMaintIds.length + ' Fault' + (linkedMaintIds.length === 1 ? '' : 's'));
         const emailVal = m.root.querySelector('#e-email-recipients')?.value.trim();
         if (emailVal) parts.push('Email Override');
@@ -7757,6 +7863,81 @@ RMTP.views.advancing = function (el, params, query) {
       if (cb) cb.addEventListener('change', updateProductionSpecialsIndicator);
     });
 
+    function renderEventJobsList() {
+      const container = m.root.querySelector('#event-jobs-list-container');
+      if (!container) return;
+      const eventTasks = (RMTP.tasks && RMTP.tasks.forEvent) ? RMTP.tasks.forEvent(ev.id) : [];
+      if (eventTasks.length === 0) {
+        container.innerHTML = '<div class="p-3 text-center text-xs text-muted italic rounded-lg border border-dashed border-line">No jobs logged for this event. Click &ldquo;Add Job&rdquo; to assign preparation or operational tasks.</div>';
+        return;
+      }
+      container.innerHTML = eventTasks.map(t => {
+        const isDone = t.status === 'Completed';
+        return (
+          '<div class="p-2.5 rounded-lg border border-line bg-panel2/50 flex items-center justify-between gap-2.5 text-xs ' + (isDone ? 'opacity-60 bg-panel2/20' : '') + '">' +
+            '<div class="flex items-center gap-2.5 min-w-0">' +
+              '<input type="checkbox" data-ev-toggle-job="' + t.id + '" class="w-4 h-4 rounded accent-emerald-500 cursor-pointer shrink-0" ' + (isDone ? 'checked' : '') + ' />' +
+              '<div class="min-w-0">' +
+                '<div class="font-bold text-ink truncate ' + (isDone ? 'line-through text-muted' : '') + '">' + ui.esc(t.title) + '</div>' +
+                '<div class="text-[11px] text-muted flex items-center gap-2 mt-0.5">' +
+                  '<span>' + (t.assignedTechName ? ui.esc(t.assignedTechName) : '<span class="italic">Unassigned</span>') + '</span>' +
+                  (t.priority === 'Urgent' ? '<span class="text-rose-400 font-bold">\u00b7 Urgent</span>' : '') +
+                  (t.dueDate ? ('<span>\u00b7 Due ' + t.dueDate + '</span>') : '') +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+            '<button type="button" data-ev-edit-job="' + t.id + '" class="text-xs text-accent hover:underline shrink-0 font-semibold">Edit \u2192</button>' +
+          '</div>'
+        );
+      }).join('');
+
+      container.querySelectorAll('[data-ev-toggle-job]').forEach(chk => {
+        chk.addEventListener('change', () => {
+          const tid = chk.getAttribute('data-ev-toggle-job');
+          RMTP.tasks.toggleCompleted(tid, () => {
+            renderEventJobsList();
+            updateSectionBannerPills();
+          });
+        });
+      });
+
+      container.querySelectorAll('[data-ev-edit-job]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tid = btn.getAttribute('data-ev-edit-job');
+          const task = store.find('tasks', tid);
+          if (task && RMTP.tasks && RMTP.tasks.openModal) {
+            RMTP.tasks.openModal(task, null, () => {
+              renderEventJobsList();
+              updateSectionBannerPills();
+            });
+          }
+        });
+      });
+    }
+
+    renderEventJobsList();
+
+    const addEventJobBtn = m.root.querySelector('#btn-add-event-job');
+    if (addEventJobBtn) {
+      addEventJobBtn.addEventListener('click', () => {
+        const curSpace = (m.root.querySelector('#e-space') ? m.root.querySelector('#e-space').value : (spaceDrafts[activeSpaceIndex]?.space || ev.space)) || 'Screen One';
+        const curDate = (m.root.querySelector('#e-date') ? m.root.querySelector('#e-date').value : ev.date) || '';
+        const curName = (m.root.querySelector('#e-name') ? m.root.querySelector('#e-name').value : ev.name) || 'Event';
+        if (RMTP.tasks && RMTP.tasks.openModal) {
+          RMTP.tasks.openModal(null, {
+            linkedEventId: ev.id,
+            filmTitle: curName,
+            space: curSpace,
+            dueDate: curDate,
+            category: isScreenSpace(curSpace) ? 'Cinema & DCP' : 'General'
+          }, () => {
+            renderEventJobsList();
+            updateSectionBannerPills();
+          });
+        }
+      });
+    }
+
     m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
 
     function scrapeCurrentFormToDraft(idx) {
@@ -8154,6 +8335,104 @@ RMTP.views.advancing = function (el, params, query) {
       updateFooterSaveButtons();
     }
 
+    async function checkAndPromptScheduleImpact(draft) {
+      if (!draft || !draft.rawEvent || !draft.rawEvent.id) return;
+      const oldEv = draft.rawEvent;
+      const oldDate = oldEv.date || '';
+      const oldStart = oldEv.startTime || '';
+      const oldFinish = oldEv.finishTime || '';
+      const oldSpace = Array.isArray(oldEv.space) ? oldEv.space[0] : (oldEv.space || '');
+      const newDate = draft.date || '';
+      const newStart = draft.startTime || '';
+      const newFinish = draft.finishTime || '';
+      const newSpace = draft.space || '';
+
+      const dateChanged = oldDate && newDate && oldDate !== newDate;
+      const timeChanged = (oldStart && newStart && oldStart !== newStart) || (oldFinish && newFinish && oldFinish !== newFinish);
+      const spaceChanged = oldSpace && newSpace && oldSpace !== newSpace;
+
+      if (!dateChanged && !timeChanged && !spaceChanged) return;
+
+      const linkedBookings = (store.all('bookings') || []).filter(b => b.eventId === draft.id && b.status !== 'cancelled');
+      const linkedTasks = (store.all('tasks') || []).filter(t => t.linkedEventId === draft.id && t.status !== 'Completed');
+      const linkedDcp = (store.all('dcps') || []).find(d => d.eventId === draft.id);
+
+      const affectedItems = [];
+      linkedBookings.forEach(b => {
+        affectedItems.push({
+          id: b.id,
+          type: 'shift',
+          label: (b.role || 'Tech') + ': ' + (b.userName || 'Unassigned'),
+          detail: (b.space || 'Venue') + ' \u00b7 ' + (b.startTime || '17:00') + '\u2013' + (b.finishTime || '23:30') + ' (' + (b.date || 'date') + ') \u2794 Move to ' + newDate + ' ' + (newStart || b.startTime) + '\u2013' + (newFinish || b.finishTime) + ' (' + newSpace + ')',
+          data: { booking: b, newDate, newStart, newFinish, newSpace }
+        });
+      });
+      linkedTasks.forEach(t => {
+        affectedItems.push({
+          id: t.id,
+          type: 'task',
+          label: t.title,
+          detail: 'Due ' + (t.dueDate || 'date') + ' in ' + (t.space || 'space') + ' \u2794 Move to ' + newDate + ' in ' + newSpace,
+          data: { task: t, newDate, newSpace }
+        });
+      });
+      if (linkedDcp) {
+        affectedItems.push({
+          id: linkedDcp.id,
+          type: 'screening',
+          label: 'Cinema QC: ' + (linkedDcp.filmTitle || linkedDcp.eventName || 'Screening'),
+          detail: linkedDcp.screen + ' on ' + (linkedDcp.eventDate || 'date') + ' \u2794 Move to ' + newSpace + ' on ' + newDate,
+          data: { dcp: linkedDcp, newDate, newStart, newFinish, newSpace }
+        });
+      }
+
+      if (affectedItems.length === 0) return;
+
+      const changes = [];
+      if (dateChanged) changes.push('Date: ' + oldDate + ' \u2794 ' + newDate);
+      if (timeChanged) changes.push('Times: ' + oldStart + '\u2013' + oldFinish + ' \u2794 ' + newStart + '\u2013' + newFinish);
+      if (spaceChanged) changes.push('Space: ' + oldSpace + ' \u2794 ' + newSpace);
+
+      if (RMTP.promptChangeImpact) {
+        const res = await RMTP.promptChangeImpact({
+          title: 'Update Linked Shifts, Jobs & Cinema QC?',
+          upstreamChange: 'Schedule updated for "' + draft.name + '": ' + changes.join('; '),
+          affectedItems: affectedItems
+        });
+
+        if (res.confirmed && res.selectedItems && res.selectedItems.length > 0) {
+          res.selectedItems.forEach(item => {
+            if (item.type === 'shift' && item.data && item.data.booking) {
+              const b = item.data.booking;
+              b.date = item.data.newDate || b.date;
+              if (item.data.newStart) b.startTime = item.data.newStart;
+              if (item.data.newFinish) b.finishTime = item.data.newFinish;
+              b.space = item.data.newSpace || b.space;
+              b.updatedAt = new Date().toISOString();
+              store.upsert('bookings', b);
+            } else if (item.type === 'task' && item.data && item.data.task) {
+              const t = item.data.task;
+              t.dueDate = item.data.newDate || t.dueDate;
+              t.space = item.data.newSpace || t.space;
+              t.updatedAt = Date.now();
+              store.upsert('tasks', t);
+            } else if (item.type === 'screening' && item.data && item.data.dcp) {
+              const d = item.data.dcp;
+              d.eventDate = item.data.newDate || d.eventDate;
+              d.eventStartTime = item.data.newStart || d.eventStartTime;
+              d.eventFinishTime = item.data.newFinish || d.eventFinishTime;
+              if (item.data.newSpace && (item.data.newSpace.includes('Screen') || item.data.newSpace.includes('Cinema'))) {
+                d.screen = item.data.newSpace;
+              }
+              d.updatedAt = new Date().toISOString();
+              store.upsert('dcps', d);
+            }
+          });
+          ui.toast('Updated ' + res.selectedItems.length + ' linked record(s) to match new schedule', 'ok');
+        }
+      }
+    }
+
     async function saveCurrentSpace() {
       scrapeCurrentFormToDraft(activeSpaceIndex);
       syncSharedFieldsAcrossDrafts(spaceDrafts[activeSpaceIndex]);
@@ -8169,6 +8448,8 @@ RMTP.views.advancing = function (el, params, query) {
         m.root.querySelector('#e-space')?.focus();
         return;
       }
+
+      await checkAndPromptScheduleImpact(draft);
 
       // Check equipment conflict
       for (const b of draft.equipmentBookings || []) {
@@ -8265,6 +8546,7 @@ RMTP.views.advancing = function (el, params, query) {
 
       for (let i = 0; i < spaceDrafts.length; i++) {
         const draft = spaceDrafts[i];
+        await checkAndPromptScheduleImpact(draft);
         if (sharedGroupId) draft.groupId = sharedGroupId;
         const { record, processedScheduleItems } = buildRecordFromDraft(draft);
 

@@ -40,13 +40,23 @@
   function renderNavigation() {
     const items = getVisibleNav();
     const currentView = RMTP._currentView || (RMTP.router && RMTP.router.parse ? RMTP.router.parse().view : RMTP.HOME);
+    const me = auth.current();
 
-    const navHtml = items.map((n) =>
-      '<a href="#/' + n.id + '" data-nav="' + n.id + '" ' +
-        (n.id === currentView ? 'aria-current="page" ' : '') +
-        'class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-muted hover:text-ink">' +
-        ui.icon(n.icon, 'w-5 h-5') + '<span>' + n.label + '</span></a>'
-    ).join('');
+    const navHtml = items.map((n) => {
+      let badgeHtml = '';
+      if (n.id === 'tasks' && me && RMTP.tasks && typeof RMTP.tasks.forUser === 'function') {
+        const myOpenCount = RMTP.tasks.forUser(me).filter(t => t.status !== 'Completed').length;
+        if (myOpenCount > 0) {
+          badgeHtml = '<span class="ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-accent text-accent-ink">' + myOpenCount + '</span>';
+        }
+      }
+      return (
+        '<a href="#/' + n.id + '" data-nav="' + n.id + '" ' +
+          (n.id === currentView ? 'aria-current="page" ' : '') +
+          'class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-muted hover:text-ink">' +
+          ui.icon(n.icon, 'w-5 h-5') + '<span class="flex-1">' + n.label + '</span>' + badgeHtml + '</a>'
+      );
+    }).join('');
 
     const desktopNav = document.getElementById('desktop-side-nav');
     if (desktopNav) desktopNav.innerHTML = navHtml;

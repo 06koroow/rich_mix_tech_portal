@@ -135,6 +135,50 @@ RMTP.views.dashboard = function (el) {
     const pending = me.admin ? RMTP.auth.pendingUsers() : [];
     const sections = [];
 
+    // Active jobs assigned or tagged to the current technician
+    const myJobs = (RMTP.tasks && RMTP.tasks.forUser)
+      ? RMTP.tasks.forUser(me).filter((t) => t.status !== 'Completed')
+      : [];
+
+    if (myJobs.length) {
+      sections.push('<div>' +
+        '<div class="flex items-center justify-between gap-2 mb-2.5">' +
+          '<div class="flex items-center gap-2">' +
+            ui.icon('list', 'w-4 h-4 text-accent') +
+            '<p class="eyebrow !text-ink font-semibold">My Assigned &amp; Tagged Jobs \u00b7 ' + myJobs.length + '</p>' +
+          '</div>' +
+          '<a href="#/tasks?assignee=me" class="text-xs text-accent hover:underline flex items-center gap-1 font-semibold">View All in Jobs List \u2192</a>' +
+        '</div>' +
+        '<div class="grid gap-2">' +
+          myJobs.slice(0, 5).map((t) => {
+            const prioCol = t.priority === 'Urgent' ? 'bg-danger/20 text-danger border-danger/40' : (t.priority === 'High' ? 'bg-warning/20 text-warning border-warning/40' : 'bg-muted/20 text-muted border-line');
+            return (
+              '<div class="p-3 rounded-xl bg-panel2/60 border border-line flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-accent/40 transition-colors">' +
+                '<div class="min-w-0 flex-1">' +
+                  '<div class="flex items-center gap-2 flex-wrap mb-1">' +
+                    '<span class="font-bold text-sm text-ink">' + ui.esc(t.title) + '</span>' +
+                    '<span class="px-1.5 py-0.2 rounded text-[10px] font-semibold border ' + prioCol + '">' + ui.esc(t.priority || 'Medium') + '</span>' +
+                    '<span class="px-1.5 py-0.2 rounded text-[10px] font-medium bg-panel border border-line text-muted">' + ui.esc(t.category) + '</span>' +
+                  '</div>' +
+                  '<div class="flex items-center gap-2 text-xs text-muted flex-wrap">' +
+                    '<span>' + ui.esc(t.space || 'Venue') + '</span>' +
+                    (t.dueDate ? ('<span>\u00b7 Target: <strong class="text-ink">' + t.dueDate + (t.dueTime ? (' ' + t.dueTime) : '') + '</strong></span>') : '') +
+                    (t.filmTitle ? ('<span>\u00b7 Context: <strong class="text-accent">' + ui.esc(t.filmTitle) + '</strong></span>') : '') +
+                  '</div>' +
+                '</div>' +
+                '<div class="flex items-center gap-2 shrink-0 self-end sm:self-center">' +
+                  '<button type="button" data-dash-complete-job="' + t.id + '" class="btn btn-secondary !py-1 !px-2.5 text-xs text-emerald-400 hover:bg-emerald-500/10 flex items-center gap-1 font-semibold">' +
+                    ui.icon('check', 'w-3.5 h-3.5 text-emerald-400') + '<span>Mark Done</span>' +
+                  '</button>' +
+                  '<a href="#/tasks?id=' + encodeURIComponent(t.id) + '" class="btn btn-ghost !py-1 !px-2 text-xs">Details \u2192</a>' +
+                '</div>' +
+              '</div>'
+            );
+          }).join('') +
+        '</div>' +
+      '</div>');
+    }
+
     if (pending.length) {
       sections.push('<div>' +
         '<div class="flex items-center gap-2 mb-2">' + ui.icon('users', 'w-4 h-4 text-accent') +
@@ -538,6 +582,19 @@ RMTP.views.dashboard = function (el) {
         RMTP.maintenance.openAddToShiftModal([id]);
       } else {
         location.hash = '#/maintenance';
+      }
+    });
+  });
+
+  // Complete job quick action from dashboard
+  el.querySelectorAll('[data-dash-complete-job]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const tid = btn.getAttribute('data-dash-complete-job');
+      if (RMTP.tasks && RMTP.tasks.toggleCompleted) {
+        RMTP.tasks.toggleCompleted(tid, () => {
+          ui.toast('Job marked as completed', 'ok');
+          RMTP.router.render();
+        });
       }
     });
   });

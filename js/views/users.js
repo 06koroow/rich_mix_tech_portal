@@ -223,11 +223,34 @@ RMTP.views.users = function (el) {
               '</div>' +
             '</div>' +
           '</div>' +
+
+          // Assigned & Tagged Jobs Panel
+          '<div class="panel p-3 bg-panel2/50 border border-line rounded-xl space-y-2">' +
+            '<div class="flex items-center justify-between">' +
+              '<div class="eyebrow text-accent flex items-center gap-1.5">' +
+                ui.icon('list', 'w-3.5 h-3.5') + '<span>Assigned &amp; Tagged Jobs (' + ((RMTP.tasks && RMTP.tasks.forUser) ? RMTP.tasks.forUser(u).length : 0) + ')</span>' +
+              '</div>' +
+              '<a href="#/tasks?assignee=' + encodeURIComponent(u.id) + '" class="text-xs text-accent hover:underline font-semibold" data-view-user-jobs>View in Jobs List \u2192</a>' +
+            '</div>' +
+            '<div class="space-y-1.5 max-h-40 overflow-y-auto pr-1">' +
+              ((RMTP.tasks && RMTP.tasks.forUser && RMTP.tasks.forUser(u).length > 0)
+                ? RMTP.tasks.forUser(u).map(t => {
+                    const isDone = t.status === 'Completed';
+                    return '<div class="p-2 rounded bg-panel border border-line flex items-center justify-between text-xs gap-2 ' + (isDone ? 'opacity-60' : '') + '">' +
+                      '<span class="font-medium truncate text-ink ' + (isDone ? 'line-through text-muted' : '') + '">' + ui.esc(t.title) + '</span>' +
+                      '<span class="text-[10px] font-mono shrink-0 ' + (isDone ? 'text-ok font-bold' : 'text-muted') + '">' + (t.status || 'Pending') + '</span>' +
+                    '</div>';
+                  }).join('')
+                : '<div class="text-xs text-muted italic p-2 text-center">No active jobs assigned or tagged.</div>'
+              ) +
+            '</div>' +
+          '</div>' +
         '</div>',
       footer:
         '<button type="button" class="btn btn-ghost text-xs ml-auto !px-4" data-done>Close</button>'
     });
     m.root.querySelector('[data-done]').addEventListener('click', m.close);
+    m.root.querySelector('[data-view-user-jobs]')?.addEventListener('click', m.close);
   }
 
   function render() {

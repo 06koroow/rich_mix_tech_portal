@@ -345,12 +345,29 @@
               '</div>' +
             '</div>' +
 
+            /* Space Jobs & Operational Tasks */
+            '<div class="grid gap-4">' +
+              '<div class="flex items-center justify-between border-b border-line pb-2 flex-wrap gap-2">' +
+                '<h3 class="text-xs font-bold uppercase tracking-wider text-accent flex items-center gap-1.5">' +
+                  ui.icon('list', 'w-4 h-4') + '<span>Active Jobs &amp; Space Prep (' + ((RMTP.tasks && RMTP.tasks.forSpace) ? RMTP.tasks.forSpace(m.activeSpace).length : 0) + ')</span>' +
+                '</h3>' +
+                '<div class="flex items-center gap-2">' +
+                  '<a href="#/tasks?space=' + encodeURIComponent(m.activeSpace) + '" class="text-[11px] text-accent hover:underline font-semibold">View in Jobs List \u2192</a>' +
+                  '<button type="button" id="btn-add-space-job" class="btn btn-primary !py-1 !px-2.5 text-xs font-semibold flex items-center gap-1">' +
+                    ui.icon('plus', 'w-3.5 h-3.5') + '<span>Add Job for ' + ui.esc(m.activeSpace) + '</span>' +
+                  '</button>' +
+                '</div>' +
+              '</div>' +
+              '<div id="space-jobs-container" class="grid gap-2 max-h-56 overflow-y-auto pr-1"></div>' +
+            '</div>' +
+
           '</div>' +
         '</div>' +
       '</div>';
 
     attachEvents();
     renderInventory();
+    renderSpaceJobs();
   }
 
   function attachEvents() {
@@ -693,6 +710,15 @@
         reader.readAsText(file);
       });
     }
+
+    const btnAddSpaceJob = m.root.querySelector('#btn-add-space-job');
+    if (btnAddSpaceJob) {
+      btnAddSpaceJob.addEventListener('click', () => {
+        if (RMTP.tasks && RMTP.tasks.openModal) {
+          RMTP.tasks.openModal(null, { space: m.activeSpace }, () => renderSpaceJobs());
+        }
+      });
+    }
   }
 
   function updateInvSelectionUI() {
@@ -779,6 +805,43 @@
         if (chk.checked) m.invSelected.add(id);
         else m.invSelected.delete(id);
         updateInvSelectionUI();
+      });
+    });
+  }
+
+  function renderSpaceJobs() {
+    const container = m.root.querySelector('#space-jobs-container');
+    if (!container) return;
+    const spaceTasks = (RMTP.tasks && RMTP.tasks.forSpace) ? RMTP.tasks.forSpace(m.activeSpace) : [];
+    if (spaceTasks.length === 0) {
+      container.innerHTML = '<div class="p-3 text-center text-xs text-muted italic rounded-lg border border-dashed border-line">No active jobs for this space. Click &ldquo;Add Job for ' + ui.esc(m.activeSpace) + '&rdquo; to assign room preparation or kit setup.</div>';
+      return;
+    }
+    container.innerHTML = spaceTasks.map(t => {
+      const isDone = t.status === 'Completed';
+      return (
+        '<div class="p-2.5 rounded-lg border border-line bg-panel2/50 flex items-center justify-between gap-2.5 text-xs ' + (isDone ? 'opacity-60 bg-panel2/20' : '') + '">' +
+          '<div class="flex items-center gap-2.5 min-w-0">' +
+            '<input type="checkbox" data-sp-toggle-job="' + t.id + '" class="w-4 h-4 rounded accent-emerald-500 cursor-pointer shrink-0" ' + (isDone ? 'checked' : '') + ' />' +
+            '<div class="min-w-0">' +
+              '<div class="font-bold text-ink truncate ' + (isDone ? 'line-through text-muted' : '') + '">' + ui.esc(t.title) + '</div>' +
+              '<div class="text-[11px] text-muted flex items-center gap-2 mt-0.5">' +
+                '<span>' + (t.assignedTechName ? ui.esc(t.assignedTechName) : '<span class="italic">Unassigned</span>') + '</span>' +
+                (t.dueDate ? ('<span>\u00b7 Due ' + t.dueDate + '</span>') : '') +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          '<a href="#/tasks?id=' + encodeURIComponent(t.id) + '" class="text-xs text-accent hover:underline shrink-0 font-semibold">View \u2192</a>' +
+        '</div>'
+      );
+    }).join('');
+
+    container.querySelectorAll('[data-sp-toggle-job]').forEach(chk => {
+      chk.addEventListener('change', () => {
+        const tid = chk.getAttribute('data-sp-toggle-job');
+        if (RMTP.tasks && RMTP.tasks.toggleCompleted) {
+          RMTP.tasks.toggleCompleted(tid, () => renderSpaceJobs());
+        }
       });
     });
   }

@@ -148,6 +148,8 @@ RMTP.views.dcp = function (el, params, query) {
         status: 'Pending',
         assignedTechId: screening.testedByUserId || '',
         assignedTechName: screening.testedByUserName || '',
+        taggedUserIds: screening.testedByUserId ? [screening.testedByUserId] : [],
+        taggedUserNames: screening.testedByUserName ? [screening.testedByUserName] : [],
         reportedBy: auth.displayName(auth.current()) || 'Cinema Tech',
         source: 'dcp_test',
         linkedScreeningId: screening.id,

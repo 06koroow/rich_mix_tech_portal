@@ -19,28 +19,41 @@ window.RMTP = window.RMTP || {};
   const PRIORITIES = ['Urgent', 'High', 'Medium', 'Low'];
   const STATUSES = ['Pending', 'In Progress', 'Blocked', 'Completed'];
 
+  const SEED_TITLES = [
+    'Past Lives: Verify 5.1 Center Channel Dialogue Anchor',
+    'Anatomy of a Fall: Ingest Updated CPL & Supplemental Subtitle Pack',
+    'Screen 1: Projector Optical Glass & Intake Filter Clean',
+    'The Stage: Radio Mic Frequency Scan & Battery Stock Replenish',
+    'Screen 3: Reset Side Masking Limits for Flat (1.85:1) Aspect',
+    'Screen One — Pre-Screening Follow-up',
+    'Screen Two — Pre-Screening Follow-up',
+    'Screen Three — Pre-Screening Follow-up',
+    'Past Lives — Pre-Screening Follow-up',
+    'Anatomy of a Fall — Pre-Screening Follow-up'
+  ];
+
+  function isPlaceholderTask(t) {
+    if (!t) return false;
+    const id = String(t.id || '');
+    if (id.startsWith('task-seed-') || id.startsWith('seed-') || id.startsWith('task-demo-')) return true;
+    if (t.isSeed === true || t.isPlaceholder === true) return true;
+    const title = (t.title || '').trim();
+    if (SEED_TITLES.some(st => title.toLowerCase() === st.toLowerCase())) return true;
+    if (/verify 5\.1 center channel|ingest updated cpl|optical glass & intake filter|frequency scan & battery stock|side masking limits/i.test(title)) return true;
+    return false;
+  }
+
   /* ---- Cleanup Any Old Placeholder Seed Items ---- */
   function purgePlaceholderSeeds() {
     const tasks = store.all('tasks') || [];
     let purged = false;
     tasks.forEach((t) => {
-      if (t.id && (t.id.startsWith('task-seed-') || t.id.startsWith('seed-'))) {
+      if (isPlaceholderTask(t) || (store.isDeleted && store.isDeleted('tasks', t.id))) {
+        if (store.markDeleted) store.markDeleted('tasks', t.id);
         store.remove('tasks', t.id);
-        purged = true;
-      }
-    });
-
-    // Also check for specific placeholder seed titles if any were saved with custom IDs
-    const seedTitles = [
-      'Past Lives: Verify 5.1 Center Channel Dialogue Anchor',
-      'Anatomy of a Fall: Ingest Updated CPL & Supplemental Subtitle Pack',
-      'Screen 1: Projector Optical Glass & Intake Filter Clean',
-      'The Stage: Radio Mic Frequency Scan & Battery Stock Replenish',
-      'Screen 3: Reset Side Masking Limits for Flat (1.85:1) Aspect'
-    ];
-    (store.all('tasks') || []).forEach((t) => {
-      if (t.title && seedTitles.includes(t.title)) {
-        store.remove('tasks', t.id);
+        if (RMTP.supabase && RMTP.supabase.deleteRow) {
+          RMTP.supabase.deleteRow('tasks', t.id).catch(() => {});
+        }
         purged = true;
       }
     });
@@ -49,6 +62,9 @@ window.RMTP = window.RMTP || {};
       RMTP.syncSb.drain();
     }
   }
+
+  // Scrub immediately on file execution
+  try { purgePlaceholderSeeds(); } catch (e) {}
 
   /* ---- Helper: Check if a user is assigned or tagged in a task ---- */
   function isUserAssignedOrTagged(task, user) {
@@ -197,7 +213,18 @@ window.RMTP = window.RMTP || {};
   RMTP.tasks = {
     all: function () {
       purgePlaceholderSeeds();
-      return store.all('tasks') || [];
+      return (store.all('tasks') || []).filter(t => !isPlaceholderTask(t) && !(store.isDeleted && store.isDeleted('tasks', t.id)));
+    },
+    delete: function (taskId, onDeleted) {
+      if (!taskId) return;
+      if (store.markDeleted) store.markDeleted('tasks', taskId);
+      store.remove('tasks', taskId);
+      if (RMTP.supabase && RMTP.supabase.deleteRow) {
+        RMTP.supabase.deleteRow('tasks', taskId).catch(() => {});
+      }
+      if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
+      if (RMTP.shell && RMTP.shell.renderNavigation) RMTP.shell.renderNavigation();
+      if (typeof onDeleted === 'function') onDeleted();
     },
     forEvent: function (eventId) {
       if (!eventId) return [];
@@ -312,7 +339,7 @@ window.RMTP = window.RMTP || {};
 
     function renderTasksPage() {
       purgePlaceholderSeeds();
-      const allTasks = store.all('tasks') || [];
+      const allTasks = (store.all('tasks') || []).filter(t => !isPlaceholderTask(t) && !(store.isDeleted && store.isDeleted('tasks', t.id)));
       const me = auth.current();
 
       // Filter tasks
@@ -663,7 +690,7 @@ window.RMTP = window.RMTP || {};
               '</span>' +
             '</div>' +
 
-            '<div class="flex items-center gap-1 shrink-0">' +
+            '<div class="flex items-center gap-1 shrink-0" onclick="event.stopPropagation()">' +
               (!t.assignedTechId && me ? (
                 '<button type="button" data-claim-task="' + t.id + '" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-panel border border-line text-accent hover:border-accent transition" title="Assign this task to yourself">' +
                   'Claim' +
@@ -679,6 +706,9 @@ window.RMTP = window.RMTP || {};
                   '\u2713 Finished' +
                 '</button>'
               )) +
+              '<button type="button" data-delete-task="' + t.id + '" class="p-1 rounded text-muted hover:text-danger hover:bg-danger/10 transition" title="Delete job">' +
+                ui.icon('trash', 'w-3.5 h-3.5') +
+              '</button>' +
             '</div>' +
           '</div>' +
         '</div>'
@@ -763,9 +793,14 @@ window.RMTP = window.RMTP || {};
                       '<td class="p-3 text-[11px]">' + linkedBadge + '</td>' +
 
                       '<td class="p-3 text-right" onclick="event.stopPropagation()">' +
-                        '<button type="button" data-edit-task="' + t.id + '" class="btn btn-ghost text-xs !py-1 !px-2 text-accent" title="Edit details">' +
-                          ui.icon('edit', 'w-3.5 h-3.5') +
-                        '</button>' +
+                        '<div class="flex items-center justify-end gap-1">' +
+                          '<button type="button" data-edit-task="' + t.id + '" class="btn btn-ghost text-xs !py-1 !px-2 text-accent" title="Edit details">' +
+                            ui.icon('edit', 'w-3.5 h-3.5') +
+                          '</button>' +
+                          '<button type="button" data-delete-task="' + t.id + '" class="btn btn-ghost text-xs !py-1 !px-2 text-muted hover:text-danger hover:bg-danger/10" title="Delete job">' +
+                            ui.icon('trash', 'w-3.5 h-3.5') +
+                          '</button>' +
+                        '</div>' +
                       '</td>' +
                     '</tr>'
                   );
@@ -934,6 +969,27 @@ window.RMTP = window.RMTP || {};
           RMTP.tasks.toggleCompleted(tid, () => {
             renderTasksPage();
           });
+        });
+      });
+
+      // Delete task buttons (direct from card or list row)
+      el.querySelectorAll('[data-delete-task]').forEach((btn) => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const tid = btn.getAttribute('data-delete-task');
+          const task = store.find('tasks', tid);
+          const taskTitle = task ? (task.title || 'this job') : 'this job';
+          const ok = await ui.confirm('Are you sure you want to delete "' + taskTitle + '"?', {
+            title: 'Delete Job',
+            danger: true,
+            confirmLabel: 'Delete'
+          });
+          if (ok) {
+            RMTP.tasks.delete(tid, () => {
+              ui.toast('Job deleted', 'info');
+              renderTasksPage();
+            });
+          }
         });
       });
 
@@ -1277,12 +1333,11 @@ window.RMTP = window.RMTP || {};
           confirmLabel: 'Delete'
         });
         if (ok) {
-          store.remove('tasks', task.id);
-          if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
-          if (RMTP.shell && RMTP.shell.renderNavigation) RMTP.shell.renderNavigation();
-          ui.toast('Task deleted', 'info');
-          m.close();
-          if (typeof onSaved === 'function') onSaved(null);
+          RMTP.tasks.delete(task.id, () => {
+            ui.toast('Job deleted', 'info');
+            m.close();
+            if (typeof onSaved === 'function') onSaved(null);
+          });
         }
       });
     }

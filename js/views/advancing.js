@@ -120,7 +120,10 @@ RMTP.views.advancing = function (el, params, query) {
   const canManageEvents = isTMOrAdmin;
   const canReport = auth.can('report.edit');
   const isFreelancer = auth.isFreelancer ? auth.isFreelancer(me) : (me && me.position === 'Freelancer');
-  const filters = (RMTP._advFilters = RMTP._advFilters || { space: '', date: '', tab: 'upcoming' });
+  const filters = (RMTP._advFilters = RMTP._advFilters || { space: 'standard', date: '', tab: 'upcoming' });
+  if (!filters.space && filters.space !== 'all') {
+    filters.space = 'standard';
+  }
   let mobileFiltersOpen = (RMTP._advMobileFiltersOpen !== undefined ? RMTP._advMobileFiltersOpen : false);
   const expandedEvents = (RMTP._expandedAdvEvents = RMTP._expandedAdvEvents || new Set());
   
@@ -175,6 +178,67 @@ RMTP.views.advancing = function (el, params, query) {
     return Boolean(d && String(d).slice(0, 10) < today);
   }
 
+  function normalizeSpaceName(s) {
+    const str = String(s || '').trim();
+    if (str === 'Screen 1') return 'Screen One';
+    if (str === 'Screen 2') return 'Screen Two';
+    if (str === 'Screen 3') return 'Screen Three';
+    if (str.toLowerCase() === 'the lab' || str.toLowerCase() === 'lab') return 'The Lab';
+    if (str.toLowerCase() === 'cinema bar') return 'Cinema Bar';
+    return str;
+  }
+
+  const STANDARD_SPACES_SET = new Set([
+    'The Stage', 'The Studio', 'The Mix', 
+    'Screen One', 'Screen Two', 'Screen Three', 
+    'Screen 1', 'Screen 2', 'Screen 3'
+  ]);
+  const CINEMA_SPACES_SET = new Set([
+    'Screen One', 'Screen Two', 'Screen Three', 
+    'Screen 1', 'Screen 2', 'Screen 3'
+  ]);
+  const LIVE_SPACES_SET = new Set([
+    'The Stage', 'The Studio', 'The Mix'
+  ]);
+
+  function eventMatchesSpace(e, spaceFilter) {
+    if (!spaceFilter || spaceFilter === 'all') return true;
+    const rawSpaces = Array.isArray(e.space) ? e.space : (e.space ? [e.space] : []);
+    if (!rawSpaces.length) return false;
+
+    if (spaceFilter === 'standard') {
+      return rawSpaces.some(s => STANDARD_SPACES_SET.has(s) || STANDARD_SPACES_SET.has(normalizeSpaceName(s)));
+    }
+    if (spaceFilter === 'cinema') {
+      return rawSpaces.some(s => CINEMA_SPACES_SET.has(s) || CINEMA_SPACES_SET.has(normalizeSpaceName(s)));
+    }
+    if (spaceFilter === 'live') {
+      return rawSpaces.some(s => LIVE_SPACES_SET.has(s) || LIVE_SPACES_SET.has(normalizeSpaceName(s)));
+    }
+
+    const targetNorm = normalizeSpaceName(spaceFilter).toLowerCase();
+    return rawSpaces.some(s => {
+      const sNorm = normalizeSpaceName(s).toLowerCase();
+      return sNorm === targetNorm || String(s).toLowerCase() === spaceFilter.toLowerCase();
+    });
+  }
+
+  function getSpaceFilterLabel(spaceFilter) {
+    if (!spaceFilter || spaceFilter === 'standard') return 'Standard (Stage, Studio, Mix, Screens 1–3)';
+    if (spaceFilter === 'live') return 'Live (All Performance Spaces)';
+    if (spaceFilter === 'cinema') return 'Cinema (All Screens)';
+    if (spaceFilter === 'all') return 'All Spaces (Whole Venue)';
+    return spaceFilter;
+  }
+
+  function getSpaceFilterShortLabel(spaceFilter) {
+    if (!spaceFilter || spaceFilter === 'standard') return 'Standard (6 Spaces)';
+    if (spaceFilter === 'live') return 'Live (Performance Spaces)';
+    if (spaceFilter === 'cinema') return 'Cinema (All Screens)';
+    if (spaceFilter === 'all') return 'All Spaces';
+    return spaceFilter;
+  }
+
   // Handle direct event target from routing params or query
   const targetEventId = (params && params[0]) || (query && (query.id || query.event || query.eventId));
   if (targetEventId) {
@@ -183,8 +247,8 @@ RMTP.views.advancing = function (el, params, query) {
       if (isPastEvent(targetEv.date)) {
         filters.tab = 'past';
       }
-      if (filters.space && (Array.isArray(targetEv.space) ? !targetEv.space.includes(filters.space) : filters.space !== targetEv.space)) {
-        filters.space = '';
+      if (filters.space && !eventMatchesSpace(targetEv, filters.space)) {
+        filters.space = 'all';
       }
       if (filters.date && filters.date !== targetEv.date) {
         filters.date = '';
@@ -194,9 +258,13 @@ RMTP.views.advancing = function (el, params, query) {
 
   function isScreenSpace(spaceName) {
     if (Array.isArray(spaceName)) {
-      return spaceName.some(s => s === 'Screen One' || s === 'Screen Two' || s === 'Screen Three');
+      return spaceName.some(s => {
+        const norm = normalizeSpaceName(s);
+        return norm === 'Screen One' || norm === 'Screen Two' || norm === 'Screen Three';
+      });
     }
-    return spaceName === 'Screen One' || spaceName === 'Screen Two' || spaceName === 'Screen Three';
+    const norm = normalizeSpaceName(spaceName);
+    return norm === 'Screen One' || norm === 'Screen Two' || norm === 'Screen Three';
   }
 
   /* ---- Production Package Helpers ---- */
@@ -422,11 +490,7 @@ RMTP.views.advancing = function (el, params, query) {
         if (evTechs.length > 0 || leadId) return false;
       }
       if (filters.space) {
-        if (Array.isArray(e.space)) {
-          if (!e.space.includes(filters.space)) return false;
-        } else {
-          if (e.space !== filters.space) return false;
-        }
+        if (!eventMatchesSpace(e, filters.space)) return false;
       }
       if (filters.date && e.date !== filters.date) return false;
       if (quickSearch) {
@@ -446,7 +510,7 @@ RMTP.views.advancing = function (el, params, query) {
         if (dateCmp !== 0) return dateCmp;
         return (b.startTime || '').localeCompare(a.startTime || '');
       } else {
-        const dateCmp = (a.date || '9999').localeCompare(b.date || '9999');
+        const dateCmp = (a.date || '9999').localeCompare(a.date || '9999');
         if (dateCmp !== 0) return dateCmp;
         return (a.startTime || '23:59').localeCompare(b.startTime || '23:59');
       }
@@ -463,7 +527,7 @@ RMTP.views.advancing = function (el, params, query) {
 
   // Active filter count summary badge
   let activeFilterCount = 0;
-  if (filters.space) activeFilterCount++;
+  if (filters.space && filters.space !== 'standard') activeFilterCount++;
   if (filters.date) activeFilterCount++;
   if (selectedTechs && selectedTechs.length > 0) activeFilterCount++;
   if (!includeUnassigned) activeFilterCount++;
@@ -535,7 +599,7 @@ RMTP.views.advancing = function (el, params, query) {
           ui.icon('search', 'w-4 h-4 text-muted') +
           '<input type="text" id="adv-quick-search-mobile" class="field flex-1 border-none shadow-none bg-transparent focus:ring-0 text-sm ml-2" placeholder="Search events..." value="' + ui.esc(quickSearch) + '">' +
         '</div>' +
-        '<div class="flex items-center justify-between md:justify-start gap-3 w-full">' +
+        '<div class="flex items-center justify-between md:justify-start gap-2.5 w-full flex-wrap">' +
           (isAdmin ? '<label class="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-line text-xs font-medium cursor-pointer transition select-none ' + (filterRequiresCrew ? 'bg-danger text-white border-danger shadow-2xs' : 'bg-panel2 hover:bg-panel text-ink') + '"><input type="checkbox" id="adv-req-crew-toggle" class="hidden" ' + (filterRequiresCrew ? 'checked' : '') + '> ' + ui.icon('alert', 'w-3.5 h-3.5') + '<span>Requires Crew</span></label>' : '') +
           '<button id="adv-filter-toggle-btn" class="btn btn-ghost text-xs flex items-center gap-2 border border-line bg-panel2 hover:bg-panel font-medium py-2 px-3 rounded-lg transition shrink-0">' +
             ui.icon('filter', 'w-3.5 h-3.5 text-accent') +
@@ -543,6 +607,13 @@ RMTP.views.advancing = function (el, params, query) {
             (activeFilterCount > 0 ? '<span class="px-1.5 py-0.2 rounded-full text-[10px] bg-accent text-accent-ink font-bold">' + activeFilterCount + '</span>' : '') +
             '<span class="text-muted transition-transform ' + (filtersPanelOpen ? 'rotate-180 text-accent' : '') + '">' + ui.icon('arrowD', 'w-3.5 h-3.5') + '</span>' +
           '</button>' +
+          '<div class="hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-line bg-panel2/60 text-ink select-none" title="' + ui.esc(getSpaceFilterLabel(filters.space)) + '">' +
+            '<span class="text-muted font-medium">Space:</span>' +
+            '<span class="font-semibold text-accent flex items-center gap-1">' +
+              (filters.space === 'cinema' ? ui.icon('film', 'w-3.5 h-3.5') : (filters.space === 'live' ? ui.icon('volume', 'w-3.5 h-3.5') : (filters.space === 'all' ? ui.icon('grid', 'w-3.5 h-3.5') : ui.icon('sliders', 'w-3.5 h-3.5')))) +
+              '<span>' + ui.esc(getSpaceFilterShortLabel(filters.space)) + '</span>' +
+            '</span>' +
+          '</div>' +
           '<div class="hidden md:flex items-center bg-panel border border-line rounded-lg px-3 py-1 shadow-xs max-w-xs">' +
             ui.icon('search', 'w-4 h-4 text-muted') +
             '<input type="text" id="adv-quick-search-desktop" class="field border-none shadow-none bg-transparent focus:ring-0 text-sm ml-2" placeholder="Search events..." value="' + ui.esc(quickSearch) + '">' +
@@ -611,13 +682,66 @@ RMTP.views.advancing = function (el, params, query) {
       if (currentTab === 'past') return e.deleted !== true && isPastEvent(e.date);
       return e.deleted !== true && !isPastEvent(e.date);
     });
-    const chip = (id, label, n, active) =>
-      '<button data-space="' + ui.esc(id) + '" class="px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ' +
-        (active ? 'bg-accent text-accent-ink border-accent font-semibold shadow-2xs' : 'bg-panel border-line text-muted hover:text-ink hover:border-line/80') + '">' +
-        ui.esc(label) + ' <span class="tabular text-[10px] opacity-70">(' + n + ')</span></button>';
+    // 1. Collect all known venue spaces (Rich Mix defaults + RMTP.SPACES + store venues + actual event spaces)
+    const knownBaseSpaces = [
+      'The Stage', 'The Studio', 'The Mix',
+      'Screen One', 'Screen Two', 'Screen Three',
+      'Streetside', 'Cinema Bar', 'The Lab'
+    ];
+    const allSpacesSet = new Set(knownBaseSpaces);
+    (RMTP.SPACES || []).forEach(s => s && allSpacesSet.add(s));
+    (store.all('venues') || []).forEach(v => {
+      const n = (v.name || v.id || '').trim();
+      if (n) allSpacesSet.add(n);
+    });
+    allEvents.forEach(e => {
+      if (Array.isArray(e.space)) {
+        e.space.forEach(s => s && allSpacesSet.add(s));
+      } else if (e.space) {
+        allSpacesSet.add(e.space);
+      }
+    });
 
-    const spaceChips = [chip('', 'All Spaces', tabPool.length, !filters.space)]
-      .concat(RMTP.SPACES.map((s) => chip(s, s, tabPool.filter((e) => Array.isArray(e.space) ? e.space.includes(s) : e.space === s).length, filters.space === s))).join('');
+    const spacePriority = {
+      'The Stage': 1, 'The Studio': 2, 'The Mix': 3,
+      'Screen One': 4, 'Screen Two': 5, 'Screen Three': 6,
+      'Streetside': 7, 'Cinema Bar': 8, 'The Lab': 9
+    };
+    const allVenueSpaces = Array.from(allSpacesSet).sort((a, b) => {
+      const pa = spacePriority[a] || 99;
+      const pb = spacePriority[b] || 99;
+      if (pa !== pb) return pa - pb;
+      return a.localeCompare(b);
+    });
+
+    const presetChip = (id, label, iconSvg, count, active, tooltip) =>
+      '<button type="button" data-space="' + ui.esc(id) + '" title="' + ui.esc(tooltip || label) + '" class="px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1.5 ' +
+        (active ? 'bg-accent text-accent-ink border-accent font-bold shadow-xs' : 'bg-panel border-line text-ink hover:text-accent hover:border-accent/70') + '">' +
+        (iconSvg || '') +
+        '<span>' + ui.esc(label) + '</span>' +
+        '<span class="tabular text-[10px] px-1.5 py-0.5 rounded-full ' + (active ? 'bg-black/20 text-white' : 'bg-panel2 text-muted') + '">' + count + '</span></button>';
+
+    const spaceChip = (id, label, count, active) =>
+      '<button type="button" data-space="' + ui.esc(id) + '" class="px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ' +
+        (active ? 'bg-accent text-accent-ink border-accent font-semibold shadow-2xs' : 'bg-panel border-line text-muted hover:text-ink hover:border-line/80') + '">' +
+        ui.esc(label) + ' <span class="tabular text-[10px] opacity-70">(' + count + ')</span></button>';
+
+    const countStandard = tabPool.filter(e => eventMatchesSpace(e, 'standard')).length;
+    const countLive = tabPool.filter(e => eventMatchesSpace(e, 'live')).length;
+    const countCinema = tabPool.filter(e => eventMatchesSpace(e, 'cinema')).length;
+    const countAll = tabPool.length;
+
+    const presetChips = [
+      presetChip('standard', 'Standard (Main Spaces)', ui.icon('sliders', 'w-3.5 h-3.5'), countStandard, filters.space === 'standard', 'The Stage, The Studio, The Mix, Screen 1, Screen 2, Screen 3'),
+      presetChip('live', 'Live (All Performance)', ui.icon('volume', 'w-3.5 h-3.5'), countLive, filters.space === 'live', 'The Stage, The Studio, The Mix'),
+      presetChip('cinema', 'Cinema (All Screens)', ui.icon('film', 'w-3.5 h-3.5'), countCinema, filters.space === 'cinema', 'Screen One, Screen Two, Screen Three'),
+      presetChip('all', 'All Spaces', ui.icon('grid', 'w-3.5 h-3.5'), countAll, filters.space === 'all', 'Every space in the venue including Streetside, Cinema Bar, The Lab')
+    ].join('');
+
+    const individualChips = allVenueSpaces.map(s => {
+      const cnt = tabPool.filter(e => eventMatchesSpace(e, s)).length;
+      return spaceChip(s, s, cnt, filters.space === s);
+    }).join('');
 
     return (
       '<div id="adv-filters-drawer" class="' + (filtersPanelOpen ? 'block' : 'hidden') + ' panel p-4 mb-4 border border-line bg-panel2/60 animate-fadeIn space-y-3.5 shadow-sm">' +
@@ -646,12 +770,34 @@ RMTP.views.advancing = function (el, params, query) {
         '</div>' +
 
         '<!-- Row 2: Space Filters -->' +
-        '<div>' +
-          '<div class="text-[11px] font-semibold text-muted uppercase tracking-wider mb-1.5 flex items-center gap-1">' +
-            ui.icon('search', 'w-3 h-3 text-accent') + '<span>Venue Space:</span>' +
+        '<div class="space-y-2.5">' +
+          '<div class="flex items-center justify-between flex-wrap gap-1">' +
+            '<span class="text-xs font-semibold text-muted uppercase tracking-wider flex items-center gap-1.5">' +
+              ui.icon('search', 'w-3.5 h-3.5 text-accent') + '<span>Space Filter:</span>' +
+            '</span>' +
+            '<span class="text-xs text-muted font-medium">' +
+              'Currently showing: <strong class="text-ink">' + ui.esc(getSpaceFilterLabel(filters.space)) + '</strong>' +
+            '</span>' +
           '</div>' +
-          '<div class="flex flex-wrap items-center gap-1.5">' +
-            spaceChips +
+
+          '<!-- Presets -->' +
+          '<div>' +
+            '<div class="text-[10px] font-semibold text-muted uppercase tracking-wider mb-1.5 text-muted/80">' +
+              'Quick Scope Filters:' +
+            '</div>' +
+            '<div class="flex flex-wrap items-center gap-1.5">' +
+              presetChips +
+            '</div>' +
+          '</div>' +
+
+          '<!-- All Listed Spaces -->' +
+          '<div class="pt-2 border-t border-line/40">' +
+            '<div class="text-[10px] font-semibold text-muted uppercase tracking-wider mb-1.5 text-muted/80">' +
+              'All Listed Spaces (including Streetside, Cinema Bar, The Lab):' +
+            '</div>' +
+            '<div class="flex flex-wrap items-center gap-1.5">' +
+              individualChips +
+            '</div>' +
           '</div>' +
         '</div>' +
 
@@ -692,9 +838,8 @@ RMTP.views.advancing = function (el, params, query) {
     // Filter base events by space if space filter active, and exclude deleted events
     const calEvents = base.filter((e) => {
       if (e.deleted === true) return false;
-      if (!filters.space) return true;
-      if (Array.isArray(e.space)) return e.space.includes(filters.space);
-      return e.space === filters.space;
+      if (!eventMatchesSpace(e, filters.space)) return false;
+      return true;
     });
 
     // Map events by YYYY-MM-DD
@@ -986,7 +1131,7 @@ RMTP.views.advancing = function (el, params, query) {
   const dateIn = el.querySelector('#adv-date'); if (dateIn) dateIn.addEventListener('change', () => { filters.date = dateIn.value; RMTP._isSoftRender = true; RMTP.router.render(); RMTP._isSoftRender = false; });
   const todayBtn = el.querySelector('#adv-today'); if (todayBtn) todayBtn.addEventListener('click', () => { filters.date = getTodayString(); RMTP._isSoftRender = true; RMTP.router.render(); RMTP._isSoftRender = false; });
   const clearBtn = el.querySelector('#adv-clear'); if (clearBtn) clearBtn.addEventListener('click', () => {
-    filters.space = '';
+    filters.space = 'standard';
     filters.date = '';
     RMTP._advTechFilter = isManager ? [] : (currentUserId ? [currentUserId] : []);
     RMTP._advTechFilterManuallySet = false;
@@ -1126,8 +1271,10 @@ RMTP.views.advancing = function (el, params, query) {
         "Screen One": "Screen One",
         "Cinema 1": "Screen One",
         "Cinema One": "Screen One",
-        "Cinema Bar / Gallery": "Screen One",
-        "Cinema Bar": "Screen One",
+        "Cinema Bar / Gallery": "Cinema Bar",
+        "Cinema Bar": "Cinema Bar",
+        "The Lab": "The Lab",
+        "Lab": "The Lab",
         "Screen 2": "Screen Two",
         "Screen Two": "Screen Two",
         "Cinema 2": "Screen Two",
@@ -1151,7 +1298,8 @@ RMTP.views.advancing = function (el, params, query) {
         if (ROOM_TO_SPACE[r]) return ROOM_TO_SPACE[r];
         
         const lower = r.toLowerCase();
-        if (lower.includes("cinema bar") || lower.includes("cinema gallery")) return "Screen One";
+        if (lower.includes("cinema bar") || lower.includes("cinema gallery")) return "Cinema Bar";
+        if (lower.includes("lab")) return "The Lab";
         if (lower.includes("screen 1") || lower.includes("cinema 1") || lower.includes("screen one") || lower.includes("cinema one")) return "Screen One";
         if (lower.includes("screen 2") || lower.includes("cinema 2") || lower.includes("screen two") || lower.includes("cinema two")) return "Screen Two";
         if (lower.includes("screen 3") || lower.includes("cinema 3") || lower.includes("screen three") || lower.includes("cinema three")) return "Screen Three";

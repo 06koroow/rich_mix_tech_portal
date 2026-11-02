@@ -52,8 +52,10 @@ const ROOM_TO_SPACE: Record<string, string> = {
   "Screen One": "Screen One",
   "Cinema 1": "Screen One",
   "Cinema One": "Screen One",
-  "Cinema Bar / Gallery": "Screen One",
-  "Cinema Bar": "Screen One",
+  "Cinema Bar / Gallery": "Cinema Bar",
+  "Cinema Bar": "Cinema Bar",
+  "The Lab": "The Lab",
+  "Lab": "The Lab",
   "Screen 2": "Screen Two",
   "Screen Two": "Screen Two",
   "Cinema 2": "Screen Two",
@@ -77,7 +79,8 @@ function resolveSpace(roomName: string): string {
   if (ROOM_TO_SPACE[r]) return ROOM_TO_SPACE[r];
   
   const lower = r.toLowerCase();
-  if (lower.includes("cinema bar") || lower.includes("cinema gallery")) return "Screen One";
+  if (lower.includes("cinema bar") || lower.includes("cinema gallery")) return "Cinema Bar";
+  if (lower.includes("lab")) return "The Lab";
   if (lower.includes("screen 1") || lower.includes("cinema 1") || lower.includes("screen one") || lower.includes("cinema one")) return "Screen One";
   if (lower.includes("screen 2") || lower.includes("cinema 2") || lower.includes("screen two") || lower.includes("cinema two")) return "Screen Two";
   if (lower.includes("screen 3") || lower.includes("cinema 3") || lower.includes("screen three") || lower.includes("cinema three")) return "Screen Three";
@@ -345,57 +348,38 @@ async function fetchArtifaxInstances(from: Date, to: Date): Promise<ArtifaxInsta
   for (let s = 0; s < numSlices; s++) {
     const sliceFrom = new Date(from.getTime() + s * SLICE_DAYS * 864e5);
     const sliceTo = new Date(Math.min(to.getTime(), from.getTime() + (s + 1) * SLICE_DAYS * 864e5));
-    
-    let page = 1;
-    const maxPagesPerSlice = 5;
 
-    while (page <= maxPagesPerSlice) {
-      const params = new URLSearchParams({
-        date: 'between',
-        start_date: sliceFrom.toISOString().slice(0, 10),
-        end_date: sliceTo.toISOString().slice(0, 10),
-        schedule_output: "1",
-        page_size: "500",
-        page: String(page),
-        offset: String((page - 1) * 500),
-      });
+    const params = new URLSearchParams({
+      date: 'between',
+      start_date: sliceFrom.toISOString().slice(0, 10),
+      end_date: sliceTo.toISOString().slice(0, 10),
+      schedule_output: "1",
+    });
 
-      const endpoint = `${baseUrl}/api/arrangements/event?${params}`;
-      const res = await fetch(endpoint, {
-        method: 'GET',
-        headers: { 
-          "X-API-Key": ARTIFAX_API_KEY,
-          "Authorization": basicAuth,
-          "Accept": "application/json" 
-        },
-      });
+    const endpoint = `${baseUrl}/api/arrangements/event?${params}`;
+    const res = await fetch(endpoint, {
+      method: 'GET',
+      headers: { 
+        "X-API-Key": ARTIFAX_API_KEY,
+        "Authorization": basicAuth,
+        "Accept": "application/json" 
+      },
+    });
 
-      if (!res.ok) {
-        if (page > 1 && (res.status === 404 || res.status === 400)) {
-          break;
-        }
-        throw new Error(`Artifax responded ${res.status}: ${await res.text()}`);
-      }
+    if (!res.ok) {
+      throw new Error(`Artifax responded ${res.status}: ${await res.text()}`);
+    }
 
-      const data = await res.json();
-      const list: any[] = Array.isArray(data) ? data : (data.instances ?? data.results ?? data.events ?? []);
-      if (!list || list.length === 0) break;
+    const data = await res.json();
+    const list: any[] = Array.isArray(data) ? data : (data.instances ?? data.results ?? data.events ?? []);
+    if (!list || list.length === 0) continue;
 
-      let newItemsInThisRequest = 0;
-      for (const r of list) {
-        const id = String(r.id || r.instanceId || r.InstanceId || r.event_id || '');
-        const key = id || `${r.arrangement_id || ''}-${r.room || ''}-${r.date || ''}-${r.start_time || ''}`;
-        if (key && seenIds.has(key)) continue;
-        if (key) seenIds.add(key);
-        allRawItems.push(r);
-        newItemsInThisRequest++;
-      }
-
-      // If fewer than 500 returned or no new items added (API repeated page), advance to next slice
-      if (list.length < 500 || newItemsInThisRequest === 0) {
-        break;
-      }
-      page++;
+    for (const r of list) {
+      const id = String(r.id || r.instanceId || r.InstanceId || r.event_id || '');
+      const key = id || `${r.arrangement_id || ''}-${r.room || ''}-${r.date || ''}-${r.start_time || ''}`;
+      if (key && seenIds.has(key)) continue;
+      if (key) seenIds.add(key);
+      allRawItems.push(r);
     }
   }
 

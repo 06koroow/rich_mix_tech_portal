@@ -81,6 +81,30 @@ RMTP.syncSb = (function () {
     return null;
   }
 
+  const SEED_TITLES = [
+    'Past Lives: Verify 5.1 Center Channel Dialogue Anchor',
+    'Anatomy of a Fall: Ingest Updated CPL & Supplemental Subtitle Pack',
+    'Screen 1: Projector Optical Glass & Intake Filter Clean',
+    'The Stage: Radio Mic Frequency Scan & Battery Stock Replenish',
+    'Screen 3: Reset Side Masking Limits for Flat (1.85:1) Aspect',
+    'Screen One — Pre-Screening Follow-up',
+    'Screen Two — Pre-Screening Follow-up',
+    'Screen Three — Pre-Screening Follow-up',
+    'Past Lives — Pre-Screening Follow-up',
+    'Anatomy of a Fall — Pre-Screening Follow-up'
+  ];
+
+  function isPlaceholderTask(t) {
+    if (!t) return false;
+    const id = String(t.id || '');
+    if (id.startsWith('task-seed-') || id.startsWith('seed-') || id.startsWith('task-demo-')) return true;
+    if (t.isSeed === true || t.isPlaceholder === true) return true;
+    const title = (t.title || '').trim();
+    if (SEED_TITLES.some(st => title.toLowerCase() === st.toLowerCase())) return true;
+    if (/verify 5\.1 center channel|ingest updated cpl|optical glass & intake filter|frequency scan & battery stock|side masking limits/i.test(title)) return true;
+    return false;
+  }
+
   async function pullCollection(coll) {
     const table = tables()[coll]; if (!table) return;
     if (isTableUnsupported(table)) return;
@@ -127,6 +151,23 @@ RMTP.syncSb = (function () {
     }
     
     rows.forEach(r => {
+      // 1. If this record was explicitly deleted by the user, DO NOT restore it on refresh!
+      if (store.isDeleted && store.isDeleted(coll, r.id)) {
+        if (sb && sb.deleteRow) {
+          sb.deleteRow(table, r.id).catch(() => {});
+        }
+        return;
+      }
+
+      // 2. If this is a placeholder seed in tasks, purge it permanently and skip
+      if (coll === 'tasks' && isPlaceholderTask(r)) {
+        if (store.markDeleted) store.markDeleted('tasks', r.id);
+        if (sb && sb.deleteRow) {
+          sb.deleteRow(table, r.id).catch(() => {});
+        }
+        return;
+      }
+
       const existing = store.find ? store.find(coll, r.id) : (store.get ? store.get(coll, r.id) : null);
 
       if (coll === 'advancing' && existing) {

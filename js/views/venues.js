@@ -568,7 +568,7 @@
             const spaceOrder = {
               'The Stage': 1, 'The Studio': 2, 'The Mix': 3, 
               'Screen One': 4, 'Screen Two': 5, 'Screen Three': 6,
-              'Streetside': 7
+              'Streetside': 7, 'Cinema Bar': 8, 'The Lab': 9
             };
             RMTP.SPACES.sort((a, b) => {
               const wa = spaceOrder[a] || 99;

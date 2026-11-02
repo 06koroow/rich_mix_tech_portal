@@ -157,7 +157,39 @@ RMTP.store = (function () {
     write(name, rows);
     return rec;
   }
+  /* ---- Persistent Tombstones for Deleted Records ---- */
+  function getDeleted(name) {
+    try {
+      const raw = localStorage.getItem('rmtp_deleted_' + name);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+  function markDeleted(name, id) {
+    if (!id) return;
+    try {
+      const list = getDeleted(name);
+      if (!list.includes(id)) {
+        list.push(id);
+        localStorage.setItem('rmtp_deleted_' + name, JSON.stringify(list));
+      }
+    } catch (e) {}
+  }
+  function unmarkDeleted(name, id) {
+    if (!id) return;
+    try {
+      const list = getDeleted(name).filter((x) => x !== id);
+      localStorage.setItem('rmtp_deleted_' + name, JSON.stringify(list));
+    } catch (e) {}
+  }
+  function isDeleted(name, id) {
+    if (!id) return false;
+    return getDeleted(name).includes(id);
+  }
+
   function remove(name, id) {
+    markDeleted(name, id);
     write(name, read(name, []).filter((r) => r.id !== id));
   }
 
@@ -168,5 +200,6 @@ RMTP.store = (function () {
     init, reset, onChange, setAdapter, clearCache,
     read, write, readRaw, writeRaw, removeRaw, rawKeys,
     all, find, get, upsert, remove, uid,
+    getDeleted, markDeleted, unmarkDeleted, isDeleted,
   };
 })();

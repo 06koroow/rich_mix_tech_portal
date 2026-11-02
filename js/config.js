@@ -63,9 +63,38 @@ RMTP.DAY_PARTS = [
   { id: 'custom', label: 'Custom Hours', start: '', end: '' }
 ];
 
+RMTP.CORE_SPACES = ['The Stage', 'The Studio', 'The Mix', 'Screen One', 'Screen Two', 'Screen Three', 'Screen 1', 'Screen 2', 'Screen 3'];
+
+RMTP.isAuxiliarySpace = function (space) {
+  if (!space) return false;
+  const list = Array.isArray(space) ? space : [space];
+  if (!list.length) return false;
+  const coreSet = new Set([
+    'The Stage', 'The Studio', 'The Mix',
+    'Screen One', 'Screen Two', 'Screen Three',
+    'Screen 1', 'Screen 2', 'Screen 3'
+  ]);
+  // An event is auxiliary if all its assigned spaces are auxiliary (e.g. Streetside, Cinema Bar, The Lab)
+  return list.every((s) => !coreSet.has(String(s || '').trim()));
+};
+
+RMTP.isTMOrST = function (u) {
+  if (!u) return false;
+  if (u.admin) return true;
+  const pos = String(u.position || '').trim();
+  const role = String(u.role || '').trim();
+  if (pos === 'Technical Manager' || pos === 'Senior Tech') return true;
+  if (/technical manager|tech manager/i.test(pos) || /senior tech/i.test(pos)) return true;
+  if (/technical manager|tech manager/i.test(role) || /senior tech/i.test(role)) return true;
+  if (RMTP.auth && RMTP.auth.isTechManager && RMTP.auth.isTechManager(u)) return true;
+  if (RMTP.auth && RMTP.auth.isAdmin && RMTP.auth.isAdmin(u)) return true;
+  return false;
+};
+
 /* Helper: Resolves minimum crew requirements and discipline breakdown for a room */
 RMTP.getSpaceCrewSpecs = function (spaceName) {
   const defaultDisciplines = function (s) {
+    if (RMTP.isAuxiliarySpace(s)) return [];
     const str = String(s || '').toLowerCase();
     if (str.includes('stage')) return [{ role: 'Sound', count: 1 }, { role: 'Lighting', count: 1 }];
     if (str.includes('studio')) return [{ role: 'Sound', count: 1 }, { role: 'Lighting', count: 1 }];

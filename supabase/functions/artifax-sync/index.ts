@@ -100,6 +100,16 @@ function resolveStatus(statusStr: string): string {
   return "Confirmed";
 }
 
+function isAuxiliarySpace(spaceName: string): boolean {
+  if (!spaceName) return false;
+  const coreSet = new Set([
+    "The Stage", "The Studio", "The Mix",
+    "Screen One", "Screen Two", "Screen Three",
+    "Screen 1", "Screen 2", "Screen 3"
+  ]);
+  return !coreSet.has(spaceName.trim());
+}
+
 // Extract all technical, layout, and event notes from Artifax response without overly strict filtering
 function extractArtifaxNotes(r: any): string {
   const parts: string[] = [];
@@ -513,9 +523,15 @@ Deno.serve(async (req) => {
         const existingTech = (existing.techInfo || "").trim();
         const techInfoVal = existingTech ? existingTech : currentNotes;
 
+        const isAux = isAuxiliarySpace(booking.space);
+        // Preserve any manual decision set by a TM/ST (e.g. techRequiredManual or explicit noTechNeeded)
+        const hasManualDecision = existing.techRequiredManual === true || (existing.noTechNeeded !== undefined && existing.noTechNeeded !== null);
+        const resolvedNoTech = hasManualDecision ? existing.noTechNeeded : isAux;
+
         const row: Record<string, any> = { 
           ...existing, 
           ...booking, 
+          noTechNeeded: resolvedNoTech,
           techInfo: techInfoVal,
           artifaxHistory: artifaxHistory,
           id: existing.id, 
@@ -538,12 +554,18 @@ Deno.serve(async (req) => {
         }] : [];
         booking.artifaxHistory = artifaxHistory;
 
+        const isAux = isAuxiliarySpace(booking.space);
+        const noTechNeeded = isAux;
+        const techs = isAux ? [{ userId: '', role: 'None', isNoTech: true, bookingStatus: 'confirmed' }] : [];
+
         const row: Record<string, any> = { 
           id: `evt-afx-${booking.artifaxId}`, 
           ...booking, 
+          noTechNeeded: noTechNeeded,
+          technicians: techs,
           techInfo: currentNotes,
           artifaxHistory: artifaxHistory,
-          production_package: { artifaxHistory, artifaxNotes: currentNotes } 
+          production_package: { artifaxHistory, artifaxNotes: currentNotes, noTechNeeded } 
         };
         delete row.notes;
         delete row.artifaxNotes;

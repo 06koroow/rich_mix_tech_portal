@@ -116,6 +116,7 @@ RMTP.views.advancing = function (el, params, query) {
 
   const me = auth.current();
   const isTMOrAdmin = auth.isTechManagerOrAdmin ? auth.isTechManagerOrAdmin(me) : (auth.isTechManager(me) || auth.isAdmin(me));
+  const isTMOrST = RMTP.isTMOrST ? RMTP.isTMOrST(me) : isTMOrAdmin;
   const isAdmin = isTMOrAdmin;
   const canManageEvents = isTMOrAdmin;
   const canReport = auth.can('report.edit');
@@ -453,6 +454,24 @@ RMTP.views.advancing = function (el, params, query) {
 
   // Pool of all events in system
   const allEvents = store.all('advancing') || [];
+
+  // Auto-fill events in Auxiliary spaces to 'No Tech Needed' (Self-Service) by default
+  // (Can be reversed to require technicians by a Technical Manager or Senior Tech)
+  allEvents.forEach((ev) => {
+    if (ev.deleted) return;
+    if (RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(ev.space)) {
+      if (ev.techRequiredManual !== true && !ev.noTechNeeded) {
+        const techs = RMTP.eventTechnicians(ev);
+        const hasAssignedCrew = techs.some((t) => t.userId && !t.isNoTech);
+        if (!hasAssignedCrew) {
+          ev.noTechNeeded = true;
+          ev.technicians = [{ userId: '', role: 'None', isNoTech: true, isFreelancer: false, freelancerName: '', startTime: '', finishTime: '', bookingStatus: 'confirmed' }];
+          store.upsert('advancing', ev);
+          if (RMTP.syncAdvancingToRota) RMTP.syncAdvancingToRota(ev);
+        }
+      }
+    }
+  });
 
   // Filter events based on active technician filter & space/tab
   function matchesTechFilter(e) {
@@ -1609,6 +1628,17 @@ RMTP.views.advancing = function (el, params, query) {
              });
           }
           
+          // Preserve manual reversals or tech decisions made by TM or ST
+          const isAux = RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(booking.space);
+          if (existing.techRequiredManual === true) {
+            row.noTechNeeded = false;
+            row.techRequiredManual = true;
+          } else if (existing.noTechNeeded !== undefined) {
+            row.noTechNeeded = existing.noTechNeeded;
+          } else if (isAux) {
+            row.noTechNeeded = true;
+          }
+
           // Always ensure notes and artifaxNotes are populated
           row.notes = techInfoNotes || existing.notes || '';
           row.artifaxNotes = techInfoNotes || existing.artifaxNotes || '';
@@ -1619,6 +1649,11 @@ RMTP.views.advancing = function (el, params, query) {
           updated++;
         } else {
           row = { id: 'evt-afx-' + id, ...booking };
+          const isAux = RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(booking.space);
+          if (isAux) {
+            row.noTechNeeded = true;
+            row.technicians = [{ userId: '', role: 'None', isNoTech: true, isFreelancer: false, freelancerName: '', startTime: '', finishTime: '', bookingStatus: 'confirmed' }];
+          }
           row.artifaxHistory = [];
           if (techInfoNotes) {
               row.artifaxHistory.push({
@@ -1634,6 +1669,9 @@ RMTP.views.advancing = function (el, params, query) {
         }
         
         store.upsert('advancing', row);
+        if (RMTP.syncAdvancingToRota) {
+          try { RMTP.syncAdvancingToRota(row); } catch (err) { /* ignore */ }
+        }
         if (RMTP.syncAdvanceToDcp) {
           try { RMTP.syncAdvanceToDcp(row); } catch (err) { /* ignore */ }
         }
@@ -1876,7 +1914,70 @@ RMTP.views.advancing = function (el, params, query) {
         }
         updateBulkDeleteButton();
       });
+  // TM/ST Quick Toggle for Auxiliary Space Technician Requirements
+  function handleToggleTechReq(eventId) {
+    const ev = store.find('advancing', eventId);
+    if (!ev) return;
+
+    if (!isTMOrST) {
+      ui.toast('Only Technical Managers and Senior Techs can reverse Self-Service staffing.', 'warning');
+      return;
     }
+
+    if (ev.noTechNeeded) {
+      // Reversing Self-Service -> Tech Coverage Required
+      ev.noTechNeeded = false;
+      ev.techRequiredManual = true;
+      ev.techReversedBy = (me && me.name) ? me.name : 'TM/ST';
+
+      const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(ev.space) : { rolesList: ['Sound'] };
+      const roles = (specs.rolesList && specs.rolesList.length) ? specs.rolesList : ['Sound'];
+      ev.technicians = roles.map((r) => ({
+        userId: '',
+        role: r,
+        isFreelancer: false,
+        freelancerName: '',
+        startTime: ev.startTime || '18:00',
+        finishTime: ev.finishTime || '23:00',
+        bookingStatus: 'confirmed'
+      }));
+
+      store.upsert('advancing', ev);
+      if (RMTP.syncAdvancingToRota) RMTP.syncAdvancingToRota(ev);
+      if (RMTP.syncSb && RMTP.syncSb.push) RMTP.syncSb.push('advancing', ev.id);
+      ui.toast('Reversed: Technician coverage required for "' + ev.name + '" (TM/ST Override)', 'ok');
+    } else {
+      // Reverting to Self-Service / No Tech Needed
+      ev.noTechNeeded = true;
+      ev.techRequiredManual = false;
+      ev.technicians = [{
+        userId: '',
+        role: 'None',
+        isNoTech: true,
+        isFreelancer: false,
+        freelancerName: '',
+        startTime: ev.startTime || '',
+        finishTime: ev.finishTime || '',
+        bookingStatus: 'confirmed'
+      }];
+
+      store.upsert('advancing', ev);
+      if (RMTP.syncAdvancingToRota) RMTP.syncAdvancingToRota(ev);
+      if (RMTP.syncSb && RMTP.syncSb.push) RMTP.syncSb.push('advancing', ev.id);
+      ui.toast('Marked "' + ev.name + '" as Self-Service (No Tech Needed)', 'info');
+    }
+
+    const currentScroll = window.scrollY || document.documentElement.scrollTop;
+    RMTP.router.render();
+    window.scrollTo(0, currentScroll);
+  }
+
+  el.querySelectorAll('[data-toggle-tech-req]').forEach((btn) => {
+    btn.addEventListener('click', (evt) => {
+      evt.stopPropagation();
+      const id = btn.getAttribute('data-toggle-tech-req');
+      handleToggleTechReq(id);
+    });
   });
 
   function updateBulkDeleteButton() {
@@ -2051,6 +2152,7 @@ RMTP.views.advancing = function (el, params, query) {
               (ev.guestEngineer ? ui.pill('Guest Engineer', 'var(--info)') : '') +
               (hasReports ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-danger/15 text-danger border border-danger/30" title="Shift reports submitted">' + ui.icon('alert', 'w-3 h-3') + 'Reports</span>' : '') +
               (hasArtifaxInfo ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-accent/15 text-accent border border-accent/30" title="Technical and layout notes imported from Artifax">' + ui.icon('file', 'w-3 h-3') + 'Artifax Spec</span>' : '') +
+              (ev.techRequiredManual && RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(ev.space) ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30" title="Tech coverage requested by TM/Senior Tech">' + ui.icon('wrench', 'w-3 h-3') + 'Tech Required (TM Override)</span>' : '') +
             '</div>' +
             '<div class="flex flex-wrap items-center gap-x-4 gap-y-2.5 mt-1 text-xs">' +
               (ev.date ? 
@@ -2109,6 +2211,15 @@ RMTP.views.advancing = function (el, params, query) {
                 '<button type="button" data-add-maint-tickets="' + ev.id + '" class="btn btn-secondary !py-1.5 !px-3 text-xs font-semibold text-warning flex items-center gap-1.5 hover:bg-warning/10 rounded-lg flex-1 sm:flex-initial justify-center" title="Add maintenance tickets or consumable orders to this shift">' +
                   ui.icon('tool', 'w-3.5 h-3.5 text-warning') + '<span>+ Add Tickets</span>' +
                 '</button>' : '') +
+              (ev.noTechNeeded ? 
+                '<button type="button" data-toggle-tech-req="' + ev.id + '" class="btn btn-ghost !py-1.5 !px-2.5 text-xs font-semibold text-amber-400 hover:bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-center gap-1.5 flex-1 sm:flex-initial justify-center" title="Reverse Self-Service: Require Technician Coverage (TM/ST)">' + 
+                  ui.icon('wrench', 'w-3.5 h-3.5 text-amber-400') + '<span>Require Tech</span>' + 
+                '</button>' : 
+                (RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(ev.space) ? 
+                  '<button type="button" data-toggle-tech-req="' + ev.id + '" class="btn btn-ghost !py-1.5 !px-2.5 text-xs font-medium text-muted hover:text-ink hover:bg-panel2 border border-line rounded-lg flex items-center gap-1.5 flex-1 sm:flex-initial justify-center" title="Set to Self-Service / No Tech Needed (TM/ST)">' + 
+                    ui.icon('slash', 'w-3.5 h-3.5') + '<span>No Tech</span>' + 
+                  '</button>' : '')
+              ) +
               '<button data-open-modal="' + ev.id + '" class="btn btn-ghost !py-1.5 !px-3 text-xs font-semibold text-accent flex items-center gap-1.5 hover:bg-accent/10 rounded-lg flex-1 sm:flex-initial justify-center">' +
                 ui.icon('eye', 'w-4 h-4') + '<span>View Advance</span>' +
               '</button>' +
@@ -2146,14 +2257,20 @@ RMTP.views.advancing = function (el, params, query) {
              ui.pill(spLabel, isCinema ? 'var(--accent)' : 'var(--info)') + 
              (times ? '<div class="flex items-center gap-1.5 text-muted">' + ui.icon('clock', 'w-3 h-3') + '<span>' + ui.esc(times) + '</span></div>' : '') +
            '</div>' +
-           '<div class="flex items-center gap-1.5 text-muted">' + 
-             ui.icon('wrench', 'w-3 h-3') + 
-             '<span>Techs:</span>' + 
-             '<div class="flex items-center gap-1 flex-wrap">' + 
-                (techs.length 
-                  ? techs.map(t => t === 'No Tech Needed' ? ui.pill(t, 'var(--muted)') : ui.pill(t, 'var(--info)')).join('')
-                  : (e.noTechNeeded ? ui.pill('Self-Service (No Tech)', 'var(--muted)') : ui.pill('Unassigned', 'var(--danger)'))) + 
+           '<div class="flex items-center gap-2 text-muted flex-wrap">' + 
+             '<div class="flex items-center gap-1.5">' + 
+               ui.icon('wrench', 'w-3 h-3') + 
+               '<span>Techs:</span>' + 
+               '<div class="flex items-center gap-1 flex-wrap">' + 
+                  (techs.length 
+                    ? techs.map(t => t === 'No Tech Needed' ? ui.pill(t, 'var(--muted)') : ui.pill(t, 'var(--info)')).join('')
+                    : (e.noTechNeeded ? ui.pill('Self-Service (No Tech)', 'var(--muted)') : ui.pill('Unassigned', 'var(--danger)'))) + 
+               '</div>' +
              '</div>' +
+             (e.noTechNeeded ? 
+               '<button type="button" data-toggle-tech-req="' + e.id + '" class="btn btn-ghost !py-0.5 !px-2 text-[11px] font-semibold text-amber-400 hover:bg-amber-500/10 border border-amber-500/30 rounded flex items-center gap-1" title="Reverse Self-Service: Require Technician Coverage (TM/ST)">' + ui.icon('wrench', 'w-3 h-3') + '<span>Require Tech</span></button>' : 
+               (RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(e.space) ? '<button type="button" data-toggle-tech-req="' + e.id + '" class="btn btn-ghost !py-0.5 !px-2 text-[11px] font-medium text-muted hover:text-ink hover:bg-panel2 border border-line rounded flex items-center gap-1" title="Set to No Tech Needed (TM/ST)">' + ui.icon('slash', 'w-3 h-3') + '<span>No Tech</span></button>' : '')
+             ) +
            '</div>' +
          '</div>'
        );
@@ -4940,7 +5057,12 @@ RMTP.views.advancing = function (el, params, query) {
         floor_tags: prod.floor_tags ? prod.floor_tags.slice() : [],
         specials: Object.assign({}, prod.specials),
         special_notes: prod.special_notes || '',
-        techs: tList,
+        noTechNeeded: (e.noTechNeeded !== undefined ? !!e.noTechNeeded : (RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(Array.isArray(e.space) ? e.space[0] : (e.space || '')) && !e.techRequiredManual)),
+        techRequiredManual: !!e.techRequiredManual,
+        techReversedBy: e.techReversedBy || '',
+        techs: (tList.length === 0 && (e.noTechNeeded || (RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(Array.isArray(e.space) ? e.space[0] : (e.space || '')) && !e.techRequiredManual)))
+          ? [{ userId: '', role: 'None', isNoTech: true, isFreelancer: false, freelancerName: '', startTime: '', finishTime: '', bookingStatus: 'confirmed' }]
+          : tList,
         scheduleItems: sItems,
         channelInputs: chIn,
         channelOutputs: chOut,
@@ -4968,6 +5090,9 @@ RMTP.views.advancing = function (el, params, query) {
     }
 
     let ev = spaceDrafts[activeSpaceIndex].rawEvent || existing || {};
+    ev.noTechNeeded = spaceDrafts[activeSpaceIndex].noTechNeeded;
+    ev.techRequiredManual = spaceDrafts[activeSpaceIndex].techRequiredManual;
+    ev.techReversedBy = spaceDrafts[activeSpaceIndex].techReversedBy;
     const opt = (arr, val) => arr.map((v) => '<option ' + (v === val ? 'selected' : '') + '>' + v + '</option>').join('');
     const blankOpt = (arr, val, blank) => '<option value="" ' + (!val ? 'selected' : '') + '>' + blank + '</option>' +
       arr.map((v) => '<option ' + (v === val ? 'selected' : '') + '>' + v + '</option>').join('');
@@ -5914,6 +6039,25 @@ RMTP.views.advancing = function (el, params, query) {
           });
         }
       });
+
+      // Auxiliary Space Workflow: Auto-fill to Self-Service if auxiliary space is chosen and tech hasn't been manually requested by TM/ST
+      if (RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(currentSpace)) {
+        if (!ev.techRequiredManual && !ev.noTechNeeded) {
+          const hasAssignedHumanTech = techs.some((t) => t.userId && !t.isNoTech);
+          if (!hasAssignedHumanTech) {
+            ev.noTechNeeded = true;
+            techs.length = 0;
+            techs.push({ userId: '', role: 'None', isNoTech: true, isFreelancer: false, freelancerName: '', startTime: '', finishTime: '', bookingStatus: 'confirmed' });
+            wireTechs();
+          }
+        }
+      } else if (hasSpace && RMTP.isAuxiliarySpace && !RMTP.isAuxiliarySpace(currentSpace)) {
+        if (ev.noTechNeeded && !ev.techRequiredManual && (techs.length === 0 || (techs.length === 1 && techs[0].isNoTech))) {
+          ev.noTechNeeded = false;
+          techs.length = 0;
+          wireTechs();
+        }
+      }
 
       updateSectionBannerPills();
     }
@@ -7748,14 +7892,28 @@ RMTP.views.advancing = function (el, params, query) {
         const toggleNoTechBtn = area.querySelector('#btn-toggle-no-tech');
         if (toggleNoTechBtn) {
           toggleNoTechBtn.addEventListener('click', () => {
+            // Permission Check: Reversing Self-Service staffing requires TM or Senior Tech authorization
+            if (ev.noTechNeeded && !isTMOrST) {
+              ui.toast('Only Technical Managers and Senior Techs can reverse Self-Service staffing.', 'warning');
+              return;
+            }
+
             ev.noTechNeeded = !ev.noTechNeeded;
             if (ev.noTechNeeded) {
+              ev.techRequiredManual = false;
               techs.length = 0;
               techs.push({ userId: '', role: 'None', isNoTech: true, isFreelancer: false, freelancerName: '', startTime: '', finishTime: '', bookingStatus: 'confirmed' });
               ui.toast('Marked event as Self-Service (No Tech Needed)', 'info');
             } else {
+              // Reversing to require technicians
+              ev.techRequiredManual = true;
+              ev.techReversedBy = (me && me.name) ? me.name : 'TM/ST';
               techs.length = 0;
-              ui.toast('Re-enabled technician staffing requirements', 'ok');
+              const currentSpace = (m.root.querySelector('#e-space') ? m.root.querySelector('#e-space').value : (spaceDrafts[activeSpaceIndex]?.space || ev.space)) || 'The Stage';
+              const crewSpecs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(currentSpace) : { rolesList: ['Sound'] };
+              const roles = (crewSpecs.rolesList && crewSpecs.rolesList.length) ? crewSpecs.rolesList : ['Sound'];
+              roles.forEach((r) => techs.push({ userId: '', role: r, isFreelancer: false, freelancerName: '', startTime: '', finishTime: '', bookingStatus: 'confirmed' }));
+              ui.toast('Re-enabled technician staffing requirements (TM/ST Override)', 'ok');
             }
             wireTechs();
           });
@@ -8333,6 +8491,8 @@ RMTP.views.advancing = function (el, params, query) {
 
         technicians: finalTechs,
         noTechNeeded: !!ev.noTechNeeded || finalTechs.some((t) => t.isNoTech),
+        techRequiredManual: ev.techRequiredManual !== undefined ? ev.techRequiredManual : (draft.techRequiredManual !== undefined ? draft.techRequiredManual : false),
+        techReversedBy: ev.techReversedBy || draft.techReversedBy || '',
         clientContact: (draft.clientContact || '').trim(),
         guestEngineer: !!draft.guestEngineer,
         techInfo: (draft.techInfo || '').trim(),

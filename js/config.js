@@ -48,6 +48,29 @@ RMTP.MEDIA_TYPES = ['DCP', 'Laptop via HDMI', 'Blu-Ray', 'HDMI (Other)'];
 RMTP.isSpace = function (loc) { return RMTP.SPACES.indexOf(loc) > -1; };
 RMTP.slug = function (s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); };
 
+/* Canonical date normalizer to standard ISO YYYY-MM-DD format (handles UK DD/MM/YYYY, ISO, and Date strings) */
+RMTP.normalizeDateStr = function (raw) {
+  if (!raw) return '';
+  const s = String(raw).trim();
+  if (!s) return '';
+  const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (dmy) {
+    return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+  }
+  const ymd = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (ymd) {
+    return `${ymd[1]}-${ymd[2].padStart(2, '0')}-${ymd[3].padStart(2, '0')}`;
+  }
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  return s.slice(0, 10);
+};
+
 /* ---- Shift roles & Technical Disciplines ----
    Per-shift role a tagged technician is covering on an event —
    distinct from a user's job title (position). An event can carry

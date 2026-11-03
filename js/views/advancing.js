@@ -165,6 +165,22 @@ RMTP.views.advancing = function (el, params, query) {
   let includeUnassigned = (RMTP._advIncludeUnassigned !== undefined ? RMTP._advIncludeUnassigned : true);
   let filterRequiresCrew = (RMTP._advRequiresCrew !== undefined ? RMTP._advRequiresCrew : false);
 
+  function normalizeDateStr(raw) {
+    if (RMTP.normalizeDateStr) return RMTP.normalizeDateStr(raw);
+    if (!raw) return '';
+    const s = String(raw).trim();
+    if (!s) return '';
+    const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+    const ymd = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    if (ymd) return `${ymd[1]}-${ymd[2].padStart(2, '0')}-${ymd[3].padStart(2, '0')}`;
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+    return s.slice(0, 10);
+  }
+
   function getTodayString() {
     const now = new Date();
     const y = now.getFullYear();
@@ -175,8 +191,37 @@ RMTP.views.advancing = function (el, params, query) {
 
   function isPastEvent(d) {
     if (!d) return false;
+    const norm = normalizeDateStr(d);
+    if (!norm) return false;
     const today = getTodayString();
-    return Boolean(d && String(d).slice(0, 10) < today);
+    return norm < today;
+  }
+
+  function compareEventsByDate(a, b, tab) {
+    const da = normalizeDateStr(a.date || (a.isGroup && a.events && a.events[0]?.date));
+    const db = normalizeDateStr(b.date || (b.isGroup && b.events && b.events[0]?.date));
+    const ta = a.startTime || (a.isGroup && a.events && a.events[0]?.startTime) || '';
+    const tb = b.startTime || (b.isGroup && b.events && b.events[0]?.startTime) || '';
+    const na = a.name || '';
+    const nb = b.name || '';
+
+    if (tab === 'past' || tab === 'deleted') {
+      if (!da && db) return 1;
+      if (da && !db) return -1;
+      const dateCmp = (db || '').localeCompare(da || '');
+      if (dateCmp !== 0) return dateCmp;
+      const timeCmp = (tb || '').localeCompare(ta || '');
+      if (timeCmp !== 0) return timeCmp;
+      return na.localeCompare(nb);
+    } else {
+      if (!da && db) return 1;
+      if (da && !db) return -1;
+      const dateCmp = (da || '9999').localeCompare(db || '9999');
+      if (dateCmp !== 0) return dateCmp;
+      const timeCmp = (ta || '23:59').localeCompare(tb || '23:59');
+      if (timeCmp !== 0) return timeCmp;
+      return na.localeCompare(nb);
+    }
   }
 
   function normalizeSpaceName(s) {
@@ -455,10 +500,20 @@ RMTP.views.advancing = function (el, params, query) {
   // Pool of all events in system
   const allEvents = store.all('advancing') || [];
 
-  // Auto-fill events in Auxiliary spaces to 'No Tech Needed' (Self-Service) by default
-  // (Can be reversed to require technicians by a Technical Manager or Senior Tech)
+  // Auto-fill events in Auxiliary spaces to 'No Tech Needed' (Self-Service) & heal date formats
   allEvents.forEach((ev) => {
-    if (ev.deleted) return;
+    let changed = false;
+    if (ev.date) {
+      const norm = normalizeDateStr(ev.date);
+      if (norm && norm !== ev.date) {
+        ev.date = norm;
+        changed = true;
+      }
+    }
+    if (ev.deleted) {
+      if (changed) store.upsert('advancing', ev);
+      return;
+    }
     if (RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(ev.space)) {
       if (ev.techRequiredManual !== true && !ev.noTechNeeded) {
         const techs = RMTP.eventTechnicians(ev);
@@ -466,11 +521,12 @@ RMTP.views.advancing = function (el, params, query) {
         if (!hasAssignedCrew) {
           ev.noTechNeeded = true;
           ev.technicians = [{ userId: '', role: 'None', isNoTech: true, isFreelancer: false, freelancerName: '', startTime: '', finishTime: '', bookingStatus: 'confirmed' }];
-          store.upsert('advancing', ev);
+          changed = true;
           if (RMTP.syncAdvancingToRota) RMTP.syncAdvancingToRota(ev);
         }
       }
     }
+    if (changed) store.upsert('advancing', ev);
   });
 
   // Filter events based on active technician filter & space/tab
@@ -511,7 +567,7 @@ RMTP.views.advancing = function (el, params, query) {
       if (filters.space) {
         if (!eventMatchesSpace(e, filters.space)) return false;
       }
-      if (filters.date && e.date !== filters.date) return false;
+      if (filters.date && normalizeDateStr(e.date) !== normalizeDateStr(filters.date)) return false;
       if (quickSearch) {
         const q = quickSearch.toLowerCase();
         const evName = (e.name || '').toLowerCase();
@@ -523,17 +579,7 @@ RMTP.views.advancing = function (el, params, query) {
       }
       return true;
     })
-    .sort((a, b) => {
-      if (currentTab === 'past' || currentTab === 'deleted') {
-        const dateCmp = (b.date || '').localeCompare(a.date || '');
-        if (dateCmp !== 0) return dateCmp;
-        return (b.startTime || '').localeCompare(a.startTime || '');
-      } else {
-        const dateCmp = (a.date || '9999').localeCompare(a.date || '9999');
-        if (dateCmp !== 0) return dateCmp;
-        return (a.startTime || '23:59').localeCompare(b.startTime || '23:59');
-      }
-    });
+    .sort((a, b) => compareEventsByDate(a, b, currentTab));
 
   const emptyMsg = !base.length
     ? (!allEvents.length ? ['clip', 'No events yet', 'Add an event to start advancing it.']
@@ -557,16 +603,20 @@ RMTP.views.advancing = function (el, params, query) {
   const groupMap = {};
   
   for (const e of shown) {
+    const eDate = normalizeDateStr(e.date);
     // Smart Fallback: if no explicit groupId exists, but it's an Artifax event, implicitly group by Name + Date
-    const effectiveGroupId = e.groupId || (e.artifaxId && e.name && e.name !== "Untitled" ? 'implicit-' + e.name.toLowerCase().trim().replace(/[^a-z0-9]/g, '-') + '-' + e.date : null);
+    const effectiveGroupId = e.groupId || (e.artifaxId && e.name && e.name !== "Untitled" ? 'implicit-' + e.name.toLowerCase().trim().replace(/[^a-z0-9]/g, '-') + '-' + (eDate || 'nodate') : null);
     
     if (effectiveGroupId) {
-      const key = effectiveGroupId + '|' + (e.date || 'TBC');
+      const key = effectiveGroupId + '|' + (eDate || 'TBC');
       if (!groupMap[key]) {
-        groupMap[key] = { isGroup: true, groupId: effectiveGroupId, date: e.date, name: e.name, events: [] };
+        groupMap[key] = { isGroup: true, groupId: effectiveGroupId, date: eDate || e.date, startTime: e.startTime || '', name: e.name, events: [] };
         groupedShown.push(groupMap[key]);
       }
       groupMap[key].events.push(e);
+      if (e.startTime && (!groupMap[key].startTime || e.startTime < groupMap[key].startTime)) {
+        groupMap[key].startTime = e.startTime;
+      }
     } else {
       groupedShown.push(e);
     }
@@ -591,6 +641,9 @@ RMTP.views.advancing = function (el, params, query) {
     }
     return item;
   });
+
+  // Strict date sorting for all cards displayed in advancing view
+  finalShown.sort((a, b) => compareEventsByDate(a, b, currentTab));
 
   el.innerHTML =
     '<div class="' + (RMTP._isSoftRender ? '' : 'view-enter') + '">' +
@@ -652,29 +705,49 @@ RMTP.views.advancing = function (el, params, query) {
               return '<div class="grid gap-3.5">' + finalShown.map(item => item.isGroup ? renderGroupedCard(item) : renderEventCard(item)).join('') + '</div>';
             }
             
-            const now = new Date();
-            const todayStr = now.toISOString().slice(0, 10);
-            const tomorrow = new Date(now);
-            tomorrow.setDate(tomorrow.getDate() + 1);
-            const tomorrowStr = tomorrow.toISOString().slice(0, 10);
-            
-            const isToday = (e) => e.date === todayStr;
-            const isTomorrow = (e) => e.date === tomorrowStr;
-            const isLater = (e) => e.date > tomorrowStr || !e.date;
+            const todayStr = getTodayString();
+            const tmwDate = new Date();
+            tmwDate.setDate(tmwDate.getDate() + 1);
+            const tmwY = tmwDate.getFullYear();
+            const tmwM = String(tmwDate.getMonth() + 1).padStart(2, '0');
+            const tmwDay = String(tmwDate.getDate()).padStart(2, '0');
+            const tomorrowStr = `${tmwY}-${tmwM}-${tmwDay}`;
 
-            const tdy = finalShown.filter(isToday);
-            const tmw = finalShown.filter(isTomorrow);
-            const ltr = finalShown.filter(isLater);
+            const tdy = [];
+            const tmw = [];
+            const ltr = [];
+            const unscheduled = [];
+
+            finalShown.forEach(item => {
+              const d = normalizeDateStr(item.date || (item.isGroup && item.events && item.events[0]?.date));
+              if (!d) {
+                unscheduled.push(item);
+              } else if (d <= todayStr) {
+                tdy.push(item);
+              } else if (d === tomorrowStr) {
+                tmw.push(item);
+              } else {
+                ltr.push(item);
+              }
+            });
+
+            tdy.sort((a, b) => compareEventsByDate(a, b, 'upcoming'));
+            tmw.sort((a, b) => compareEventsByDate(a, b, 'upcoming'));
+            ltr.sort((a, b) => compareEventsByDate(a, b, 'upcoming'));
+            unscheduled.sort((a, b) => compareEventsByDate(a, b, 'upcoming'));
 
             let html = '';
             if (tdy.length) {
-              html += '<div class="mb-6"><h3 class="text-xs font-bold uppercase tracking-wider text-accent mb-3 flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-accent animate-pulse"></span>Today</h3><div class="grid gap-3.5">' + tdy.map(item => item.isGroup ? renderGroupedCard(item) : renderEventCard(item)).join('') + '</div></div>';
+              html += '<div class="mb-6"><h3 class="text-xs font-bold uppercase tracking-wider text-accent mb-3 flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-accent animate-pulse"></span>Today (' + ui.formatDate(todayStr) + ')</h3><div class="grid gap-3.5">' + tdy.map(item => item.isGroup ? renderGroupedCard(item) : renderEventCard(item)).join('') + '</div></div>';
             }
             if (tmw.length) {
-              html += '<div class="mb-6"><h3 class="text-xs font-bold uppercase tracking-wider text-ink mb-3">Tomorrow</h3><div class="grid gap-3.5">' + tmw.map(item => item.isGroup ? renderGroupedCard(item) : renderEventCard(item)).join('') + '</div></div>';
+              html += '<div class="mb-6"><h3 class="text-xs font-bold uppercase tracking-wider text-ink mb-3 flex items-center gap-2">' + ui.icon('calendar', 'w-3.5 h-3.5 text-accent') + '<span>Tomorrow (' + ui.formatDate(tomorrowStr) + ')</span></h3><div class="grid gap-3.5">' + tmw.map(item => item.isGroup ? renderGroupedCard(item) : renderEventCard(item)).join('') + '</div></div>';
             }
             if (ltr.length) {
-              html += '<div><h3 class="text-xs font-bold uppercase tracking-wider text-muted mb-3">Upcoming</h3><div class="grid gap-3.5">' + ltr.map(item => item.isGroup ? renderGroupedCard(item) : renderEventCard(item)).join('') + '</div></div>';
+              html += '<div class="mb-6"><h3 class="text-xs font-bold uppercase tracking-wider text-muted mb-3 flex items-center gap-2">' + ui.icon('clock', 'w-3.5 h-3.5 text-muted') + '<span>Upcoming</span></h3><div class="grid gap-3.5">' + ltr.map(item => item.isGroup ? renderGroupedCard(item) : renderEventCard(item)).join('') + '</div></div>';
+            }
+            if (unscheduled.length) {
+              html += '<div class="mb-6"><h3 class="text-xs font-bold uppercase tracking-wider text-muted/70 mb-3 flex items-center gap-2">' + ui.icon('alert', 'w-3.5 h-3.5 text-muted') + '<span>Date TBC / Unscheduled</span></h3><div class="grid gap-3.5">' + unscheduled.map(item => item.isGroup ? renderGroupedCard(item) : renderEventCard(item)).join('') + '</div></div>';
             }
             return html;
           })() : ui.empty(emptyMsg[0], emptyMsg[1], emptyMsg[2]))
@@ -865,7 +938,8 @@ RMTP.views.advancing = function (el, params, query) {
     const eventsByDate = {};
     calEvents.forEach((ev) => {
       if (!ev.date) return;
-      const d = ev.date.slice(0, 10);
+      const d = normalizeDateStr(ev.date);
+      if (!d) return;
       if (!eventsByDate[d]) eventsByDate[d] = [];
       eventsByDate[d].push(ev);
     });
@@ -3225,7 +3299,7 @@ RMTP.views.advancing = function (el, params, query) {
     );
       
     // Sort by date (ascending)
-    allEvents.sort((a, b) => new Date(a.date || '9999').getTime() - new Date(b.date || '9999').getTime());
+    allEvents.sort((a, b) => compareEventsByDate(a, b, 'upcoming'));
 
     const optionsHtml = allEvents.map(e => 
       '<option value="' + e.id + '">' + (e.date ? ui.formatDate(e.date) : 'TBC') + ' – ' + ui.esc(e.name || '') + '</option>'

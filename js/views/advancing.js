@@ -1914,6 +1914,9 @@ RMTP.views.advancing = function (el, params, query) {
         }
         updateBulkDeleteButton();
       });
+    }
+  });
+
   // TM/ST Quick Toggle for Auxiliary Space Technician Requirements
   function handleToggleTechReq(eventId) {
     const ev = store.find('advancing', eventId);

@@ -249,6 +249,206 @@ RMTP.views.dcp = function (el, params, query) {
   }
   RMTP.syncDcpToAdvance = syncDcpToAdvance;
 
+  /* ---- Duplicate Detection & Merging Engine ---- */
+  function normalizeFilmTitle(title) {
+    if (!title) return '';
+    return String(title)
+      .toLowerCase()
+      .replace(/\b(screening|film|preview|dcp test|q&a|premiere|relaxed screening)\b/gi, '')
+      .replace(/\([0-9]{1,2}[a-z]?\)/gi, '') // e.g. (15), (PG), (12A), (U), (18)
+      .replace(/[^a-z0-9]/g, '')
+      .trim();
+  }
+  RMTP.normalizeFilmTitle = normalizeFilmTitle;
+
+  function getDcpDedupKey(d) {
+    if (!d) return '';
+    const normTitle = normalizeFilmTitle(d.filmTitle || d.eventName);
+    const normDate = (d.eventDate || '').trim();
+    const normScreen = resolveNormalizedScreen(d.screen);
+    if (!normTitle) return '';
+    return `${normTitle}|${normDate}|${normScreen}`;
+  }
+  RMTP.getDcpDedupKey = getDcpDedupKey;
+
+  function findDuplicateClusters(dcpsList) {
+    const clusterMap = new Map();
+
+    dcpsList.forEach(d => {
+      // 1. Group by eventId if present
+      if (d.eventId && String(d.eventId).trim()) {
+        const evKey = 'event:' + String(d.eventId).trim();
+        if (!clusterMap.has(evKey)) clusterMap.set(evKey, []);
+        clusterMap.get(evKey).push(d);
+      }
+      // 2. Group by normalized title + date + screen
+      const dedupKey = getDcpDedupKey(d);
+      if (dedupKey) {
+        const k = 'title:' + dedupKey;
+        if (!clusterMap.has(k)) clusterMap.set(k, []);
+        clusterMap.get(k).push(d);
+      }
+    });
+
+    // Assemble connected components using union-find
+    const parent = new Map();
+    function find(id) {
+      if (!parent.has(id)) parent.set(id, id);
+      if (parent.get(id) !== id) {
+        parent.set(id, find(parent.get(id)));
+      }
+      return parent.get(id);
+    }
+    function union(idA, idB) {
+      const rootA = find(idA);
+      const rootB = find(idB);
+      if (rootA !== rootB) {
+        parent.set(rootA, rootB);
+      }
+    }
+
+    clusterMap.forEach(items => {
+      if (items.length > 1) {
+        for (let i = 1; i < items.length; i++) {
+          union(items[0].id, items[i].id);
+        }
+      }
+    });
+
+    const rootGroups = new Map();
+    const duplicateIds = new Set();
+    const dupGroupMap = new Map();
+
+    dcpsList.forEach(d => {
+      if (parent.has(d.id)) {
+        const root = find(d.id);
+        if (!rootGroups.has(root)) rootGroups.set(root, []);
+        rootGroups.get(root).push(d);
+      }
+    });
+
+    const duplicateGroups = [];
+    rootGroups.forEach((items, root) => {
+      if (items.length > 1) {
+        const grp = {
+          id: root,
+          title: items[0].filmTitle || items[0].eventName || 'Screening',
+          date: items[0].eventDate || '',
+          screen: items[0].screen || '',
+          items
+        };
+        duplicateGroups.push(grp);
+        items.forEach(it => {
+          duplicateIds.add(it.id);
+          dupGroupMap.set(it.id, grp);
+        });
+      }
+    });
+
+    return {
+      groups: duplicateGroups,
+      duplicateIds,
+      dupGroupMap,
+      duplicateCount: duplicateIds.size
+    };
+  }
+  RMTP.findDuplicateClusters = findDuplicateClusters;
+
+  function mergeDuplicateGroup(items) {
+    if (!items || items.length < 2) return null;
+
+    function score(item) {
+      let s = 0;
+      if (item.eventId) {
+        s += 5;
+        if (String(item.eventId).startsWith('evt-')) s += 5;
+      }
+      if (item.tested) s += 6;
+      if (item.outcome === 'Passed') s += 6;
+      else if (item.outcome === 'Passed with Caveats') s += 4;
+      else if (item.outcome === 'Failed') s += 2;
+      if (item.mediaReceived) s += 3;
+      if (item.kdmCplReceived) s += 3;
+      if (item.playlistMade) s += 3;
+      if (item.holdingSlidesReady) s += 2;
+      if (item.subsAudioSync) s += 2;
+      if (item.issuesNoted && item.issuesNoted.trim()) s += 3;
+      if (item.linkedTaskId || item.furtherAction) s += 3;
+      return s;
+    }
+
+    const sorted = items.slice().sort((a, b) => score(b) - score(a));
+    const primary = JSON.parse(JSON.stringify(sorted[0]));
+    const toDelete = sorted.slice(1);
+
+    toDelete.forEach(other => {
+      if (!primary.eventId && other.eventId) primary.eventId = other.eventId;
+      if (!primary.mediaType && other.mediaType) primary.mediaType = other.mediaType;
+      if (!primary.eventStartTime && other.eventStartTime) primary.eventStartTime = other.eventStartTime;
+      if (!primary.eventFinishTime && other.eventFinishTime) primary.eventFinishTime = other.eventFinishTime;
+
+      if (other.mediaReceived) primary.mediaReceived = true;
+      if (other.kdmCplReceived) primary.kdmCplReceived = true;
+      if (other.playlistMade) primary.playlistMade = true;
+      if (other.tested) primary.tested = true;
+      if (other.holdingSlidesReady) primary.holdingSlidesReady = true;
+      if (other.subsAudioSync) primary.subsAudioSync = true;
+
+      const rank = { 'Passed': 4, 'Passed with Caveats': 3, 'Failed': 2, 'Pending': 1 };
+      if ((rank[other.outcome] || 0) > (rank[primary.outcome] || 0)) {
+        primary.outcome = other.outcome;
+      }
+
+      if (!primary.testedByUserId && other.testedByUserId) {
+        primary.testedByUserId = other.testedByUserId;
+        primary.testedByUserName = other.testedByUserName;
+      }
+      if (!primary.testDateTime && other.testDateTime) {
+        primary.testDateTime = other.testDateTime;
+      }
+
+      if (other.issuesNoted && other.issuesNoted.trim()) {
+        const note = other.issuesNoted.trim();
+        if (!primary.issuesNoted) {
+          primary.issuesNoted = note;
+        } else if (!primary.issuesNoted.includes(note)) {
+          primary.issuesNoted = primary.issuesNoted.trim() + '; ' + note;
+        }
+      }
+
+      if (other.furtherAction && other.furtherAction.trim()) {
+        const act = other.furtherAction.trim();
+        if (!primary.furtherAction) {
+          primary.furtherAction = act;
+          primary.hasFurtherAction = true;
+        } else if (!primary.furtherAction.includes(act)) {
+          primary.furtherAction = primary.furtherAction.trim() + '; ' + act;
+          primary.hasFurtherAction = true;
+        }
+      }
+
+      if (!primary.linkedTaskId && other.linkedTaskId) {
+        primary.linkedTaskId = other.linkedTaskId;
+      }
+    });
+
+    primary.updatedAt = new Date().toISOString();
+    store.upsert('dcps', primary);
+
+    toDelete.forEach(other => {
+      store.remove('dcps', other.id);
+    });
+
+    syncDcpToAdvance(primary);
+
+    if (RMTP.syncSb && RMTP.syncSb.drain) {
+      RMTP.syncSb.drain();
+    }
+
+    return primary;
+  }
+  RMTP.mergeDuplicateGroup = mergeDuplicateGroup;
+
   function syncAdvanceToDcp(ev) {
     if (!ev) return;
     const isCinema = isCinemaSpace(ev.space) || isCinemaSpace(ev.room);
@@ -259,8 +459,21 @@ RMTP.views.dcp = function (el, params, query) {
     if (!isScreenEvent) return;
 
     const allDcps = store.all('dcps') || [];
-    let existing = allDcps.find(d => d.eventId === ev.id || d.id === 'dcp-' + ev.id);
     const normalizedScreen = resolveNormalizedScreen(ev.space, ev.room);
+    const evDedupKey = getDcpDedupKey({
+      filmTitle: ev.name || ev.title,
+      eventName: ev.name || ev.title,
+      eventDate: ev.date || '',
+      screen: normalizedScreen
+    });
+
+    let existing = allDcps.find(d => d.eventId === ev.id || d.id === 'dcp-' + ev.id);
+    if (!existing && evDedupKey) {
+      existing = allDcps.find(d => getDcpDedupKey(d) === evDedupKey);
+      if (existing && !existing.eventId) {
+        existing.eventId = ev.id;
+      }
+    }
 
     if (existing) {
       let changed = false;
@@ -446,8 +659,21 @@ RMTP.views.dcp = function (el, params, query) {
 
       if (!isScreenEvent) return;
 
-      const existing = dcps.find(d => d.eventId === ev.id || d.id === 'dcp-' + ev.id);
       const normalizedScreen = resolveNormalizedScreen(ev.space, ev.room);
+      const evDedupKey = getDcpDedupKey({
+        filmTitle: ev.name || ev.title,
+        eventName: ev.name || ev.title,
+        eventDate: ev.date || '',
+        screen: normalizedScreen
+      });
+
+      let existing = dcps.find(d => d.eventId === ev.id || d.id === 'dcp-' + ev.id);
+      if (!existing && evDedupKey) {
+        existing = dcps.find(d => getDcpDedupKey(d) === evDedupKey);
+        if (existing && !existing.eventId) {
+          existing.eventId = ev.id;
+        }
+      }
 
       if (!existing) {
         const isRec = !!(ev.dcp_received || ev.dcpReceived);
@@ -538,13 +764,18 @@ RMTP.views.dcp = function (el, params, query) {
   /* ---- Filter State ---- */
   let activeScreenTab = 'all'; // 'all', 'Screen One', 'Screen Two', 'Screen Three'
   let activeOutcomeFilter = 'all'; // 'all', 'Passed', 'Pending', 'Caveats', 'Failed'
-  let activeDateFilter = 'upcoming'; // 'upcoming' (default), 'all', 'past'
+  let activeDateFilter = 'upcoming'; // 'upcoming' (default), 'all', 'past', 'duplicates'
   let excludePast = true;
   let searchTerm = '';
+  let currentDuplicatesInfo = { groups: [], duplicateIds: new Set(), dupGroupMap: new Map(), duplicateCount: 0 };
 
   function renderView() {
     const dcps = syncAdvancingToDcps();
     const todayIso = new Date().toISOString().slice(0, 10);
+
+    // Calculate duplicate clusters across full ingested dcps
+    const duplicatesInfo = findDuplicateClusters(dcps);
+    currentDuplicatesInfo = duplicatesInfo;
 
     // Calculate KPI metrics & date buckets
     const totalCount = dcps.length;
@@ -562,8 +793,10 @@ RMTP.views.dcp = function (el, params, query) {
       filtered = filtered.filter(d => d.screen === activeScreenTab);
     }
 
-    // Date filtering and past screening exclusion
-    if (activeDateFilter === 'upcoming' || (excludePast && activeDateFilter !== 'all' && activeDateFilter !== 'past')) {
+    // Date filtering, past screening exclusion, and duplicates filter
+    if (activeDateFilter === 'duplicates') {
+      filtered = filtered.filter(d => duplicatesInfo.duplicateIds.has(d.id));
+    } else if (activeDateFilter === 'upcoming' || (excludePast && activeDateFilter !== 'all' && activeDateFilter !== 'past')) {
       filtered = filtered.filter(d => !d.eventDate || d.eventDate >= todayIso);
     } else if (activeDateFilter === 'past') {
       filtered = filtered.filter(d => d.eventDate && d.eventDate < todayIso);
@@ -589,18 +822,31 @@ RMTP.views.dcp = function (el, params, query) {
       );
     }
 
-    // Chronological sort: for upcoming, soonest first; for past archive, most recent past first
-    filtered.sort((a, b) => {
-      const da = (a.eventDate || '') + ' ' + (a.eventStartTime || '00:00');
-      const db = (b.eventDate || '') + ' ' + (b.eventStartTime || '00:00');
-      if (activeDateFilter === 'past') {
-        return db.localeCompare(da);
-      }
-      if (da && db && da.trim() !== '00:00' && db.trim() !== '00:00') {
-        return da.localeCompare(db);
-      }
-      return (b.updatedAt || '').localeCompare(a.updatedAt || '');
-    });
+    // Sort order
+    if (activeDateFilter === 'duplicates') {
+      // Group matched duplicates next to each other
+      filtered.sort((a, b) => {
+        const grpA = duplicatesInfo.dupGroupMap.get(a.id);
+        const grpB = duplicatesInfo.dupGroupMap.get(b.id);
+        const idA = grpA ? grpA.id : (a.filmTitle || a.id);
+        const idB = grpB ? grpB.id : (b.filmTitle || b.id);
+        if (idA !== idB) return idA.localeCompare(idB);
+        return (a.id || '').localeCompare(b.id || '');
+      });
+    } else {
+      // Chronological sort: for upcoming, soonest first; for past archive, most recent past first
+      filtered.sort((a, b) => {
+        const da = (a.eventDate || '') + ' ' + (a.eventStartTime || '00:00');
+        const db = (b.eventDate || '') + ' ' + (b.eventStartTime || '00:00');
+        if (activeDateFilter === 'past') {
+          return db.localeCompare(da);
+        }
+        if (da && db && da.trim() !== '00:00' && db.trim() !== '00:00') {
+          return da.localeCompare(db);
+        }
+        return (b.updatedAt || '').localeCompare(a.updatedAt || '');
+      });
+    }
 
     el.innerHTML =
       '<div class="space-y-6 w-full max-w-full pb-16">' +
@@ -696,6 +942,14 @@ RMTP.views.dcp = function (el, params, query) {
                 (activeDateFilter === 'past' ? 'bg-accent/15 text-accent border border-accent/30 font-bold' : 'text-muted hover:text-ink hover:bg-panel/40') + '">' +
                 ui.icon('clock', 'w-3.5 h-3.5') + '<span>Past Archive (' + pastCount + ')</span>' +
               '</button>' +
+              '<button type="button" data-date-tab="duplicates" class="px-2.5 py-1 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ' +
+                (activeDateFilter === 'duplicates'
+                  ? 'bg-amber-500/25 text-amber-300 border border-amber-500/50 font-bold shadow-2xs'
+                  : (duplicatesInfo.duplicateCount > 0
+                      ? 'bg-amber-500/10 text-amber-400 hover:text-amber-300 hover:bg-amber-500/20 border border-amber-500/30'
+                      : 'text-muted hover:text-ink hover:bg-panel/40')) + '">' +
+                ui.icon('copy', 'w-3.5 h-3.5') + '<span>Duplicates (' + duplicatesInfo.duplicateCount + ')</span>' +
+              '</button>' +
             '</div>' +
 
             '<div class="flex items-center gap-2.5 shrink-0 flex-wrap">' +
@@ -716,8 +970,37 @@ RMTP.views.dcp = function (el, params, query) {
             '</div>' +
           '</div>' +
 
-          // Informational banner when past screenings are excluded
-          (activeDateFilter === 'upcoming' && pastCount > 0 ? (
+          // Duplicates banner or past screening informational banner
+          (activeDateFilter === 'duplicates' ? (
+            '<div class="p-3.5 sm:p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">' +
+              '<div class="flex items-start sm:items-center gap-2.5">' +
+                '<span class="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">' +
+                  ui.icon('copy', 'w-4 h-4') +
+                '</span>' +
+                '<div>' +
+                  '<div class="font-bold text-ink text-sm">Filtered for Duplicates (' + duplicatesInfo.duplicateCount + ' records across ' + duplicatesInfo.groups.length + ' group' + (duplicatesInfo.groups.length === 1 ? '' : 's') + ')</div>' +
+                  '<div class="text-muted text-[11px] mt-0.5">Showing screenings that share the same film title, screening date, and screen. Click \u201cMerge\u201d on any record or merge all at once to consolidate tests and eliminate redundant rows.</div>' +
+                '</div>' +
+              '</div>' +
+              (duplicatesInfo.duplicateCount > 0 ? (
+                '<div class="flex items-center gap-2 shrink-0">' +
+                  '<button type="button" id="btn-merge-all-duplicates" class="btn btn-warning !py-1.5 !px-3 text-xs font-bold flex items-center gap-1.5 shadow-sm">' +
+                    ui.icon('check', 'w-3.5 h-3.5') + '<span>Merge All Duplicates</span>' +
+                  '</button>' +
+                '</div>'
+              ) : '') +
+            '</div>'
+          ) : (duplicatesInfo.duplicateCount > 0 ? (
+            '<div class="flex items-center justify-between text-xs px-3.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300">' +
+              '<div class="flex items-center gap-1.5">' +
+                ui.icon('copy', 'w-3.5 h-3.5 text-amber-400 shrink-0') +
+                '<span>Detected <strong>' + duplicatesInfo.duplicateCount + '</strong> duplicate screening record' + (duplicatesInfo.duplicateCount === 1 ? '' : 's') + ' across ' + duplicatesInfo.groups.length + ' group' + (duplicatesInfo.groups.length === 1 ? '' : 's') + '.</span>' +
+              '</div>' +
+              '<button type="button" data-date-tab="duplicates" class="text-amber-300 hover:text-white underline font-semibold text-[11px] flex items-center gap-1">' +
+                '<span>Filter for Duplicates</span> \u2192' +
+              '</button>' +
+            '</div>'
+          ) : (activeDateFilter === 'upcoming' && pastCount > 0 ? (
             '<div class="flex items-center justify-between text-xs px-3.5 py-1.5 rounded-lg bg-panel border border-line text-muted">' +
               '<div class="flex items-center gap-1.5">' +
                 ui.icon('clock', 'w-3.5 h-3.5 text-accent') +
@@ -727,7 +1010,7 @@ RMTP.views.dcp = function (el, params, query) {
                 '<span>View Past Archive</span> \u2192' +
               '</button>' +
             '</div>'
-          ) : '') +
+          ) : ''))) +
         '</div>' +
 
         // ---- Main Screenings Pre-Testing Checklist Table (Desktop & Tablet) ----
@@ -736,13 +1019,14 @@ RMTP.views.dcp = function (el, params, query) {
             '<div class="w-12 h-12 rounded-xl bg-panel2 flex items-center justify-center mx-auto mb-3 text-muted">' +
               ui.icon('film', 'w-6 h-6') +
             '</div>' +
-            '<h3 class="font-display font-semibold text-ink text-base">No Screenings in Selected View</h3>' +
+            '<h3 class="font-display font-semibold text-ink text-base">' + (activeDateFilter === 'duplicates' ? 'No Duplicates Found' : 'No Screenings in Selected View') + '</h3>' +
             '<p class="text-xs text-muted max-w-sm mx-auto mt-1">' +
               (searchTerm ? 'No screenings match your search term \u201c' + ui.esc(searchTerm) + '\u201d.' :
-               (activeDateFilter === 'upcoming' ? 'No upcoming screenings found. Past screenings may be filtered out.' : 'No screenings in this screen tab.')) +
+               (activeDateFilter === 'duplicates' ? 'No duplicate screening records detected in the tracker. All screening entries are unique.' :
+               (activeDateFilter === 'upcoming' ? 'No upcoming screenings found. Past screenings may be filtered out.' : 'No screenings in this screen tab.'))) +
             '</p>' +
             '<div class="mt-4 flex justify-center gap-2">' +
-              '<button id="btn-reset-filters" class="btn btn-ghost text-xs">Reset Filters</button>' +
+              '<button id="btn-reset-filters" class="btn btn-ghost text-xs">' + (activeDateFilter === 'duplicates' ? 'Return to Upcoming Queue' : 'Reset Filters') + '</button>' +
               '<button id="btn-empty-add-dcp" class="btn btn-primary text-xs">Add Manual Screening</button>' +
             '</div>' +
           '</div>'
@@ -760,11 +1044,11 @@ RMTP.views.dcp = function (el, params, query) {
                       '<th class="py-2.5 px-3 min-w-[180px]">Issues Noted</th>' +
                       '<th class="py-2.5 px-3 min-w-[140px]">Outcome</th>' +
                       '<th class="py-2.5 px-3 min-w-[170px]">Further Action / Task</th>' +
-                      '<th class="py-2.5 px-3 text-right sticky right-0 bg-panel2/90 z-20 w-[140px] min-w-[140px] shadow-[-8px_0_10px_-4px_rgba(0,0,0,0.3)]">Sign-off</th>' +
+                      '<th class="py-2.5 px-3 text-right sticky right-0 bg-panel2/90 z-20 w-[180px] min-w-[180px] shadow-[-8px_0_10px_-4px_rgba(0,0,0,0.3)]">Actions</th>' +
                     '</tr>' +
                   '</thead>' +
                   '<tbody class="divide-y divide-line/60 font-sans">' +
-                    filtered.map(d => renderScreeningRow(d)).join('') +
+                    filtered.map(d => renderScreeningRow(d, duplicatesInfo)).join('') +
                   '</tbody>' +
                 '</table>' +
               '</div>' +
@@ -772,7 +1056,7 @@ RMTP.views.dcp = function (el, params, query) {
 
             // Mobile Card View (< md)
             '<div class="grid grid-cols-1 gap-3.5 md:hidden">' +
-              filtered.map(d => renderScreeningMobileCard(d)).join('') +
+              filtered.map(d => renderScreeningMobileCard(d, duplicatesInfo)).join('') +
             '</div>' +
           '</div>'
         )) +
@@ -782,9 +1066,11 @@ RMTP.views.dcp = function (el, params, query) {
   }
 
   /* ---- Render Desktop Row ---- */
-  function renderScreeningRow(dcp) {
+  function renderScreeningRow(dcp, dupInfo) {
     const todayIso = new Date().toISOString().slice(0, 10);
     const isPast = dcp.eventDate && dcp.eventDate < todayIso;
+    const isDup = dupInfo && dupInfo.dupGroupMap && dupInfo.dupGroupMap.has(dcp.id);
+    const dupGroup = isDup ? dupInfo.dupGroupMap.get(dcp.id) : null;
 
     // Outcome Badge
     let outcomeBadge = '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-panel2 text-muted border border-line">Pending</span>';
@@ -827,7 +1113,7 @@ RMTP.views.dcp = function (el, params, query) {
     }
 
     return (
-      '<tr class="hover:bg-panel2/30 transition-colors group ' + (isPast ? 'opacity-85' : '') + '">' +
+      '<tr class="hover:bg-panel2/30 transition-colors group ' + (isDup ? 'bg-amber-500/[0.03]' : '') + ' ' + (isPast ? 'opacity-85' : '') + '">' +
         // 1. Media Type & Advance Dropdown (first column as requested)
         '<td class="py-3 px-3 align-top min-w-[170px] border-b border-line/60">' +
           '<div class="mb-1.5">' +
@@ -855,6 +1141,13 @@ RMTP.views.dcp = function (el, params, query) {
           '<div class="font-display font-bold text-ink text-sm group-hover:text-accent transition-colors cursor-pointer" data-open-signoff="' + dcp.id + '" title="Click to open pre-screening sign-off sheet">' +
             ui.esc(dcp.filmTitle || dcp.eventName || 'Screening') +
           '</div>' +
+          (isDup && dupGroup ? (
+            '<div class="mt-1">' +
+              '<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono bg-amber-500/15 text-amber-400 border border-amber-500/30" title="This screening has ' + dupGroup.items.length + ' matching records in the tracker">' +
+                ui.icon('copy', 'w-3 h-3 text-amber-400') + '<span>Duplicate (' + dupGroup.items.length + ' records)</span>' +
+              '</span>' +
+            '</div>'
+          ) : '') +
           '<div class="text-[11px] text-muted mt-0.5">' +
             (dcp.testedByUserName ? 'Tested by <span class="text-ink font-medium">' + ui.esc(dcp.testedByUserName) + '</span>' : '<span class="text-muted/80">Untested</span>') +
             (dcp.testDateTime ? ' \u00b7 ' + new Date(dcp.testDateTime).toLocaleDateString([], { month: 'short', day: 'numeric' }) : '') +
@@ -917,8 +1210,13 @@ RMTP.views.dcp = function (el, params, query) {
         '</td>' +
 
         // 7. Actions (Sticky column on right edge so buttons are never cut off)
-        '<td class="py-3 px-3 align-middle text-right whitespace-nowrap min-w-[140px] w-[140px] sticky right-0 bg-panel group-hover:bg-[#1a202a] transition-colors z-10 shadow-[-10px_0_12px_-4px_rgba(0,0,0,0.45)] border-b border-l border-line/60">' +
+        '<td class="py-3 px-3 align-middle text-right whitespace-nowrap min-w-[180px] w-[180px] sticky right-0 bg-panel group-hover:bg-[#1a202a] transition-colors z-10 shadow-[-10px_0_12px_-4px_rgba(0,0,0,0.45)] border-b border-l border-line/60">' +
           '<div class="flex items-center justify-end gap-1.5 shrink-0">' +
+            (isDup ? (
+              '<button type="button" data-merge-dcp="' + dcp.id + '" class="btn btn-warning !py-1 !px-2 text-xs font-semibold flex items-center gap-1 shrink-0 shadow-2xs" title="Merge this duplicate group into one consolidated record">' +
+                ui.icon('copy', 'w-3.5 h-3.5') + '<span>Merge</span>' +
+              '</button>'
+            ) : '') +
             '<button type="button" data-open-signoff="' + dcp.id + '" class="btn btn-primary !py-1 !px-2 text-xs font-semibold flex items-center gap-1 shadow-2xs whitespace-nowrap" title="Open Full Sign-off Sheet">' +
               ui.icon('check', 'w-3.5 h-3.5') + '<span>Sign-off</span>' +
             '</button>' +
@@ -932,14 +1230,17 @@ RMTP.views.dcp = function (el, params, query) {
   }
 
   /* ---- Render Mobile Card (< md) ---- */
-  function renderScreeningMobileCard(dcp) {
+  function renderScreeningMobileCard(dcp, dupInfo) {
     const todayIso = new Date().toISOString().slice(0, 10);
     const isPast = dcp.eventDate && dcp.eventDate < todayIso;
+    const isDup = dupInfo && dupInfo.dupGroupMap && dupInfo.dupGroupMap.has(dcp.id);
+    const dupGroup = isDup ? dupInfo.dupGroupMap.get(dcp.id) : null;
 
     let outcomeClass = 'border-line';
     if (dcp.outcome === 'Passed') outcomeClass = 'border-ok/40 bg-ok/5';
     else if (dcp.outcome === 'Passed with Caveats') outcomeClass = 'border-warning/40 bg-warning/5';
     else if (dcp.outcome === 'Failed') outcomeClass = 'border-danger/40 bg-danger/5';
+    if (isDup) outcomeClass = 'border-amber-500/40 bg-amber-500/5';
 
     return (
       '<div class="p-4 rounded-xl bg-panel border ' + outcomeClass + ' shadow-2xs space-y-3.5 ' + (isPast ? 'opacity-85' : '') + '">' +
@@ -964,8 +1265,15 @@ RMTP.views.dcp = function (el, params, query) {
         '</div>' +
 
         '<div>' +
-          '<div class="font-display font-bold text-ink text-base cursor-pointer hover:text-accent" data-open-signoff="' + dcp.id + '">' +
-            ui.esc(dcp.filmTitle || dcp.eventName || 'Screening') +
+          '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+            '<div class="font-display font-bold text-ink text-base cursor-pointer hover:text-accent" data-open-signoff="' + dcp.id + '">' +
+              ui.esc(dcp.filmTitle || dcp.eventName || 'Screening') +
+            '</div>' +
+            (isDup && dupGroup ? (
+              '<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono bg-amber-500/15 text-amber-400 border border-amber-500/30">' +
+                ui.icon('copy', 'w-3 h-3 text-amber-400') + '<span>Duplicate (' + dupGroup.items.length + ')</span>' +
+              '</span>'
+            ) : '') +
           '</div>' +
           '<div class="text-xs text-muted mt-0.5">' +
             (dcp.testedByUserName ? 'Tested by ' + ui.esc(dcp.testedByUserName) : 'Untested') +
@@ -1017,6 +1325,11 @@ RMTP.views.dcp = function (el, params, query) {
             '</select>' +
           '</div>' +
           '<div class="flex items-center gap-2">' +
+            (isDup ? (
+              '<button type="button" data-merge-dcp="' + dcp.id + '" class="btn btn-warning !py-1 !px-2 text-xs font-semibold flex items-center gap-1">' +
+                ui.icon('copy', 'w-3.5 h-3.5') + '<span>Merge</span>' +
+              '</button>'
+            ) : '') +
             '<button type="button" data-open-signoff="' + dcp.id + '" class="btn btn-primary !py-1 !px-2.5 text-xs font-semibold flex items-center gap-1">' +
               ui.icon('check', 'w-3.5 h-3.5') + '<span>Sign-off Sheet</span>' +
             '</button>' +
@@ -1065,8 +1378,26 @@ RMTP.views.dcp = function (el, params, query) {
       '<option value="' + u.id + '"' + (item.testedByUserId === u.id ? ' selected' : '') + '>' + ui.esc(auth.displayName(u)) + ' (' + ui.esc(u.position || u.role) + ')</option>'
     ).join('');
 
+    const dupGroup = currentDuplicatesInfo && currentDuplicatesInfo.dupGroupMap && currentDuplicatesInfo.dupGroupMap.get(item.id);
+
     const modalBody =
       '<div class="space-y-6 text-xs max-h-[75vh] overflow-y-auto pr-1">' +
+        // Duplicate warning banner if screening has duplicates
+        (dupGroup ? (
+          '<div class="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">' +
+            '<div class="flex items-center gap-2">' +
+              ui.icon('copy', 'w-4 h-4 text-amber-400 shrink-0') +
+              '<div>' +
+                '<div class="font-bold text-amber-300">Duplicate Screening Detected (' + dupGroup.items.length + ' records)</div>' +
+                '<div class="text-[11px] text-muted">This title exists ' + dupGroup.items.length + ' times on ' + ui.esc(item.eventDate || 'this date') + ' in ' + ui.esc(item.screen || 'cinema') + '.</div>' +
+              '</div>' +
+            '</div>' +
+            '<button type="button" id="btn-modal-merge-dup" class="btn btn-warning !py-1 !px-2.5 text-xs font-bold flex items-center gap-1 shrink-0">' +
+              ui.icon('copy', 'w-3.5 h-3.5') + '<span>Merge Duplicates</span>' +
+            '</button>' +
+          '</div>'
+        ) : '') +
+
         // Panel 1: Screening & Media Identity
         '<div class="p-4 rounded-xl bg-panel2/40 border border-line space-y-3.5">' +
           '<div class="eyebrow text-accent flex items-center justify-between">' +
@@ -1408,6 +1739,17 @@ RMTP.views.dcp = function (el, params, query) {
         renderView();
       });
     }
+
+    // Modal quick-merge duplicate button
+    const btnModalMerge = m.root.querySelector('#btn-modal-merge-dup');
+    if (btnModalMerge && dupGroup) {
+      btnModalMerge.addEventListener('click', () => {
+        mergeDuplicateGroup(dupGroup.items);
+        ui.toast('Merged duplicate records for \u201c' + (dupGroup.title || 'Screening') + '\u201d', 'ok');
+        m.close();
+        renderView();
+      });
+    }
   }
 
   /* ---- Attach Event Listeners to View ---- */
@@ -1424,12 +1766,54 @@ RMTP.views.dcp = function (el, params, query) {
     el.querySelectorAll('[data-date-tab]').forEach(btn => {
       btn.addEventListener('click', () => {
         activeDateFilter = btn.getAttribute('data-date-tab');
-        if (activeDateFilter === 'all' || activeDateFilter === 'past') {
+        if (activeDateFilter === 'all' || activeDateFilter === 'past' || activeDateFilter === 'duplicates') {
           excludePast = false;
         } else {
           excludePast = true;
         }
         renderView();
+      });
+    });
+
+    // Batch merge all duplicates button
+    const btnMergeAll = el.querySelector('#btn-merge-all-duplicates');
+    if (btnMergeAll) {
+      btnMergeAll.addEventListener('click', async () => {
+        if (!currentDuplicatesInfo || currentDuplicatesInfo.duplicateCount === 0) return;
+        const ok = await ui.confirm(
+          'Automatically merge all ' + currentDuplicatesInfo.duplicateCount + ' duplicate records across ' + currentDuplicatesInfo.groups.length + ' screening groups? Best testing sign-offs, notes, and media checklists will be preserved.',
+          {
+            title: 'Merge All Duplicates',
+            confirmLabel: 'Merge All (' + currentDuplicatesInfo.duplicateCount + ' records)'
+          }
+        );
+        if (ok) {
+          currentDuplicatesInfo.groups.forEach(grp => mergeDuplicateGroup(grp.items));
+          ui.toast('Successfully merged all duplicate screenings!', 'ok');
+          renderView();
+        }
+      });
+    }
+
+    // Individual duplicate merge button (per-row or per-card)
+    el.querySelectorAll('[data-merge-dcp]').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const id = btn.getAttribute('data-merge-dcp');
+        const grp = currentDuplicatesInfo && currentDuplicatesInfo.dupGroupMap && currentDuplicatesInfo.dupGroupMap.get(id);
+        if (!grp) return;
+        const ok = await ui.confirm(
+          'Merge ' + grp.items.length + ' duplicate records for \u201c' + (grp.title || 'Screening') + '\u201d into a single consolidated record? Testing sign-offs and notes will be preserved.',
+          {
+            title: 'Merge Duplicate Screenings',
+            confirmLabel: 'Merge Duplicates'
+          }
+        );
+        if (ok) {
+          mergeDuplicateGroup(grp.items);
+          ui.toast('Merged duplicate records for \u201c' + (grp.title || 'Screening') + '\u201d', 'ok');
+          renderView();
+        }
       });
     });
 

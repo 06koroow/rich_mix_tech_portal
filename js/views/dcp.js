@@ -616,6 +616,15 @@ RMTP.views.dcp = function (el, params, query) {
         if (isPassed && !existing.tested) { existing.tested = true; changed = true; }
       }
       if (ev.qc_status && existing.outcome !== ev.qc_status) { existing.outcome = ev.qc_status; changed = true; }
+      // Decouple from Artifax Event Description: purge any legacy Artifax event descriptions from issuesNoted
+      const artifaxDesc = (ev.techInfo || ev.notes || ev.artifaxNotes || '').trim();
+      if (artifaxDesc && ev.dcp_notes && ev.dcp_notes.trim() === artifaxDesc) {
+        ev.dcp_notes = '';
+      }
+      if (artifaxDesc && existing.issuesNoted && existing.issuesNoted.trim() === artifaxDesc && !ev.dcp_notes) {
+        existing.issuesNoted = '';
+        changed = true;
+      }
       if (ev.dcp_notes && existing.issuesNoted !== ev.dcp_notes) { existing.issuesNoted = ev.dcp_notes; changed = true; }
       if (ev.further_action && existing.furtherAction !== ev.further_action) {
         existing.furtherAction = ev.further_action;
@@ -653,7 +662,7 @@ RMTP.views.dcp = function (el, params, query) {
         tested: isPassed,
         holdingSlidesReady: false,
         subsAudioSync: isPassed,
-        issuesNoted: (ev.dcp_notes || ev.techInfo || '').trim(),
+        issuesNoted: (ev.dcp_notes || '').trim(),
         outcome: outcomeVal,
         hasFurtherAction: !!ev.further_action,
         furtherAction: ev.further_action || '',
@@ -814,7 +823,7 @@ RMTP.views.dcp = function (el, params, query) {
           tested: isPassed,
           holdingSlidesReady: false,
           subsAudioSync: isPassed,
-          issuesNoted: (ev.dcp_notes || ev.techInfo || '').trim(),
+          issuesNoted: (ev.dcp_notes || '').trim(),
           outcome: outcomeVal,
           hasFurtherAction: !!ev.further_action,
           furtherAction: ev.further_action || '',
@@ -850,6 +859,15 @@ RMTP.views.dcp = function (el, params, query) {
           existing.tested = true;
           changed = true;
         }
+        // Decouple issuesNoted from Artifax Event Description
+        const artifaxDesc = (ev.techInfo || ev.notes || ev.artifaxNotes || '').trim();
+        if (artifaxDesc && ev.dcp_notes && ev.dcp_notes.trim() === artifaxDesc) {
+          ev.dcp_notes = '';
+        }
+        if (artifaxDesc && existing.issuesNoted && existing.issuesNoted.trim() === artifaxDesc && !ev.dcp_notes) {
+          existing.issuesNoted = '';
+          changed = true;
+        }
         if (ev.dcp_notes && existing.issuesNoted !== ev.dcp_notes) {
           existing.issuesNoted = ev.dcp_notes;
           changed = true;
@@ -866,6 +884,28 @@ RMTP.views.dcp = function (el, params, query) {
         if (changed) {
           existing.updatedAt = new Date().toISOString();
           store.upsert('dcps', existing);
+          modified = true;
+        }
+      }
+    });
+
+    // Ensure any previously synced DCP records with Artifax event descriptions in issuesNoted are cleaned up
+    dcps.forEach(dcp => {
+      if (dcp.issuesNoted) {
+        let matchedArtifax = false;
+        if (dcp.eventId) {
+          const advEv = store.find('advancing', dcp.eventId);
+          if (advEv) {
+            const artDesc = (advEv.techInfo || advEv.notes || advEv.artifaxNotes || '').trim();
+            if (artDesc && dcp.issuesNoted.trim() === artDesc) {
+              matchedArtifax = true;
+            }
+          }
+        }
+        if (matchedArtifax) {
+          dcp.issuesNoted = '';
+          dcp.updatedAt = new Date().toISOString();
+          store.upsert('dcps', dcp);
           modified = true;
         }
       }
@@ -1692,7 +1732,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
                       '<th class="py-2.5 px-3 min-w-[170px]">Media &amp; Advance</th>' +
                       '<th class="py-2.5 px-3 min-w-[200px]">Film &amp; Screening</th>' +
                       '<th class="py-2.5 px-3 min-w-[320px]">QC Report &amp; 7-Point Checklist</th>' +
-                      '<th class="py-2.5 px-3 min-w-[180px]">Issues Noted</th>' +
+                      '<th class="py-2.5 px-3 min-w-[200px]">Technician Issues &amp; Notes</th>' +
                       '<th class="py-2.5 px-3 min-w-[140px]">Outcome</th>' +
                       '<th class="py-2.5 px-3 min-w-[170px]">Further Action / Task</th>' +
                       '<th class="py-2.5 px-3 text-right sticky right-0 bg-panel2/90 z-20 w-[180px] min-w-[180px] shadow-[-8px_0_10px_-4px_rgba(0,0,0,0.3)]">Actions</th>' +
@@ -1716,9 +1756,22 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     attachViewListeners();
   }
 
+  /* ---- Check if a screening has been signed off ---- */
+  function isDcpSignedOff(dcp) {
+    if (!dcp) return false;
+    const outcome = dcp.outcome || 'Pending';
+    if (outcome === 'Pending') {
+      // If outcome is still Pending, check if explicitly marked tested or if a formal report was already generated
+      return !!(dcp.tested && (dcp.reportGeneratedAt || dcp.lastReportId));
+    }
+    return (outcome === 'Passed' || outcome === 'Passed with Caveats' || outcome === 'Failed' || !!dcp.reportGeneratedAt || !!dcp.lastReportId);
+  }
+  RMTP.isDcpSignedOff = isDcpSignedOff;
+
   /* ---- Obvious Link Component to Cinema QC Report (Replaces old 6-checkbox checklist) ---- */
   function renderQcReportLinkBlock(dcp) {
     const crit = ensureQcCriteria(dcp);
+    const isSigned = isDcpSignedOff(dcp);
     let passCount = 0;
     let caveatsCount = 0;
     let failCount = 0;
@@ -1767,11 +1820,18 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       statusPill = '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-accent/20 text-accent border border-accent/30">' + passCount + '/7 Verified</span>';
     }
 
+    const linkTitle = isSigned
+      ? 'Signed off \u2014 Click to view official 7-category QC report & client email'
+      : 'Screening not signed off \u2014 Click to open edit screen & complete sign-off';
+    const linkPrompt = isSigned
+      ? 'Open Report &rarr;'
+      : 'Edit Screen &rarr;';
+
     return (
-      '<div data-open-report="' + dcp.id + '" class="group/qc cursor-pointer p-3 rounded-xl border border-accent/40 bg-accent/5 hover:bg-accent/15 transition-all shadow-2xs space-y-2 select-none" title="Click to open official 7-category QC report & client email">' +
+      '<div data-open-report="' + dcp.id + '" class="group/qc cursor-pointer p-3 rounded-xl border border-accent/40 bg-accent/5 hover:bg-accent/15 transition-all shadow-2xs space-y-2 select-none" title="' + ui.esc(linkTitle) + '">' +
         '<div class="flex items-center justify-between gap-2">' +
           '<div class="flex items-center gap-1.5 font-bold text-xs text-ink group-hover/qc:text-accent transition-colors">' +
-            ui.icon('file-text', 'w-4 h-4 text-accent shrink-0') +
+            ui.icon(isSigned ? 'file-text' : 'edit-3', 'w-4 h-4 text-accent shrink-0') +
             '<span>QC Report &amp; 7-Point Checklist</span>' +
             '<span class="text-accent group-hover/qc:translate-x-0.5 transition-transform">&rarr;</span>' +
           '</div>' +
@@ -1782,7 +1842,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
         '</div>' +
         '<div class="text-[10px] text-accent font-semibold flex items-center justify-between pt-1 border-t border-accent/20">' +
           '<span class="text-muted group-hover/qc:text-ink transition-colors">Ingestion, KDM, CPL, Framing, Audio, Subs, Playback</span>' +
-          '<span class="underline group-hover/qc:text-white transition-colors">Open Report &rarr;</span>' +
+          '<span class="underline group-hover/qc:text-white transition-colors">' + linkPrompt + '</span>' +
         '</div>' +
       '</div>'
     );
@@ -1794,6 +1854,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     const isPast = dcp.eventDate && dcp.eventDate < todayIso;
     const isDup = dupInfo && dupInfo.dupGroupMap && dupInfo.dupGroupMap.has(dcp.id);
     const dupGroup = isDup ? dupInfo.dupGroupMap.get(dcp.id) : null;
+    const isSigned = isDcpSignedOff(dcp);
 
     // Outcome Badge
     let outcomeBadge = '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-panel2 text-muted border border-line">Pending</span>';
@@ -1882,9 +1943,9 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
           renderQcReportLinkBlock(dcp) +
         '</td>' +
 
-        // 4. Issues Noted (Inline text input with auto-save)
-        '<td class="py-3 px-3 align-top min-w-[180px] border-b border-line/60">' +
-          '<input type="text" data-issues-input="' + dcp.id + '" value="' + ui.esc(dcp.issuesNoted || '') + '" placeholder="Any issues noted..." class="field !py-1 !px-2 !text-xs w-full bg-panel text-ink" title="Type issues noted and press Enter or click outside to save" />' +
+        // 4. Technician Issues & Notes (Inline text input with auto-save)
+        '<td class="py-3 px-3 align-top min-w-[200px] border-b border-line/60">' +
+          '<input type="text" data-issues-input="' + dcp.id + '" value="' + ui.esc(dcp.issuesNoted || '') + '" placeholder="Technician issues &amp; notes..." class="field !py-1 !px-2 !text-xs w-full bg-panel text-ink" title="Type technician issues and press Enter or click outside to save" />' +
         '</td>' +
 
         // 5. Outcome of Testing
@@ -1910,11 +1971,11 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
                 ui.icon('copy', 'w-3.5 h-3.5') + '<span>Merge</span>' +
               '</button>'
             ) : '') +
-            '<button type="button" data-open-report="' + dcp.id + '" class="btn btn-ghost !py-1 !px-2 text-xs font-semibold flex items-center gap-1 text-accent hover:bg-accent/10 border border-accent/30 shadow-2xs whitespace-nowrap" title="Generate & View Professional PDF QC Report & Client Email">' +
-              ui.icon('file-text', 'w-3.5 h-3.5') + '<span>QC Report</span>' +
+            '<button type="button" data-open-report="' + dcp.id + '" class="btn btn-ghost !py-1 !px-2 text-xs font-semibold flex items-center gap-1 text-accent hover:bg-accent/10 border border-accent/30 shadow-2xs whitespace-nowrap" title="' + (isSigned ? 'View Finalized PDF QC Report & Client Email' : 'Screening not signed off \u2014 Open Edit Screen') + '">' +
+              ui.icon(isSigned ? 'file-text' : 'edit-3', 'w-3.5 h-3.5') + '<span>' + (isSigned ? 'QC Report' : 'Edit QC') + '</span>' +
             '</button>' +
             '<button type="button" data-open-signoff="' + dcp.id + '" class="btn btn-primary !py-1 !px-2 text-xs font-semibold flex items-center gap-1 shadow-2xs whitespace-nowrap" title="Open Full Pre-Screening Sign-off Sheet">' +
-              ui.icon('check', 'w-3.5 h-3.5') + '<span>Sign-off</span>' +
+              ui.icon('check', 'w-3.5 h-3.5') + '<span>' + (isSigned ? 'Edit' : 'Sign-off') + '</span>' +
             '</button>' +
             '<button type="button" data-delete-dcp="' + dcp.id + '" class="btn btn-danger !p-1.5 !h-7 !w-7 min-h-0 shrink-0 inline-flex items-center justify-center rounded-lg" title="Delete Screening Record">' +
               ui.icon('trash', 'w-3.5 h-3.5') +
@@ -1931,6 +1992,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     const isPast = dcp.eventDate && dcp.eventDate < todayIso;
     const isDup = dupInfo && dupInfo.dupGroupMap && dupInfo.dupGroupMap.has(dcp.id);
     const dupGroup = isDup ? dupInfo.dupGroupMap.get(dcp.id) : null;
+    const isSigned = isDcpSignedOff(dcp);
 
     let outcomeClass = 'border-line';
     if (dcp.outcome === 'Passed') outcomeClass = 'border-ok/40 bg-ok/5';
@@ -1979,10 +2041,10 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
         // Where checklist was: Obvious link to the QC report
         renderQcReportLinkBlock(dcp) +
 
-        // Issues input
+        // Technician Issues & Notes input
         '<div>' +
-          '<label class="block text-[10px] font-semibold text-muted uppercase tracking-wider mb-1">Issues Noted</label>' +
-          '<input type="text" data-issues-input="' + dcp.id + '" value="' + ui.esc(dcp.issuesNoted || '') + '" placeholder="Any issues noted..." class="field !py-1.5 !px-2.5 !text-xs w-full bg-panel text-ink" />' +
+          '<label class="block text-[10px] font-semibold text-muted uppercase tracking-wider mb-1">Technician Issues &amp; Notes</label>' +
+          '<input type="text" data-issues-input="' + dcp.id + '" value="' + ui.esc(dcp.issuesNoted || '') + '" placeholder="Technician issues &amp; notes..." class="field !py-1.5 !px-2.5 !text-xs w-full bg-panel text-ink" />' +
         '</div>' +
 
         // Outcome & Further Action
@@ -2001,11 +2063,11 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
                 ui.icon('copy', 'w-3.5 h-3.5') + '<span>Merge</span>' +
               '</button>'
             ) : '') +
-            '<button type="button" data-open-report="' + dcp.id + '" class="btn btn-ghost !py-1 !px-2 text-xs font-semibold flex items-center gap-1 text-accent border border-accent/30" title="View QC Report & Email">' +
-              ui.icon('file-text', 'w-3.5 h-3.5') + '<span>QC Report</span>' +
+            '<button type="button" data-open-report="' + dcp.id + '" class="btn btn-ghost !py-1 !px-2 text-xs font-semibold flex items-center gap-1 text-accent border border-accent/30" title="' + (isSigned ? 'View QC Report & Email' : 'Screening not signed off \u2014 Open Edit Screen') + '">' +
+              ui.icon(isSigned ? 'file-text' : 'edit-3', 'w-3.5 h-3.5') + '<span>' + (isSigned ? 'QC Report' : 'Edit QC') + '</span>' +
             '</button>' +
             '<button type="button" data-open-signoff="' + dcp.id + '" class="btn btn-primary !py-1 !px-2.5 text-xs font-semibold flex items-center gap-1">' +
-              ui.icon('check', 'w-3.5 h-3.5') + '<span>Sign-off Sheet</span>' +
+              ui.icon('check', 'w-3.5 h-3.5') + '<span>' + (isSigned ? 'Edit' : 'Sign-off Sheet') + '</span>' +
             '</button>' +
             '<button type="button" data-delete-dcp="' + dcp.id + '" class="btn btn-danger !p-1.5 !h-7 !w-7 inline-flex items-center justify-center rounded-lg">' +
               ui.icon('trash', 'w-3.5 h-3.5') +
@@ -2280,14 +2342,16 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
           '</div>' +
         '</div>' +
 
-        // Panel 4: Any issues noted?
+        // Panel 4: Technician Issues & Notes (Questionnaire Text Input Field)
         '<div class="p-4 rounded-xl bg-panel2/40 border border-line space-y-3.5">' +
-          '<div class="eyebrow text-accent flex items-center gap-1.5">' +
-            ui.icon('tool', 'w-3.5 h-3.5') + '<span>Any Issues Noted?</span>' +
+          '<div class="eyebrow text-accent flex items-center justify-between">' +
+            '<span class="flex items-center gap-1.5">' + ui.icon('tool', 'w-3.5 h-3.5') + '<span>Technician Issues &amp; Notes</span></span>' +
+            '<span class="text-[11px] font-mono text-muted">Questionnaire Text Input</span>' +
           '</div>' +
           '<div>' +
-            '<textarea id="m-issues" rows="3" placeholder="Note any aspect ratio framing quirks, sound level offsets, missing holding slides, audio sync lag, or distributor notes..." class="field !text-xs w-full leading-relaxed">' + ui.esc(item.issuesNoted || '') + '</textarea>' +
-            '<div class="text-[10px] text-muted mt-1">These notes appear directly on the booth checklist, sync with Event Advancing notes, and populate the QC report.</div>' +
+            '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Technician Issues &amp; Notes</label>' +
+            '<textarea id="m-issues" rows="3" placeholder="Enter technician issues, booth observations, aspect ratio framing quirks, sound level offsets, audio sync lag, or distributor notes..." class="field !text-xs w-full leading-relaxed text-ink">' + ui.esc(item.issuesNoted || '') + '</textarea>' +
+            '<div class="text-[10px] text-muted mt-1">Manual technician input. This populates the QC Report and is sent in client notification emails (completely decoupled from Artifax event descriptions).</div>' +
           '</div>' +
         '</div>' +
 
@@ -2844,13 +2908,18 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       });
     });
 
-    // Open QC Report Modal directly
+    // Open QC Report (or Edit Screen if not signed off)
     el.querySelectorAll('[data-open-report]').forEach(elem => {
       elem.addEventListener('click', (e) => {
         e.stopPropagation();
         const id = elem.getAttribute('data-open-report');
         const dcp = store.find('dcps', id);
-        if (dcp) openQcReportModal(dcp);
+        if (!dcp) return;
+        if (isDcpSignedOff(dcp)) {
+          openQcReportModal(dcp);
+        } else {
+          openSignoffModal(dcp);
+        }
       });
     });
 

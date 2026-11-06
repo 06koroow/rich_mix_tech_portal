@@ -50,6 +50,123 @@ RMTP.views.dcp = function (el, params, query) {
   };
   RMTP.HARDWARE_MEDIA_BLOCKS = HARDWARE_MEDIA_BLOCKS;
 
+  // Rich Mix Standardized 7-Parameter QC Test Criteria (from Cinema QC Pass/Fail Criteria Specification)
+  const QC_CRITERIA_DEFINITIONS = [
+    {
+      id: 'ingestion',
+      num: 1,
+      title: 'Ingestion & Integrity',
+      requirement: 'DCP ingests without hash errors, missing assets, or corruption.',
+      passDesc: 'Ingest completes at 100% with valid hash checks on all MXF files.',
+      caveatsDesc: 'Minor slow read rate during ingest, but passes hash checks and completes fully.',
+      failDesc: 'Ingest fails, corrupt asset, hash check error, or missing PKL / VOLINDEX files.'
+    },
+    {
+      id: 'kdm',
+      num: 2,
+      title: 'KDM Validation',
+      requirement: 'KDM matches cinema server certificate, correct screen, and covers the full screening timeframe.',
+      passDesc: 'KDM is valid for target media block, active window covers test and showtime.',
+      caveatsDesc: 'KDM window starts close to showtime (<2 hours buffer), but is confirmed active and working.',
+      failDesc: 'KDM expired, incorrect server certificate / thumbprint mismatch, or wrong CPL.'
+    },
+    {
+      id: 'cpl',
+      num: 3,
+      title: 'CPL Selection',
+      requirement: 'Correct composition playlist selected (theatrical cut, correct language / audio config, rated version).',
+      passDesc: 'Confirmed CPL matches booking specs (e.g. OV, VF, 5.1 audio, correct runtime).',
+      caveatsDesc: 'CPL title differs slightly from paperwork but content & config are confirmed correct.',
+      failDesc: 'Incorrect version loaded (e.g. wrong language track, incorrect cut or trailers).'
+    },
+    {
+      id: 'framing',
+      num: 4,
+      title: 'Visual Framing & Ratios',
+      requirement: 'Image displays in correct aspect ratio (Flat 1.85:1 or Scope 2.39:1) with appropriate masking and no distortion.',
+      passDesc: 'Aspect ratio matches container exactly. No letterbox/pillarbox inside active picture area.',
+      caveatsDesc: 'Mild keystoning or slight framing offset (<1%) that does not clip credits or picture.',
+      failDesc: 'Wrong aspect ratio (e.g. Scope stretched into Flat), severe cropping, or improper lens macro.'
+    },
+    {
+      id: 'audio',
+      num: 5,
+      title: 'Audio Mapping & Sync',
+      requirement: 'Audio channels route correctly (L, C, R, LFE, Ls, Rs). Dialogue anchored to Center channel. In-sync with picture.',
+      passDesc: 'Dialogue cleanly isolated to Center (ch 3). Surrounds and sub function. Lip-sync within ±20ms.',
+      caveatsDesc: 'Dialogue slightly low/high in mix; fader offset adjusted. Minor sync variance (<45ms).',
+      failDesc: 'Dialogue missing Center (L/R only), channels out of phase, severe lip-sync delay (>45ms), buzz or clipping.'
+    },
+    {
+      id: 'subtitles',
+      num: 6,
+      title: 'Subtitles & Accessibility',
+      requirement: 'Open captions / subtitles / timed text render at correct position, legible, in sync, with no font rendering errors.',
+      passDesc: 'Subtitles positioned correctly above lower masking, legible, and synchronized with speech.',
+      caveatsDesc: 'Font size slightly small or positioned slightly higher than standard, but fully legible.',
+      failDesc: 'Subtitles missing entirely, garbled characters (encoding failure), overlapping lines, or out of sync.'
+    },
+    {
+      id: 'playback',
+      num: 7,
+      title: 'Playback Stability',
+      requirement: 'Test run through projector and sound processor shows no dropped frames, stutter, audio dropouts, or server lockups.',
+      passDesc: 'Continuous playback for test duration (minimum head, tail, and spot checks) with 0 dropped frames.',
+      caveatsDesc: 'Single momentary glitch during pre-show or non-critical content, verified clean on repeat.',
+      failDesc: 'Playback stutter, frame freezing, audio dropouts, server reboot or crash during test.'
+    }
+  ];
+  RMTP.QC_CRITERIA_DEFINITIONS = QC_CRITERIA_DEFINITIONS;
+
+  function ensureQcCriteria(dcp) {
+    if (!dcp) return {};
+    if (!dcp.qc_criteria || typeof dcp.qc_criteria !== 'object') {
+      dcp.qc_criteria = {};
+    }
+    QC_CRITERIA_DEFINITIONS.forEach(def => {
+      if (!dcp.qc_criteria[def.id] || typeof dcp.qc_criteria[def.id] !== 'object') {
+        let status = 'Pending';
+        if (dcp.tested) {
+          if (dcp.outcome === 'Passed') status = 'Pass';
+          else if (dcp.outcome === 'Passed with Caveats') status = (def.id === 'framing' || def.id === 'audio') ? 'Caveats' : 'Pass';
+          else if (dcp.outcome === 'Failed') status = (def.id === 'playback' || def.id === 'kdm') ? 'Fail' : 'Pass';
+        }
+        if (def.id === 'ingestion' && dcp.mediaReceived) status = 'Pass';
+        if (def.id === 'kdm' && dcp.kdmCplReceived) status = 'Pass';
+        if (def.id === 'cpl' && dcp.playlistMade) status = 'Pass';
+        if (def.id === 'audio' && dcp.subsAudioSync) status = 'Pass';
+        if (def.id === 'subtitles' && dcp.subsAudioSync) status = 'Pass';
+
+        dcp.qc_criteria[def.id] = {
+          status: status,
+          notes: ''
+        };
+      }
+    });
+    return dcp.qc_criteria;
+  }
+  RMTP.ensureQcCriteria = ensureQcCriteria;
+
+  function calculateOverallQcOutcome(criteriaMap) {
+    if (!criteriaMap) return 'Pending';
+    const entries = Object.values(criteriaMap);
+    if (!entries.length) return 'Pending';
+
+    const anyFail = entries.some(e => e && e.status === 'Fail');
+    if (anyFail) return 'Failed';
+
+    const anyCaveat = entries.some(e => e && e.status === 'Caveats');
+    const allPass = entries.length >= 7 && entries.every(e => e && e.status === 'Pass');
+    if (allPass) return 'Passed';
+    if (anyCaveat && !anyFail) return 'Passed with Caveats';
+
+    const allChecked = entries.length >= 7 && entries.every(e => e && (e.status === 'Pass' || e.status === 'Caveats'));
+    if (allChecked) return anyCaveat ? 'Passed with Caveats' : 'Passed';
+
+    return 'Pending';
+  }
+  RMTP.calculateOverallQcOutcome = calculateOverallQcOutcome;
+
   function isCinemaSpace(sp) {
     if (!sp) return false;
     if (Array.isArray(sp)) return sp.some(s => /Screen|Cinema/i.test(String(s || '')));
@@ -759,7 +876,541 @@ RMTP.views.dcp = function (el, params, query) {
     }
     return dcps;
   }
-  RMTP.syncAdvancingToDcps = syncAdvancingToDcps;
+  /* ---- QC Report & Client Email Generator Engine ---- */
+  function generateQcEmail(dcp) {
+    const crit = ensureQcCriteria(dcp);
+    const film = dcp.filmTitle || dcp.eventName || 'Cinema Screening';
+    const client = dcp.clientName || 'Screening Client / Distributor';
+    const screen = dcp.screen || 'Screen One';
+    const date = dcp.eventDate ? new Date(dcp.eventDate + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'Date TBC';
+    const time = dcp.eventStartTime || 'Time TBC';
+    const picFmt = dcp.pictureFormat || (dcp.mediaType === 'DCP' ? 'Flat (1.85:1)' : '16:9 Full HD');
+    const audFmt = dcp.audioFormat || '5.1 Surround';
+    const outcome = dcp.outcome || 'Pending';
+    const deadline = dcp.deadlineDate ? new Date(dcp.deadlineDate + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : '48 hours prior to screening';
+
+    // Format text table for email
+    const rows = QC_CRITERIA_DEFINITIONS.map(def => {
+      const c = crit[def.id] || { status: 'Pending', notes: '' };
+      let st = c.status ? c.status.toUpperCase() : 'PENDING';
+      if (st === 'CAVEATS') st = 'CAVEATS';
+      const padCat = (def.num + '. ' + def.title).padEnd(28, ' ');
+      const padStatus = st.padEnd(9, ' ');
+      const note = c.notes ? c.notes : (def.passDesc ? 'Tested & verified.' : '-');
+      return `${padCat} | ${padStatus} | ${note}`;
+    });
+    const tableHeader = 'Category                     | Status    | Notes\n-----------------------------+-----------+----------------------------------------------';
+    const tableStr = tableHeader + '\n' + rows.join('\n');
+
+    let subject = '';
+    let body = '';
+
+    if (outcome === 'Passed') {
+      subject = `DCP QC Test Passed \u2014 ${film} \u2014 ${dcp.eventDate || date}`;
+      body =
+`Dear ${client},
+
+We have completed the Quality Control (QC) testing for your upcoming screening of ${film} in ${screen} at Rich Mix.
+
+We are pleased to confirm that the DCP has PASSED all technical checks and is ready for playback.
+
+Technical Details:
+\u2022 Film / Event: ${film}
+\u2022 Screening Date & Time: ${date} at ${time}
+\u2022 Venue: ${screen}
+\u2022 Picture Format: ${picFmt}
+\u2022 Audio Format: ${audFmt}
+\u2022 Target Media Block: ${dcp.targetHardware || HARDWARE_MEDIA_BLOCKS[screen] || screen}
+
+QC Summary:
+${tableStr}
+
+No further action is required from your side. If you have any questions or require any adjustments prior to the screening, please don't hesitate to get in touch.
+
+Best regards,
+Rich Mix Technical Team
+
+--
+Rich Mix Cultural Foundation
+35-47 Bethnal Green Road, London, E1 6LA
+richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
+    } else if (outcome === 'Passed with Caveats') {
+      subject = `DCP QC Test Passed with Caveats \u2014 ${film} \u2014 Action Required \u2014 ${dcp.eventDate || date}`;
+      const actionText = (dcp.furtherAction ? dcp.furtherAction : (dcp.issuesNoted ? dcp.issuesNoted : 'Please review the technician notes listed in the QC summary above.'));
+      body =
+`Dear ${client},
+
+We have completed the Quality Control (QC) testing for your upcoming screening of ${film} in ${screen} at Rich Mix.
+
+The DCP has PASSED WITH CAVEATS. The content is playable, but our technicians noted issues that you should be aware of prior to the event. Please review the details below.
+
+Technical Details:
+\u2022 Film / Event: ${film}
+\u2022 Screening Date & Time: ${date} at ${time}
+\u2022 Venue: ${screen}
+\u2022 Picture Format: ${picFmt}
+\u2022 Audio Format: ${audFmt}
+\u2022 Target Media Block: ${dcp.targetHardware || HARDWARE_MEDIA_BLOCKS[screen] || screen}
+
+QC Summary:
+${tableStr}
+
+Recommended Actions:
+\u2022 ${actionText}
+
+Please let us know how you would like to proceed by ${deadline}. If we do not hear from you, we will proceed with playback using the adjustments noted above.
+
+Best regards,
+Rich Mix Technical Team
+
+--
+Rich Mix Cultural Foundation
+35-47 Bethnal Green Road, London, E1 6LA
+richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
+    } else if (outcome === 'Failed') {
+      subject = `URGENT: DCP QC Test Failed \u2014 ${film} \u2014 Replacement Required \u2014 ${dcp.eventDate || date}`;
+      const actionText = (dcp.furtherAction ? dcp.furtherAction : (dcp.issuesNoted ? dcp.issuesNoted : 'A replacement DCP addressing the failures listed above is required.'));
+      body =
+`Dear ${client},
+
+We have completed the Quality Control (QC) testing for your upcoming screening of ${film} in ${screen} at Rich Mix.
+
+Unfortunately, the DCP has FAILED our technical checks and cannot be screened in its current state.
+
+Technical Details:
+\u2022 Film / Event: ${film}
+\u2022 Screening Date & Time: ${date} at ${time}
+\u2022 Venue: ${screen}
+\u2022 Picture Format: ${picFmt}
+\u2022 Audio Format: ${audFmt}
+\u2022 Target Media Block: ${dcp.targetHardware || HARDWARE_MEDIA_BLOCKS[screen] || screen}
+
+QC Summary:
+${tableStr}
+
+Required Actions:
+\u2022 ${actionText}
+
+Please arrange for a corrected DCP to be delivered no later than ${deadline} to allow sufficient time for re-ingest and testing.
+
+If you need assistance resolving these issues, please contact the Technical Team immediately.
+
+Best regards,
+Rich Mix Technical Team
+
+--
+Rich Mix Cultural Foundation
+35-47 Bethnal Green Road, London, E1 6LA
+richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
+    } else {
+      // Pending
+      subject = `DCP QC Test In Progress \u2014 ${film} \u2014 ${dcp.eventDate || date}`;
+      body =
+`Dear ${client},
+
+QC testing for your upcoming screening of ${film} in ${screen} is currently underway.
+
+Technical Details:
+\u2022 Film / Event: ${film}
+\u2022 Screening Date & Time: ${date} at ${time}
+\u2022 Venue: ${screen}
+\u2022 Picture Format: ${picFmt}
+\u2022 Audio Format: ${audFmt}
+
+Our technicians are currently validating ingestion, KDMs, audio sync, and visual framing against our cinema playback criteria. We will provide a finalized QC sign-off report shortly.
+
+Best regards,
+Rich Mix Technical Team
+
+--
+Rich Mix Cultural Foundation
+35-47 Bethnal Green Road, London, E1 6LA
+richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
+    }
+
+    return { subject, body };
+  }
+  RMTP.generateQcEmail = generateQcEmail;
+
+  /* ---- Open QC Report & Email Modal ---- */
+  function openQcReportModal(dcp) {
+    if (!dcp) return;
+    const crit = ensureQcCriteria(dcp);
+    const email = generateQcEmail(dcp);
+    const film = dcp.filmTitle || dcp.eventName || 'Cinema Screening';
+    const client = dcp.clientName || 'Screening Client / Distributor';
+    const screen = dcp.screen || 'Screen One';
+    const dateFormatted = dcp.eventDate ? new Date(dcp.eventDate + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' }) : 'Date TBC';
+    const time = dcp.eventStartTime || 'Time TBC';
+    const picFmt = dcp.pictureFormat || (dcp.mediaType === 'DCP' ? 'Flat (1.85:1)' : '16:9 Full HD');
+    const audFmt = dcp.audioFormat || '5.1 Surround';
+    const outcome = dcp.outcome || 'Pending';
+    const deadline = dcp.deadlineDate ? new Date(dcp.deadlineDate + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : '48 hours prior to screening';
+    const reportRef = dcp.lastReportId || ('QC-RM-' + (dcp.eventDate ? dcp.eventDate.replace(/-/g, '') : '2026') + '-' + (dcp.id ? dcp.id.slice(-4).toUpperCase() : '001'));
+    const generatedTimestamp = new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+    const testerName = dcp.testedByUserName || (curUser ? auth.displayName(curUser) : 'Cinema Technician');
+
+    // Persist Report to Supabase backend in reports table
+    const reportRecord = {
+      id: reportRef,
+      type: 'dcp_qc',
+      title: 'QC Report: ' + film,
+      screeningId: dcp.id,
+      eventId: dcp.eventId || '',
+      filmTitle: film,
+      screen: screen,
+      date: dcp.eventDate || '',
+      outcome: outcome,
+      testerName: testerName,
+      clientName: client,
+      emailSubject: email.subject,
+      emailBody: email.body,
+      createdAt: new Date().toISOString()
+    };
+    store.upsert('reports', reportRecord);
+    dcp.lastReportId = reportRef;
+    dcp.reportGeneratedAt = new Date().toISOString();
+    store.upsert('dcps', dcp);
+    if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
+
+    let outcomeBg = 'bg-slate-100 text-slate-800 border-slate-300';
+    let outcomeTitle = 'TESTING IN PROGRESS / PENDING';
+    let outcomeDesc = 'Verification checks are ongoing. Final sign-off pending completion.';
+    if (outcome === 'Passed') {
+      outcomeBg = 'bg-emerald-50 text-emerald-900 border-emerald-300';
+      outcomeTitle = 'DCP QC PASSED \u2014 APPROVED FOR PLAYBACK';
+      outcomeDesc = 'The DCP has passed all technical requirements and is fully authorized for public screening.';
+    } else if (outcome === 'Passed with Caveats') {
+      outcomeBg = 'bg-amber-50 text-amber-950 border-amber-300';
+      outcomeTitle = 'PASSED WITH CAVEATS \u2014 ACTION / ACKNOWLEDGEMENT REQUIRED';
+      outcomeDesc = 'The content is playable, but minor technical offsets or adjustments are required as detailed below.';
+    } else if (outcome === 'Failed') {
+      outcomeBg = 'bg-rose-50 text-rose-950 border-rose-300';
+      outcomeTitle = 'DCP QC FAILED \u2014 REPLACEMENT REQUIRED';
+      outcomeDesc = 'Critical technical errors prevent playback. Content must be replaced or re-mastered prior to screening.';
+    }
+
+    const modalBody =
+      '<div class="space-y-4 max-h-[82vh] overflow-y-auto pr-1">' +
+        // Tab Strip & Actions Header
+        '<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-2.5 rounded-xl bg-panel2/60 border border-line">' +
+          '<div class="flex items-center gap-1.5">' +
+            '<button type="button" id="tab-btn-pdf" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all bg-accent text-white shadow-2xs flex items-center gap-1.5">' +
+              ui.icon('file-text', 'w-3.5 h-3.5') + '<span>PDF Report View</span>' +
+            '</button>' +
+            '<button type="button" id="tab-btn-email" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all text-muted hover:text-ink hover:bg-panel/60 flex items-center gap-1.5">' +
+              ui.icon('mail', 'w-3.5 h-3.5') + '<span>Client Email Template</span>' +
+            '</button>' +
+          '</div>' +
+          '<div class="flex items-center gap-2 shrink-0 flex-wrap">' +
+            '<button type="button" id="btn-edit-checklist-top" class="btn btn-ghost !py-1.5 !px-3 text-xs font-semibold flex items-center gap-1.5 text-accent border border-accent/40 hover:bg-accent/10" title="Open 7-category evaluation editor to modify checklist & sign-off">' +
+              ui.icon('check', 'w-3.5 h-3.5') + '<span>Edit Checklist</span>' +
+            '</button>' +
+            '<button type="button" id="btn-download-pdf" class="btn btn-primary !py-1.5 !px-3 text-xs font-bold flex items-center gap-1.5 shadow-2xs" title="Download High-Resolution Branded PDF Report">' +
+              ui.icon('download', 'w-3.5 h-3.5') + '<span>Download PDF</span>' +
+            '</button>' +
+            '<button type="button" id="btn-print-report" class="btn btn-ghost !py-1.5 !px-3 text-xs font-semibold flex items-center gap-1.5" title="Print Report">' +
+              ui.icon('printer', 'w-3.5 h-3.5') + '<span>Print</span>' +
+            '</button>' +
+            '<button type="button" id="btn-copy-email-top" class="btn btn-ghost !py-1.5 !px-3 text-xs font-semibold flex items-center gap-1.5" title="Copy Client Email to Clipboard">' +
+              ui.icon('copy', 'w-3.5 h-3.5') + '<span>Copy Email</span>' +
+            '</button>' +
+          '</div>' +
+        '</div>' +
+
+        // TAB 1: PDF Document View (Rich Mix Brand)
+        '<div id="view-tab-pdf" class="block space-y-4">' +
+          '<div id="qc-printable-report" class="p-6 sm:p-8 rounded-xl bg-white text-slate-900 shadow-md border border-slate-200 font-sans leading-relaxed text-xs space-y-5 print:p-0 print:border-0 print:shadow-none">' +
+            // Header Bar
+            '<div class="flex items-start justify-between pb-4 border-b-2 border-slate-900 gap-4">' +
+              '<div>' +
+                '<div class="flex items-center gap-2">' +
+                  '<div class="w-8 h-8 rounded-lg bg-slate-900 text-white flex items-center justify-center font-black text-sm tracking-wider font-mono">RM</div>' +
+                  '<div>' +
+                    '<div class="font-black text-base tracking-tight text-slate-950 font-display">RICH MIX CINEMA</div>' +
+                    '<div class="text-[10px] font-mono uppercase tracking-widest text-slate-500 font-semibold">Technical Services &amp; Projection Booth</div>' +
+                  '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="text-right">' +
+                '<div class="inline-block px-2.5 py-1 rounded bg-slate-100 text-slate-900 border border-slate-300 font-mono text-[11px] font-bold tracking-wide">REF: ' + reportRef + '</div>' +
+                '<div class="text-[10px] text-slate-500 mt-1 font-mono">Generated: ' + generatedTimestamp + '</div>' +
+              '</div>' +
+            '</div>' +
+
+            // Document Title
+            '<div class="text-center py-1">' +
+              '<h1 class="text-lg font-black tracking-tight text-slate-950 uppercase font-display">Cinema Quality Control (QC) Sign-Off Report</h1>' +
+              '<p class="text-[11px] text-slate-500 mt-0.5">Official Rich Mix technical playback verification standard for DCI-compliant screenings</p>' +
+            '</div>' +
+
+            // Overall Outcome Banner
+            '<div class="p-3.5 rounded-lg border-2 ' + outcomeBg + ' flex items-center justify-between gap-3">' +
+              '<div>' +
+                '<div class="font-black text-sm tracking-wide font-display">' + outcomeTitle + '</div>' +
+                '<div class="text-[11px] mt-0.5 opacity-90">' + outcomeDesc + '</div>' +
+              '</div>' +
+              '<div class="text-right shrink-0">' +
+                '<span class="px-3 py-1 rounded text-xs font-mono font-black uppercase tracking-wider bg-white/80 shadow-xs border border-current">' + outcome + '</span>' +
+              '</div>' +
+            '</div>' +
+
+            // Screening Metadata Grid
+            '<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-800">' +
+              '<div>' +
+                '<div class="text-[9px] font-mono uppercase text-slate-400 font-bold tracking-wider">Film / Screening</div>' +
+                '<div class="font-bold text-slate-950 text-xs mt-0.5 break-words">' + ui.esc(film) + '</div>' +
+              '</div>' +
+              '<div>' +
+                '<div class="text-[9px] font-mono uppercase text-slate-400 font-bold tracking-wider">Client / Distributor</div>' +
+                '<div class="font-bold text-slate-950 text-xs mt-0.5 break-words">' + ui.esc(client) + '</div>' +
+              '</div>' +
+              '<div>' +
+                '<div class="text-[9px] font-mono uppercase text-slate-400 font-bold tracking-wider">Screening Date &amp; Time</div>' +
+                '<div class="font-bold text-slate-950 text-xs mt-0.5">' + ui.esc(dateFormatted) + '<br/><span class="font-mono text-slate-600">' + ui.esc(time) + '</span></div>' +
+              '</div>' +
+              '<div>' +
+                '<div class="text-[9px] font-mono uppercase text-slate-400 font-bold tracking-wider">Venue / Cinema Space</div>' +
+                '<div class="font-bold text-slate-950 text-xs mt-0.5">' + ui.esc(screen) + '</div>' +
+              '</div>' +
+              '<div class="pt-2 border-t border-slate-200/80">' +
+                '<div class="text-[9px] font-mono uppercase text-slate-400 font-bold tracking-wider">Picture Aspect Format</div>' +
+                '<div class="font-semibold text-slate-900 text-xs mt-0.5">' + ui.esc(picFmt) + '</div>' +
+              '</div>' +
+              '<div class="pt-2 border-t border-slate-200/80">' +
+                '<div class="text-[9px] font-mono uppercase text-slate-400 font-bold tracking-wider">Audio Routing Format</div>' +
+                '<div class="font-semibold text-slate-900 text-xs mt-0.5">' + ui.esc(audFmt) + '</div>' +
+              '</div>' +
+              '<div class="pt-2 border-t border-slate-200/80">' +
+                '<div class="text-[9px] font-mono uppercase text-slate-400 font-bold tracking-wider">Media Type</div>' +
+                '<div class="font-semibold text-slate-900 text-xs mt-0.5">' + ui.esc(dcp.mediaType || 'DCP') + '</div>' +
+              '</div>' +
+              '<div class="pt-2 border-t border-slate-200/80">' +
+                '<div class="text-[9px] font-mono uppercase text-slate-400 font-bold tracking-wider">Revision Deadline</div>' +
+                '<div class="font-semibold text-slate-900 text-xs mt-0.5">' + ui.esc(deadline) + '</div>' +
+              '</div>' +
+            '</div>' +
+
+            // 7 QC Test Categories Matrix
+            '<div>' +
+              '<div class="text-[11px] font-black uppercase tracking-wider text-slate-900 mb-2 font-display">Cinema QC Verification Checklist &amp; Evaluation Matrix (7 Categories)</div>' +
+              '<table class="w-full text-left text-xs border border-slate-300 rounded overflow-hidden">' +
+                '<thead>' +
+                  '<tr class="bg-slate-100 text-slate-700 font-mono uppercase text-[9px] tracking-wider border-b border-slate-300">' +
+                    '<th class="py-2 px-2.5 w-8 text-center">#</th>' +
+                    '<th class="py-2 px-3 w-48">Test Parameter</th>' +
+                    '<th class="py-2 px-3">Standard Requirement</th>' +
+                    '<th class="py-2 px-3 w-28 text-center">Result</th>' +
+                    '<th class="py-2 px-3 w-64">Technician Observations</th>' +
+                  '</tr>' +
+                '</thead>' +
+                '<tbody class="divide-y divide-slate-200">' +
+                  QC_CRITERIA_DEFINITIONS.map(def => {
+                    const c = crit[def.id] || { status: 'Pending', notes: '' };
+                    let badge = '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-100 text-slate-600 border border-slate-300">PENDING</span>';
+                    if (c.status === 'Pass') {
+                      badge = '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">PASS</span>';
+                    } else if (c.status === 'Caveats') {
+                      badge = '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-100 text-amber-900 border border-amber-300">CAVEATS</span>';
+                    } else if (c.status === 'Fail') {
+                      badge = '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-100 text-rose-900 border border-rose-300">FAIL</span>';
+                    }
+                    return (
+                      '<tr class="align-top">' +
+                        '<td class="py-2 px-2.5 text-center font-mono font-bold text-slate-500 text-[10px]">' + def.num + '</td>' +
+                        '<td class="py-2 px-3 font-bold text-slate-900">' + ui.esc(def.title) + '</td>' +
+                        '<td class="py-2 px-3 text-slate-600 text-[11px] leading-tight">' + ui.esc(def.requirement) + '</td>' +
+                        '<td class="py-2 px-3 text-center">' + badge + '</td>' +
+                        '<td class="py-2 px-3 text-slate-800 text-[11px] leading-tight">' +
+                          ui.esc(c.notes || (c.status === 'Pass' ? def.passDesc : (c.status === 'Caveats' ? def.caveatsDesc : (c.status === 'Fail' ? def.failDesc : '-')))) +
+                        '</td>' +
+                      '</tr>'
+                    );
+                  }).join('') +
+                '</tbody>' +
+              '</table>' +
+            '</div>' +
+
+            // Issues and Required Actions
+            '<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">' +
+              '<div class="p-3 rounded-lg bg-slate-50 border border-slate-200">' +
+                '<div class="text-[10px] font-mono font-bold uppercase text-slate-600 tracking-wider">Technician Issues &amp; Notes</div>' +
+                '<div class="text-xs text-slate-800 mt-1 leading-relaxed">' +
+                  ui.esc(dcp.issuesNoted || 'No negative technical issues recorded during booth evaluation.') +
+                '</div>' +
+              '</div>' +
+              '<div class="p-3 rounded-lg bg-slate-50 border border-slate-200">' +
+                '<div class="text-[10px] font-mono font-bold uppercase text-slate-600 tracking-wider">Required Client Actions &amp; Next Steps</div>' +
+                '<div class="text-xs text-slate-800 mt-1 leading-relaxed">' +
+                  ui.esc(dcp.furtherAction || (outcome === 'Passed' ? 'No further action required. The screening is authorized for live playback.' : 'Please review and address the technical action points highlighted above.')) +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+
+            // Sign-off Block
+            '<div class="pt-3 border-t border-slate-200 grid grid-cols-2 sm:grid-cols-3 gap-3 text-[11px] text-slate-600">' +
+              '<div>' +
+                '<span class="font-bold text-slate-900">Signed Off By:</span> ' + ui.esc(testerName) +
+              '</div>' +
+              '<div>' +
+                '<span class="font-bold text-slate-900">Hardware Media Block:</span> ' + ui.esc(dcp.targetHardware || HARDWARE_MEDIA_BLOCKS[screen] || screen) +
+              '</div>' +
+              '<div>' +
+                '<span class="font-bold text-slate-900">QC Status:</span> <span class="font-mono font-bold text-slate-900">' + outcome.toUpperCase() + '</span>' +
+              '</div>' +
+            '</div>' +
+
+            // Rich Mix Cultural Foundation Official Registered Office Footer
+            '<div class="pt-4 border-t-2 border-slate-900 text-center text-[10px] text-slate-500 font-mono space-y-0.5">' +
+              '<div class="font-bold text-slate-800 tracking-wider uppercase">Rich Mix Cultural Foundation</div>' +
+              '<div>35-47 Bethnal Green Road, London, E1 6LA \u00b7 richmix.org.uk</div>' +
+              '<div>Registered in England &amp; Wales \u00b7 Company no: 04293133 \u00b7 Charity no: 1089163</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+
+        // TAB 2: Email Template View
+        '<div id="view-tab-email" class="hidden space-y-4">' +
+          '<div class="p-4 rounded-xl bg-panel2/40 border border-line space-y-3">' +
+            '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+              '<span class="eyebrow text-accent flex items-center gap-1.5">' + ui.icon('mail', 'w-3.5 h-3.5') + 'Client Email Notification (Rich Mix Standard)' + '</span>' +
+              '<div class="flex items-center gap-2">' +
+                '<button type="button" id="btn-copy-subj" class="btn btn-ghost !py-1 !px-2.5 text-xs font-semibold flex items-center gap-1">' +
+                  ui.icon('copy', 'w-3 h-3') + '<span>Copy Subject</span>' +
+                '</button>' +
+                '<button type="button" id="btn-copy-email-body" class="btn btn-primary !py-1 !px-2.5 text-xs font-bold flex items-center gap-1 shadow-2xs">' +
+                  ui.icon('copy', 'w-3 h-3') + '<span>Copy Entire Email</span>' +
+                '</button>' +
+              '</div>' +
+            '</div>' +
+
+            '<div>' +
+              '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Email Subject Line</label>' +
+              '<input type="text" id="email-subject-field" value="' + ui.esc(email.subject) + '" readonly class="field !text-xs w-full font-mono bg-panel text-ink" />' +
+            '</div>' +
+
+            '<div>' +
+              '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Email Body (Formatted for Client)</label>' +
+              '<textarea id="email-body-field" rows="18" readonly class="field !text-xs w-full font-mono bg-panel text-ink leading-relaxed">' + ui.esc(email.body) + '</textarea>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    const modalFooter =
+      '<div class="flex items-center justify-between w-full">' +
+        '<div class="text-[11px] text-muted font-mono">' +
+          'Report record synced to Supabase backend (`reports` &amp; `dcps`)' +
+        '</div>' +
+        '<div class="flex items-center gap-2">' +
+          '<button type="button" data-close-report class="btn btn-ghost text-xs">Close</button>' +
+          '<button type="button" id="btn-download-pdf-footer" class="btn btn-primary text-xs font-semibold flex items-center gap-1.5 shadow-2xs">' +
+            ui.icon('download', 'w-4 h-4') + '<span>Download PDF Report</span>' +
+          '</button>' +
+        '</div>' +
+      '</div>';
+
+    const m = ui.modal({
+      title: 'DCP Quality Control Report \u2014 ' + film,
+      body: modalBody,
+      footer: modalFooter,
+      maxWidth: 'max-w-4xl'
+    });
+
+    // Tab switching
+    const tabPdf = m.root.querySelector('#tab-btn-pdf');
+    const tabEmail = m.root.querySelector('#tab-btn-email');
+    const viewPdf = m.root.querySelector('#view-tab-pdf');
+    const viewEmail = m.root.querySelector('#view-tab-email');
+
+    function showTab(t) {
+      if (t === 'pdf') {
+        tabPdf.className = 'px-3 py-1.5 rounded-lg text-xs font-bold transition-all bg-accent text-white shadow-2xs flex items-center gap-1.5';
+        tabEmail.className = 'px-3 py-1.5 rounded-lg text-xs font-bold transition-all text-muted hover:text-ink hover:bg-panel/60 flex items-center gap-1.5';
+        viewPdf.classList.remove('hidden');
+        viewPdf.classList.add('block');
+        viewEmail.classList.remove('block');
+        viewEmail.classList.add('hidden');
+      } else {
+        tabEmail.className = 'px-3 py-1.5 rounded-lg text-xs font-bold transition-all bg-accent text-white shadow-2xs flex items-center gap-1.5';
+        tabPdf.className = 'px-3 py-1.5 rounded-lg text-xs font-bold transition-all text-muted hover:text-ink hover:bg-panel/60 flex items-center gap-1.5';
+        viewEmail.classList.remove('hidden');
+        viewEmail.classList.add('block');
+        viewPdf.classList.remove('block');
+        viewPdf.classList.add('hidden');
+      }
+    }
+
+    tabPdf.addEventListener('click', () => showTab('pdf'));
+    tabEmail.addEventListener('click', () => showTab('email'));
+
+    // Copy subject
+    m.root.querySelector('#btn-copy-subj')?.addEventListener('click', () => {
+      navigator.clipboard.writeText(email.subject).then(() => {
+        ui.toast('Email subject copied to clipboard', 'ok');
+      }).catch(() => {
+        m.root.querySelector('#email-subject-field')?.select();
+        document.execCommand('copy');
+        ui.toast('Subject line copied', 'ok');
+      });
+    });
+
+    // Copy email body
+    const copyEmailHandler = () => {
+      navigator.clipboard.writeText(email.body).then(() => {
+        ui.toast('Client email template copied to clipboard!', 'ok');
+      }).catch(() => {
+        m.root.querySelector('#email-body-field')?.select();
+        document.execCommand('copy');
+        ui.toast('Email text copied to clipboard', 'ok');
+      });
+    };
+    m.root.querySelector('#btn-copy-email-top')?.addEventListener('click', copyEmailHandler);
+    m.root.querySelector('#btn-copy-email-body')?.addEventListener('click', copyEmailHandler);
+
+    // Download PDF handler
+    const downloadPdfHandler = () => {
+      showTab('pdf');
+      const element = m.root.querySelector('#qc-printable-report');
+      if (!element) return;
+
+      const filename = `RichMix_QC_Report_${film.replace(/[^a-zA-Z0-9]/g, '_')}_${dcp.eventDate || 'Date'}.pdf`;
+
+      if (window.html2pdf) {
+        ui.toast('Generating PDF report...', 'info');
+        const opt = {
+          margin: [8, 8, 8, 8],
+          filename: filename,
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: { scale: 2, useCORS: true, logging: false },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+        };
+        window.html2pdf().set(opt).from(element).save().then(() => {
+          ui.toast('PDF report downloaded successfully!', 'ok');
+        }).catch(err => {
+          console.warn('[PDF Download] html2pdf error, triggering system print fallback:', err);
+          window.print();
+        });
+      } else {
+        window.print();
+      }
+    };
+
+    m.root.querySelector('#btn-download-pdf')?.addEventListener('click', downloadPdfHandler);
+    m.root.querySelector('#btn-download-pdf-footer')?.addEventListener('click', downloadPdfHandler);
+    m.root.querySelector('#btn-print-report')?.addEventListener('click', () => {
+      showTab('pdf');
+      window.print();
+    });
+
+    m.root.querySelector('#btn-edit-checklist-top')?.addEventListener('click', () => {
+      m.close();
+      openSignoffModal(dcp);
+    });
+
+    m.root.querySelector('[data-close-report]')?.addEventListener('click', m.close);
+  }
+  RMTP.openQcReportModal = openQcReportModal;
 
   /* ---- Filter State ---- */
   let activeScreenTab = 'all'; // 'all', 'Screen One', 'Screen Two', 'Screen Three'
@@ -1040,7 +1691,7 @@ RMTP.views.dcp = function (el, params, query) {
                     '<tr class="bg-panel2/70 text-muted font-mono uppercase text-[10px] tracking-wider border-b border-line select-none">' +
                       '<th class="py-2.5 px-3 min-w-[170px]">Media &amp; Advance</th>' +
                       '<th class="py-2.5 px-3 min-w-[200px]">Film &amp; Screening</th>' +
-                      '<th class="py-2.5 px-3 min-w-[340px]">Pre-Screening Checklist</th>' +
+                      '<th class="py-2.5 px-3 min-w-[320px]">QC Report &amp; 7-Point Checklist</th>' +
                       '<th class="py-2.5 px-3 min-w-[180px]">Issues Noted</th>' +
                       '<th class="py-2.5 px-3 min-w-[140px]">Outcome</th>' +
                       '<th class="py-2.5 px-3 min-w-[170px]">Further Action / Task</th>' +
@@ -1063,6 +1714,78 @@ RMTP.views.dcp = function (el, params, query) {
       '</div>';
 
     attachViewListeners();
+  }
+
+  /* ---- Obvious Link Component to Cinema QC Report (Replaces old 6-checkbox checklist) ---- */
+  function renderQcReportLinkBlock(dcp) {
+    const crit = ensureQcCriteria(dcp);
+    let passCount = 0;
+    let caveatsCount = 0;
+    let failCount = 0;
+    QC_CRITERIA_DEFINITIONS.forEach(def => {
+      const st = (crit[def.id] && crit[def.id].status) || 'Pending';
+      if (st === 'Pass') passCount++;
+      else if (st === 'Caveats') caveatsCount++;
+      else if (st === 'Fail') failCount++;
+    });
+
+    const categoryBadges = QC_CRITERIA_DEFINITIONS.map(def => {
+      const st = (crit[def.id] && crit[def.id].status) || 'Pending';
+      let dotColor = 'bg-slate-400';
+      let textColor = 'text-muted';
+      let bgStyle = 'bg-panel2/70 border-line';
+      if (st === 'Pass') {
+        dotColor = 'bg-ok';
+        textColor = 'text-ok font-bold';
+        bgStyle = 'bg-ok/10 border-ok/30';
+      } else if (st === 'Caveats') {
+        dotColor = 'bg-warning';
+        textColor = 'text-warning font-bold';
+        bgStyle = 'bg-warning/10 border-warning/30';
+      } else if (st === 'Fail') {
+        dotColor = 'bg-danger';
+        textColor = 'text-danger font-bold';
+        bgStyle = 'bg-danger/10 border-danger/30';
+      }
+      const shortName = def.title.replace(' & Integrity', '').replace(' Validation', '').replace(' Selection', '').replace(' & Ratios', '').replace(' & Sync', '').replace(' & Accessibility', '').replace(' Stability', '');
+      return (
+        '<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono border ' + bgStyle + ' ' + textColor + '" title="' + ui.esc(def.title) + ': ' + st + '">' +
+          '<span class="w-1.5 h-1.5 rounded-full ' + dotColor + ' shrink-0"></span>' +
+          '<span>' + def.num + '.' + ui.esc(shortName) + '</span>' +
+        '</span>'
+      );
+    }).join('');
+
+    let statusPill = '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-panel2 text-muted border border-line">Pending</span>';
+    if (dcp.outcome === 'Passed') {
+      statusPill = '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-ok/20 text-ok border border-ok/30">' + ui.icon('check', 'w-3 h-3 inline mr-1') + '7/7 Passed</span>';
+    } else if (dcp.outcome === 'Passed with Caveats') {
+      statusPill = '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-warning/20 text-warning border border-warning/30">Caveats (' + caveatsCount + ')</span>';
+    } else if (dcp.outcome === 'Failed') {
+      statusPill = '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-danger/20 text-danger border border-danger/30">' + ui.icon('x', 'w-3 h-3 inline mr-1') + 'Failed (' + failCount + ')</span>';
+    } else if (passCount > 0) {
+      statusPill = '<span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-accent/20 text-accent border border-accent/30">' + passCount + '/7 Verified</span>';
+    }
+
+    return (
+      '<div data-open-report="' + dcp.id + '" class="group/qc cursor-pointer p-3 rounded-xl border border-accent/40 bg-accent/5 hover:bg-accent/15 transition-all shadow-2xs space-y-2 select-none" title="Click to open official 7-category QC report & client email">' +
+        '<div class="flex items-center justify-between gap-2">' +
+          '<div class="flex items-center gap-1.5 font-bold text-xs text-ink group-hover/qc:text-accent transition-colors">' +
+            ui.icon('file-text', 'w-4 h-4 text-accent shrink-0') +
+            '<span>QC Report &amp; 7-Point Checklist</span>' +
+            '<span class="text-accent group-hover/qc:translate-x-0.5 transition-transform">&rarr;</span>' +
+          '</div>' +
+          statusPill +
+        '</div>' +
+        '<div class="flex items-center gap-1 flex-wrap pt-0.5">' +
+          categoryBadges +
+        '</div>' +
+        '<div class="text-[10px] text-accent font-semibold flex items-center justify-between pt-1 border-t border-accent/20">' +
+          '<span class="text-muted group-hover/qc:text-ink transition-colors">Ingestion, KDM, CPL, Framing, Audio, Subs, Playback</span>' +
+          '<span class="underline group-hover/qc:text-white transition-colors">Open Report &rarr;</span>' +
+        '</div>' +
+      '</div>'
+    );
   }
 
   /* ---- Render Desktop Row ---- */
@@ -1154,39 +1877,9 @@ RMTP.views.dcp = function (el, params, query) {
           '</div>' +
         '</td>' +
 
-        // 3. Pre-Screening Checklist (6 Interactive Checkboxes right in row!)
-        '<td class="py-3 px-3 align-top min-w-[340px] border-b border-line/60">' +
-          '<div class="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px] select-none">' +
-            '<label class="flex items-center gap-1.5 cursor-pointer hover:text-ink ' + (dcp.mediaReceived ? 'text-ok font-medium' : 'text-muted') + '">' +
-              '<input type="checkbox" data-check-field="mediaReceived" data-id="' + dcp.id + '" class="w-3.5 h-3.5 rounded accent-[var(--ok)]" ' + (dcp.mediaReceived ? 'checked' : '') + ' />' +
-              '<span>Media Received</span>' +
-            '</label>' +
-
-            '<label class="flex items-center gap-1.5 cursor-pointer hover:text-ink ' + (dcp.kdmCplReceived ? 'text-ok font-medium' : 'text-muted') + '">' +
-              '<input type="checkbox" data-check-field="kdmCplReceived" data-id="' + dcp.id + '" class="w-3.5 h-3.5 rounded accent-[var(--ok)]" ' + (dcp.kdmCplReceived ? 'checked' : '') + ' />' +
-              '<span>KDM / CPL Rcvd</span>' +
-            '</label>' +
-
-            '<label class="flex items-center gap-1.5 cursor-pointer hover:text-ink ' + (dcp.playlistMade ? 'text-ok font-medium' : 'text-muted') + '">' +
-              '<input type="checkbox" data-check-field="playlistMade" data-id="' + dcp.id + '" class="w-3.5 h-3.5 rounded accent-[var(--ok)]" ' + (dcp.playlistMade ? 'checked' : '') + ' />' +
-              '<span>Playlist Made</span>' +
-            '</label>' +
-
-            '<label class="flex items-center gap-1.5 cursor-pointer hover:text-ink ' + (dcp.tested ? 'text-ok font-medium' : 'text-muted') + '">' +
-              '<input type="checkbox" data-check-field="tested" data-id="' + dcp.id + '" class="w-3.5 h-3.5 rounded accent-[var(--ok)]" ' + (dcp.tested ? 'checked' : '') + ' />' +
-              '<span>Tested in Booth</span>' +
-            '</label>' +
-
-            '<label class="flex items-center gap-1.5 cursor-pointer hover:text-ink ' + (dcp.holdingSlidesReady ? 'text-ok font-medium' : 'text-muted') + '">' +
-              '<input type="checkbox" data-check-field="holdingSlidesReady" data-id="' + dcp.id + '" class="w-3.5 h-3.5 rounded accent-[var(--ok)]" ' + (dcp.holdingSlidesReady ? 'checked' : '') + ' />' +
-              '<span>Holding Slides</span>' +
-            '</label>' +
-
-            '<label class="flex items-center gap-1.5 cursor-pointer hover:text-ink ' + (dcp.subsAudioSync ? 'text-ok font-medium' : 'text-muted') + '">' +
-              '<input type="checkbox" data-check-field="subsAudioSync" data-id="' + dcp.id + '" class="w-3.5 h-3.5 rounded accent-[var(--ok)]" ' + (dcp.subsAudioSync ? 'checked' : '') + ' />' +
-              '<span>Audio &amp; Subs Sync</span>' +
-            '</label>' +
-          '</div>' +
+        // 3. Obvious Link to Cinema QC Report (replaces old 6-checkbox checklist)
+        '<td class="py-3 px-3 align-top min-w-[320px] border-b border-line/60">' +
+          renderQcReportLinkBlock(dcp) +
         '</td>' +
 
         // 4. Issues Noted (Inline text input with auto-save)
@@ -1210,14 +1903,17 @@ RMTP.views.dcp = function (el, params, query) {
         '</td>' +
 
         // 7. Actions (Sticky column on right edge so buttons are never cut off)
-        '<td class="py-3 px-3 align-middle text-right whitespace-nowrap min-w-[180px] w-[180px] sticky right-0 bg-panel group-hover:bg-[#1a202a] transition-colors z-10 shadow-[-10px_0_12px_-4px_rgba(0,0,0,0.45)] border-b border-l border-line/60">' +
+        '<td class="py-3 px-3 align-middle text-right whitespace-nowrap min-w-[220px] w-[220px] sticky right-0 bg-panel group-hover:bg-[#1a202a] transition-colors z-10 shadow-[-10px_0_12px_-4px_rgba(0,0,0,0.45)] border-b border-l border-line/60">' +
           '<div class="flex items-center justify-end gap-1.5 shrink-0">' +
             (isDup ? (
               '<button type="button" data-merge-dcp="' + dcp.id + '" class="btn btn-warning !py-1 !px-2 text-xs font-semibold flex items-center gap-1 shrink-0 shadow-2xs" title="Merge this duplicate group into one consolidated record">' +
                 ui.icon('copy', 'w-3.5 h-3.5') + '<span>Merge</span>' +
               '</button>'
             ) : '') +
-            '<button type="button" data-open-signoff="' + dcp.id + '" class="btn btn-primary !py-1 !px-2 text-xs font-semibold flex items-center gap-1 shadow-2xs whitespace-nowrap" title="Open Full Sign-off Sheet">' +
+            '<button type="button" data-open-report="' + dcp.id + '" class="btn btn-ghost !py-1 !px-2 text-xs font-semibold flex items-center gap-1 text-accent hover:bg-accent/10 border border-accent/30 shadow-2xs whitespace-nowrap" title="Generate & View Professional PDF QC Report & Client Email">' +
+              ui.icon('file-text', 'w-3.5 h-3.5') + '<span>QC Report</span>' +
+            '</button>' +
+            '<button type="button" data-open-signoff="' + dcp.id + '" class="btn btn-primary !py-1 !px-2 text-xs font-semibold flex items-center gap-1 shadow-2xs whitespace-nowrap" title="Open Full Pre-Screening Sign-off Sheet">' +
               ui.icon('check', 'w-3.5 h-3.5') + '<span>Sign-off</span>' +
             '</button>' +
             '<button type="button" data-delete-dcp="' + dcp.id + '" class="btn btn-danger !p-1.5 !h-7 !w-7 min-h-0 shrink-0 inline-flex items-center justify-center rounded-lg" title="Delete Screening Record">' +
@@ -1280,33 +1976,8 @@ RMTP.views.dcp = function (el, params, query) {
           '</div>' +
         '</div>' +
 
-        // 6 Checklist items
-        '<div class="grid grid-cols-2 gap-2 p-3 rounded-lg bg-panel2/50 border border-line/60 text-xs select-none">' +
-          '<label class="flex items-center gap-1.5 cursor-pointer ' + (dcp.mediaReceived ? 'text-ok font-medium' : 'text-muted') + '">' +
-            '<input type="checkbox" data-check-field="mediaReceived" data-id="' + dcp.id + '" class="w-3.5 h-3.5 rounded accent-[var(--ok)]" ' + (dcp.mediaReceived ? 'checked' : '') + ' />' +
-            '<span>Media Received</span>' +
-          '</label>' +
-          '<label class="flex items-center gap-1.5 cursor-pointer ' + (dcp.kdmCplReceived ? 'text-ok font-medium' : 'text-muted') + '">' +
-            '<input type="checkbox" data-check-field="kdmCplReceived" data-id="' + dcp.id + '" class="w-3.5 h-3.5 rounded accent-[var(--ok)]" ' + (dcp.kdmCplReceived ? 'checked' : '') + ' />' +
-            '<span>KDM / CPL Rcvd</span>' +
-          '</label>' +
-          '<label class="flex items-center gap-1.5 cursor-pointer ' + (dcp.playlistMade ? 'text-ok font-medium' : 'text-muted') + '">' +
-            '<input type="checkbox" data-check-field="playlistMade" data-id="' + dcp.id + '" class="w-3.5 h-3.5 rounded accent-[var(--ok)]" ' + (dcp.playlistMade ? 'checked' : '') + ' />' +
-            '<span>Playlist Made</span>' +
-          '</label>' +
-          '<label class="flex items-center gap-1.5 cursor-pointer ' + (dcp.tested ? 'text-ok font-medium' : 'text-muted') + '">' +
-            '<input type="checkbox" data-check-field="tested" data-id="' + dcp.id + '" class="w-3.5 h-3.5 rounded accent-[var(--ok)]" ' + (dcp.tested ? 'checked' : '') + ' />' +
-            '<span>Tested in Booth</span>' +
-          '</label>' +
-          '<label class="flex items-center gap-1.5 cursor-pointer ' + (dcp.holdingSlidesReady ? 'text-ok font-medium' : 'text-muted') + '">' +
-            '<input type="checkbox" data-check-field="holdingSlidesReady" data-id="' + dcp.id + '" class="w-3.5 h-3.5 rounded accent-[var(--ok)]" ' + (dcp.holdingSlidesReady ? 'checked' : '') + ' />' +
-            '<span>Holding Slides</span>' +
-          '</label>' +
-          '<label class="flex items-center gap-1.5 cursor-pointer ' + (dcp.subsAudioSync ? 'text-ok font-medium' : 'text-muted') + '">' +
-            '<input type="checkbox" data-check-field="subsAudioSync" data-id="' + dcp.id + '" class="w-3.5 h-3.5 rounded accent-[var(--ok)]" ' + (dcp.subsAudioSync ? 'checked' : '') + ' />' +
-            '<span>Audio &amp; Subs Sync</span>' +
-          '</label>' +
-        '</div>' +
+        // Where checklist was: Obvious link to the QC report
+        renderQcReportLinkBlock(dcp) +
 
         // Issues input
         '<div>' +
@@ -1324,12 +1995,15 @@ RMTP.views.dcp = function (el, params, query) {
               ).join('') +
             '</select>' +
           '</div>' +
-          '<div class="flex items-center gap-2">' +
+          '<div class="flex items-center gap-2 flex-wrap">' +
             (isDup ? (
               '<button type="button" data-merge-dcp="' + dcp.id + '" class="btn btn-warning !py-1 !px-2 text-xs font-semibold flex items-center gap-1">' +
                 ui.icon('copy', 'w-3.5 h-3.5') + '<span>Merge</span>' +
               '</button>'
             ) : '') +
+            '<button type="button" data-open-report="' + dcp.id + '" class="btn btn-ghost !py-1 !px-2 text-xs font-semibold flex items-center gap-1 text-accent border border-accent/30" title="View QC Report & Email">' +
+              ui.icon('file-text', 'w-3.5 h-3.5') + '<span>QC Report</span>' +
+            '</button>' +
             '<button type="button" data-open-signoff="' + dcp.id + '" class="btn btn-primary !py-1 !px-2.5 text-xs font-semibold flex items-center gap-1">' +
               ui.icon('check', 'w-3.5 h-3.5') + '<span>Sign-off Sheet</span>' +
             '</button>' +
@@ -1342,7 +2016,7 @@ RMTP.views.dcp = function (el, params, query) {
     );
   }
 
-  /* ---- Open Full Pre-Screening Sign-off Modal ---- */
+  /* ---- Open Full Pre-Screening Sign-off Modal (7-Criteria Standard) ---- */
   function openSignoffModal(existing) {
     const isNew = !existing;
     const item = existing ? JSON.parse(JSON.stringify(existing)) : {
@@ -1350,7 +2024,11 @@ RMTP.views.dcp = function (el, params, query) {
       eventId: '',
       eventName: '',
       filmTitle: '',
-      mediaType: '',
+      clientName: '',
+      pictureFormat: 'Flat (1.85:1)',
+      audioFormat: '5.1 Surround',
+      deadlineDate: '',
+      mediaType: 'DCP',
       eventDate: new Date().toISOString().slice(0, 10),
       eventStartTime: '19:00',
       eventFinishTime: '21:00',
@@ -1363,6 +2041,7 @@ RMTP.views.dcp = function (el, params, query) {
       subsAudioSync: false,
       issuesNoted: '',
       outcome: 'Pending',
+      outcomeManualOverride: false,
       hasFurtherAction: false,
       furtherAction: '',
       linkedTaskId: '',
@@ -1372,6 +2051,9 @@ RMTP.views.dcp = function (el, params, query) {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
+
+    // Ensure 7 QC criteria initialized
+    ensureQcCriteria(item);
 
     const users = store.all('users');
     const userOptions = users.map(u =>
@@ -1398,10 +2080,11 @@ RMTP.views.dcp = function (el, params, query) {
           '</div>'
         ) : '') +
 
-        // Panel 1: Screening & Media Identity
+        // Panel 1: Screening & Technical Specification Setup
         '<div class="p-4 rounded-xl bg-panel2/40 border border-line space-y-3.5">' +
           '<div class="eyebrow text-accent flex items-center justify-between">' +
-            '<span class="flex items-center gap-1.5">' + ui.icon('film', 'w-3.5 h-3.5') + 'Screening &amp; Media Setup</span>' +
+            '<span class="flex items-center gap-1.5">' + ui.icon('film', 'w-3.5 h-3.5') + 'Screening &amp; Technical Specifications</span>' +
+            '<span class="text-[11px] font-mono text-muted">Booth &amp; Client Metadata</span>' +
           '</div>' +
 
           '<div class="grid grid-cols-1 sm:grid-cols-3 gap-3">' +
@@ -1410,15 +2093,22 @@ RMTP.views.dcp = function (el, params, query) {
               '<input type="text" id="m-film-title" value="' + ui.esc(item.filmTitle || item.eventName || '') + '" placeholder="e.g. Past Lives" class="field !text-xs w-full font-semibold text-ink" />' +
             '</div>' +
             '<div>' +
+              '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Client / Distributor Name</label>' +
+              '<input type="text" id="m-client-name" value="' + ui.esc(item.clientName || '') + '" placeholder="e.g. StudioCanal / A24 / Private Booking" class="field !text-xs w-full text-ink" />' +
+            '</div>' +
+            '<div>' +
               '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Screen / Venue</label>' +
-              '<select id="m-screen" class="field !text-xs w-full">' +
+              '<select id="m-screen" class="field !text-xs w-full font-semibold text-ink">' +
                 ['Screen One', 'Screen Two', 'Screen Three'].map(s =>
                   '<option value="' + s + '"' + (item.screen === s ? ' selected' : '') + '>' + s + '</option>'
                 ).join('') +
               '</select>' +
             '</div>' +
+          '</div>' +
+
+          '<div class="grid grid-cols-1 sm:grid-cols-3 gap-3">' +
             '<div>' +
-              '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">What media type is the screening? *</label>' +
+              '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Media Type</label>' +
               '<select id="m-media-type" class="field !text-xs w-full font-semibold text-ink">' +
                 '<option value="">\u2014 Blank (TBC) \u2014</option>' +
                 MEDIA_TYPES.map(m =>
@@ -1426,9 +2116,25 @@ RMTP.views.dcp = function (el, params, query) {
                 ).join('') +
               '</select>' +
             '</div>' +
+            '<div>' +
+              '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Picture Format</label>' +
+              '<select id="m-picture-format" class="field !text-xs w-full text-ink">' +
+                ['Flat (1.85:1)', 'Scope (2.39:1)', '16:9 Full HD', 'Other / Custom'].map(f =>
+                  '<option value="' + f + '"' + ((item.pictureFormat || 'Flat (1.85:1)') === f ? ' selected' : '') + '>' + f + '</option>'
+                ).join('') +
+              '</select>' +
+            '</div>' +
+            '<div>' +
+              '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Audio Routing Format</label>' +
+              '<select id="m-audio-format" class="field !text-xs w-full text-ink">' +
+                ['5.1 Surround', '7.1 Surround', 'Stereo (2.0)', 'Dolby Atmos', 'Other'].map(a =>
+                  '<option value="' + a + '"' + ((item.audioFormat || '5.1 Surround') === a ? ' selected' : '') + '>' + a + '</option>'
+                ).join('') +
+              '</select>' +
+            '</div>' +
           '</div>' +
 
-          '<div class="grid grid-cols-1 sm:grid-cols-3 gap-3">' +
+          '<div class="grid grid-cols-1 sm:grid-cols-4 gap-3">' +
             '<div>' +
               '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Screening Date</label>' +
               '<input type="date" id="m-date" value="' + ui.esc(item.eventDate || '') + '" class="field !text-xs w-full" />' +
@@ -1441,69 +2147,76 @@ RMTP.views.dcp = function (el, params, query) {
               '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Finish Time</label>' +
               '<input type="time" id="m-finish-time" value="' + ui.esc(item.eventFinishTime || '') + '" class="field !text-xs w-full" />' +
             '</div>' +
+            '<div>' +
+              '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Revision Deadline</label>' +
+              '<input type="date" id="m-deadline-date" value="' + ui.esc(item.deadlineDate || '') + '" class="field !text-xs w-full" title="Deadline for client to deliver replacement/re-ingest DCP" />' +
+            '</div>' +
           '</div>' +
         '</div>' +
 
-        // Panel 2: Pre-Screening Checklist (The 6 core items)
+        // Panel 2: Standardized 7-Point Technical QC Evaluation Grid
         '<div class="p-4 rounded-xl bg-panel2/40 border border-line space-y-3.5">' +
-          '<div class="eyebrow text-accent flex items-center justify-between">' +
-            '<span class="flex items-center gap-1.5">' + ui.icon('check', 'w-3.5 h-3.5') + 'Pre-Screening Verification Checklist</span>' +
-            '<button type="button" id="btn-quick-pass-all" class="text-accent hover:underline font-semibold cursor-pointer text-[11px] flex items-center gap-1">' +
-              ui.icon('check', 'w-3 h-3') + '<span>Mark All Verified</span>' +
-            '</button>' +
+          '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+            '<div class="eyebrow text-accent flex items-center gap-1.5">' +
+              ui.icon('check', 'w-3.5 h-3.5') + '<span>Rich Mix 7-Parameter QC Verification Criteria</span>' +
+            '</div>' +
+            '<div class="flex items-center gap-2">' +
+              '<button type="button" id="btn-quick-pass-all" class="btn btn-ghost !py-1 !px-2.5 text-xs text-ok hover:bg-ok/10 border border-ok/30 flex items-center gap-1 font-semibold">' +
+                ui.icon('check', 'w-3 h-3') + '<span>Mark All 7 Passed</span>' +
+              '</button>' +
+            '</div>' +
           '</div>' +
 
-          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-lg bg-panel border border-line">' +
-            '<label class="flex items-start gap-2.5 cursor-pointer p-2 rounded-lg hover:bg-panel2/60 transition-colors">' +
-              '<input type="checkbox" id="chk-m-media-rcv" class="w-4 h-4 rounded mt-0.5 accent-[var(--ok)]" ' + (item.mediaReceived ? 'checked' : '') + ' />' +
-              '<div>' +
-                '<div class="font-semibold text-ink text-xs">Has the Media been received?</div>' +
-                '<div class="text-[10px] text-muted">DCP drive, Aspera / Signiant transfer, laptop, or physical disc delivered to booth.</div>' +
-              '</div>' +
-            '</label>' +
+          '<div class="space-y-3">' +
+            QC_CRITERIA_DEFINITIONS.map(def => {
+              const currentCrit = (item.qc_criteria && item.qc_criteria[def.id]) || { status: 'Pending', notes: '' };
+              const currentStatus = currentCrit.status || 'Pending';
+              return (
+                '<div class="p-3.5 rounded-xl bg-panel border border-line space-y-2.5 transition-all" data-criteria-card="' + def.id + '">' +
+                  '<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">' +
+                    '<div class="flex items-start gap-2.5">' +
+                      '<span class="w-6 h-6 rounded-md bg-panel2 text-ink font-mono font-bold text-xs flex items-center justify-center shrink-0 mt-0.5 border border-line">' +
+                        def.num +
+                      '</span>' +
+                      '<div>' +
+                        '<div class="font-bold text-ink text-xs">' + ui.esc(def.title) + '</div>' +
+                        '<div class="text-[11px] text-muted leading-tight mt-0.5">' + ui.esc(def.requirement) + '</div>' +
+                      '</div>' +
+                    '</div>' +
 
-            '<label class="flex items-start gap-2.5 cursor-pointer p-2 rounded-lg hover:bg-panel2/60 transition-colors">' +
-              '<input type="checkbox" id="chk-m-kdm-cpl" class="w-4 h-4 rounded mt-0.5 accent-[var(--ok)]" ' + (item.kdmCplReceived ? 'checked' : '') + ' />' +
-              '<div>' +
-                '<div class="font-semibold text-ink text-xs">Have any required KDM\u2019s or CPL\u2019s been received?</div>' +
-                '<div class="text-[10px] text-muted">Key certificate matches media block hardware serial &amp; valid window covers screening.</div>' +
-              '</div>' +
-            '</label>' +
+                    // 3-Way Toggle Buttons: Pass / Caveats / Fail
+                    '<div class="flex items-center gap-1 shrink-0 p-1 rounded-lg bg-panel2/60 border border-line" data-crit-btn-group="' + def.id + '">' +
+                      '<button type="button" data-crit-btn="Pass" data-crit-id="' + def.id + '" class="px-2.5 py-1 rounded text-xs font-bold transition-all ' +
+                        (currentStatus === 'Pass' ? 'bg-ok text-white shadow-2xs' : 'text-muted hover:text-ink hover:bg-panel/60') + '">' +
+                        'PASS' +
+                      '</button>' +
+                      '<button type="button" data-crit-btn="Caveats" data-crit-id="' + def.id + '" class="px-2.5 py-1 rounded text-xs font-bold transition-all ' +
+                        (currentStatus === 'Caveats' ? 'bg-warning text-slate-950 shadow-2xs' : 'text-muted hover:text-ink hover:bg-panel/60') + '">' +
+                        'CAVEATS' +
+                      '</button>' +
+                      '<button type="button" data-crit-btn="Fail" data-crit-id="' + def.id + '" class="px-2.5 py-1 rounded text-xs font-bold transition-all ' +
+                        (currentStatus === 'Fail' ? 'bg-danger text-white shadow-2xs' : 'text-muted hover:text-ink hover:bg-panel/60') + '">' +
+                        'FAIL' +
+                      '</button>' +
+                    '</div>' +
+                  '</div>' +
 
-            '<label class="flex items-start gap-2.5 cursor-pointer p-2 rounded-lg hover:bg-panel2/60 transition-colors">' +
-              '<input type="checkbox" id="chk-m-playlist" class="w-4 h-4 rounded mt-0.5 accent-[var(--ok)]" ' + (item.playlistMade ? 'checked' : '') + ' />' +
-              '<div>' +
-                '<div class="font-semibold text-ink text-xs">Has a playlist been made?</div>' +
-                '<div class="text-[10px] text-muted">Show playlist (SPL) assembled on projector server with cues and audio macros.</div>' +
-              '</div>' +
-            '</label>' +
-
-            '<label class="flex items-start gap-2.5 cursor-pointer p-2 rounded-lg hover:bg-panel2/60 transition-colors">' +
-              '<input type="checkbox" id="chk-m-tested" class="w-4 h-4 rounded mt-0.5 accent-[var(--ok)]" ' + (item.tested ? 'checked' : '') + ' />' +
-              '<div>' +
-                '<div class="font-semibold text-ink text-xs">Has it been tested?</div>' +
-                '<div class="text-[10px] text-muted">Full booth pre-screening dry run completed through speakers and screen.</div>' +
-              '</div>' +
-            '</label>' +
-
-            '<label class="flex items-start gap-2.5 cursor-pointer p-2 rounded-lg hover:bg-panel2/60 transition-colors">' +
-              '<input type="checkbox" id="chk-m-slides" class="w-4 h-4 rounded mt-0.5 accent-[var(--ok)]" ' + (item.holdingSlidesReady ? 'checked' : '') + ' />' +
-              '<div>' +
-                '<div class="font-semibold text-ink text-xs">Are there holding slides?</div>' +
-                '<div class="text-[10px] text-muted">Walk-in holding slides, intermission cards, or client sponsor graphics loaded.</div>' +
-              '</div>' +
-            '</label>' +
-
-            '<label class="flex items-start gap-2.5 cursor-pointer p-2 rounded-lg hover:bg-panel2/60 transition-colors">' +
-              '<input type="checkbox" id="chk-m-sync" class="w-4 h-4 rounded mt-0.5 accent-[var(--ok)]" ' + (item.subsAudioSync ? 'checked' : '') + ' />' +
-              '<div>' +
-                '<div class="font-semibold text-ink text-xs">Do the subtitles and audio sync?</div>' +
-                '<div class="text-[10px] text-muted">Subtitles render in-sync with speech; audio channels balanced without delay.</div>' +
-              '</div>' +
-            '</label>' +
+                  // Notes and Guidance
+                  '<div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-line/50 text-[11px]">' +
+                    '<div class="text-muted italic flex items-center gap-1">' +
+                      ui.icon('info', 'w-3 h-3 text-muted shrink-0') +
+                      '<span>Pass rule: ' + ui.esc(def.passDesc) + '</span>' +
+                    '</div>' +
+                    '<div>' +
+                      '<input type="text" data-crit-notes="' + def.id + '" value="' + ui.esc(currentCrit.notes || '') + '" placeholder="Observations / notes for ' + ui.esc(def.title) + '..." class="field !py-1 !px-2 !text-xs w-full bg-panel2/40 text-ink" />' +
+                    '</div>' +
+                  '</div>' +
+                '</div>'
+              );
+            }).join('') +
           '</div>' +
 
-          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">' +
+          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">' +
             '<div>' +
               '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Tested By</label>' +
               '<select id="m-tester" class="field !text-xs w-full">' +
@@ -1518,24 +2231,36 @@ RMTP.views.dcp = function (el, params, query) {
           '</div>' +
         '</div>' +
 
-        // Panel 3: Any issues noted?
+        // Panel 3: Live Outcome Banner & Override Option
         '<div class="p-4 rounded-xl bg-panel2/40 border border-line space-y-3.5">' +
-          '<div class="eyebrow text-accent flex items-center gap-1.5">' +
-            ui.icon('tool', 'w-3.5 h-3.5') + '<span>Any Issues Noted?</span>' +
-          '</div>' +
-          '<div>' +
-            '<textarea id="m-issues" rows="3" placeholder="Note any aspect ratio framing quirks, sound level offsets, missing holding slides, audio sync lag, or distributor notes..." class="field !text-xs w-full leading-relaxed">' + ui.esc(item.issuesNoted || '') + '</textarea>' +
-            '<div class="text-[10px] text-muted mt-1">These notes appear directly on the booth checklist and sync with Event Advancing notes.</div>' +
-          '</div>' +
-        '</div>' +
-
-        // Panel 4: Outcome of Testing
-        '<div class="p-4 rounded-xl bg-panel2/40 border border-line space-y-3.5">' +
-          '<div class="eyebrow text-accent flex items-center gap-1.5">' +
-            ui.icon('check', 'w-3.5 h-3.5') + '<span>Outcome of Testing</span>' +
+          '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+            '<div class="eyebrow text-accent flex items-center gap-1.5">' +
+              ui.icon('check', 'w-3.5 h-3.5') + '<span>Overall QC Outcome &amp; Sign-off</span>' +
+            '</div>' +
+            '<label class="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-muted hover:text-ink select-none">' +
+              '<input type="checkbox" id="chk-outcome-override" class="w-3.5 h-3.5 rounded accent-[var(--accent)]" ' + (item.outcomeManualOverride ? 'checked' : '') + ' />' +
+              '<span>Manual Outcome Override</span>' +
+            '</label>' +
           '</div>' +
 
-          '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2">' +
+          // Live Status Display
+          '<div id="modal-outcome-banner" class="p-3.5 rounded-xl border flex items-center justify-between gap-3 bg-panel border-line">' +
+            '<div class="flex items-center gap-2.5">' +
+              '<span id="modal-outcome-icon" class="w-8 h-8 rounded-lg bg-panel2 flex items-center justify-center font-bold text-ink shrink-0">' +
+                ui.icon('check', 'w-4 h-4') +
+              '</span>' +
+              '<div>' +
+                '<div class="text-xs font-bold text-ink" id="modal-outcome-title">Outcome: ' + (item.outcome || 'Pending') + '</div>' +
+                '<div class="text-[11px] text-muted" id="modal-outcome-desc">Auto-calculated from 7-point evaluation criteria.</div>' +
+              '</div>' +
+            '</div>' +
+            '<div id="modal-outcome-badge">' +
+              '<span class="px-2.5 py-1 rounded text-xs font-mono font-bold bg-panel2 text-muted border border-line">' + (item.outcome || 'Pending').toUpperCase() + '</span>' +
+            '</div>' +
+          '</div>' +
+
+          // Outcome button strip
+          '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">' +
             ['Passed', 'Passed with Caveats', 'Failed', 'Pending'].map(out => {
               const isSel = (item.outcome === out) || (!item.outcome && out === 'Pending');
               let borderClass = isSel ? 'border-accent bg-accent/15 text-accent font-bold ring-1 ring-accent' : 'border-line bg-panel text-muted hover:text-ink';
@@ -1550,6 +2275,20 @@ RMTP.views.dcp = function (el, params, query) {
             }).join('') +
           '</div>' +
           '<input type="hidden" id="m-outcome-val" value="' + ui.esc(item.outcome || 'Pending') + '" />' +
+          '<div class="text-[10px] text-muted" id="override-hint">' +
+            (item.outcomeManualOverride ? 'Manual override is ACTIVE: Outcome is locked to your selection above.' : 'Auto-calculate is ACTIVE: Failing any criteria marks overall Failed; Caveats marks Passed with Caveats.') +
+          '</div>' +
+        '</div>' +
+
+        // Panel 4: Any issues noted?
+        '<div class="p-4 rounded-xl bg-panel2/40 border border-line space-y-3.5">' +
+          '<div class="eyebrow text-accent flex items-center gap-1.5">' +
+            ui.icon('tool', 'w-3.5 h-3.5') + '<span>Any Issues Noted?</span>' +
+          '</div>' +
+          '<div>' +
+            '<textarea id="m-issues" rows="3" placeholder="Note any aspect ratio framing quirks, sound level offsets, missing holding slides, audio sync lag, or distributor notes..." class="field !text-xs w-full leading-relaxed">' + ui.esc(item.issuesNoted || '') + '</textarea>' +
+            '<div class="text-[10px] text-muted mt-1">These notes appear directly on the booth checklist, sync with Event Advancing notes, and populate the QC report.</div>' +
+          '</div>' +
         '</div>' +
 
         // Panel 5: Any further action? (Creates a task with a follow up action)
@@ -1582,7 +2321,7 @@ RMTP.views.dcp = function (el, params, query) {
       '</div>';
 
     const modalFooter =
-      '<div class="flex items-center justify-between w-full">' +
+      '<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 w-full">' +
         '<div>' +
           (existing ? (
             '<button type="button" id="btn-del-modal-dcp" class="btn btn-danger text-xs flex items-center gap-1.5">' +
@@ -1590,7 +2329,10 @@ RMTP.views.dcp = function (el, params, query) {
             '</button>'
           ) : '') +
         '</div>' +
-        '<div class="flex items-center gap-2">' +
+        '<div class="flex items-center gap-2 flex-wrap justify-end">' +
+          '<button type="button" id="btn-modal-open-report" class="btn btn-ghost text-xs text-accent hover:bg-accent/10 border border-accent/40 font-bold flex items-center gap-1.5 shadow-2xs" title="Generate QC Report & Client Email">' +
+            ui.icon('file-text', 'w-4 h-4') + '<span>Generate QC Report &amp; Email</span>' +
+          '</button>' +
           '<button type="button" data-cancel class="btn btn-ghost text-xs">Cancel</button>' +
           '<button type="button" id="btn-save-dcp" class="btn btn-primary text-xs font-semibold flex items-center gap-1.5 shadow-2xs">' +
             ui.icon('check', 'w-4 h-4') + '<span>' + (isNew ? 'Create Screening' : 'Save Pre-Screening Sign-off') + '</span>' +
@@ -1599,48 +2341,138 @@ RMTP.views.dcp = function (el, params, query) {
       '</div>';
 
     const m = ui.modal({
-      title: isNew ? 'Add Manual Screening' : (item.filmTitle || 'Pre-Screening Sign-off'),
+      title: isNew ? 'Add Manual Screening' : ((item.filmTitle || 'Screening') + ' \u2014 Cinema QC Sign-Off'),
       body: modalBody,
       footer: modalFooter,
-      maxWidth: 'max-w-2xl'
+      maxWidth: 'max-w-3xl'
     });
 
-    // Wire Outcome buttons in modal
-    m.root.querySelectorAll('[data-outcome-btn]').forEach(b => {
+    // Helper to refresh live outcome UI
+    function refreshOutcomeBanner(outcomeVal) {
+      const banner = m.root.querySelector('#modal-outcome-banner');
+      const title = m.root.querySelector('#modal-outcome-title');
+      const badge = m.root.querySelector('#modal-outcome-badge');
+      const icon = m.root.querySelector('#modal-outcome-icon');
+      if (!banner || !title || !badge) return;
+
+      m.root.querySelector('#m-outcome-val').value = outcomeVal;
+
+      if (outcomeVal === 'Passed') {
+        banner.className = 'p-3.5 rounded-xl border flex items-center justify-between gap-3 bg-ok/10 border-ok/40 text-ok';
+        title.innerHTML = 'Outcome: PASSED (All Criteria Verified)';
+        badge.innerHTML = '<span class="px-2.5 py-1 rounded text-xs font-mono font-bold bg-ok text-white">' + ui.icon('check', 'w-3 h-3 inline mr-1') + 'PASSED</span>';
+      } else if (outcomeVal === 'Passed with Caveats') {
+        banner.className = 'p-3.5 rounded-xl border flex items-center justify-between gap-3 bg-warning/10 border-warning/40 text-warning';
+        title.innerHTML = 'Outcome: PASSED WITH CAVEATS (Technical Adjustments Noted)';
+        badge.innerHTML = '<span class="px-2.5 py-1 rounded text-xs font-mono font-bold bg-warning text-slate-950">CAVEATS</span>';
+      } else if (outcomeVal === 'Failed') {
+        banner.className = 'p-3.5 rounded-xl border flex items-center justify-between gap-3 bg-danger/10 border-danger/40 text-danger';
+        title.innerHTML = 'Outcome: FAILED (Critical Issues Require Replacement)';
+        badge.innerHTML = '<span class="px-2.5 py-1 rounded text-xs font-mono font-bold bg-danger text-white">' + ui.icon('x', 'w-3 h-3 inline mr-1') + 'FAILED</span>';
+      } else {
+        banner.className = 'p-3.5 rounded-xl border flex items-center justify-between gap-3 bg-panel border-line text-muted';
+        title.innerHTML = 'Outcome: PENDING';
+        badge.innerHTML = '<span class="px-2.5 py-1 rounded text-xs font-mono font-bold bg-panel2 text-muted border border-line">PENDING</span>';
+      }
+
+      // Update button styling
+      m.root.querySelectorAll('[data-outcome-btn]').forEach(btn => {
+        const out = btn.getAttribute('data-outcome-btn');
+        const isSel = (out === outcomeVal);
+        let borderClass = isSel ? 'border-accent bg-accent/15 text-accent font-bold ring-1 ring-accent' : 'border-line bg-panel text-muted hover:text-ink';
+        if (isSel && out === 'Passed') borderClass = 'border-ok bg-ok/15 text-ok font-bold ring-1 ring-ok';
+        if (isSel && out === 'Failed') borderClass = 'border-danger bg-danger/15 text-danger font-bold ring-1 ring-danger';
+        if (isSel && out === 'Passed with Caveats') borderClass = 'border-warning bg-warning/15 text-warning font-bold ring-1 ring-warning';
+        btn.className = 'p-2.5 rounded-lg border text-xs text-center transition-all ' + borderClass;
+      });
+    }
+
+    function reevaluateOutcomeFromCriteria() {
+      const isOverride = m.root.querySelector('#chk-outcome-override')?.checked;
+      if (isOverride) return;
+
+      const criteriaState = {};
+      QC_CRITERIA_DEFINITIONS.forEach(def => {
+        const card = m.root.querySelector('[data-criteria-card="' + def.id + '"]');
+        const activeBtn = card ? card.querySelector('[data-crit-btn-group="' + def.id + '"] .bg-ok, [data-crit-btn-group="' + def.id + '"] .bg-warning, [data-crit-btn-group="' + def.id + '"] .bg-danger') : null;
+        let st = 'Pending';
+        if (activeBtn) {
+          st = activeBtn.getAttribute('data-crit-btn') || 'Pending';
+        }
+        criteriaState[def.id] = { status: st };
+      });
+
+      const autoOutcome = calculateOverallQcOutcome(criteriaState);
+      refreshOutcomeBanner(autoOutcome);
+    }
+
+    // Criteria buttons click handlers
+    m.root.querySelectorAll('[data-crit-btn]').forEach(b => {
       b.addEventListener('click', () => {
-        const out = b.getAttribute('data-outcome-btn');
-        m.root.querySelector('#m-outcome-val').value = out;
-        m.root.querySelectorAll('[data-outcome-btn]').forEach(btn => {
-          btn.className = 'p-2.5 rounded-lg border text-xs text-center transition-all border-line bg-panel text-muted hover:text-ink';
+        const critId = b.getAttribute('data-crit-id');
+        const status = b.getAttribute('data-crit-btn');
+        const group = m.root.querySelector('[data-crit-btn-group="' + critId + '"]');
+        if (!group) return;
+
+        group.querySelectorAll('[data-crit-btn]').forEach(btn => {
+          btn.className = 'px-2.5 py-1 rounded text-xs font-bold transition-all text-muted hover:text-ink hover:bg-panel/60';
         });
-        let activeClass = 'border-accent bg-accent/15 text-accent font-bold ring-1 ring-accent';
-        if (out === 'Passed') activeClass = 'border-ok bg-ok/15 text-ok font-bold ring-1 ring-ok';
-        if (out === 'Failed') activeClass = 'border-danger bg-danger/15 text-danger font-bold ring-1 ring-danger';
-        if (out === 'Passed with Caveats') activeClass = 'border-warning bg-warning/15 text-warning font-bold ring-1 ring-warning';
-        b.className = 'p-2.5 rounded-lg border text-xs text-center transition-all ' + activeClass;
+
+        if (status === 'Pass') b.className = 'px-2.5 py-1 rounded text-xs font-bold transition-all bg-ok text-white shadow-2xs';
+        else if (status === 'Caveats') b.className = 'px-2.5 py-1 rounded text-xs font-bold transition-all bg-warning text-slate-950 shadow-2xs';
+        else if (status === 'Fail') b.className = 'px-2.5 py-1 rounded text-xs font-bold transition-all bg-danger text-white shadow-2xs';
+
+        reevaluateOutcomeFromCriteria();
       });
     });
 
-    // Wire Quick Pass All Verified
+    // Checkbox override change handler
+    const chkOverride = m.root.querySelector('#chk-outcome-override');
+    const overrideHint = m.root.querySelector('#override-hint');
+    if (chkOverride) {
+      chkOverride.addEventListener('change', () => {
+        if (chkOverride.checked) {
+          overrideHint.textContent = 'Manual override is ACTIVE: Outcome is locked to your selection.';
+        } else {
+          overrideHint.textContent = 'Auto-calculate is ACTIVE: Failing any criteria marks overall Failed; Caveats marks Passed with Caveats.';
+          reevaluateOutcomeFromCriteria();
+        }
+      });
+    }
+
+    // Manual Outcome buttons click handlers
+    m.root.querySelectorAll('[data-outcome-btn]').forEach(b => {
+      b.addEventListener('click', () => {
+        const out = b.getAttribute('data-outcome-btn');
+        // If override not checked, automatically check it so user intent is honored
+        if (chkOverride && !chkOverride.checked) {
+          chkOverride.checked = true;
+          overrideHint.textContent = 'Manual override is ACTIVE: Outcome is locked to your selection.';
+        }
+        refreshOutcomeBanner(out);
+      });
+    });
+
+    // Quick Pass All 7
     const btnQuickPass = m.root.querySelector('#btn-quick-pass-all');
     if (btnQuickPass) {
       btnQuickPass.addEventListener('click', () => {
-        m.root.querySelector('#chk-m-media-rcv').checked = true;
-        m.root.querySelector('#chk-m-kdm-cpl').checked = true;
-        m.root.querySelector('#chk-m-playlist').checked = true;
-        m.root.querySelector('#chk-m-tested').checked = true;
-        m.root.querySelector('#chk-m-slides').checked = true;
-        m.root.querySelector('#chk-m-sync').checked = true;
-        // Set outcome to Passed
-        const passBtn = m.root.querySelector('[data-outcome-btn="Passed"]');
-        if (passBtn) passBtn.click();
+        QC_CRITERIA_DEFINITIONS.forEach(def => {
+          const group = m.root.querySelector('[data-crit-btn-group="' + def.id + '"]');
+          if (group) {
+            const passBtn = group.querySelector('[data-crit-btn="Pass"]');
+            if (passBtn) passBtn.click();
+          }
+        });
+        if (chkOverride) chkOverride.checked = false;
+        refreshOutcomeBanner('Passed');
         if (!m.root.querySelector('#m-tester').value && auth.current()) {
           m.root.querySelector('#m-tester').value = auth.current().id;
         }
         if (!m.root.querySelector('#m-test-date').value) {
           m.root.querySelector('#m-test-date').value = new Date().toISOString().slice(0, 16);
         }
-        ui.toast('Marked all verification checks as complete', 'ok');
+        ui.toast('Marked all 7 QC criteria as PASSED', 'ok');
       });
     }
 
@@ -1655,6 +2487,111 @@ RMTP.views.dcp = function (el, params, query) {
         } else {
           actionFields.classList.add('hidden');
         }
+      });
+    }
+
+    // Gather modal form data helper
+    function gatherModalData() {
+      const titleVal = m.root.querySelector('#m-film-title')?.value.trim();
+      if (!titleVal) {
+        ui.toast('Screening Title is required', 'danger');
+        m.root.querySelector('#m-film-title')?.focus();
+        return null;
+      }
+
+      const testerId = m.root.querySelector('#m-tester')?.value || '';
+      const testerUser = testerId ? store.find('users', testerId) : null;
+      const furtherActionReq = m.root.querySelector('#chk-m-further-action')?.checked || false;
+      const furtherActionText = m.root.querySelector('#m-further-action')?.value.trim() || '';
+
+      item.filmTitle = titleVal;
+      item.eventName = titleVal;
+      item.clientName = m.root.querySelector('#m-client-name')?.value.trim() || '';
+      item.screen = m.root.querySelector('#m-screen')?.value || 'Screen One';
+      item._manualScreen = true;
+      item.targetHardware = HARDWARE_MEDIA_BLOCKS[item.screen] || (item.screen + ' Media Block');
+      item.mediaType = m.root.querySelector('#m-media-type')?.value || '';
+      item.pictureFormat = m.root.querySelector('#m-picture-format')?.value || 'Flat (1.85:1)';
+      item.audioFormat = m.root.querySelector('#m-audio-format')?.value || '5.1 Surround';
+      item.deadlineDate = m.root.querySelector('#m-deadline-date')?.value || '';
+      item.eventDate = m.root.querySelector('#m-date')?.value || '';
+      item.eventStartTime = m.root.querySelector('#m-start-time')?.value || '';
+      item.eventFinishTime = m.root.querySelector('#m-finish-time')?.value || '';
+
+      // Collect 7 criteria statuses and notes
+      item.qc_criteria = item.qc_criteria || {};
+      QC_CRITERIA_DEFINITIONS.forEach(def => {
+        const group = m.root.querySelector('[data-crit-btn-group="' + def.id + '"]');
+        const activeBtn = group ? group.querySelector('.bg-ok, .bg-warning, .bg-danger') : null;
+        const st = activeBtn ? activeBtn.getAttribute('data-crit-btn') : 'Pending';
+        const notes = m.root.querySelector('[data-crit-notes="' + def.id + '"]')?.value.trim() || '';
+        item.qc_criteria[def.id] = { status: st, notes: notes };
+      });
+
+      // Synchronize backward-compatible 6 booleans
+      item.mediaReceived = (item.qc_criteria.ingestion?.status === 'Pass');
+      item.kdmCplReceived = (item.qc_criteria.kdm?.status === 'Pass' && item.qc_criteria.cpl?.status === 'Pass');
+      item.playlistMade = (item.qc_criteria.cpl?.status === 'Pass');
+      item.tested = (item.qc_criteria.playback?.status === 'Pass' || item.qc_criteria.playback?.status === 'Caveats');
+      item.subsAudioSync = (item.qc_criteria.audio?.status === 'Pass' && item.qc_criteria.subtitles?.status === 'Pass');
+
+      item.issuesNoted = m.root.querySelector('#m-issues')?.value.trim() || '';
+      item.outcomeManualOverride = !!m.root.querySelector('#chk-outcome-override')?.checked;
+      item.outcome = m.root.querySelector('#m-outcome-val')?.value || 'Pending';
+
+      item.testedByUserId = testerId;
+      item.testedByUserName = testerUser ? auth.displayName(testerUser) : '';
+      item.testDateTime = m.root.querySelector('#m-test-date')?.value || '';
+      item.updatedAt = new Date().toISOString();
+
+      if (furtherActionReq && furtherActionText) {
+        item.hasFurtherAction = true;
+        item.furtherAction = furtherActionText;
+      } else {
+        item.hasFurtherAction = false;
+        item.furtherAction = '';
+      }
+
+      return item;
+    }
+
+    // Save button
+    const btnSave = m.root.querySelector('#btn-save-dcp');
+    if (btnSave) {
+      btnSave.addEventListener('click', () => {
+        const data = gatherModalData();
+        if (!data) return;
+
+        if (data.hasFurtherAction && data.furtherAction) {
+          createOrUpdateFollowUpTask(data, data.furtherAction);
+          ui.toast('Screening saved and Follow-up Task created in Jobs List!', 'ok');
+        } else {
+          store.upsert('dcps', data);
+          syncDcpToAdvance(data);
+          if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
+          ui.toast('Pre-screening QC sign-off saved', 'ok');
+        }
+
+        m.close();
+        renderView();
+      });
+    }
+
+    // Direct "Generate QC Report & Email" button
+    const btnGenReport = m.root.querySelector('#btn-modal-open-report');
+    if (btnGenReport) {
+      btnGenReport.addEventListener('click', () => {
+        const data = gatherModalData();
+        if (!data) return;
+
+        store.upsert('dcps', data);
+        syncDcpToAdvance(data);
+        if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
+
+        m.close();
+        renderView();
+        // Open QC Report Modal
+        setTimeout(() => openQcReportModal(data), 150);
       });
     }
 
@@ -1677,68 +2614,6 @@ RMTP.views.dcp = function (el, params, query) {
     }
 
     m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
-
-    // Save button
-    const btnSave = m.root.querySelector('#btn-save-dcp');
-    if (btnSave) {
-      btnSave.addEventListener('click', () => {
-        const titleVal = m.root.querySelector('#m-film-title')?.value.trim();
-        if (!titleVal) {
-          ui.toast('Screening Title is required', 'danger');
-          m.root.querySelector('#m-film-title')?.focus();
-          return;
-        }
-
-        const testerId = m.root.querySelector('#m-tester')?.value || '';
-        const testerUser = testerId ? store.find('users', testerId) : null;
-        const furtherActionReq = m.root.querySelector('#chk-m-further-action')?.checked || false;
-        const furtherActionText = m.root.querySelector('#m-further-action')?.value.trim() || '';
-
-        item.filmTitle = titleVal;
-        item.eventName = titleVal;
-        item.screen = m.root.querySelector('#m-screen')?.value || 'Screen One';
-        item._manualScreen = true;
-        item.targetHardware = HARDWARE_MEDIA_BLOCKS[item.screen] || (item.screen + ' Media Block');
-        item.mediaType = m.root.querySelector('#m-media-type')?.value || '';
-        item.eventDate = m.root.querySelector('#m-date')?.value || '';
-        item.eventStartTime = m.root.querySelector('#m-start-time')?.value || '';
-        item.eventFinishTime = m.root.querySelector('#m-finish-time')?.value || '';
-
-        // Checklist Values
-        item.mediaReceived = !!m.root.querySelector('#chk-m-media-rcv')?.checked;
-        item.kdmCplReceived = !!m.root.querySelector('#chk-m-kdm-cpl')?.checked;
-        item.playlistMade = !!m.root.querySelector('#chk-m-playlist')?.checked;
-        item.tested = !!m.root.querySelector('#chk-m-tested')?.checked;
-        item.holdingSlidesReady = !!m.root.querySelector('#chk-m-slides')?.checked;
-        item.subsAudioSync = !!m.root.querySelector('#chk-m-sync')?.checked;
-
-        item.issuesNoted = m.root.querySelector('#m-issues')?.value.trim() || '';
-        item.outcome = m.root.querySelector('#m-outcome-val')?.value || 'Pending';
-
-        item.testedByUserId = testerId;
-        item.testedByUserName = testerUser ? auth.displayName(testerUser) : '';
-        item.testDateTime = m.root.querySelector('#m-test-date')?.value || '';
-        item.updatedAt = new Date().toISOString();
-
-        // Further action & task creation
-        if (furtherActionReq && furtherActionText) {
-          item.hasFurtherAction = true;
-          item.furtherAction = furtherActionText;
-          createOrUpdateFollowUpTask(item, furtherActionText);
-          ui.toast('Screening saved and Follow-up Task created in Jobs List!', 'ok');
-        } else {
-          item.hasFurtherAction = false;
-          item.furtherAction = '';
-          store.upsert('dcps', item);
-          syncDcpToAdvance(item);
-          if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
-          ui.toast('Pre-screening sign-off saved', 'ok');
-        }
-
-        m.close();
-        renderView();
-      });
-    }
 
     // Modal quick-merge duplicate button
     const btnModalMerge = m.root.querySelector('#btn-modal-merge-dup');
@@ -1912,37 +2787,6 @@ RMTP.views.dcp = function (el, params, query) {
       });
     });
 
-    // Inline Checklist Checkboxes (Instant auto-save with toast)
-    el.querySelectorAll('[data-check-field]').forEach(chk => {
-      chk.addEventListener('change', () => {
-        const field = chk.getAttribute('data-check-field');
-        const id = chk.getAttribute('data-id');
-        const dcp = store.find('dcps', id);
-        if (!dcp) return;
-
-        dcp[field] = chk.checked;
-        dcp.updatedAt = new Date().toISOString();
-
-        // If 'tested' checked, set tester and date if not already set
-        if (field === 'tested' && chk.checked) {
-          if (!dcp.testedByUserId && curUser) {
-            dcp.testedByUserId = curUser.id;
-            dcp.testedByUserName = auth.displayName(curUser);
-          }
-          if (!dcp.testDateTime) {
-            dcp.testDateTime = new Date().toISOString();
-          }
-          if (dcp.outcome === 'Pending') {
-            dcp.outcome = 'Passed';
-          }
-        }
-
-        store.upsert('dcps', dcp);
-        syncDcpToAdvance(dcp);
-        renderView();
-      });
-    });
-
     // Inline Issues Noted Input (auto-save on change / blur)
     el.querySelectorAll('[data-issues-input]').forEach(input => {
       input.addEventListener('change', () => {
@@ -1997,6 +2841,16 @@ RMTP.views.dcp = function (el, params, query) {
         const dcp = store.find('dcps', id);
         if (!dcp) return;
         openSignoffModal(dcp);
+      });
+    });
+
+    // Open QC Report Modal directly
+    el.querySelectorAll('[data-open-report]').forEach(elem => {
+      elem.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = elem.getAttribute('data-open-report');
+        const dcp = store.find('dcps', id);
+        if (dcp) openQcReportModal(dcp);
       });
     });
 

@@ -700,13 +700,44 @@ create table if not exists public.dcps (
   "testedByUserId" text default '',
   "testedByUserName" text default '',
   "testDateTime" text default '',
+  "clientName" text default '',
+  "pictureFormat" text default 'Flat (1.85:1)',
+  "audioFormat" text default '5.1 Surround',
+  "deadlineDate" text default '',
+  "qc_criteria" jsonb default '{}'::jsonb,
+  "outcomeManualOverride" boolean default false,
+  "lastReportId" text default '',
+  "reportGeneratedAt" text default '',
   "createdAt" text default '',
   "updatedAt" text default ''
 );
 
+alter table public.dcps add column if not exists "clientName" text default '';
+alter table public.dcps add column if not exists "pictureFormat" text default 'Flat (1.85:1)';
+alter table public.dcps add column if not exists "audioFormat" text default '5.1 Surround';
+alter table public.dcps add column if not exists "deadlineDate" text default '';
+alter table public.dcps add column if not exists "qc_criteria" jsonb default '{}'::jsonb;
+alter table public.dcps add column if not exists "outcomeManualOverride" boolean default false;
+alter table public.dcps add column if not exists "lastReportId" text default '';
+alter table public.dcps add column if not exists "reportGeneratedAt" text default '';
+
 alter table public.dcps enable row level security;
 drop policy if exists rw_all_dcps on public.dcps;
 create policy rw_all_dcps on public.dcps for all to authenticated, anon using (true) with check (true);
+
+-- Ensure reports table supports DCP QC reports
+alter table public.reports add column if not exists "type" text default 'duty_report';
+alter table public.reports add column if not exists "title" text default '';
+alter table public.reports add column if not exists "screeningId" text default '';
+alter table public.reports add column if not exists "filmTitle" text default '';
+alter table public.reports add column if not exists "screen" text default '';
+alter table public.reports add column if not exists "date" text default '';
+alter table public.reports add column if not exists "outcome" text default '';
+alter table public.reports add column if not exists "testerName" text default '';
+alter table public.reports add column if not exists "clientName" text default '';
+alter table public.reports add column if not exists "emailSubject" text default '';
+alter table public.reports add column if not exists "emailBody" text default '';
+alter table public.reports add column if not exists "createdAt" text default '';
 
 
 insert into public.dmx_personalities ("id", "manufacturer", "model", "mode", "channels", "category", "isFactory", "createdAt", "updatedAt")

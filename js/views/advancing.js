@@ -377,8 +377,8 @@ RMTP.views.advancing = function (el, params, query) {
     return badges.join(' ');
   }
 
-  const STATUSES = ['Advancing', 'Confirmed', 'Complete'];
-  const statusColour = { 'Advancing': 'var(--info)', 'Confirmed': 'var(--accent)', 'Complete': 'var(--ok)' };
+  const STATUSES = ['Advancing', 'Confirmed', 'Complete', 'Cancelled'];
+  const statusColour = { 'Advancing': 'var(--info)', 'Confirmed': 'var(--accent)', 'Complete': 'var(--ok)', 'Cancelled': 'var(--danger)' };
 
   /* ---- Shift Reports Email Automation & Recipients Config ---- */
   const DEFAULT_RECIPIENT_RULES = [
@@ -546,8 +546,14 @@ RMTP.views.advancing = function (el, params, query) {
 
   const base = allEvents.filter(matchesTechFilter);
 
-  const upcomingCount = base.filter((e) => e.deleted !== true && !isPastEvent(e.date)).length;
-  const pastCount = base.filter((e) => e.deleted !== true && isPastEvent(e.date)).length;
+  const isEvCancelled = (e) => {
+    const s = String(e.status || '').trim().toLowerCase();
+    return s === 'cancelled' || s === 'canceled';
+  };
+
+  const upcomingCount = base.filter((e) => e.deleted !== true && !isEvCancelled(e) && !isPastEvent(e.date)).length;
+  const pastCount = base.filter((e) => e.deleted !== true && !isEvCancelled(e) && isPastEvent(e.date)).length;
+  const cancelledCount = base.filter((e) => e.deleted !== true && isEvCancelled(e)).length;
   const deletedCount = base.filter((e) => e.deleted === true).length;
 
   const currentTab = filters.tab || 'upcoming';
@@ -555,8 +561,11 @@ RMTP.views.advancing = function (el, params, query) {
   const shown = base
     .filter((e) => {
       if (currentTab === 'deleted') return e.deleted === true;
-      if (currentTab === 'past') return e.deleted !== true && isPastEvent(e.date);
-      return e.deleted !== true && !isPastEvent(e.date);
+      if (e.deleted === true) return false;
+      if (currentTab === 'cancelled') return isEvCancelled(e);
+      if (isEvCancelled(e)) return false;
+      if (currentTab === 'past') return isPastEvent(e.date);
+      return !isPastEvent(e.date);
     })
     .filter((e) => {
       if (filterRequiresCrew) {
@@ -586,9 +595,11 @@ RMTP.views.advancing = function (el, params, query) {
                          : ['user', 'No shifts found for selected technician(s)', 'Try selecting "All Team Shifts" or a different technician filter.'])
     : (currentTab === 'past'
       ? ['clip', 'No past events found', 'Past events will appear here once their date has passed.']
-      : currentTab === 'deleted' 
-        ? ['trash', 'No deleted events', 'Events you delete will appear here.']
-        : ['clip', 'Nothing matches these filters', 'Try a different space, tab, or clear the date.']);
+      : currentTab === 'cancelled'
+        ? ['x', 'No cancelled events', 'Events marked as cancelled in Artifax will appear here.']
+        : currentTab === 'deleted' 
+          ? ['trash', 'No deleted events', 'Events you delete will appear here.']
+          : ['clip', 'Nothing matches these filters', 'Try a different space, tab, or clear the date.']);
 
   // Active filter count summary badge
   let activeFilterCount = 0;
@@ -927,9 +938,10 @@ RMTP.views.advancing = function (el, params, query) {
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     const monthName = monthNames[month];
 
-    // Filter base events by space if space filter active, and exclude deleted events
+    // Filter base events by space if space filter active, and exclude deleted and cancelled events
     const calEvents = base.filter((e) => {
       if (e.deleted === true) return false;
+      if (isEvCancelled(e)) return false;
       if (!eventMatchesSpace(e, filters.space)) return false;
       return true;
     });
@@ -2159,6 +2171,11 @@ RMTP.views.advancing = function (el, params, query) {
           ui.icon('clock', 'w-4 h-4') + '<span>Past Events</span>' +
           '<span class="px-1.5 py-0.5 rounded text-[11px] ' + (currentTab === 'past' ? 'bg-black/20 text-accent-ink' : 'bg-line text-muted') + '">' + pastCount + '</span>' +
         '</button>' +
+        '<button data-adv-tab="cancelled" class="flex-1 sm:flex-initial px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 sm:gap-2 ' +
+          (currentTab === 'cancelled' ? 'bg-danger text-white shadow-sm' : 'text-muted hover:text-ink') + '">' +
+          ui.icon('x', 'w-4 h-4') + '<span>Cancelled</span>' +
+          '<span class="px-1.5 py-0.5 rounded text-[11px] ' + (currentTab === 'cancelled' ? 'bg-black/20 text-white' : 'bg-line text-muted') + '">' + cancelledCount + '</span>' +
+        '</button>' +
         '<button data-adv-tab="deleted" class="flex-1 sm:flex-initial px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 sm:gap-2 ' +
           (currentTab === 'deleted' ? 'bg-danger text-white shadow-sm' : 'text-muted hover:text-ink') + '">' +
           ui.icon('trash', 'w-4 h-4') + '<span>Deleted</span>' +
@@ -3291,15 +3308,10 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   function openMergeModal(targetEv) {
-    const allEvents = store.all('advancing').filter(e => 
+    const allEvents = (RMTP.getUpcomingActiveEvents ? RMTP.getUpcomingActiveEvents() : store.all('advancing')).filter(e => 
       e.id !== targetEv.id && 
-      !e.deleted && 
-      !isPastEvent(e.date) && 
       e.space === targetEv.space
     );
-      
-    // Sort by date (ascending)
-    allEvents.sort((a, b) => compareEventsByDate(a, b, 'upcoming'));
 
     const optionsHtml = allEvents.map(e => 
       '<option value="' + e.id + '">' + (e.date ? ui.formatDate(e.date) : 'TBC') + ' – ' + ui.esc(e.name || '') + '</option>'

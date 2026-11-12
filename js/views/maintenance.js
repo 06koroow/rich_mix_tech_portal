@@ -926,10 +926,9 @@ RMTP.maintenance = (function () {
       return;
     }
 
-    const allAdv = store.all('advancing').filter((e) => !e.deleted);
+    const allAdv = (RMTP.getUpcomingActiveEvents ? RMTP.getUpcomingActiveEvents() : (store.all('advancing') || []));
     const existingShifts = allAdv
-      .filter((e) => e.category === 'Maintenance Shift' || e.category === 'Maintenance' || String(e.name).toLowerCase().includes('maintenance'))
-      .sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
+      .filter((e) => e.category === 'Maintenance Shift' || e.category === 'Maintenance' || String(e.name).toLowerCase().includes('maintenance'));
 
     const ticketRecords = targetIds.map((id) => store.find('maintenance', id)).filter(Boolean);
 

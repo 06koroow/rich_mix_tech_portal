@@ -1019,8 +1019,8 @@ window.RMTP = window.RMTP || {};
   function openTaskModal(existingTask = null, defaults = null, onSaved = null) {
     const isNew = !existingTask;
     const allUsers = store.all('users') || [];
-    const allDcps = store.all('dcps') || [];
-    const allAdv = (store.all('advancing') || []).filter((e) => !e.deleted);
+    const allDcps = (RMTP.getUpcomingActiveScreenings ? RMTP.getUpcomingActiveScreenings(existingTask ? existingTask.linkedScreeningId : null) : (store.all('dcps') || []));
+    const allAdv = (RMTP.getUpcomingActiveEvents ? RMTP.getUpcomingActiveEvents(existingTask ? existingTask.linkedEventId : null) : (store.all('advancing') || []));
     const allMaint = (store.all('maintenance') || []).filter((m) => m.status !== 'Resolved');
     const me = auth.current();
 
@@ -1150,16 +1150,16 @@ window.RMTP = window.RMTP || {};
             '<select id="tk-link-select" class="field font-medium">' +
               '<option value="">\u2014 Standalone Venue Task / Not Linked \u2014</option>' +
               '<optgroup label="Venue Events (Advancing)">' +
-                allAdv.slice(0, 20).map((e) => (
+                allAdv.map((e) => (
                   '<option value="adv|' + e.id + '" ' + (task.linkedEventId === e.id ? 'selected' : '') + '>' +
-                    '\uD83D\uDCCB ' + ui.esc(e.name) + ' \u00b7 ' + ui.esc(e.space) + ' (' + (e.date || 'TBC') + ')' +
+                    '\uD83D\uDCCB ' + (e.date ? ui.formatDate(e.date) : 'TBC') + ' \u2014 ' + ui.esc(e.name) + ' (' + ui.esc(Array.isArray(e.space) ? e.space.join(', ') : e.space) + ')' +
                   '</option>'
                 )).join('') +
               '</optgroup>' +
               '<optgroup label="Cinema Screenings (Pre-Screening Tracker)">' +
                 allDcps.map((d) => (
                   '<option value="dcp|' + d.id + '" ' + (task.linkedScreeningId === d.id ? 'selected' : '') + '>' +
-                    '\uD83C\uDFAC ' + ui.esc(d.filmTitle || d.eventName) + ' \u00b7 ' + ui.esc(d.screen) + ' (' + (d.eventDate || 'No date') + ')' +
+                    '\uD83C\uDFAC ' + (d.eventDate ? ui.formatDate(d.eventDate) : 'TBC') + ' \u2014 ' + ui.esc(d.filmTitle || d.eventName) + ' (' + ui.esc(d.screen) + ')' +
                   '</option>'
                 )).join('') +
               '</optgroup>' +

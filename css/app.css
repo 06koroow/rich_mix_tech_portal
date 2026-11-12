@@ -130,11 +130,16 @@ select.field { appearance: none; background-image: url("data:image/svg+xml,%3Csv
   * { animation: none !important; transition: none !important; }
 }
 
-/* --- Print: procedures should print cleanly (techs like paper on the wall) --- */
+/* --- Print: procedures and user guides should print cleanly (techs like paper on the wall) --- */
 @media print {
   #app aside, #app .app-topbar, #app .app-tabbar, .no-print { display: none !important; }
-  body { background: #fff; color: #000; }
-  .panel { border-color: #ccc; }
+  body { background: #fff !important; color: #000 !important; }
+  .panel { border-color: #cbd5e1 !important; background: #fff !important; color: #0f172a !important; box-shadow: none !important; }
+  .print-header, .print-footer { display: block !important; }
+  #guide-reader-pane article { background: #fff !important; color: #0f172a !important; border: 1px solid #cbd5e1 !important; }
+  #guide-reader-pane h1, #guide-reader-pane h2, #guide-reader-pane h3, #guide-reader-pane th { color: #0f172a !important; }
+  #guide-reader-pane p, #guide-reader-pane li, #guide-reader-pane td { color: #1e293b !important; }
+  #guide-reader-pane code { background: #f1f5f9 !important; color: #0f172a !important; border-color: #cbd5e1 !important; }
 }
 
 /* --- QR label sheet & Advance PDF Export ---

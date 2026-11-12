@@ -1159,8 +1159,7 @@ RMTP.views.inventory = function (el, params, query) {
 
   /* ---- Quick Allocate Modal to book kit to an advancing event ---- */
   function openQuickAllocateModal(item, maxQty, onComplete) {
-    const today = new Date().toISOString().slice(0, 10);
-    const events = store.all('advancing').filter((e) => !e.deleted && (!e.date || e.date >= today)).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    const events = (RMTP.getUpcomingActiveEvents ? RMTP.getUpcomingActiveEvents() : (store.all('advancing') || []));
 
     if (!events.length) {
       ui.toast('No upcoming events found in Advancing to book kit to.', 'danger');
@@ -1168,7 +1167,7 @@ RMTP.views.inventory = function (el, params, query) {
     }
 
     const eventOptionsHtml = events.map((e) =>
-      '<option value="' + e.id + '">' + ui.esc(e.name) + ' \u00b7 ' + (e.date ? ui.formatDate(e.date) : 'No date') + ' (' + ui.esc(Array.isArray(e.space) ? e.space.join(', ') : e.space) + ')</option>'
+      '<option value="' + e.id + '">' + (e.date ? ui.formatDate(e.date) : 'TBC') + ' \u2014 ' + ui.esc(e.name) + ' (' + ui.esc(Array.isArray(e.space) ? e.space.join(', ') : e.space) + ')</option>'
     ).join('');
 
     const initialEvent = events[0];

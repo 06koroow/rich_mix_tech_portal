@@ -28,6 +28,7 @@ RMTP.nav = [
   { id: 'maintenance', label: 'Maintenance', icon: 'wrench'},
   { id: 'inventory',   label: 'Inventory',   icon: 'box'   },
   { id: 'procedures',  label: 'Procedures',  icon: 'book'  },
+  { id: 'guides',      label: 'User Guides', icon: 'file'  },
   { id: 'users',       label: 'Users',       icon: 'users' },
 ];
 
@@ -195,6 +196,71 @@ RMTP.eventAssignedTo = function (ev, userId) {
   return RMTP.eventTechnicians(ev).some((t) => t.userId === userId);
 };
 
+/* Standard helper for event selection dropdowns across the portal.
+   Excludes past events, excludes cancelled events, and sorts in date order soonest first.
+   Optionally preserves an already-selected event ID so existing links do not break. */
+RMTP.getUpcomingActiveEvents = function (includeEventId = null) {
+  const store = RMTP.store;
+  if (!store || typeof store.all !== 'function') return [];
+  const today = new Date().toISOString().slice(0, 10);
+  const all = store.all('advancing') || [];
+
+  return all.filter((e) => {
+    if (!e || e.deleted) return false;
+    if (includeEventId && e.id === includeEventId) return true;
+
+    const s = String(e.status || '').trim().toLowerCase();
+    if (s === 'cancelled' || s === 'canceled') return false;
+
+    const d = RMTP.normalizeDateStr(e.date);
+    if (!d || d < today) return false;
+
+    return true;
+  }).sort((a, b) => {
+    const da = RMTP.normalizeDateStr(a.date) || '9999-99-99';
+    const db = RMTP.normalizeDateStr(b.date) || '9999-99-99';
+    if (da !== db) return da.localeCompare(db);
+    const ta = a.startTime || '';
+    const tb = b.startTime || '';
+    if (ta !== tb) return ta.localeCompare(tb);
+    return (a.name || '').localeCompare(b.name || '');
+  });
+};
+
+/* Standard helper for cinema screening selection dropdowns.
+   Excludes past screenings, excludes cancelled screenings, and sorts soonest first. */
+RMTP.getUpcomingActiveScreenings = function (includeScreeningId = null) {
+  const store = RMTP.store;
+  if (!store || typeof store.all !== 'function') return [];
+  const today = new Date().toISOString().slice(0, 10);
+  const all = store.all('dcps') || [];
+  const cancelledEventIds = new Set(
+    (store.all('advancing') || [])
+      .filter((e) => String(e.status || '').trim().toLowerCase() === 'cancelled' || String(e.status || '').trim().toLowerCase() === 'canceled')
+      .map((e) => e.id)
+  );
+
+  return all.filter((d) => {
+    if (!d) return false;
+    if (includeScreeningId && d.id === includeScreeningId) return true;
+    if (d.isCancelled || d.outcome === 'Cancelled') return false;
+    if (d.eventId && cancelledEventIds.has(d.eventId)) return false;
+
+    const dt = RMTP.normalizeDateStr(d.eventDate);
+    if (!dt || dt < today) return false;
+
+    return true;
+  }).sort((a, b) => {
+    const da = RMTP.normalizeDateStr(a.eventDate) || '9999-99-99';
+    const db = RMTP.normalizeDateStr(b.eventDate) || '9999-99-99';
+    if (da !== db) return da.localeCompare(db);
+    const ta = a.eventStartTime || '';
+    const tb = b.eventStartTime || '';
+    if (ta !== tb) return ta.localeCompare(tb);
+    return (a.filmTitle || a.eventName || '').localeCompare(b.filmTitle || b.eventName || '');
+  });
+};
+
 /* Auto-generate or sync draft rota shifts directly from event technical specs.
    Carries through venue minimum crew disciplines and supports 'No Tech Needed'. */
 RMTP.syncAdvancingToRota = function (ev) {
@@ -203,6 +269,19 @@ RMTP.syncAdvancingToRota = function (ev) {
   const existingBookings = (store.all('bookings') || []).filter((b) => b.eventId === ev.id);
   const spaces = Array.isArray(ev.space) ? ev.space : [ev.space || 'The Stage'];
   const createdShifts = [];
+
+  const isEvCancelled = String(ev.status || '').trim().toLowerCase() === 'cancelled';
+  if (isEvCancelled) {
+    existingBookings.forEach((b) => {
+      if (b.status !== 'cancelled') {
+        b.status = 'cancelled';
+        b.cancellationReason = 'Event cancelled in Artifax';
+        b.cancelledAt = new Date().toISOString();
+        store.upsert('bookings', b);
+      }
+    });
+    return [];
+  }
 
   if (ev.noTechNeeded) {
     existingBookings.forEach((b) => store.remove('bookings', b.id));
@@ -437,7 +516,7 @@ RMTP.equipmentBookings = {
 
     // 2. Check other advancing events on the same date
     if (!date) return { hasConflict: false };
-    const allAdv = store.all('advancing').filter((e) => !e.deleted && e.id !== excludeEventId);
+    const allAdv = store.all('advancing').filter((e) => !e.deleted && String(e.status || '').trim().toLowerCase() !== 'cancelled' && e.id !== excludeEventId);
     for (const otherEv of allAdv) {
       const otherDate = otherEv.date || '';
       if (otherDate !== date) continue;
@@ -485,7 +564,7 @@ RMTP.equipmentBookings = {
     const itemTag = targetItem ? String(targetItem.tag || '').trim().toLowerCase() : '';
     const itemName = targetItem ? String(targetItem.name || '').trim().toLowerCase() : '';
 
-    const allAdv = store.all('advancing').filter((e) => !e.deleted);
+    const allAdv = store.all('advancing').filter((e) => !e.deleted && String(e.status || '').trim().toLowerCase() !== 'cancelled');
     const bookings = [];
 
     allAdv.forEach((ev) => {

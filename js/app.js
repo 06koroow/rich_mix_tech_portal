@@ -78,7 +78,10 @@
 
       // ---- Desktop sidebar ----
       '<aside class="hidden md:flex flex-col w-[var(--sidebar-w)] shrink-0 border-r border-line bg-panel/40 sticky top-0 h-screen">' +
-        '<div class="px-4 h-16 flex items-center border-b border-line">' + brand(false) + '</div>' +
+        '<div class="px-4 h-16 flex items-center justify-between border-b border-line">' +
+          brand(false) +
+          '<a href="#/guides" class="p-1.5 text-muted hover:text-accent rounded-lg hover:bg-panel2 transition-colors flex items-center justify-center shrink-0" title="User Guides &amp; Documentation">' + ui.icon('book', 'w-4 h-4') + '</a>' +
+        '</div>' +
         '<nav id="desktop-side-nav" class="flex-1 p-3 space-y-1 overflow-y-auto"></nav>' +
         '<div id="sidebar-identity" class="p-3 border-t border-line"></div>' +
       '</aside>' +
@@ -110,8 +113,9 @@
             '</button>' +
             brand(true) +
           '</div>' +
-          '<div class="flex items-center gap-2.5 min-w-0">' +
+          '<div class="flex items-center gap-2 min-w-0">' +
             '<span id="section-title" class="font-display font-semibold text-xs sm:text-sm truncate max-w-[125px] sm:max-w-[200px] text-right text-muted"></span>' +
+            '<a href="#/guides" class="p-1 text-muted hover:text-accent rounded-lg hover:bg-panel2 transition-colors flex items-center justify-center shrink-0" title="User Guides">' + ui.icon('book', 'w-4 h-4') + '</a>' +
             '<div id="mobile-identity" class="shrink-0"></div>' +
           '</div>' +
         '</header>' +

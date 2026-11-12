@@ -140,7 +140,7 @@ RMTP.views.rota = (function () {
     const allUsers = getAllUsers();
 
     function getAllEvents() {
-      return (store.all('advancing') || []).filter((e) => !e.deleted);
+      return (store.all('advancing') || []).filter((e) => !e.deleted && String(e.status || '').trim().toLowerCase() !== 'cancelled');
     }
 
     function getUserAvailability(userId, dateStr) {
@@ -2440,7 +2440,7 @@ RMTP.views.rota = (function () {
       // 1-Click Sync Advancing Shifts for current selected day
       tabContainer.querySelector('#btn-sync-advancing-rota')?.addEventListener('click', () => {
         const targetDay = state.selectedDay || formatDate(new Date());
-        const dayEvents = (store.all('advancing') || []).filter((e) => e.date === targetDay && !e.deleted);
+        const dayEvents = (store.all('advancing') || []).filter((e) => e.date === targetDay && !e.deleted && String(e.status || '').trim().toLowerCase() !== 'cancelled');
         let count = 0;
         dayEvents.forEach((ev) => {
           const created = RMTP.syncAdvancingToRota ? RMTP.syncAdvancingToRota(ev) : [];
@@ -3682,7 +3682,7 @@ RMTP.views.rota = (function () {
     // 1. Shift Booking Modal
     function openBookingModal(initialData = {}) {
       const isNew = !initialData.id;
-      const events = getAllEvents();
+      const events = (RMTP.getUpcomingActiveEvents ? RMTP.getUpcomingActiveEvents(initialData.eventId) : getAllEvents());
       const allUsers = getAllUsers();
       const initialDate = initialData.date || formatDate(new Date());
 
@@ -3767,7 +3767,7 @@ RMTP.views.rota = (function () {
                 <option value="">Standalone Shift / Dark Day / Maintenance</option>
                 ${events.map((e) => `
                   <option value="${e.id}" ${e.id === initialData.eventId ? 'selected' : ''}>
-                    ${ui.esc(e.name)} · ${ui.esc(e.space)} (${e.date})
+                    ${ui.esc(e.date ? ui.formatDate(e.date) : 'TBC')} — ${ui.esc(e.name)} (${ui.esc(Array.isArray(e.space) ? e.space.join(', ') : e.space)})
                   </option>
                 `).join('')}
               </select>

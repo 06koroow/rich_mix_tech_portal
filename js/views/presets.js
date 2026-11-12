@@ -1243,7 +1243,7 @@ RMTP.presets = (function () {
     if (!Array.isArray(sheet.patchPoints)) sheet.patchPoints = JSON.parse(JSON.stringify(DEFAULT_PATCH_POINTS));
     if (!sheet.actMutes) sheet.actMutes = {};
 
-    const events = store.all('advancing') || [];
+    const events = (RMTP.getUpcomingActiveEvents ? RMTP.getUpcomingActiveEvents(sheet.eventId) : (store.all('advancing') || []));
 
     // If an event is pre-linked and sheet acts are default or empty, auto-sync from schedule
     if (sheet.eventId) {
@@ -1381,7 +1381,7 @@ RMTP.presets = (function () {
                 '<label class="block text-xs font-semibold mb-1">Linked Event (Bi-directional Sync)</label>' +
                 '<select id="ps-event" class="field font-semibold text-accent">' +
                   '<option value="">(Standalone Patch Sheet \u2014 Not Linked)</option>' +
-                  events.map((e) => '<option value="' + ui.esc(e.id) + '" ' + (e.id === sheet.eventId ? 'selected' : '') + '>' + ui.esc(e.date || 'No Date') + ' \u2014 ' + ui.esc(e.name) + ' (' + ui.esc(e.space || '') + ')</option>').join('') +
+                  events.map((e) => '<option value="' + ui.esc(e.id) + '" ' + (e.id === sheet.eventId ? 'selected' : '') + '>' + ui.esc(e.date ? ui.formatDate(e.date) : 'TBC') + ' \u2014 ' + ui.esc(e.name) + ' (' + ui.esc(Array.isArray(e.space) ? e.space.join(', ') : (e.space || '')) + ')</option>').join('') +
                 '</select>' +
               '</div>' +
               '<div>' +
@@ -3748,7 +3748,7 @@ RMTP.views.presets = function (contentEl) {
 
     const allPresets = presetsApi.getAllPresets();
     const allSheets = presetsApi.getAllPatchSheets();
-    const advanceEvents = (store && typeof store.read === 'function') ? store.read('advance_events', []) : [];
+    const advanceEvents = (RMTP.getUpcomingActiveEvents ? RMTP.getUpcomingActiveEvents(spec.eventId) : []);
     const dmxPatch = getDmxPatch();
     const dmxFixtures = Array.isArray(dmxPatch.fixtures) ? dmxPatch.fixtures : [];
 
@@ -4093,7 +4093,7 @@ RMTP.views.presets = function (contentEl) {
                   '<label class="block text-[11px] font-semibold text-muted mb-1">Linked Advance Event</label>' +
                   '<select id="ts-meta-event" class="field text-xs w-full">' +
                     '<option value="">-- No Linked Event --</option>' +
-                    advanceEvents.map((ev) => '<option value="' + ev.id + '" ' + (ev.id === spec.eventId ? 'selected' : '') + '>' + ui.esc(ev.name || ev.title) + (ev.space ? ' (' + ev.space + ')' : '') + '</option>').join('') +
+                    advanceEvents.map((ev) => '<option value="' + ev.id + '" ' + (ev.id === spec.eventId ? 'selected' : '') + '>' + ui.esc(ev.date ? ui.formatDate(ev.date) : 'TBC') + ' \u2014 ' + ui.esc(ev.name || ev.title) + (ev.space ? ' (' + ui.esc(Array.isArray(ev.space) ? ev.space.join(', ') : ev.space) + ')' : '') + '</option>').join('') +
                   '</select>' +
                 '</div>' +
                 '<div>' +
@@ -4500,7 +4500,7 @@ RMTP.views.presets = function (contentEl) {
           });
 
           const savedPatches = (RMTP.dmx && typeof RMTP.dmx.getAllPatches === 'function') ? RMTP.dmx.getAllPatches() : [];
-          const advancingEvents = (store && typeof store.all === 'function') ? store.all('advancing') : [];
+          const advancingEvents = (RMTP.getUpcomingActiveEvents ? RMTP.getUpcomingActiveEvents(dmxPatch.eventId) : []);
 
           return (
             '<div class="grid gap-5">' +
@@ -4524,7 +4524,7 @@ RMTP.views.presets = function (contentEl) {
                     '<label class="block text-[11px] font-semibold text-muted mb-1">Associate Event</label>' +
                     '<select id="dmx-meta-event" class="field text-xs w-full bg-panel">' +
                       '<option value="">(None / General Rig)</option>' +
-                      advancingEvents.map((ev) => '<option value="' + ev.id + '" ' + (dmxPatch.eventId === ev.id ? 'selected' : '') + '>' + ui.esc(ev.name || 'Untitled') + ' (' + ui.esc(ev.date || '') + ')</option>').join('') +
+                      advancingEvents.map((ev) => '<option value="' + ev.id + '" ' + (dmxPatch.eventId === ev.id ? 'selected' : '') + '>' + ui.esc(ev.date ? ui.formatDate(ev.date) : 'TBC') + ' \u2014 ' + ui.esc(ev.name || 'Untitled') + (ev.space ? ' (' + ui.esc(Array.isArray(ev.space) ? ev.space.join(', ') : ev.space) + ')' : '') + '</option>').join('') +
                     '</select>' +
                   '</div>' +
                   '<div>' +

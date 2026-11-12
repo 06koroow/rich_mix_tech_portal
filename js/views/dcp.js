@@ -592,6 +592,17 @@ RMTP.views.dcp = function (el, params, query) {
       }
     }
 
+    const isEvCancelled = String(ev.status || '').trim().toLowerCase() === 'cancelled';
+    if (isEvCancelled) {
+      if (existing && !existing.isCancelled) {
+        existing.isCancelled = true;
+        existing.outcome = 'Cancelled';
+        existing.updatedAt = new Date().toISOString();
+        store.upsert('dcps', existing);
+      }
+      return;
+    }
+
     if (existing) {
       let changed = false;
       if (ev.name && existing.eventName !== ev.name) { existing.eventName = ev.name; existing.filmTitle = ev.name; changed = true; }
@@ -799,6 +810,18 @@ RMTP.views.dcp = function (el, params, query) {
         if (existing && !existing.eventId) {
           existing.eventId = ev.id;
         }
+      }
+
+      const isEvCancelled = String(ev.status || '').trim().toLowerCase() === 'cancelled';
+      if (isEvCancelled) {
+        if (existing && !existing.isCancelled) {
+          existing.isCancelled = true;
+          existing.outcome = 'Cancelled';
+          existing.updatedAt = new Date().toISOString();
+          store.upsert('dcps', existing);
+          modified = true;
+        }
+        return;
       }
 
       if (!existing) {
@@ -1468,14 +1491,25 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     const duplicatesInfo = findDuplicateClusters(dcps);
     currentDuplicatesInfo = duplicatesInfo;
 
+    // Calculate cancelled events and active screenings
+    const cancelledEventIds = new Set(
+      (store.all('advancing') || [])
+        .filter(e => String(e.status || '').trim().toLowerCase() === 'cancelled')
+        .map(e => e.id)
+    );
+    const isDcpCancelled = (d) => !!(d.isCancelled || d.outcome === 'Cancelled' || (d.eventId && (cancelledEventIds.has(d.eventId) || cancelledEventIds.has(d.eventId.replace(/^evt-afx-/, '')))));
+
+    const activeDcps = dcps.filter(d => !isDcpCancelled(d));
+    const cancelledCount = dcps.filter(d => isDcpCancelled(d)).length;
+
     // Calculate KPI metrics & date buckets
-    const totalCount = dcps.length;
-    const upcomingCount = dcps.filter(d => !d.eventDate || d.eventDate >= todayIso).length;
-    const pastCount = dcps.filter(d => d.eventDate && d.eventDate < todayIso).length;
-    const passedCount = dcps.filter(d => d.outcome === 'Passed').length;
-    const pendingCount = dcps.filter(d => !d.outcome || d.outcome === 'Pending').length;
-    const actionRequiredCount = dcps.filter(d => d.hasFurtherAction || d.outcome === 'Failed').length;
-    const mediaReadyCount = dcps.filter(d => d.mediaReceived && d.kdmCplReceived).length;
+    const totalCount = activeDcps.length;
+    const upcomingCount = activeDcps.filter(d => !d.eventDate || d.eventDate >= todayIso).length;
+    const pastCount = activeDcps.filter(d => d.eventDate && d.eventDate < todayIso).length;
+    const passedCount = activeDcps.filter(d => d.outcome === 'Passed').length;
+    const pendingCount = activeDcps.filter(d => !d.outcome || d.outcome === 'Pending').length;
+    const actionRequiredCount = activeDcps.filter(d => d.hasFurtherAction || d.outcome === 'Failed').length;
+    const mediaReadyCount = activeDcps.filter(d => d.mediaReceived && d.kdmCplReceived).length;
 
     // Filter list
     let filtered = dcps.slice();
@@ -1486,11 +1520,15 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
 
     // Date filtering, past screening exclusion, and duplicates filter
     if (activeDateFilter === 'duplicates') {
-      filtered = filtered.filter(d => duplicatesInfo.duplicateIds.has(d.id));
+      filtered = filtered.filter(d => !isDcpCancelled(d) && duplicatesInfo.duplicateIds.has(d.id));
+    } else if (activeDateFilter === 'cancelled') {
+      filtered = filtered.filter(d => isDcpCancelled(d));
+    } else if (activeDateFilter === 'all') {
+      filtered = filtered.filter(d => !isDcpCancelled(d));
     } else if (activeDateFilter === 'upcoming' || (excludePast && activeDateFilter !== 'all' && activeDateFilter !== 'past')) {
-      filtered = filtered.filter(d => !d.eventDate || d.eventDate >= todayIso);
+      filtered = filtered.filter(d => !isDcpCancelled(d) && (!d.eventDate || d.eventDate >= todayIso));
     } else if (activeDateFilter === 'past') {
-      filtered = filtered.filter(d => d.eventDate && d.eventDate < todayIso);
+      filtered = filtered.filter(d => !isDcpCancelled(d) && d.eventDate && d.eventDate < todayIso);
     }
 
     if (activeOutcomeFilter !== 'all') {
@@ -1640,6 +1678,14 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
                       ? 'bg-amber-500/10 text-amber-400 hover:text-amber-300 hover:bg-amber-500/20 border border-amber-500/30'
                       : 'text-muted hover:text-ink hover:bg-panel/40')) + '">' +
                 ui.icon('copy', 'w-3.5 h-3.5') + '<span>Duplicates (' + duplicatesInfo.duplicateCount + ')</span>' +
+              '</button>' +
+              '<button type="button" data-date-tab="cancelled" class="px-2.5 py-1 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ' +
+                (activeDateFilter === 'cancelled'
+                  ? 'bg-danger/25 text-danger border border-danger/50 font-bold shadow-2xs'
+                  : (cancelledCount > 0
+                      ? 'bg-danger/10 text-danger hover:text-danger hover:bg-danger/20 border border-danger/30'
+                      : 'text-muted hover:text-ink hover:bg-panel/40')) + '">' +
+                ui.icon('x', 'w-3.5 h-3.5') + '<span>Cancelled (' + cancelledCount + ')</span>' +
               '</button>' +
             '</div>' +
 
@@ -2705,7 +2751,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     el.querySelectorAll('[data-date-tab]').forEach(btn => {
       btn.addEventListener('click', () => {
         activeDateFilter = btn.getAttribute('data-date-tab');
-        if (activeDateFilter === 'all' || activeDateFilter === 'past' || activeDateFilter === 'duplicates') {
+        if (activeDateFilter === 'all' || activeDateFilter === 'past' || activeDateFilter === 'duplicates' || activeDateFilter === 'cancelled') {
           excludePast = false;
         } else {
           excludePast = true;

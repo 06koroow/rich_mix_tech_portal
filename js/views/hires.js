@@ -100,13 +100,24 @@ window.RMTP = window.RMTP || {};
     return null;
   }
 
+  function isTaskCompletedStatus(status) {
+    return String(status || '').trim().toLowerCase() === 'completed';
+  }
+
+  function isCompletedOrAnswered(task, meta) {
+    if (task && isTaskCompletedStatus(task.status)) return true;
+    const m = meta || (task ? getMeta(task) : null);
+    return !!(m && m.hiresStatus === 'Answered');
+  }
+
   function normalizeMeta(rawMeta, task) {
     const m = (rawMeta && typeof rawMeta === 'object') ? rawMeta : {};
     const requestType = REQUEST_TYPES.includes(m.requestType) ? m.requestType : 'Question';
+    const taskDone = !!(task && isTaskCompletedStatus(task.status));
     const rawStatus = STATUSES.includes(m.hiresStatus)
       ? m.hiresStatus
       : taskStatusToHiresStatus(task && task.status, null);
-    const hiresStatus = (task && task.status === 'Completed') ? 'Answered' : (rawStatus === 'Answered' && task && task.status !== 'Completed' ? 'Awaiting Tech' : rawStatus);
+    const hiresStatus = taskDone ? 'Answered' : (rawStatus === 'Answered' && task && !taskDone ? 'Awaiting Tech' : rawStatus);
     const replies = Array.isArray(m.replies)
       ? m.replies
           .filter((r) => r && (r.body || '').trim())
@@ -236,7 +247,7 @@ window.RMTP = window.RMTP || {};
 
   function openCount(user) {
     const u = user || (auth && auth.current ? auth.current() : null);
-    const items = all().filter((t) => getMeta(t).hiresStatus !== 'Answered');
+    const items = all().filter((t) => !isCompletedOrAnswered(t));
     if (u && auth && auth.isHiresTeam && auth.isHiresTeam(u)) {
       const awaitingHires = items.filter((t) => getMeta(t).hiresStatus === 'Awaiting Hires').length;
       return awaitingHires > 0 ? awaitingHires : items.length;
@@ -248,7 +259,7 @@ window.RMTP = window.RMTP || {};
   }
 
   function totalOpenCount() {
-    return all().filter((t) => getMeta(t).hiresStatus !== 'Answered').length;
+    return all().filter((t) => !isCompletedOrAnswered(t)).length;
   }
 
   function extractArtifaxRef(ev) {
@@ -485,7 +496,8 @@ window.RMTP = window.RMTP || {};
     if (!task || !isHiresTask(task)) return;
     const meta = getMeta(task);
     const targetHiresStatus = taskStatusToHiresStatus(task.status, meta.hiresStatus);
-    if (meta.hiresStatus !== targetHiresStatus) {
+    const storedStatus = task.hiresMeta && task.hiresMeta.hiresStatus;
+    if (storedStatus !== targetHiresStatus || meta.hiresStatus !== targetHiresStatus) {
       const nextMeta = Object.assign({}, meta, {
         hiresStatus: targetHiresStatus,
         updatedAt: Date.now()
@@ -496,6 +508,7 @@ window.RMTP = window.RMTP || {};
     } else {
       mirrorToAdvancing(Object.assign({}, task, { hiresMeta: meta }), null);
     }
+    if (RMTP.shell && RMTP.shell.renderNavigation) RMTP.shell.renderNavigation();
   }
 
   function deleteRequest(taskId) {
@@ -1234,12 +1247,15 @@ window.RMTP = window.RMTP || {};
     if (query && query.id) {
       state.selectedId = query.id;
       const target = store.find('tasks', query.id);
-      if (target && getMeta(target).hiresStatus === 'Answered') {
+      if (target && isCompletedOrAnswered(target)) {
         state.statusTab = 'Answered';
       } else {
         state.statusTab = 'open';
       }
+      state.typeFilter = 'all';
+      state.urgencyFilter = 'all';
       state.eventFilter = 'all';
+      state.search = '';
       state.mobileDetailOpen = true;
     } else if (query && query.event) {
       state.eventFilter = query.event;
@@ -1253,18 +1269,19 @@ window.RMTP = window.RMTP || {};
       let list = allReqs.slice();
 
       if (state.statusTab === 'open') {
-        list = list.filter((t) => getMeta(t).hiresStatus !== 'Answered');
+        list = list.filter((t) => !isCompletedOrAnswered(t));
       } else if (state.statusTab === 'overdue') {
-        list = list.filter((t) => getMeta(t).hiresStatus !== 'Answered' && t.dueDate && normDate(t.dueDate) <= today);
+        list = list.filter((t) => !isCompletedOrAnswered(t) && t.dueDate && normDate(t.dueDate) <= today);
       } else if (state.statusTab === 'Awaiting Tech') {
         list = list.filter((t) => {
+          if (isCompletedOrAnswered(t)) return false;
           const st = getMeta(t).hiresStatus;
           return st === 'Open' || st === 'Awaiting Tech';
         });
       } else if (state.statusTab === 'Awaiting Hires') {
-        list = list.filter((t) => getMeta(t).hiresStatus === 'Awaiting Hires');
+        list = list.filter((t) => !isCompletedOrAnswered(t) && getMeta(t).hiresStatus === 'Awaiting Hires');
       } else if (state.statusTab === 'Answered') {
-        list = list.filter((t) => getMeta(t).hiresStatus === 'Answered');
+        list = list.filter((t) => isCompletedOrAnswered(t));
       }
 
       if (state.typeFilter !== 'all') {
@@ -1296,17 +1313,25 @@ window.RMTP = window.RMTP || {};
       return sortRequests(list);
     }
 
-    function renderDetailPane(selected) {
+    function renderDetailPane(selected, answeredCount) {
       if (!selected) {
+        const showAnsweredShortcut = state.statusTab !== 'Answered' && answeredCount > 0;
         return (
           '<div class="panel p-8 lg:p-12 flex flex-col items-center justify-center text-center min-h-[420px]">' +
             '<div class="w-11 h-11 rounded-lg border border-line bg-panel2 flex items-center justify-center text-muted mb-3">' +
-              ui.icon('chat', 'w-5 h-5') +
+              ui.icon(showAnsweredShortcut ? 'check' : 'chat', 'w-5 h-5') +
             '</div>' +
-            '<h2 class="font-display text-base font-semibold text-ink">Select a Hires request</h2>' +
+            '<h2 class="font-display text-base font-semibold text-ink">' +
+              (showAnsweredShortcut ? 'No open requests in this view' : 'Select a Hires request') +
+            '</h2>' +
             '<p class="text-xs text-muted mt-1 max-w-sm leading-relaxed">' +
-              'Pick a thread from the queue to review event context, Artifax references, and replies — or submit a new request for an upcoming hire.' +
+              (showAnsweredShortcut
+                ? 'Completed requests are archived under Answered unless a follow-up reply is added.'
+                : 'Pick a thread from the queue to review event context, Artifax references, and replies \u2014 or submit a new request for an upcoming hire.') +
             '</p>' +
+            (showAnsweredShortcut
+              ? '<button type="button" id="hires-jump-answered" class="btn btn-ghost text-xs mt-4 border border-line">View Answered (' + answeredCount + ')</button>'
+              : '') +
           '</div>'
         );
       }
@@ -1503,7 +1528,7 @@ window.RMTP = window.RMTP || {};
     function render() {
       const allReqs = all();
       const today = todayIso();
-      const openReqs = allReqs.filter((t) => getMeta(t).hiresStatus !== 'Answered');
+      const openReqs = allReqs.filter((t) => !isCompletedOrAnswered(t));
       const awaitingTechCount = openReqs.filter((t) => {
         const st = getMeta(t).hiresStatus;
         return st === 'Open' || st === 'Awaiting Tech';
@@ -1514,15 +1539,18 @@ window.RMTP = window.RMTP || {};
 
       const filtered = getFilteredList(allReqs);
 
-      // Ensure selection stays valid
+      // Keep selection strictly scoped to the active view's filtered queue
+      // so completed/answered requests never linger in All Open.
       let selected = state.selectedId ? filtered.find((t) => t.id === state.selectedId) : null;
-      if (!selected && state.selectedId) {
-        // Keep deep-linked item visible if it exists in allReqs
-        selected = allReqs.find((t) => t.id === state.selectedId) || null;
-      }
-      if (!selected && filtered.length > 0) {
-        selected = filtered[0];
-        state.selectedId = selected.id;
+      if (!selected) {
+        if (filtered.length > 0) {
+          selected = filtered[0];
+          state.selectedId = selected.id;
+        } else {
+          selected = null;
+          state.selectedId = null;
+          state.mobileDetailOpen = false;
+        }
       }
 
       // Build event filter options from upcoming events + any events currently referenced by hires requests
@@ -1703,7 +1731,7 @@ window.RMTP = window.RMTP || {};
 
             // Right Thread Detail (7 cols on desktop)
             '<div class="lg:col-span-7 ' + (!state.mobileDetailOpen && selected ? 'hidden lg:block' : 'block') + '">' +
-              renderDetailPane(selected) +
+              renderDetailPane(selected, answeredCount) +
             '</div>' +
           '</div>' +
         '</div>';
@@ -1795,6 +1823,16 @@ window.RMTP = window.RMTP || {};
         });
       }
 
+      const jumpAnsweredBtn = el.querySelector('#hires-jump-answered');
+      if (jumpAnsweredBtn) {
+        jumpAnsweredBtn.addEventListener('click', () => {
+          state.statusTab = 'Answered';
+          state.selectedId = null;
+          state.mobileDetailOpen = false;
+          render();
+        });
+      }
+
       // Wire detail pane actions
       if (selected) {
         const editBtn = el.querySelector('#hires-edit-btn');
@@ -1843,8 +1881,20 @@ window.RMTP = window.RMTP || {};
         const statusSel = el.querySelector('#hires-status-select');
         if (statusSel) {
           statusSel.addEventListener('change', (e) => {
-            updateStatus(selected.id, e.target.value);
-            ui.toast('Status updated to ' + e.target.value + '.', 'ok');
+            const nextStatus = e.target.value;
+            const wasAnswered = isCompletedOrAnswered(selected);
+            updateStatus(selected.id, nextStatus);
+            if (nextStatus === 'Answered' && state.statusTab !== 'Answered') {
+              state.selectedId = null;
+              state.mobileDetailOpen = false;
+              ui.toast('Marked as Answered \u2014 moved to Answered.', 'ok');
+            } else if (wasAnswered && nextStatus !== 'Answered' && state.statusTab === 'Answered') {
+              state.statusTab = 'open';
+              state.selectedId = selected.id;
+              ui.toast('Request reopened \u2014 moved back to All Open.', 'ok');
+            } else {
+              ui.toast('Status updated to ' + nextStatus + '.', 'ok');
+            }
             render();
           });
         }
@@ -1854,7 +1904,8 @@ window.RMTP = window.RMTP || {};
           reopenBtn.addEventListener('click', () => {
             updateStatus(selected.id, 'Awaiting Tech');
             state.statusTab = 'open';
-            ui.toast('Request reopened for technical team review.', 'ok');
+            state.selectedId = selected.id;
+            ui.toast('Request reopened \u2014 moved back to All Open.', 'ok');
             render();
           });
         }
@@ -1862,10 +1913,17 @@ window.RMTP = window.RMTP || {};
         const replyInput = el.querySelector('#hires-reply-input');
         function submitReply(targetStatus) {
           const text = replyInput ? replyInput.value.trim() : '';
+          const wasAnswered = isCompletedOrAnswered(selected);
           if (!text) {
             if (targetStatus === 'Answered') {
               updateStatus(selected.id, 'Answered');
-              ui.toast('Request marked as Answered.', 'ok');
+              if (state.statusTab !== 'Answered') {
+                state.selectedId = null;
+                state.mobileDetailOpen = false;
+                ui.toast('Marked as Answered \u2014 moved to Answered.', 'ok');
+              } else {
+                ui.toast('Request marked as Answered.', 'ok');
+              }
               render();
               return;
             }
@@ -1874,7 +1932,17 @@ window.RMTP = window.RMTP || {};
             return;
           }
           addReply(selected.id, text, targetStatus);
-          ui.toast(targetStatus === 'Answered' ? 'Reply posted & marked Answered.' : 'Reply posted.', 'ok');
+          if (targetStatus === 'Answered' && state.statusTab !== 'Answered') {
+            state.selectedId = null;
+            state.mobileDetailOpen = false;
+            ui.toast('Reply posted & moved to Answered.', 'ok');
+          } else if (wasAnswered && targetStatus !== 'Answered') {
+            state.statusTab = 'open';
+            state.selectedId = selected.id;
+            ui.toast('Follow-up added \u2014 moved back to All Open.', 'ok');
+          } else {
+            ui.toast(targetStatus === 'Answered' ? 'Reply posted & marked Answered.' : 'Reply posted.', 'ok');
+          }
           render();
         }
 

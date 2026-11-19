@@ -187,22 +187,29 @@ RMTP.views.advancing = function (el, params, query) {
   let calDate = (RMTP._advCalDate = RMTP._advCalDate || new Date());
 
   const currentUserId = me ? (me.id || me.email) : null;
+  const currentUserKey = (currentUserId || '') + '|' + (me ? (me.position || '') : '');
   const isManager = !!((auth.isTechManager && auth.isTechManager(me)) ||
     (me && (/technical manager|tech manager/i.test(me.position || '') || /tech.*manager/i.test(me.role || ''))));
+  const showAllEventsByDefault = isManager || isHires;
 
-  // Determine if navigating fresh into Advancing from another view or after user switch
-  const isFreshViewEntry = RMTP._lastAdvancingUser !== currentUserId || (RMTP._previousView && RMTP._previousView !== 'advancing');
+  // Determine if navigating fresh into Advancing from another view or after user/role switch
+  const isFreshViewEntry = RMTP._lastAdvancingUser !== currentUserKey || (RMTP._previousView && RMTP._previousView !== 'advancing');
   if (isFreshViewEntry) {
-    RMTP._lastAdvancingUser = currentUserId;
+    RMTP._lastAdvancingUser = currentUserKey;
     RMTP._advTechFilterManuallySet = false;
+    if (isHires) {
+      filters.space = 'all';
+    } else if (!filters.space) {
+      filters.space = 'standard';
+    }
   }
 
   // Technician filter state: array of user IDs/emails, or empty array = 'All Team shifts'
-  // Tech managers automatically filter to 'All Team shifts' ([])
+  // Tech managers and Hires Team automatically see all venue events ([])
   // Other technicians default to their own shifts ([currentUserId])
-  if (RMTP._advTechFilter === undefined || (isFreshViewEntry && !RMTP._advTechFilterManuallySet) || (isManager && !RMTP._advTechFilterManuallySet)) {
-    if (isManager) {
-      RMTP._advTechFilter = []; // Automatically filter to All Team shifts
+  if (RMTP._advTechFilter === undefined || (isFreshViewEntry && !RMTP._advTechFilterManuallySet) || (showAllEventsByDefault && !RMTP._advTechFilterManuallySet)) {
+    if (showAllEventsByDefault) {
+      RMTP._advTechFilter = []; // Automatically show all venue events
     } else {
       RMTP._advTechFilter = currentUserId ? [currentUserId] : [];
     }
@@ -649,8 +656,10 @@ RMTP.views.advancing = function (el, params, query) {
 
   // Filter events based on active technician filter & space/tab
   function matchesTechFilter(e) {
-    if (!selectedTechs || selectedTechs.length === 0) return true; // all technicians
-    const evTechs = RMTP.eventTechnicians(e).map((t) => t.userId);
+    if (!selectedTechs || selectedTechs.length === 0) return true; // all technicians / all events
+    const evTechs = RMTP.eventTechnicians(e)
+      .filter((t) => t && !t.isNoTech && t.userId)
+      .map((t) => t.userId);
     const leadId = RMTP.getAdvancingLeadId(e);
     if (leadId) evTechs.push(leadId);
     if (!evTechs.length) return includeUnassigned;
@@ -1083,8 +1092,9 @@ RMTP.views.advancing = function (el, params, query) {
           : ['clip', 'Nothing matches these filters', 'Try a different space, tab, or clear the date.']);
 
   // Active filter count summary badge
+  const defaultSpaceFilter = isHires ? 'all' : 'standard';
   let activeFilterCount = 0;
-  if (filters.space && filters.space !== 'standard') activeFilterCount++;
+  if (filters.space && filters.space !== defaultSpaceFilter) activeFilterCount++;
   if (filters.date) activeFilterCount++;
   if (selectedTechs && selectedTechs.length > 0) activeFilterCount++;
   if (!includeUnassigned) activeFilterCount++;
@@ -1092,7 +1102,7 @@ RMTP.views.advancing = function (el, params, query) {
 
   el.innerHTML =
     '<div class="' + (RMTP._isSoftRender ? '' : 'view-enter') + '">' +
-      ui.pageHeader('Advancing', isAdmin ? 'Events & Production Schedules' : 'Your shifts & Production Advancing',
+      ui.pageHeader('Advancing', (isAdmin || isHires) ? 'Events & Production Schedules' : 'Your shifts & Production Advancing',
         '<div class="inline-flex rounded-lg border border-line p-0.5 bg-panel mr-1">' +
           '<button id="adv-mode-list" class="px-2.5 py-1 text-xs rounded font-medium transition flex items-center gap-1.5 ' + (advViewMode === 'list' ? 'bg-accent text-accent-ink font-semibold shadow-xs' : 'text-muted hover:text-ink') + '">' +
             ui.icon('list', 'w-3.5 h-3.5') + '<span class="hidden sm:inline">List</span>' +
@@ -1666,9 +1676,9 @@ RMTP.views.advancing = function (el, params, query) {
   const dateIn = el.querySelector('#adv-date'); if (dateIn) dateIn.addEventListener('change', () => { filters.date = dateIn.value; RMTP._isSoftRender = true; RMTP.router.render(); RMTP._isSoftRender = false; });
   const todayBtn = el.querySelector('#adv-today'); if (todayBtn) todayBtn.addEventListener('click', () => { filters.date = getTodayString(); RMTP._isSoftRender = true; RMTP.router.render(); RMTP._isSoftRender = false; });
   const clearBtn = el.querySelector('#adv-clear'); if (clearBtn) clearBtn.addEventListener('click', () => {
-    filters.space = 'standard';
+    filters.space = isHires ? 'all' : 'standard';
     filters.date = '';
-    RMTP._advTechFilter = isManager ? [] : (currentUserId ? [currentUserId] : []);
+    RMTP._advTechFilter = showAllEventsByDefault ? [] : (currentUserId ? [currentUserId] : []);
     RMTP._advTechFilterManuallySet = false;
     RMTP._advIncludeUnassigned = true;
     RMTP._isSoftRender = true; RMTP.router.render(); RMTP._isSoftRender = false;

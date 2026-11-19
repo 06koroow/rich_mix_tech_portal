@@ -153,11 +153,14 @@ RMTP.views.dashboard = function (el) {
       ? RMTP.tasks.forUser(me).filter((t) => t.status !== 'Completed')
       : [];
 
-    // Open Hires Desk requests needing technical attention
+    // Open Hires Desk requests needing attention
+    const isHiresUser = !!(RMTP.auth && RMTP.auth.isHiresTeam && RMTP.auth.isHiresTeam(me));
     const allOpenHires = (RMTP.hires && RMTP.hires.all)
       ? RMTP.hires.all().filter((t) => {
+          if (String(t.status || '').trim().toLowerCase() === 'completed') return false;
           const meta = RMTP.hires.getMeta(t);
           if (meta.hiresStatus === 'Answered') return false;
+          if (isHiresUser) return true;
           if (isTechLead) return meta.hiresStatus === 'Open' || meta.hiresStatus === 'Awaiting Tech';
           if (t.assignedTechId === me.id) return true;
           if (t.linkedEventId) {
@@ -544,8 +547,9 @@ RMTP.views.dashboard = function (el) {
       }
     });
 
+    const isHiresToday = !!(RMTP.auth && RMTP.auth.isHiresTeam && RMTP.auth.isHiresTeam(me));
     let advList = store.all('advancing').filter((e) => !e.deleted && String(e.status || '').trim().toLowerCase() !== 'cancelled' && normD(e.date) === today);
-    if (me && !me.admin) {
+    if (me && !me.admin && !isHiresToday) {
       advList = advList.filter((e) => {
         if (RMTP.eventAssignedTo(e, me.id)) return true;
         const evB = bookingsByEvent.get(e.id) || [];

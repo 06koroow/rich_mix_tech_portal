@@ -7,7 +7,7 @@
    category has a "Sign off all". Admins manage users; trainers
    (and admins) sign people off. Gating is UX-only (see auth.js).
    ============================================================ */
-RMTP.views.users = function (el) {
+RMTP.views.users = function (el, params) {
   const ui = RMTP.ui, store = RMTP.store, auth = RMTP.auth;
 
   const isTMOrAdmin = auth.isTechManagerOrAdmin ? auth.isTechManagerOrAdmin() : (auth.isTechManager() || auth.isAdmin());
@@ -17,6 +17,8 @@ RMTP.views.users = function (el) {
 
   let dirSearch = '';
   let dirRole = 'All';
+  let activeAdminTab = (params && params[0] === 'views') ? 'views' : (RMTP._usersAdminTab || 'team');
+  RMTP._usersAdminTab = activeAdminTab;
 
   function competencies() {
     const out = [];
@@ -29,13 +31,18 @@ RMTP.views.users = function (el) {
   function adminCount() { return store.all('users').filter((u) => u.admin).length; }
 
   render();
-  // Supabase mode: on every visit to this page, refresh the users list from
-  // the database (the source of truth), then re-render once — so approvals and
-  // new self-registrations made elsewhere show up without a manual reload.
+  // Supabase mode: on every visit to this page, refresh the users list and
+  // latest role-view settings from the database, then re-render once.
   if (sbMode()) {
-    RMTP.syncSb.pullCollection('users')
-      .then(() => { render(); auth.refreshShell(); })
-      .catch(() => { /* keep showing cached users */ });
+    Promise.all([
+      RMTP.syncSb.pullCollection('users').catch(() => {}),
+      RMTP.syncSb.pullRoleViews ? RMTP.syncSb.pullRoleViews({ force: true }).catch(() => {}) : Promise.resolve(),
+    ]).then(() => {
+      if (RMTP._currentView === 'users') {
+        render();
+        auth.refreshShell();
+      }
+    });
   }
 
   function renderCrewDirectory(users) {
@@ -55,7 +62,7 @@ RMTP.views.users = function (el) {
       return haystack.includes(q);
     });
 
-    const roleFilters = ['All', 'Technical Manager', 'Senior Tech', 'Duty Tech', 'Freelancer'];
+    const roleFilters = ['All', 'Technical Manager', 'Senior Tech', 'Duty Tech', 'Freelancer', 'Hires Team'];
     const filterPills = roleFilters.map((r) => {
       const active = dirRole === r;
       return '<button type="button" data-dir-filter="' + r + '" class="px-2.5 py-1 rounded-lg text-xs font-semibold transition-all ' +
@@ -273,12 +280,36 @@ RMTP.views.users = function (el) {
 
     const pending = allUsers.filter((u) => u.status === 'pending');
     const total = competencies().length;
+    RMTP._usersAdminTab = activeAdminTab;
+
+    const adminTabsHtml =
+      '<div class="inline-flex items-center gap-1 p-1 rounded-lg bg-panel border border-line mb-5" role="tablist" aria-label="Users administration sections">' +
+        '<button type="button" role="tab" aria-selected="' + (activeAdminTab === 'team' ? 'true' : 'false') + '" data-admin-tab="team" ' +
+          'class="px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 flex items-center gap-2 ' +
+          (activeAdminTab === 'team' ? 'bg-accent text-accent-ink' : 'text-muted hover:text-ink') + '">' +
+          ui.icon('users', 'w-3.5 h-3.5') +
+          '<span>Team &amp; Training</span>' +
+          '<span class="font-mono tabular-nums text-[11px] opacity-80">' + users.length + '</span>' +
+        '</button>' +
+        '<button type="button" role="tab" aria-selected="' + (activeAdminTab === 'views' ? 'true' : 'false') + '" data-admin-tab="views" ' +
+          'class="px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 flex items-center gap-2 ' +
+          (activeAdminTab === 'views' ? 'bg-accent text-accent-ink' : 'text-muted hover:text-ink') + '">' +
+          ui.icon('sliders', 'w-3.5 h-3.5') +
+          '<span>Set-Up User Views</span>' +
+        '</button>' +
+      '</div>';
+
+    if (activeAdminTab === 'views') {
+      renderUserViewsSetup(users, adminTabsHtml);
+      return;
+    }
 
     el.innerHTML =
       '<div class="view-enter">' +
         ui.pageHeader('Users', 'Team',
           canManage && !sbMode() ? '<button id="add-user" class="btn btn-primary">' + ui.icon('plus', 'w-4 h-4') + 'Add user</button>' : '') +
-        '<p class="text-muted -mt-2 mb-6 max-w-2xl text-sm">' + users.length + ' users \u00b7 ' + total + ' competencies. ' +
+        adminTabsHtml +
+        '<p class="text-muted mb-6 max-w-2xl text-sm">' + users.length + ' users \u00b7 ' + total + ' competencies. ' +
           (canManage ? (sbMode() ? 'New people sign up via \u201cRequest access\u201d on the sign-in screen; approve them below and set their role.' : 'You can add, edit and approve users.') : canSign ? 'You can sign off training.' : 'View only \u2014 ask an admin to make changes.') + '</p>' +
         (canManage && pending.length ? pendingPanel(pending) : '') +
         (users.length
@@ -286,6 +317,7 @@ RMTP.views.users = function (el) {
           : ui.empty('users', 'No users yet', 'Add someone to get started.')) +
       '</div>';
 
+    bindAdminTabs();
     const add = el.querySelector('#add-user');
     if (add) add.addEventListener('click', () => editUser());
     users.forEach((u) => el.querySelector('[data-open="' + u.id + '"]').addEventListener('click', () => openUser(u)));
@@ -296,6 +328,266 @@ RMTP.views.users = function (el) {
         if (ok) { auth.rejectUser(u.id); ui.toast('Request rejected', 'ok'); render(); }
       });
     });
+  }
+
+  function bindAdminTabs() {
+    el.querySelectorAll('[data-admin-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next = btn.getAttribute('data-admin-tab');
+        if (next && next !== activeAdminTab) {
+          activeAdminTab = next;
+          RMTP._usersAdminTab = next;
+          render();
+        }
+      });
+    });
+  }
+
+  function formatViewsMeta(cfg) {
+    if (!cfg || !cfg.updatedAt) {
+      return 'Default portal permissions active \u00b7 Changes apply immediately to all users';
+    }
+    const ago = ui.timeAgo ? ui.timeAgo(cfg.updatedAt) : new Date(cfg.updatedAt).toLocaleString();
+    const by = cfg.updatedBy ? ' \u00b7 Updated by ' + cfg.updatedBy : '';
+    return 'Last updated ' + ago + by + ' \u00b7 Live for all users';
+  }
+
+  function renderUserViewsSetup(users, adminTabsHtml) {
+    const cfg = auth.getRoleViewsConfig();
+    const roles = auth.POSITIONS.slice();
+    const navItems = (RMTP.nav || []).slice();
+    const totalNav = navItems.length;
+    const isRealTM = auth.isRealTechManager && auth.isRealTechManager();
+
+    const roleUserCounts = {};
+    roles.forEach((r) => { roleUserCounts[r] = 0; });
+    users.forEach((u) => {
+      const key = auth.resolveUserRoleKey ? auth.resolveUserRoleKey(u) : (u.position || 'Duty Tech');
+      if (roleUserCounts[key] !== undefined) roleUserCounts[key] += 1;
+    });
+
+    function buildHomeOptions(roleViews, selectedHome) {
+      return navItems
+        .filter((n) => roleViews.indexOf(n.id) > -1)
+        .map((n) => '<option value="' + ui.esc(n.id) + '" ' + (n.id === selectedHome ? 'selected' : '') + '>' + ui.esc(n.label) + '</option>')
+        .join('');
+    }
+
+    const headerActions =
+      '<div class="flex items-center gap-2">' +
+        (isRealTM
+          ? '<button type="button" id="rv-preview-btn" class="btn btn-ghost text-xs whitespace-nowrap shrink-0">' +
+              ui.icon('gear', 'w-4 h-4') + '<span>Preview Role</span>' +
+            '</button>'
+          : '') +
+        '<button type="button" id="rv-reset-btn" class="btn btn-ghost text-xs whitespace-nowrap shrink-0">' +
+          ui.icon('reset', 'w-4 h-4') + '<span>Reset Defaults</span>' +
+        '</button>' +
+      '</div>';
+
+    const colHeadersHtml = roles.map((role) => {
+      const roleCfg = (cfg.roles && cfg.roles[role]) || { views: [], home: RMTP.HOME };
+      const count = roleCfg.views.length;
+      const uCount = roleUserCounts[role] || 0;
+      return (
+        '<th scope="col" class="px-3 py-3 text-center align-bottom border-l border-line/60 min-w-[148px]">' +
+          '<div class="font-display font-semibold text-sm text-ink whitespace-nowrap">' + ui.esc(role) + '</div>' +
+          '<div class="text-[11px] text-muted mt-1 font-mono tabular-nums whitespace-nowrap">' +
+            '<span data-rv-count="' + ui.esc(role) + '">' + count + '/' + totalNav + '</span>' +
+            ' <span aria-hidden="true">\u00b7</span> ' +
+            uCount + (uCount === 1 ? ' user' : ' users') +
+          '</div>' +
+          '<div class="flex items-center justify-center gap-2 mt-2 text-[11px]">' +
+            '<button type="button" data-rv-bulk-role="' + ui.esc(role) + '" data-rv-bulk-mode="all" ' +
+              'class="text-muted hover:text-accent transition-colors whitespace-nowrap">Select all</button>' +
+            '<span class="text-line" aria-hidden="true">/</span>' +
+            '<button type="button" data-rv-bulk-role="' + ui.esc(role) + '" data-rv-bulk-mode="default" ' +
+              'class="text-muted hover:text-ink transition-colors whitespace-nowrap">Default</button>' +
+          '</div>' +
+        '</th>'
+      );
+    }).join('');
+
+    const rowsHtml = navItems.map((item) => {
+      const cells = roles.map((role) => {
+        const roleCfg = (cfg.roles && cfg.roles[role]) || { views: [] };
+        const checked = roleCfg.views.indexOf(item.id) > -1;
+        const locked = auth.isRoleViewLocked && auth.isRoleViewLocked(role, item.id);
+        return (
+          '<td class="px-3 py-2 text-center border-l border-line/60">' +
+            '<label class="inline-flex items-center justify-center gap-1.5 min-w-[44px] min-h-[38px] rounded-lg transition-colors ' +
+              (locked ? 'cursor-not-allowed opacity-75' : 'cursor-pointer hover:bg-panel2/60') + '" ' +
+              (locked ? 'title="Locked on so Technical Managers always retain access to Users"' : 'title="' + ui.esc(role + ' \u2014 ' + item.label) + '"') + '>' +
+              '<input type="checkbox" ' +
+                'data-rv-role="' + ui.esc(role) + '" ' +
+                'data-rv-view="' + ui.esc(item.id) + '" ' +
+                'aria-label="' + ui.esc(role + ' access to ' + item.label) + '" ' +
+                'class="w-4 h-4 rounded accent-[var(--accent)] ' + (locked ? 'cursor-not-allowed' : 'cursor-pointer') + '" ' +
+                (checked ? 'checked ' : '') +
+                (locked ? 'disabled ' : '') + '/>' +
+              (locked ? '<span class="text-muted" aria-hidden="true">' + ui.icon('lock', 'w-3.5 h-3.5') + '</span>' : '') +
+            '</label>' +
+          '</td>'
+        );
+      }).join('');
+
+      return (
+        '<tr class="hover:bg-panel2/25 transition-colors">' +
+          '<th scope="row" class="px-4 py-2.5 text-left font-normal sticky left-0 bg-panel z-10 border-r border-line/60">' +
+            '<div class="flex items-center gap-2.5 whitespace-nowrap">' +
+              '<span class="text-muted shrink-0">' + ui.icon(item.icon, 'w-4 h-4') + '</span>' +
+              '<span class="text-sm font-medium text-ink">' + ui.esc(item.label) + '</span>' +
+            '</div>' +
+          '</th>' +
+          cells +
+        '</tr>'
+      );
+    }).join('');
+
+    const landingRowCells = roles.map((role) => {
+      const roleCfg = (cfg.roles && cfg.roles[role]) || { views: [], home: RMTP.HOME };
+      return (
+        '<td class="px-3 py-3 text-center border-l border-line/60">' +
+          '<select data-rv-home="' + ui.esc(role) + '" aria-label="Default landing page for ' + ui.esc(role) + '" ' +
+            'class="field !py-1.5 !px-2.5 text-xs w-full max-w-[172px] mx-auto block">' +
+            buildHomeOptions(roleCfg.views, roleCfg.home) +
+          '</select>' +
+        '</td>'
+      );
+    }).join('');
+
+    el.innerHTML =
+      '<div class="view-enter">' +
+        ui.pageHeader('Users', 'Admin Access Control', headerActions) +
+        adminTabsHtml +
+        '<div class="mb-5 space-y-1.5">' +
+          '<p class="text-sm text-muted max-w-3xl">' +
+            'Tick which portal menu items each user level can see and open. Changes save automatically and take effect immediately across navigation, dashboard shortcuts, and direct links.' +
+          '</p>' +
+          '<p id="rv-updated-meta" class="text-xs text-muted font-mono tabular-nums">' + ui.esc(formatViewsMeta(cfg)) + '</p>' +
+        '</div>' +
+
+        '<div class="panel overflow-hidden">' +
+          '<div class="overflow-x-auto">' +
+            '<table class="w-full text-left border-collapse min-w-[820px]">' +
+              '<thead class="bg-panel2/40 border-b border-line">' +
+                '<tr>' +
+                  '<th scope="col" class="px-4 py-3 text-left align-bottom sticky left-0 bg-panel z-20 border-r border-line/60 min-w-[220px]">' +
+                    '<div class="text-xs font-semibold text-ink">Portal Menu Item</div>' +
+                    '<div class="text-[11px] text-muted mt-1 font-mono tabular-nums">' + totalNav + ' sections</div>' +
+                  '</th>' +
+                  colHeadersHtml +
+                '</tr>' +
+              '</thead>' +
+              '<tbody class="divide-y divide-line">' +
+                rowsHtml +
+              '</tbody>' +
+              '<tfoot class="border-t border-line bg-panel2/30">' +
+                '<tr>' +
+                  '<th scope="row" class="px-4 py-3 text-left font-normal sticky left-0 bg-panel z-10 border-r border-line/60">' +
+                    '<div class="text-xs font-semibold text-ink">Default Landing Page</div>' +
+                    '<div class="text-[11px] text-muted mt-0.5">Opened first on sign-in</div>' +
+                  '</th>' +
+                  landingRowCells +
+                '</tr>' +
+              '</tfoot>' +
+            '</table>' +
+          '</div>' +
+        '</div>' +
+
+        '<p class="text-xs text-muted mt-4 max-w-3xl">' +
+          'Technical Manager access to Users is locked on to prevent accidental admin lockout. Any user currently viewing a disabled section is redirected to their role\u2019s landing page.' +
+        '</p>' +
+      '</div>';
+
+    bindAdminTabs();
+
+    function syncRoleColumnUI(role, latestCfg) {
+      const roleCfg = (latestCfg.roles && latestCfg.roles[role]) || { views: [], home: RMTP.HOME };
+      const cntEl = el.querySelector('[data-rv-count="' + role + '"]');
+      if (cntEl) cntEl.textContent = roleCfg.views.length + '/' + totalNav;
+      const homeSel = el.querySelector('[data-rv-home="' + role + '"]');
+      if (homeSel) {
+        homeSel.innerHTML = buildHomeOptions(roleCfg.views, roleCfg.home);
+        homeSel.value = roleCfg.home;
+      }
+      const metaEl = el.querySelector('#rv-updated-meta');
+      if (metaEl) metaEl.textContent = formatViewsMeta(latestCfg);
+    }
+
+    el.querySelectorAll('input[data-rv-role][data-rv-view]').forEach((box) => {
+      box.addEventListener('change', () => {
+        const role = box.getAttribute('data-rv-role');
+        const viewId = box.getAttribute('data-rv-view');
+        const enabled = box.checked;
+        const res = auth.setRoleViewAccess(role, viewId, enabled);
+        if (!res || !res.ok) {
+          box.checked = !enabled;
+          if (res && res.reason === 'last-view') {
+            ui.toast(role + ' must keep at least one portal menu item enabled.', 'info');
+          } else if (res && res.reason === 'locked') {
+            ui.toast('Technical Managers must retain access to Users.', 'info');
+          }
+          return;
+        }
+        syncRoleColumnUI(role, res.config);
+        const navItem = navItems.find((n) => n.id === viewId);
+        const label = navItem ? navItem.label : viewId;
+        ui.toast(role + ': ' + label + (enabled ? ' enabled' : ' hidden'), 'ok');
+      });
+    });
+
+    el.querySelectorAll('select[data-rv-home]').forEach((sel) => {
+      sel.addEventListener('change', () => {
+        const role = sel.getAttribute('data-rv-home');
+        const viewId = sel.value;
+        const res = auth.setRoleDefaultHome(role, viewId);
+        if (res && res.ok) {
+          syncRoleColumnUI(role, res.config);
+          const navItem = navItems.find((n) => n.id === viewId);
+          ui.toast(role + ' landing page set to ' + (navItem ? navItem.label : viewId), 'ok');
+        }
+      });
+    });
+
+    el.querySelectorAll('[data-rv-bulk-role]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const role = btn.getAttribute('data-rv-bulk-role');
+        const mode = btn.getAttribute('data-rv-bulk-mode');
+        const res = auth.setRoleAllViews(role, mode);
+        if (res && res.ok) {
+          const roleCfg = res.config.roles[role];
+          const allowed = new Set(roleCfg.views);
+          el.querySelectorAll('input[data-rv-role="' + role + '"]').forEach((box) => {
+            const vid = box.getAttribute('data-rv-view');
+            box.checked = allowed.has(vid);
+          });
+          syncRoleColumnUI(role, res.config);
+          ui.toast(role + (mode === 'all' ? ': all menu items enabled' : ': restored to default views'), 'ok');
+        }
+      });
+    });
+
+    const previewBtn = el.querySelector('#rv-preview-btn');
+    if (previewBtn) {
+      previewBtn.addEventListener('click', () => {
+        if (auth.openDevModal) auth.openDevModal();
+      });
+    }
+
+    const resetBtn = el.querySelector('#rv-reset-btn');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', async () => {
+        const ok = await ui.confirm('Reset menu access for all user levels back to Rich Mix defaults?', {
+          title: 'Reset user views',
+          confirmLabel: 'Reset defaults',
+        });
+        if (!ok) return;
+        auth.resetRoleViewsConfig();
+        ui.toast('All user level views restored to defaults', 'ok');
+        render();
+      });
+    }
   }
 
   function pendingPanel(pending) {

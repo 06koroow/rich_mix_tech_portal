@@ -20,6 +20,7 @@ RMTP.meta = {
 RMTP.nav = [
   { id: 'dashboard',   label: 'Dashboard',   icon: 'grid'  },
   { id: 'advancing',   label: 'Advancing',   icon: 'clip'  },
+  { id: 'hires',       label: 'Hires Desk',  icon: 'chat'  },
   { id: 'dcp',         label: 'Pre-Screening Tracker', icon: 'film'  },
   { id: 'tasks',       label: 'Jobs & Tasks', icon: 'list' },
   { id: 'rota',        label: 'Rota & Shifts', icon: 'calendar' },
@@ -88,18 +89,41 @@ RMTP.DAY_PARTS = [
 ];
 
 RMTP.CORE_SPACES = ['The Stage', 'The Studio', 'The Mix', 'Screen One', 'Screen Two', 'Screen Three', 'Screen 1', 'Screen 2', 'Screen 3'];
+RMTP.CORE_SPACE_OPTIONS = ['The Stage', 'The Studio', 'The Mix', 'Screen One', 'Screen Two', 'Screen Three'];
+
+RMTP.normalizeSpaceName = function (space) {
+  const s = String(space || '').trim();
+  if (!s) return '';
+  const low = s.toLowerCase();
+  if (low === 'screen 1' || low === 'screen one' || low === 'screen1') return 'Screen One';
+  if (low === 'screen 2' || low === 'screen two' || low === 'screen2') return 'Screen Two';
+  if (low === 'screen 3' || low === 'screen three' || low === 'screen3') return 'Screen Three';
+  if (low === 'the stage' || low === 'stage') return 'The Stage';
+  if (low === 'the studio' || low === 'studio') return 'The Studio';
+  if (low === 'the mix' || low === 'mix') return 'The Mix';
+  return s;
+};
 
 RMTP.isAuxiliarySpace = function (space) {
   if (!space) return false;
-  const list = Array.isArray(space) ? space : [space];
+  const rawList = Array.isArray(space)
+    ? space
+    : String(space).split(/[,;&]+/);
+  const list = rawList.map((s) => String(s || '').trim()).filter(Boolean);
   if (!list.length) return false;
   const coreSet = new Set([
-    'The Stage', 'The Studio', 'The Mix',
-    'Screen One', 'Screen Two', 'Screen Three',
-    'Screen 1', 'Screen 2', 'Screen 3'
+    'the stage', 'stage', 'the studio', 'studio', 'the mix', 'mix',
+    'screen one', 'screen two', 'screen three',
+    'screen 1', 'screen 2', 'screen 3',
+    'screen1', 'screen2', 'screen3'
   ]);
-  // An event is auxiliary if all its assigned spaces are auxiliary (e.g. Streetside, Cinema Bar, The Lab)
-  return list.every((s) => !coreSet.has(String(s || '').trim()));
+  // An event is auxiliary if all its assigned spaces are outside core spaces (e.g. Streetside, Cinema Bar, The Lab)
+  return list.every((s) => !coreSet.has(s.toLowerCase()));
+};
+
+RMTP.isCoreSpace = function (space) {
+  if (!space) return false;
+  return !RMTP.isAuxiliarySpace(space);
 };
 
 RMTP.isTMOrST = function (u) {
@@ -376,6 +400,115 @@ RMTP.syncAdvancingToRota = function (ev) {
     });
   }
   return createdShifts;
+};
+
+/* Sync Rota shift bookings back onto the linked Advancing event record so
+   Advancing cards, modals, Dashboard, and crew filters always stay in sync.
+   opts: { prevBookingId, prevUserId, prevUserName } when editing/deleting/reassigning */
+RMTP.syncRotaToAdvancing = function (eventId, opts) {
+  if (!eventId || !RMTP.store) return null;
+  const store = RMTP.store;
+  const advEv = store.find('advancing', eventId);
+  if (!advEv) return null;
+
+  opts = opts || {};
+  const allBookings = (store.all('bookings') || []).filter((b) => b.eventId === eventId);
+  const activeBookings = allBookings.filter((b) => b.status !== 'cancelled' && b.status !== 'declined');
+
+  const isPlaceholderName = (n) => {
+    const s = String(n || '').trim().toLowerCase();
+    return !s || s === 'unassigned' || s === 'unassigned tech' || s === 'no tech required';
+  };
+
+  const assignedBookings = activeBookings.filter((b) => {
+    if (b.isNoTech || b.role === 'None') return false;
+    return !!(b.userId || !isPlaceholderName(b.userName));
+  });
+  const noTechBookings = activeBookings.filter((b) => b.isNoTech || b.role === 'None');
+
+  const nextTechs = [];
+  const coveredUserIds = new Set();
+  const coveredFreelancers = new Set();
+
+  assignedBookings.forEach((b) => {
+    if (b.userId) {
+      coveredUserIds.add(b.userId);
+      nextTechs.push({
+        bookingId: b.id,
+        userId: b.userId,
+        role: b.role || 'Tech',
+        startTime: b.startTime || advEv.startTime || '',
+        finishTime: b.finishTime || advEv.finishTime || '',
+        bookingStatus: b.status || 'pencil',
+        isFreelancer: false,
+        freelancerName: '',
+        splitFromId: b.splitFromId || '',
+        legIndex: b.legIndex || '',
+        rate: b.rate || '',
+        notes: b.notes || '',
+      });
+    } else if (!isPlaceholderName(b.userName)) {
+      const fn = String(b.userName).trim();
+      coveredFreelancers.add(fn.toLowerCase());
+      nextTechs.push({
+        bookingId: b.id,
+        userId: '',
+        isFreelancer: true,
+        freelancerName: fn,
+        role: b.role || 'Tech',
+        startTime: b.startTime || advEv.startTime || '',
+        finishTime: b.finishTime || advEv.finishTime || '',
+        bookingStatus: b.status || 'pencil',
+        splitFromId: b.splitFromId || '',
+        legIndex: b.legIndex || '',
+        rate: b.rate || '',
+        notes: b.notes || '',
+      });
+    }
+  });
+
+  // Preserve any pre-existing manual Advancing technicians that have no booking record yet
+  // and were not the technician just removed/reassigned/cancelled.
+  const removedBookingId = opts.prevBookingId || '';
+  const removedUserId = opts.prevUserId || '';
+  const removedUserName = String(opts.prevUserName || '').trim().toLowerCase();
+  const existingTechs = Array.isArray(advEv.technicians) ? advEv.technicians : [];
+
+  existingTechs.forEach((t) => {
+    if (!t || t.isNoTech || t.role === 'None') return;
+    if (removedBookingId && t.bookingId && t.bookingId === removedBookingId) return;
+    if (t.bookingId && !assignedBookings.some((b) => b.id === t.bookingId)) return;
+    if (t.userId) {
+      if (coveredUserIds.has(t.userId)) return;
+      if (removedUserId && t.userId === removedUserId) return;
+      coveredUserIds.add(t.userId);
+      nextTechs.push(Object.assign({}, t, { isFreelancer: false }));
+    } else if (t.freelancerName && !isPlaceholderName(t.freelancerName)) {
+      const fnKey = String(t.freelancerName).trim().toLowerCase();
+      if (coveredFreelancers.has(fnKey)) return;
+      if (removedUserName && fnKey === removedUserName) return;
+      coveredFreelancers.add(fnKey);
+      nextTechs.push(Object.assign({}, t, { isFreelancer: true }));
+    }
+  });
+
+  const updatedEv = Object.assign({}, advEv, {
+    technicians: nextTechs,
+    techUserId: nextTechs.find((t) => t.userId)?.userId || '',
+  });
+
+  if (assignedBookings.length > 0) {
+    updatedEv.noTechNeeded = false;
+    // Clean up obsolete No-Tech placeholder bookings now that real crew are assigned
+    noTechBookings.forEach((ntb) => store.remove('bookings', ntb.id));
+  } else if (noTechBookings.length > 0 && nextTechs.length === 0) {
+    updatedEv.noTechNeeded = true;
+  } else if (opts.clearNoTech) {
+    updatedEv.noTechNeeded = false;
+  }
+
+  store.upsert('advancing', updatedEv);
+  return updatedEv;
 };
 
 /* --- Shift Timing & Split Handover Utilities --- */

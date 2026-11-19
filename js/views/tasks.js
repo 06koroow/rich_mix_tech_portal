@@ -15,7 +15,7 @@ window.RMTP = window.RMTP || {};
   const ui = RMTP.ui;
   const auth = RMTP.auth;
 
-  const CATEGORIES = ['Cinema & DCP', 'Sound', 'Lighting', 'AV', 'Stage', 'General', 'Maintenance'];
+  const CATEGORIES = ['Cinema & DCP', 'Sound', 'Lighting', 'AV', 'Stage', 'General', 'Maintenance', 'Hires'];
   const PRIORITIES = ['Urgent', 'High', 'Medium', 'Low'];
   const STATUSES = ['Pending', 'In Progress', 'Blocked', 'Completed'];
 
@@ -204,6 +204,11 @@ window.RMTP = window.RMTP || {};
       }
     }
 
+    // 4. If linked to a Hires Desk request, keep hiresStatus & advancing mirror in sync
+    if ((task.source === 'hires' || task.category === 'Hires') && RMTP.hires && typeof RMTP.hires.syncFromTaskStatus === 'function') {
+      RMTP.hires.syncFromTaskStatus(task);
+    }
+
     if (RMTP.syncSb && RMTP.syncSb.drain) {
       RMTP.syncSb.drain();
     }
@@ -308,6 +313,9 @@ window.RMTP = window.RMTP || {};
     } else if (c.includes('Maintenance')) {
       colorClass = 'bg-rose-500/15 text-rose-300 border-rose-500/30';
       iconKey = 'wrench';
+    } else if (c.includes('Hires')) {
+      colorClass = 'bg-sky-500/15 text-sky-300 border-sky-500/30';
+      iconKey = 'chat';
     }
     return '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium border ' + colorClass + '">' +
       ui.icon(iconKey, 'w-3 h-3') + '<span>' + ui.esc(c) + '</span></span>';
@@ -679,6 +687,17 @@ window.RMTP = window.RMTP || {};
             '</div>'
           ) : '') +
 
+          // 4. Hires Desk Thread Link
+          ((t.source === 'hires' || t.category === 'Hires') ? (
+            '<div class="p-1.5 rounded bg-sky-500/10 border border-sky-500/20 text-[10.5px] text-sky-300 flex items-center justify-between gap-1" onclick="event.stopPropagation()">' +
+              '<span class="flex items-center gap-1 truncate">' +
+                ui.icon('chat', 'w-3 h-3 text-sky-400 shrink-0') +
+                '<span class="truncate font-semibold">' + ui.esc((t.hiresMeta && t.hiresMeta.requestType) ? ('Hires \u00b7 ' + t.hiresMeta.requestType) : 'Hires Desk Request') + '</span>' +
+              '</span>' +
+              '<a href="#/hires?id=' + encodeURIComponent(t.id) + '" class="text-[9.5px] underline hover:text-ink shrink-0 font-semibold" title="Open thread in Hires Desk">Hires Desk \u2192</a>' +
+            '</div>'
+          ) : '') +
+
           // Assignee & Action Buttons
           '<div class="flex items-center justify-between gap-1 pt-1.5 border-t border-line/40 text-[11px]">' +
             '<div class="flex items-center gap-1.5 min-w-0">' +
@@ -751,7 +770,10 @@ window.RMTP = window.RMTP || {};
 
                   // Linked Badge
                   let linkedBadge = '<span class="text-muted">\u2014</span>';
-                  if (t.linkedScreeningId) {
+                  if (t.source === 'hires' || t.category === 'Hires') {
+                    linkedBadge = '<a href="#/hires?id=' + encodeURIComponent(t.id) + '" onclick="event.stopPropagation()" class="text-sky-300 font-semibold hover:underline flex items-center gap-1">' +
+                      ui.icon('chat', 'w-3 h-3 text-sky-400') + '<span>' + ui.esc(t.filmTitle || 'Hires Desk') + '</span></a>';
+                  } else if (t.linkedScreeningId) {
                     linkedBadge = '<a href="#/dcp?id=' + encodeURIComponent(t.linkedScreeningId) + '" class="text-purple-300 font-semibold hover:underline flex items-center gap-1">' +
                       ui.icon('film', 'w-3 h-3 text-purple-400') + '<span>' + ui.esc(t.filmTitle || 'Screening') + '</span></a>';
                   } else if (t.linkedEventId) {

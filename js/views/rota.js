@@ -39,6 +39,7 @@ RMTP.views.rota = (function () {
       unfilledOnly: false,
       eventsFilter: isTMOrAdmin ? 'all' : 'all', // 'all' (all events inc gaps) | 'staffed' (staffed only)
       spaceFilter: '',
+      showNonCoreSpaces: false,
       roleFilter: '',
       statusFilter: '',
       techFilter: '',
@@ -52,7 +53,8 @@ RMTP.views.rota = (function () {
       state.tab = 'my_avail';
     }
     if (state.density === undefined) state.density = 'compact';
-    if (!state.boardView || state.boardView === 'timeline') state.boardView = 'month';
+    if (!state.boardView) state.boardView = 'month';
+    if (state.showNonCoreSpaces === undefined) state.showNonCoreSpaces = false;
     if (!state.rotaMonth) state.rotaMonth = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
     if (!state.collapsedSpaces) state.collapsedSpaces = new Set();
     if (!state.selectedDay) state.selectedDay = formatDate(new Date());
@@ -71,9 +73,40 @@ RMTP.views.rota = (function () {
       return `${year}-${month}-${day}`;
     }
 
+    function normalizeDate(raw) {
+      if (!raw) return '';
+      if (RMTP.normalizeDateStr) return RMTP.normalizeDateStr(raw);
+      return String(raw).trim().slice(0, 10);
+    }
+
+    function normalizeTime(raw, fallback) {
+      const s = String(raw || '').trim();
+      const m = s.match(/^(\d{1,2}):(\d{2})/);
+      if (m) return m[1].padStart(2, '0') + ':' + m[2];
+      return fallback || '17:00';
+    }
+
+    function normalizeSpace(raw) {
+      const first = Array.isArray(raw) ? (raw[0] || '') : String(raw || '').split(',')[0].trim();
+      if (!first) return '';
+      return RMTP.normalizeSpaceName ? RMTP.normalizeSpaceName(first) : first;
+    }
+
+    function isSpaceAllowed(space) {
+      if (state.showNonCoreSpaces) return true;
+      if (!space) return true;
+      return !(RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(space));
+    }
+
+    function getVisibleSpacesList() {
+      if (state.showNonCoreSpaces) return RMTP.SPACES.slice();
+      return (RMTP.CORE_SPACE_OPTIONS || ['The Stage', 'The Studio', 'The Mix', 'Screen One', 'Screen Two', 'Screen Three']).slice();
+    }
+
     function parseDate(str) {
       if (!str) return new Date();
-      const parts = str.split('-');
+      const norm = normalizeDate(str);
+      const parts = norm.split('-');
       return new Date(parts[0], parts[1] - 1, parts[2]);
     }
 
@@ -113,44 +146,64 @@ RMTP.views.rota = (function () {
       return store.all('availability') || [];
     }
 
-    function getAllBookings() {
+    function getAllBookingsRaw() {
       return store.all('bookings') || [];
     }
 
-    function ensureSampleSwap() {
-      const allB = getAllBookings();
-      const hasSwap = allB.some((b) => b.swapRequested && b.status !== 'cancelled');
-      if (!hasSwap && allB.length > 0) {
-        const candidate = allB.find((b) => b.userId !== (me ? me.id : '')) || allB[0];
-        if (candidate) {
-          candidate.swapRequested = true;
-          candidate.swapOfferedBy = candidate.userId;
-          candidate.swapOfferedByName = candidate.userName || 'Maya Lin';
-          candidate.swapOfferedAt = new Date().toISOString();
-          candidate.swapReason = candidate.swapReason || 'Double-booked with rehearsals, looking for cover on this shift.';
-          store.upsert('bookings', candidate);
-        }
-      }
+    function getAllBookings(includeNonCore = false) {
+      const list = getAllBookingsRaw();
+      if (includeNonCore || state.showNonCoreSpaces) return list;
+      return list.filter((b) => isSpaceAllowed(b.space));
     }
-    ensureSampleSwap();
+
+    function isUpcomingShiftDate(dateStr) {
+      const d = normalizeDate(dateStr);
+      if (!d) return false;
+      return d >= formatDate(new Date());
+    }
+
+    function isBookingEventCancelled(b) {
+      if (!b || !b.eventId) return false;
+      const ev = store.find('advancing', b.eventId);
+      if (!ev) return false;
+      if (ev.deleted) return true;
+      const st = String(ev.status || '').trim().toLowerCase();
+      return st === 'cancelled' || st === 'canceled';
+    }
+
+    function isActiveOpenSwap(b) {
+      if (!b || !b.swapRequested || b.isNoTech) return false;
+      if (b.status === 'cancelled' || b.status === 'declined') return false;
+      if (!isUpcomingShiftDate(b.date)) return false;
+      if (isBookingEventCancelled(b)) return false;
+      return true;
+    }
 
     function getAllUsers() {
       return store.all('users') || [];
     }
     const allUsers = getAllUsers();
 
-    function getAllEvents() {
-      return (store.all('advancing') || []).filter((e) => !e.deleted && String(e.status || '').trim().toLowerCase() !== 'cancelled');
+    function getAllEvents(includeNonCore = false) {
+      return (store.all('advancing') || []).filter((e) => {
+        if (!e || e.deleted) return false;
+        const st = String(e.status || '').trim().toLowerCase();
+        if (st === 'cancelled' || st === 'canceled') return false;
+        if (!includeNonCore && !state.showNonCoreSpaces && !isSpaceAllowed(e.space)) return false;
+        return true;
+      });
     }
 
     function getUserAvailability(userId, dateStr) {
       const all = getAllAvailability();
-      return all.find((a) => a.userId === userId && a.date === dateStr);
+      const target = normalizeDate(dateStr);
+      return all.find((a) => a.userId === userId && normalizeDate(a.date) === target);
     }
 
     function getUserBookingsOnDate(userId, dateStr) {
-      const all = getAllBookings();
-      return all.filter((b) => b.userId === userId && b.date === dateStr && b.status !== 'cancelled' && b.status !== 'declined');
+      const all = getAllBookingsRaw();
+      const target = normalizeDate(dateStr);
+      return all.filter((b) => b.userId === userId && normalizeDate(b.date) === target && b.status !== 'cancelled' && b.status !== 'declined');
     }
 
     function getTechLiveStatus(userId, dateStr, currentShiftTimes) {
@@ -400,16 +453,31 @@ RMTP.views.rota = (function () {
     // Map storing active schedule items for fast click routing
     const allScheduleItemsMap = new Map();
 
+    function resolveTakeoverEventId(item, targetSpace) {
+      if (!item) return '';
+      const normTarget = normalizeSpace(targetSpace).toLowerCase();
+      if (Array.isArray(item.clusterEvents) && normTarget) {
+        const matched = item.clusterEvents.find((e) => {
+          const spList = Array.isArray(e.space) ? e.space : [e.space];
+          return spList.some((s) => normalizeSpace(s).toLowerCase() === normTarget);
+        });
+        if (matched) return matched.id;
+      }
+      return item.eventId || '';
+    }
+
     // Unified helper: builds all shifts & advancing events for any date dynamically,
     // consolidating multi-room takeovers into a single card with crew needed vs assigned.
     function getDaySchedule(dateStr) {
-      const allB = getAllBookings().filter((b) => b.date === dateStr);
-      const allEv = getAllEvents().filter((e) => e.date === dateStr);
+      const normDay = normalizeDate(dateStr);
+      const allB = getAllBookings().filter((b) => normalizeDate(b.date) === normDay);
+      const allEv = getAllEvents().filter((e) => normalizeDate(e.date) === normDay);
       const allUsers = getAllUsers();
 
       const items = [];
       const handledEventIds = new Set();
       const handledBookingIds = new Set();
+      const bookedTechKeysByEvent = new Map(); // eventId -> Set of userId or lowercase userName
 
       // --- STEP 1: DETECT AND CLUSTER MULTI-ROOM TAKEOVERS ---
       // A takeover is an event that:
@@ -434,26 +502,28 @@ RMTP.views.rota = (function () {
         const groupEvents = (ev.groupId && byGroupId[ev.groupId] && byGroupId[ev.groupId].length > 1) ? byGroupId[ev.groupId] : null;
 
         // Check matching name on same date across different spaces (e.g. Artifax multi-room arrangement)
-        const nameMatches = allEv.filter((other) => other.id !== ev.id && other.name && ev.name && other.name.trim().toLowerCase() === ev.name.trim().toLowerCase() && other.date === dateStr);
+        const nameMatches = allEv.filter((other) => other.id !== ev.id && other.name && ev.name && other.name.trim().toLowerCase() === ev.name.trim().toLowerCase() && normalizeDate(other.date) === normDay);
 
         if (isExplicitMulti || groupEvents || nameMatches.length > 0) {
           const clusterEvents = groupEvents ? groupEvents : (nameMatches.length > 0 ? [ev, ...nameMatches] : [ev]);
           clusterEvents.forEach((e) => usedEventIdsForTakeover.add(e.id));
 
-          // Collect spaces
+          // Collect spaces (normalized & respecting Core Spaces filter)
           const spacesSet = new Set();
           clusterEvents.forEach((e) => {
-            if (Array.isArray(e.spaces)) e.spaces.forEach((s) => spacesSet.add(s));
-            if (Array.isArray(e.space)) e.space.forEach((s) => spacesSet.add(s));
-            else if (e.space) spacesSet.add(e.space);
+            if (Array.isArray(e.spaces)) e.spaces.forEach((s) => { const ns = normalizeSpace(s); if (ns && isSpaceAllowed(ns)) spacesSet.add(ns); });
+            if (Array.isArray(e.space)) e.space.forEach((s) => { const ns = normalizeSpace(s); if (ns && isSpaceAllowed(ns)) spacesSet.add(ns); });
+            else if (e.space) { const ns = normalizeSpace(e.space); if (ns && isSpaceAllowed(ns)) spacesSet.add(ns); }
           });
+
+          if (spacesSet.size === 0) return;
 
           takeoverClusters.push({
             primaryEvent: ev,
             events: clusterEvents,
             spaces: Array.from(spacesSet),
             name: ev.name,
-            date: dateStr,
+            date: normDay,
             groupId: ev.groupId || ('takeover-' + ev.id),
           });
         }
@@ -470,7 +540,7 @@ RMTP.views.rota = (function () {
         const takeoverBookings = allB.filter((b) => {
           if (cl.events.some((e) => e.id === b.eventId)) return true;
           if (b.groupId && b.groupId === cl.groupId) return true;
-          if (spaces.includes(b.space) && b.eventName && b.eventName.trim().toLowerCase() === cl.name.trim().toLowerCase()) return true;
+          if (spaces.includes(normalizeSpace(b.space)) && b.eventName && b.eventName.trim().toLowerCase() === cl.name.trim().toLowerCase()) return true;
           return false;
         });
         takeoverBookings.forEach((b) => handledBookingIds.add(b.id));
@@ -486,8 +556,8 @@ RMTP.views.rota = (function () {
         const spaceBreakdown = spaces.map((sp) => {
           const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(sp) : { total: getSpaceBasicCrew(sp), disciplines: [{ role: 'Sound', count: 1 }], summary: '1x Sound' };
           const basic = specs.total;
-          const spBookings = takeoverBookings.filter((b) => b.space === sp && b.status !== 'cancelled');
-          const spTechs = allEvTechs.filter((t) => (t.space === sp || t.eventSpace === sp) && (t.bookingStatus || 'confirmed') !== 'cancelled');
+          const spBookings = takeoverBookings.filter((b) => normalizeSpace(b.space) === sp && b.status !== 'cancelled' && b.status !== 'declined');
+          const spTechs = allEvTechs.filter((t) => (normalizeSpace(t.space) === sp || normalizeSpace(t.eventSpace) === sp) && (t.bookingStatus || 'confirmed') !== 'cancelled' && (t.bookingStatus || 'confirmed') !== 'declined');
 
           const assignedTechs = [];
           spBookings.forEach((b) => {
@@ -581,12 +651,13 @@ RMTP.views.rota = (function () {
           key: 'takeover_' + (cl.groupId || primary.id),
           type: 'takeover',
           eventId: primary.id,
+          clusterEvents: cl.events,
           groupId: cl.groupId,
           advEvent: primary,
           eventName: cl.name,
           space: spaces.join(', '),
           spaces: spaces,
-          date: dateStr,
+          date: normDay,
           startTime: primary.startTime || '17:00',
           finishTime: primary.finishTime || '23:30',
           totalCrewNeeded: totalCrewNeeded,
@@ -605,23 +676,36 @@ RMTP.views.rota = (function () {
       // --- STEP 2: REMAINING REGULAR BOOKINGS ---
       allB.forEach((b) => {
         if (handledBookingIds.has(b.id)) return;
-        if (state.spaceFilter && b.space !== state.spaceFilter) return;
+        const bSpace = normalizeSpace(b.space) || 'Venue';
+        const isBookingNoTech = !!b.isNoTech || b.role === 'None';
+        const isPlaceholderTech = !b.userId && (!b.userName || /^unassigned(\s+tech)?$/i.test(String(b.userName).trim()));
+        const isBookingUnfilled = !isBookingNoTech && isPlaceholderTech && b.status !== 'cancelled';
+
+        if (state.spaceFilter && bSpace !== state.spaceFilter) return;
         if (state.roleFilter && b.role !== state.roleFilter) return;
-        if (state.statusFilter && b.status !== state.statusFilter) return;
+        if (state.statusFilter) {
+          if (state.statusFilter === 'unfilled' && !isBookingUnfilled) return;
+          if (state.statusFilter !== 'unfilled' && b.status !== state.statusFilter) return;
+        }
         if (state.techFilter && b.userId !== state.techFilter) return;
-        if (state.unfilledOnly) return;
+        if (state.unfilledOnly && !isBookingUnfilled) return;
+        if (state.eventsFilter === 'staffed' && isBookingUnfilled) return;
         if (state.searchQuery) {
           const q = state.searchQuery.toLowerCase();
           const match = (b.eventName && b.eventName.toLowerCase().includes(q)) ||
-                        (b.space && b.space.toLowerCase().includes(q)) ||
+                        (bSpace && bSpace.toLowerCase().includes(q)) ||
                         (b.userName && b.userName.toLowerCase().includes(q)) ||
                         (b.role && b.role.toLowerCase().includes(q));
           if (!match) return;
         }
 
-        if (b.eventId) handledEventIds.add(b.eventId);
+        if (b.eventId && b.status !== 'cancelled' && b.status !== 'declined') {
+          handledEventIds.add(b.eventId);
+          if (!bookedTechKeysByEvent.has(b.eventId)) bookedTechKeysByEvent.set(b.eventId, new Set());
+          if (b.userId) bookedTechKeysByEvent.get(b.eventId).add('u:' + b.userId);
+          else if (b.userName && !isPlaceholderTech) bookedTechKeysByEvent.get(b.eventId).add('n:' + String(b.userName).trim().toLowerCase());
+        }
         const techObj = allUsers.find((u) => u.id === b.userId);
-        const isBookingNoTech = !!b.isNoTech || b.role === 'None';
         const item = {
           key: 'b_' + b.id,
           type: 'booking',
@@ -629,19 +713,19 @@ RMTP.views.rota = (function () {
           booking: b,
           eventId: b.eventId,
           eventName: b.eventName || 'Venue Shift',
-          space: b.space || 'Venue',
-          date: b.date,
+          space: bSpace,
+          date: normDay,
           startTime: b.startTime || '17:00',
           finishTime: b.finishTime || '23:30',
           userId: isBookingNoTech ? '' : b.userId,
-          userName: isBookingNoTech ? 'No Tech Required' : (b.userName || (techObj ? auth.displayName(techObj) : 'Unassigned Tech')),
+          userName: isBookingNoTech ? 'No Tech Required' : (isBookingUnfilled ? 'Unassigned' : (b.userName || (techObj ? auth.displayName(techObj) : 'Unassigned Tech'))),
           role: isBookingNoTech ? 'None' : (b.role || 'Tech'),
-          status: isBookingNoTech ? 'confirmed' : (b.status || 'pencil'),
+          status: isBookingNoTech ? 'confirmed' : (isBookingUnfilled ? 'unfilled' : (b.status || 'pencil')),
           rate: b.rate,
           notes: b.notes,
           splitFromId: b.splitFromId || '',
           legIndex: b.legIndex || '',
-          isUnfilled: false,
+          isUnfilled: isBookingUnfilled,
           isNoTech: isBookingNoTech,
         };
         items.push(item);
@@ -650,8 +734,7 @@ RMTP.views.rota = (function () {
 
       // --- STEP 3: REMAINING ADVANCING EVENTS (SINGLE ROOM) ---
       allEv.forEach((ev) => {
-        if (handledEventIds.has(ev.id)) return;
-        const spaceVal = Array.isArray(ev.space) ? ev.space[0] : (ev.space || 'Venue');
+        const spaceVal = normalizeSpace(Array.isArray(ev.space) ? ev.space[0] : (ev.space || 'Venue')) || 'Venue';
         if (state.spaceFilter && spaceVal !== state.spaceFilter) return;
 
         if (state.searchQuery) {
@@ -663,11 +746,19 @@ RMTP.views.rota = (function () {
         }
 
         const isEventNoTech = !!ev.noTechNeeded;
+        const alreadyHasBookings = handledEventIds.has(ev.id);
+        const bookedSet = bookedTechKeysByEvent.get(ev.id) || new Set();
 
         const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(ev) : [];
         if (evTechs && evTechs.length > 0) {
-          if (state.unfilledOnly) return;
           evTechs.forEach((t, idx) => {
+            // Skip any tech already rendered via a booking record in Step 2
+            if (alreadyHasBookings) {
+              if (t.userId && bookedSet.has('u:' + t.userId)) return;
+              if (!t.userId && t.freelancerName && bookedSet.has('n:' + String(t.freelancerName).trim().toLowerCase())) return;
+              if (t.isNoTech || t.role === 'None') return;
+              if (!t.userId && !(t.freelancerName && t.freelancerName.trim())) return;
+            }
             if (state.techFilter && t.userId !== state.techFilter) return;
             if (state.roleFilter && t.role !== state.roleFilter) return;
             if (state.statusFilter && (t.bookingStatus || 'confirmed') !== state.statusFilter) return;
@@ -676,6 +767,7 @@ RMTP.views.rota = (function () {
             const isNoTech = isEventNoTech || !!t.isNoTech || t.role === 'None';
             const hasAssigned = !!(t.userId || (t.freelancerName && t.freelancerName.trim()));
             const isSlotUnfilled = !isNoTech && !hasAssigned;
+            if (state.unfilledOnly && !isSlotUnfilled) return;
             if (state.eventsFilter === 'staffed' && isSlotUnfilled) return;
             const tName = isNoTech ? 'No Tech Required' : (t.freelancerName || (techObj ? auth.displayName(techObj) : (t.userId ? 'Tech' : 'Unassigned')));
 
@@ -686,7 +778,7 @@ RMTP.views.rota = (function () {
               advEvent: ev,
               eventName: ev.name,
               space: spaceVal,
-              date: ev.date,
+              date: normDay,
               startTime: t.startTime || ev.startTime || '18:00',
               finishTime: t.finishTime || ev.finishTime || '23:00',
               userId: isNoTech ? '' : t.userId,
@@ -702,6 +794,9 @@ RMTP.views.rota = (function () {
             items.push(item);
             allScheduleItemsMap.set(item.key, item);
           });
+          if (alreadyHasBookings) return;
+        } else if (alreadyHasBookings) {
+          return;
         } else if (isEventNoTech) {
           // Self-Service advancing event with zero crew needed
           if (state.unfilledOnly) return;
@@ -1181,22 +1276,22 @@ RMTP.views.rota = (function () {
       const wStart = wDays[0].date;
       const wEnd = wDays[6].date;
 
-      const totalWeekBookings = allB.filter((b) => b.date >= wStart && b.date <= wEnd && b.status !== 'cancelled');
+      const totalWeekBookings = allB.filter((b) => { const d = normalizeDate(b.date); return d >= wStart && d <= wEnd && b.status !== 'cancelled' && b.status !== 'declined'; });
       const confirmedCount = totalWeekBookings.filter((b) => b.status === 'confirmed').length;
       const pencilCount = totalWeekBookings.filter((b) => b.status === 'pencil').length;
       const activeFreelancers = new Set(totalWeekBookings.map((b) => b.userId).filter(Boolean)).size;
 
-      const weekEvents = allEv.filter((e) => e.date >= wStart && e.date <= wEnd);
+      const weekEvents = allEv.filter((e) => { const d = normalizeDate(e.date); return d >= wStart && d <= wEnd; });
       const unfilledWeekEvents = weekEvents.filter((e) => {
         if (e.noTechNeeded) return false;
-        const assigned = allB.filter((b) => b.eventId === e.id && b.status !== 'cancelled');
-        const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(e) : [];
+        const assigned = allB.filter((b) => b.eventId === e.id && b.status !== 'cancelled' && b.status !== 'declined' && (b.userId || (b.userName && !/^unassigned(\s+tech)?$/i.test(String(b.userName).trim()))));
+        const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(e).filter((t) => t.userId || (t.freelancerName && t.freelancerName.trim()) || t.isNoTech) : [];
         return assigned.length === 0 && evTechs.length === 0;
       });
 
-      // Update badge on tabs
-      const openSwaps = allB.filter((b) => b.swapRequested && b.status !== 'cancelled');
-      const myShifts = allB.filter((b) => me && b.userId === me.id && b.status !== 'cancelled');
+      // Update badge on tabs (only active upcoming shift swaps)
+      const openSwaps = getAllBookings().filter((b) => isActiveOpenSwap(b));
+      const myShifts = getAllBookingsRaw().filter((b) => me && b.userId === me.id && b.status !== 'cancelled' && b.status !== 'declined');
       const swapsBadge = el.querySelector('#rota-swaps-count');
       if (swapsBadge) {
         swapsBadge.textContent = openSwaps.length > 0 ? String(openSwaps.length) : '0';
@@ -1207,15 +1302,15 @@ RMTP.views.rota = (function () {
 
       const now = new Date();
       const currentMonthActive = (state.rotaMonth || formatDate(now).slice(0, 7));
-      const monthBookings = allB.filter((b) => b.date.startsWith(currentMonthActive) && b.status !== 'cancelled');
+      const monthBookings = allB.filter((b) => normalizeDate(b.date).startsWith(currentMonthActive) && b.status !== 'cancelled' && b.status !== 'declined');
       const monthShiftsCount = monthBookings.length;
 
       // Calculate all advancing events for active month to detect gaps
-      const monthEvents = allEv.filter((e) => e.date.startsWith(currentMonthActive));
+      const monthEvents = allEv.filter((e) => normalizeDate(e.date).startsWith(currentMonthActive));
       const monthUnfilledEvents = monthEvents.filter((e) => {
         if (e.noTechNeeded) return false;
-        const assigned = allB.filter((b) => b.eventId === e.id && b.status !== 'cancelled');
-        const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(e) : [];
+        const assigned = allB.filter((b) => b.eventId === e.id && b.status !== 'cancelled' && b.status !== 'declined' && (b.userId || (b.userName && !/^unassigned(\s+tech)?$/i.test(String(b.userName).trim()))));
+        const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(e).filter((t) => t.userId || (t.freelancerName && t.freelancerName.trim()) || t.isNoTech) : [];
         return assigned.length === 0 && evTechs.length === 0;
       });
       const activeGapsCount = state.boardView === 'month' ? monthUnfilledEvents.length : unfilledWeekEvents.length;
@@ -1483,11 +1578,16 @@ RMTP.views.rota = (function () {
                   </button>
                 </div>
 
-                <!-- Space Filter Dropdown -->
-                <select id="flt-space" class="field !py-1 text-xs max-w-[135px]">
-                  <option value="">All Spaces</option>
-                  ${RMTP.SPACES.map((s) => `<option value="${ui.esc(s)}" ${state.spaceFilter === s ? 'selected' : ''}>${ui.esc(s)}</option>`).join('')}
+                <!-- Space Filter Dropdown (Core Spaces by default) -->
+                <select id="flt-space" class="field !py-1 text-xs max-w-[140px]">
+                  <option value="">${state.showNonCoreSpaces ? 'All Spaces' : 'Core Spaces'}</option>
+                  ${getVisibleSpacesList().map((s) => `<option value="${ui.esc(s)}" ${state.spaceFilter === s ? 'selected' : ''}>${ui.esc(s)}</option>`).join('')}
                 </select>
+
+                <!-- Non-Core Spaces Toggle -->
+                <button type="button" id="flt-toggle-noncore" class="px-2 py-1 text-[11px] font-semibold rounded-md border transition flex items-center gap-1 ${state.showNonCoreSpaces ? 'bg-accent/15 text-accent border-accent/40' : 'bg-panel border-line text-muted hover:text-ink'}" title="Non-core spaces (Streetside, Cinema Bar, The Lab, etc.) are hidden by default. Click to include them.">
+                  <span>${state.showNonCoreSpaces ? 'Showing All Spaces' : 'Core Spaces Only'}</span>
+                </button>
 
                 <!-- Role Filter Dropdown -->
                 <select id="flt-role" class="field !py-1 text-xs max-w-[115px]">
@@ -1586,9 +1686,9 @@ RMTP.views.rota = (function () {
 
           const isToday = dateStr === todayStr;
           const myShifts = dayItems.filter((i) => me && i.userId === me.id);
-          const swapShifts = dayItems.filter((i) => i.booking && i.booking.swapRequested);
+          const swapShifts = dayItems.filter((i) => i.booking && isActiveOpenSwap(i.booking));
           const unfilledGaps = dayItems.filter((i) => i.isUnfilled && !i.isNoTech);
-          const otherStaffed = dayItems.filter((i) => !i.isUnfilled && !i.isNoTech && (!me || i.userId !== me.id) && (!i.booking || !i.booking.swapRequested));
+          const otherStaffed = dayItems.filter((i) => !i.isUnfilled && !i.isNoTech && (!me || i.userId !== me.id) && (!i.booking || !isActiveOpenSwap(i.booking)));
           const selfService = dayItems.filter((i) => i.isNoTech);
 
           let cellBorder = 'border-line';
@@ -1627,7 +1727,7 @@ RMTP.views.rota = (function () {
           // 1. My shifts first
           myShifts.forEach((b) => {
             out += `
-              <div data-click-booking="${b.id || (b.booking && b.booking.id) || ''}" class="p-1 rounded bg-accent/20 border border-accent/40 text-accent font-semibold text-[10px] leading-tight truncate flex items-center justify-between gap-1 shadow-2xs hover:bg-accent/30 transition" title="${ui.esc(b.eventName)} · ${ui.esc(b.space)}">
+              <div data-click-booking="${b.id || (b.booking && b.booking.id) || ''}" data-schedule-item="${b.key}" class="p-1 rounded bg-accent/20 border border-accent/40 text-accent font-semibold text-[10px] leading-tight truncate flex items-center justify-between gap-1 shadow-2xs hover:bg-accent/30 transition" title="${ui.esc(b.eventName)} · ${ui.esc(b.space)}">
                 <span class="truncate">⭐ ${ui.esc(b.role || 'Tech')} · ${ui.esc(b.space)}</span>
                 <span class="font-mono text-[9px] opacity-80 shrink-0">${b.startTime}</span>
               </div>
@@ -1637,7 +1737,7 @@ RMTP.views.rota = (function () {
           // 2. Swap shifts (that are not mine)
           swapShifts.filter((b) => !me || b.userId !== me.id).forEach((b) => {
             out += `
-              <div data-click-booking="${b.id || (b.booking && b.booking.id) || ''}" class="p-1 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300 font-semibold text-[10px] leading-tight truncate flex items-center justify-between gap-1 hover:bg-amber-500/30 transition" title="Swap Offered: ${ui.esc(b.eventName)}">
+              <div data-click-booking="${b.id || (b.booking && b.booking.id) || ''}" data-schedule-item="${b.key}" class="p-1 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300 font-semibold text-[10px] leading-tight truncate flex items-center justify-between gap-1 hover:bg-amber-500/30 transition" title="Swap Offered: ${ui.esc(b.eventName)}">
                 <span class="truncate">🔄 Cover: ${ui.esc(b.role || 'Tech')}</span>
                 <span class="text-[9px] underline font-bold shrink-0">Claim</span>
               </div>
@@ -1723,8 +1823,8 @@ RMTP.views.rota = (function () {
         nextDayObj.setDate(nextDayObj.getDate() + 1);
         const nextDayStr = formatDate(nextDayObj);
 
-        // Spaces list
-        const activeSpaces = Array.from(new Set([...RMTP.SPACES, ...daySchedule.map((i) => i.space)])).filter(Boolean);
+        // Spaces list (Core Spaces by default unless Non-Core toggled on)
+        const activeSpaces = Array.from(new Set([...getVisibleSpacesList(), ...daySchedule.flatMap((i) => i.spaces || [i.space])])).filter((sp) => sp && isSpaceAllowed(sp));
         state.collapsedSpaces = state.collapsedSpaces || new Set();
 
         // Calculate Venue-wide Metrics for today
@@ -2094,8 +2194,8 @@ RMTP.views.rota = (function () {
         nextDayObj.setDate(nextDayObj.getDate() + 1);
         const nextDayStr = formatDate(nextDayObj);
 
-        // Gather all venue spaces to show as columns
-        const activeSpaces = Array.from(new Set([...RMTP.SPACES, ...daySchedule.map(i => i.space)])).filter(Boolean);
+        // Gather visible venue spaces to show as columns (Core Spaces by default)
+        const activeSpaces = Array.from(new Set([...getVisibleSpacesList(), ...daySchedule.flatMap((i) => i.spaces || [i.space])])).filter((sp) => sp && isSpaceAllowed(sp));
 
         out += `
           <!-- Day Navigator Bar -->
@@ -2364,9 +2464,37 @@ RMTP.views.rota = (function () {
       tabContainer.querySelectorAll('[data-click-booking]').forEach((chip) => {
         chip.addEventListener('click', (e) => {
           e.stopPropagation();
+          e.stopImmediatePropagation();
           const bid = chip.getAttribute('data-click-booking');
-          const b = getAllBookings().find((x) => x.id === bid);
-          if (b) openShiftDetailModal(b);
+          const b = bid ? getAllBookingsRaw().find((x) => x.id === bid) : null;
+          if (b) {
+            openShiftDetailModal(b);
+            return;
+          }
+          const key = chip.getAttribute('data-schedule-item');
+          const item = key ? allScheduleItemsMap.get(key) : null;
+          if (!item) return;
+          if (item.type === 'booking' && item.booking) {
+            openShiftDetailModal(item.booking);
+          } else if (isTechManager || isAdmin) {
+            const targetSpace = item.type === 'takeover'
+              ? normalizeSpace((item.unfilledSpaces && item.unfilledSpaces[0]) || (item.spaces && item.spaces[0]) || 'The Stage')
+              : normalizeSpace(item.space || 'The Stage');
+            openBookingModal({
+              eventId: item.type === 'takeover' ? resolveTakeoverEventId(item, targetSpace) : item.eventId,
+              eventName: item.eventName,
+              space: targetSpace,
+              date: normalizeDate(item.date),
+              startTime: normalizeTime(item.startTime, '17:00'),
+              finishTime: normalizeTime(item.finishTime, '23:30'),
+              userId: item.userId || '',
+              userName: item.userName || '',
+              role: item.role || 'Sound',
+              status: item.status || 'pencil',
+            });
+          } else {
+            openShiftDetailModal(item);
+          }
         });
       });
       tabContainer.querySelectorAll('[data-click-unfilled]').forEach((chip) => {
@@ -2375,13 +2503,17 @@ RMTP.views.rota = (function () {
           const key = chip.getAttribute('data-click-unfilled');
           const item = allScheduleItemsMap.get(key);
           if (item) {
+            const targetSpace = item.type === 'takeover'
+              ? normalizeSpace((item.unfilledSpaces && item.unfilledSpaces[0]) || (item.spaces && item.spaces[0]) || 'The Stage')
+              : normalizeSpace(item.space || 'The Stage');
             openBookingModal({
-              eventId: item.eventId,
+              id: (item.type === 'booking' && item.booking && item.booking.id) ? item.booking.id : undefined,
+              eventId: item.type === 'takeover' ? resolveTakeoverEventId(item, targetSpace) : item.eventId,
               eventName: item.eventName,
-              space: item.space,
-              date: item.date,
-              startTime: item.startTime,
-              finishTime: item.finishTime,
+              space: targetSpace,
+              date: normalizeDate(item.date),
+              startTime: normalizeTime(item.startTime, '17:00'),
+              finishTime: normalizeTime(item.finishTime, '23:30'),
               role: item.role || 'Sound',
               status: 'pencil',
             });
@@ -2433,14 +2565,20 @@ RMTP.views.rota = (function () {
         renderBoardTab();
       });
       tabContainer.querySelector('#btn-collapse-all-spaces')?.addEventListener('click', () => {
-        RMTP.SPACES.forEach((s) => state.collapsedSpaces.add(s));
+        getVisibleSpacesList().forEach((s) => state.collapsedSpaces.add(s));
         renderBoardTab();
       });
 
       // 1-Click Sync Advancing Shifts for current selected day
       tabContainer.querySelector('#btn-sync-advancing-rota')?.addEventListener('click', () => {
-        const targetDay = state.selectedDay || formatDate(new Date());
-        const dayEvents = (store.all('advancing') || []).filter((e) => e.date === targetDay && !e.deleted && String(e.status || '').trim().toLowerCase() !== 'cancelled');
+        const targetDay = normalizeDate(state.selectedDay) || formatDate(new Date());
+        const dayEvents = (store.all('advancing') || []).filter((e) => {
+          if (e.deleted || normalizeDate(e.date) !== targetDay) return false;
+          const st = String(e.status || '').trim().toLowerCase();
+          if (st === 'cancelled' || st === 'canceled') return false;
+          if (!state.showNonCoreSpaces && !isSpaceAllowed(e.space)) return false;
+          return true;
+        });
         let count = 0;
         dayEvents.forEach((ev) => {
           const created = RMTP.syncAdvancingToRota ? RMTP.syncAdvancingToRota(ev) : [];
@@ -2512,6 +2650,15 @@ RMTP.views.rota = (function () {
         renderBoardTab();
         updateTopMetrics();
       });
+      // Non-Core Spaces Toggle (Core Spaces Only by default)
+      tabContainer.querySelector('#flt-toggle-noncore')?.addEventListener('click', () => {
+        state.showNonCoreSpaces = !state.showNonCoreSpaces;
+        if (!state.showNonCoreSpaces && state.spaceFilter && !isSpaceAllowed(state.spaceFilter)) {
+          state.spaceFilter = '';
+        }
+        renderBoardTab();
+        updateTopMetrics();
+      });
       // Event Scope Toggles
       tabContainer.querySelector('#flt-events-all')?.addEventListener('click', () => {
         state.eventsFilter = 'all';
@@ -2527,7 +2674,8 @@ RMTP.views.rota = (function () {
         state.statusFilter = '';
         state.techFilter = '';
         state.unfilledOnly = false;
-        state.eventsFilter = isTMOrAdmin ? 'all' : 'all';
+        state.showNonCoreSpaces = false;
+        state.eventsFilter = 'all';
         state.searchQuery = '';
         renderBoardTab();
         updateTopMetrics();
@@ -2561,7 +2709,11 @@ RMTP.views.rota = (function () {
             const nextStatus = b.status === 'confirmed' ? 'pencil' : 'confirmed';
             b.status = nextStatus;
             if (nextStatus === 'confirmed') b.confirmedAt = new Date().toISOString();
+            b.updatedAt = new Date().toISOString();
             store.upsert('bookings', b);
+            if (b.eventId && RMTP.syncRotaToAdvancing) {
+              RMTP.syncRotaToAdvancing(b.eventId);
+            }
             ui.toast(`Shift status updated to ${nextStatus === 'confirmed' ? 'Confirmed' : 'Pencil Hold'}`, 'ok');
             renderActiveTab();
           }
@@ -2575,13 +2727,17 @@ RMTP.views.rota = (function () {
           const key = btn.getAttribute('data-assign-shift');
           const item = allScheduleItemsMap.get(key);
           if (item) {
+            const targetSpace = item.type === 'takeover'
+              ? normalizeSpace((item.unfilledSpaces && item.unfilledSpaces[0]) || (item.spaces && item.spaces[0]) || 'The Stage')
+              : normalizeSpace(item.space || 'The Stage');
             openBookingModal({
-              eventId: item.eventId,
+              id: (item.type === 'booking' && item.booking && item.booking.id) ? item.booking.id : undefined,
+              eventId: item.type === 'takeover' ? resolveTakeoverEventId(item, targetSpace) : item.eventId,
               eventName: item.eventName,
-              space: item.space,
-              date: item.date,
-              startTime: item.startTime,
-              finishTime: item.finishTime,
+              space: targetSpace,
+              date: normalizeDate(item.date),
+              startTime: normalizeTime(item.startTime, '17:00'),
+              finishTime: normalizeTime(item.finishTime, '23:30'),
               role: item.role || 'Sound',
               status: 'pencil',
             });
@@ -2597,16 +2753,16 @@ RMTP.views.rota = (function () {
           const [key, spaceName, roleHint] = raw.split('|');
           const item = allScheduleItemsMap.get(key);
           if (item) {
-            const targetSpace = spaceName || (item.spaces ? item.spaces[0] : 'The Stage');
+            const targetSpace = normalizeSpace(spaceName || (item.spaces ? item.spaces[0] : 'The Stage'));
             const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(targetSpace) : null;
             const targetRole = roleHint || (specs && specs.rolesList && specs.rolesList.length ? specs.rolesList[0] : 'Sound');
             openBookingModal({
-              eventId: item.eventId,
+              eventId: resolveTakeoverEventId(item, targetSpace),
               eventName: item.eventName,
               space: targetSpace,
-              date: item.date,
-              startTime: item.startTime,
-              finishTime: item.finishTime,
+              date: normalizeDate(item.date),
+              startTime: normalizeTime(item.startTime, '17:00'),
+              finishTime: normalizeTime(item.finishTime, '23:30'),
               role: targetRole,
               status: 'pencil',
             });
@@ -2616,6 +2772,7 @@ RMTP.views.rota = (function () {
 
       // Card Click Handler: Opens booking/shift modal for instant view, edit or assign
       tabContainer.querySelectorAll('[data-schedule-item]').forEach((card) => {
+        if (card.hasAttribute('data-click-booking')) return;
         card.addEventListener('click', (e) => {
           // If clicked a button inside card, don't trigger modal
           if (e.target.closest('button')) return;
@@ -2624,14 +2781,14 @@ RMTP.views.rota = (function () {
           if (!item) return;
 
           if (item.type === 'takeover') {
-            const targetSpace = (item.unfilledSpaces && item.unfilledSpaces.length > 0) ? item.unfilledSpaces[0] : (item.spaces ? item.spaces[0] : 'The Stage');
+            const targetSpace = normalizeSpace((item.unfilledSpaces && item.unfilledSpaces.length > 0) ? item.unfilledSpaces[0] : (item.spaces ? item.spaces[0] : 'The Stage'));
             openBookingModal({
-              eventId: item.eventId,
+              eventId: resolveTakeoverEventId(item, targetSpace),
               eventName: item.eventName,
               space: targetSpace,
-              date: item.date,
-              startTime: item.startTime,
-              finishTime: item.finishTime,
+              date: normalizeDate(item.date),
+              startTime: normalizeTime(item.startTime, '17:00'),
+              finishTime: normalizeTime(item.finishTime, '23:30'),
               role: 'Sound',
               status: 'pencil',
             });
@@ -2641,21 +2798,21 @@ RMTP.views.rota = (function () {
             openBookingModal({
               eventId: item.eventId,
               eventName: item.eventName,
-              space: item.space,
-              date: item.date,
-              startTime: item.startTime,
-              finishTime: item.finishTime,
-              role: 'Sound',
+              space: normalizeSpace(item.space || 'The Stage'),
+              date: normalizeDate(item.date),
+              startTime: normalizeTime(item.startTime, '17:00'),
+              finishTime: normalizeTime(item.finishTime, '23:30'),
+              role: item.role || 'Sound',
               status: 'pencil',
             });
           } else if (item.type === 'adv_tech') {
             openBookingModal({
               eventId: item.eventId,
               eventName: item.eventName,
-              space: item.space,
-              date: item.date,
-              startTime: item.startTime,
-              finishTime: item.finishTime,
+              space: normalizeSpace(item.space || 'The Stage'),
+              date: normalizeDate(item.date),
+              startTime: normalizeTime(item.startTime, '17:00'),
+              finishTime: normalizeTime(item.finishTime, '23:30'),
               userId: item.userId,
               userName: item.userName,
               role: item.role,
@@ -2717,7 +2874,7 @@ RMTP.views.rota = (function () {
 
       // Month availability and bookings for this user
       const userAvails = getAllAvailability().filter((a) => a.userId === selectedUserId);
-      const userBookings = getAllBookings().filter((b) => b.userId === selectedUserId && b.status !== 'cancelled');
+      const userBookings = getAllBookingsRaw().filter((b) => b.userId === selectedUserId && b.status !== 'cancelled' && b.status !== 'declined');
 
       const monthName = firstDay.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
       const now = new Date();
@@ -2831,8 +2988,8 @@ RMTP.views.rota = (function () {
           const todayStr = formatDate(new Date());
           for (let dayNum = 1; dayNum <= daysInMonth; dayNum++) {
             const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
-            const avail = userAvails.find((a) => a.date === dateStr);
-            const dayBookings = userBookings.filter((b) => b.date === dateStr);
+            const avail = userAvails.find((a) => normalizeDate(a.date) === dateStr);
+            const dayBookings = userBookings.filter((b) => normalizeDate(b.date) === dateStr);
             const isToday = dateStr === todayStr;
 
             let statusBorder = 'border-line';
@@ -2944,15 +3101,15 @@ RMTP.views.rota = (function () {
                   <div class="flex items-center justify-between text-[11px] pt-1 flex-wrap gap-1">
                     <span class="px-1.5 py-0.2 rounded bg-panel border border-line text-ink font-semibold">${ui.esc(b.role || 'Tech')}</span>
                     <div class="flex items-center gap-1.5 flex-wrap">
-                      ${b.swapRequested ? `
+                      ${isActiveOpenSwap(b) ? `
                         <span class="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">Cover Offered</span>
                         <button data-cancel-my-swap="${b.id}" class="text-[10px] text-danger font-semibold hover:underline cursor-pointer">Cancel</button>
-                      ` : `
+                      ` : (isUpcomingShiftDate(b.date) ? `
                         <button data-offer-my-swap="${b.id}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-panel border border-line text-muted hover:text-amber-400 hover:border-amber-500/40 transition cursor-pointer flex items-center gap-1">
                           ${ui.icon('refresh', 'w-3 h-3')}
                           <span>Offer Swap</span>
                         </button>
-                      `}
+                      ` : '')}
                       ${b.status === 'pencil' ? `
                         <button data-tech-accept="${b.id}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20">
                           Accept
@@ -3093,9 +3250,14 @@ RMTP.views.rota = (function () {
           if (b) {
             b.status = 'confirmed';
             b.confirmedAt = new Date().toISOString();
+            b.updatedAt = new Date().toISOString();
             store.upsert('bookings', b);
+            if (b.eventId && RMTP.syncRotaToAdvancing) {
+              RMTP.syncRotaToAdvancing(b.eventId);
+            }
             ui.toast('Shift accepted and confirmed', 'ok');
             renderMyAvailTab();
+            updateTopMetrics();
           }
         });
       });
@@ -3106,9 +3268,14 @@ RMTP.views.rota = (function () {
           const b = store.find('bookings', id);
           if (b) {
             b.status = 'declined';
+            b.updatedAt = new Date().toISOString();
             store.upsert('bookings', b);
+            if (b.eventId && RMTP.syncRotaToAdvancing) {
+              RMTP.syncRotaToAdvancing(b.eventId, { prevBookingId: b.id, prevUserId: b.userId, prevUserName: b.userName });
+            }
             ui.toast('Shift declined', 'info');
             renderMyAvailTab();
+            updateTopMetrics();
           }
         });
       });
@@ -3226,7 +3393,7 @@ RMTP.views.rota = (function () {
           }
 
           out += `
-            <td data-matrix-cell="${u.id}_${d.date}" class="p-1.5 text-center border-l border-line/40 cursor-pointer hover:bg-panel2 ${cellCls}">
+            <td data-matrix-cell data-matrix-user="${ui.esc(u.id)}" data-matrix-date="${d.date}" class="p-1.5 text-center border-l border-line/40 cursor-pointer hover:bg-panel2 ${cellCls}">
               ${cellContent}
             </td>
           `;
@@ -3263,7 +3430,9 @@ RMTP.views.rota = (function () {
 
       tabContainer.querySelectorAll('[data-matrix-cell]').forEach((td) => {
         td.addEventListener('click', () => {
-          const [userId, dateStr] = td.getAttribute('data-matrix-cell').split('_');
+          const userId = td.getAttribute('data-matrix-user');
+          const dateStr = td.getAttribute('data-matrix-date');
+          if (!userId || !dateStr) return;
           const existingBooking = getUserBookingsOnDate(userId, dateStr);
           const existingAvail = getUserAvailability(userId, dateStr);
 
@@ -3290,7 +3459,7 @@ RMTP.views.rota = (function () {
       const allUsers = getAllUsers();
       let bookings = getAllBookings().slice().sort((a, b) => (a.date < b.date ? 1 : -1));
 
-      if (state.spaceFilter) bookings = bookings.filter((b) => b.space === state.spaceFilter);
+      if (state.spaceFilter) bookings = bookings.filter((b) => normalizeSpace(b.space) === normalizeSpace(state.spaceFilter));
       if (state.roleFilter) bookings = bookings.filter((b) => b.role === state.roleFilter);
       if (state.statusFilter) bookings = bookings.filter((b) => b.status === state.statusFilter);
       if (state.techFilter) bookings = bookings.filter((b) => b.userId === state.techFilter);
@@ -3305,8 +3474,8 @@ RMTP.views.rota = (function () {
             <!-- Filters -->
             <div class="flex items-center gap-2 flex-wrap">
               <select id="list-flt-space" class="field !py-1 text-xs">
-                <option value="">All Spaces</option>
-                ${RMTP.SPACES.map((s) => `<option value="${ui.esc(s)}" ${state.spaceFilter === s ? 'selected' : ''}>${ui.esc(s)}</option>`).join('')}
+                <option value="">${state.showNonCoreSpaces ? 'All Spaces' : 'Core Spaces'}</option>
+                ${getVisibleSpacesList().map((s) => `<option value="${ui.esc(s)}" ${state.spaceFilter === s ? 'selected' : ''}>${ui.esc(s)}</option>`).join('')}
               </select>
 
               <select id="list-flt-status" class="field !py-1 text-xs">
@@ -3428,7 +3597,7 @@ RMTP.views.rota = (function () {
     // ------------------------------------------------------------------------
     function renderSwapsTab() {
       const allB = getAllBookings();
-      const openSwaps = allB.filter((b) => b.swapRequested && b.status !== 'cancelled');
+      const openSwaps = allB.filter((b) => isActiveOpenSwap(b));
       const myId = me ? me.id : '';
 
       state.swapFilter = state.swapFilter || 'all'; // 'all' | 'available' | 'my'
@@ -3440,8 +3609,8 @@ RMTP.views.rota = (function () {
         filteredSwaps = openSwaps.filter((b) => b.userId === myId || b.swapOfferedBy === myId);
       }
 
-      // Sort by date ascending
-      filteredSwaps.sort((a, b) => (a.date > b.date ? 1 : -1));
+      // Sort by soonest date first
+      filteredSwaps.sort((a, b) => normalizeDate(a.date).localeCompare(normalizeDate(b.date)));
 
       let out = `
         <div class="space-y-4">
@@ -3479,10 +3648,10 @@ RMTP.views.rota = (function () {
                 All Open Swaps (${openSwaps.length})
               </button>
               <button data-swap-flt="available" class="px-2.5 py-1 font-semibold rounded-md transition ${state.swapFilter === 'available' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}">
-                Available to Pick Up (${openSwaps.filter((b) => b.userId !== myId).length})
+                Available to Pick Up (${openSwaps.filter((b) => b.userId !== myId && b.swapOfferedBy !== myId).length})
               </button>
               <button data-swap-flt="my" class="px-2.5 py-1 font-semibold rounded-md transition ${state.swapFilter === 'my' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink'}">
-                My Swap Offers (${openSwaps.filter((b) => b.userId === myId).length})
+                My Swap Offers (${openSwaps.filter((b) => b.userId === myId || b.swapOfferedBy === myId).length})
               </button>
             </div>
           </div>
@@ -3597,7 +3766,9 @@ RMTP.views.rota = (function () {
       });
 
       const onPostNewSwap = () => {
-        const myShifts = getAllBookings().filter((b) => b.userId === (me ? me.id : 'user-3') && b.status !== 'cancelled' && !b.swapRequested);
+        const myShifts = getAllBookingsRaw()
+          .filter((b) => b.userId === (me ? me.id : 'user-3') && b.status !== 'cancelled' && b.status !== 'declined' && !b.isNoTech && !b.swapRequested && isUpcomingShiftDate(b.date) && !isBookingEventCancelled(b))
+          .sort((a, b) => normalizeDate(a.date).localeCompare(normalizeDate(b.date)));
         if (myShifts.length === 0) {
           ui.toast('You have no upcoming assigned shifts to offer for swap.', 'info');
           return;
@@ -3682,12 +3853,20 @@ RMTP.views.rota = (function () {
     // 1. Shift Booking Modal
     function openBookingModal(initialData = {}) {
       const isNew = !initialData.id;
-      const events = (RMTP.getUpcomingActiveEvents ? RMTP.getUpcomingActiveEvents(initialData.eventId) : getAllEvents());
+      const rawEvents = (RMTP.getUpcomingActiveEvents ? RMTP.getUpcomingActiveEvents(initialData.eventId) : getAllEvents());
+      const events = rawEvents.filter((e) => (initialData.eventId && e.id === initialData.eventId) || isSpaceAllowed(e.space));
       const allUsers = getAllUsers();
-      const initialDate = initialData.date || formatDate(new Date());
+      const initialDate = normalizeDate(initialData.date) || formatDate(new Date());
+      const initialStart = normalizeTime(initialData.startTime, '17:00');
+      const initialEnd = normalizeTime(initialData.finishTime, '23:30');
+      const initialSpace = normalizeSpace(Array.isArray(initialData.space) ? initialData.space[0] : initialData.space) || 'The Stage';
+      const spaceOptions = getVisibleSpacesList();
+      if (initialSpace && !spaceOptions.includes(initialSpace)) {
+        spaceOptions.push(initialSpace);
+      }
 
       function getUserOptionsHtml(selectedUserId, targetDate) {
-        const dStr = targetDate || formatDate(new Date());
+        const dStr = normalizeDate(targetDate) || formatDate(new Date());
         const available = [];
         const booked = [];
         const unavailable = [];
@@ -3782,8 +3961,8 @@ RMTP.views.rota = (function () {
               <div>
                 <label class="block font-semibold text-muted mb-1">Venue Space</label>
                 <select id="b-space" class="field">
-                  ${RMTP.SPACES.map((s) => `
-                    <option value="${ui.esc(s)}" ${s === initialData.space ? 'selected' : ''}>${ui.esc(s)}</option>
+                  ${spaceOptions.map((s) => `
+                    <option value="${ui.esc(s)}" ${s === initialSpace ? 'selected' : ''}>${ui.esc(s)}</option>
                   `).join('')}
                 </select>
               </div>
@@ -3797,15 +3976,15 @@ RMTP.views.rota = (function () {
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label class="block font-semibold text-muted mb-1">Date</label>
-                <input type="date" id="b-date" class="field" value="${initialData.date || formatDate(new Date())}" />
+                <input type="date" id="b-date" class="field" value="${initialDate}" />
               </div>
               <div>
                 <label class="block font-semibold text-muted mb-1">Start Time</label>
-                <input type="time" id="b-start" class="field font-mono" value="${initialData.startTime || '17:00'}" />
+                <input type="time" id="b-start" class="field font-mono" value="${initialStart}" />
               </div>
               <div>
                 <label class="block font-semibold text-muted mb-1">Finish Time</label>
-                <input type="time" id="b-end" class="field font-mono" value="${initialData.finishTime || '23:30'}" />
+                <input type="time" id="b-end" class="field font-mono" value="${initialEnd}" />
               </div>
             </div>
 
@@ -3814,7 +3993,7 @@ RMTP.views.rota = (function () {
               <div class="flex items-center gap-2">
                 <span class="text-xs text-muted font-medium">Shift Duration:</span>
                 <span id="b-shift-duration-badge" class="font-mono font-bold text-accent px-2 py-0.5 rounded bg-panel border border-line text-xs">
-                  ${RMTP.getShiftDurationHours ? RMTP.getShiftDurationHours(initialData.startTime || '17:00', initialData.finishTime || '23:30') : 6.5}h
+                  ${RMTP.getShiftDurationHours ? RMTP.getShiftDurationHours(initialStart, initialEnd) : 6.5}h
                 </span>
                 ${(initialData.splitFromId || initialData.legIndex) ? `
                   <span class="text-[10px] px-2 py-0.5 rounded font-mono font-bold bg-accent/15 text-accent border border-accent/30">
@@ -3864,7 +4043,7 @@ RMTP.views.rota = (function () {
                   <option value="pencil" ${initialData.status === 'pencil' ? 'selected' : ''}>Pencil (Provisional Hold)</option>
                   <option value="confirmed" ${initialData.status === 'confirmed' ? 'selected' : ''}>Confirmed (Firm Booking)</option>
                   <option value="declined" ${initialData.status === 'declined' ? 'selected' : ''}>Declined (Tech Unavailable)</option>
-                  ${isTechManager ? `<option value="cancelled" ${initialData.status === 'cancelled' ? 'selected' : ''}>Cancelled (Venue)</option>` : ''}
+                  ${(isTechManager || isAdmin) ? `<option value="cancelled" ${initialData.status === 'cancelled' ? 'selected' : ''}>Cancelled (Venue)</option>` : ''}
                 </select>
               </div>
             </div>
@@ -4060,17 +4239,30 @@ RMTP.views.rota = (function () {
       });
       updateSpaceSpecsBanner();
 
-      // If linking advancing event, auto-fill event name, space, date
+      // If linking advancing event, auto-fill event name, space, date & refresh live availability
       eventSel.addEventListener('change', () => {
         const evId = eventSel.value;
         if (evId) {
           const ev = store.find('advancing', evId);
           if (ev) {
-            eventNameInp.value = ev.name;
-            spaceSel.value = Array.isArray(ev.space) ? ev.space[0] : ev.space;
-            dateInp.value = ev.date;
-            if (ev.startTime) m.root.querySelector('#b-start').value = ev.startTime;
-            if (ev.finishTime) m.root.querySelector('#b-end').value = ev.finishTime;
+            eventNameInp.value = ev.name || '';
+            const evSpace = normalizeSpace(Array.isArray(ev.space) ? ev.space[0] : ev.space) || 'The Stage';
+            if (!Array.from(spaceSel.options).some((o) => o.value === evSpace)) {
+              const opt = document.createElement('option');
+              opt.value = evSpace;
+              opt.textContent = evSpace;
+              spaceSel.appendChild(opt);
+            }
+            spaceSel.value = evSpace;
+            const normDate = normalizeDate(ev.date);
+            if (normDate) {
+              dateInp.value = normDate;
+              const curUser = userSel.value;
+              userSel.innerHTML = getUserOptionsHtml(curUser, normDate);
+              if (curUser) userSel.value = curUser;
+            }
+            if (ev.startTime) m.root.querySelector('#b-start').value = normalizeTime(ev.startTime, '17:00');
+            if (ev.finishTime) m.root.querySelector('#b-end').value = normalizeTime(ev.finishTime, '23:30');
             updateDurationBadge();
             updateAvailabilityCheck();
             updateSpaceSpecsBanner();
@@ -4117,12 +4309,13 @@ RMTP.views.rota = (function () {
       // Save
       m.root.querySelector('#b-save').addEventListener('click', () => {
         const userId = userSel.value;
-        const bookingDate = dateInp.value;
+        const bookingDate = normalizeDate(dateInp.value);
         const noTechCheck = m.root.querySelector('#b-is-notech');
         const isNoTechChecked = (noTechCheck && noTechCheck.checked) || userId === '__notech__';
 
         if (!bookingDate) {
           ui.toast('Date is required', 'danger');
+          dateInp.focus();
           return;
         }
 
@@ -4147,22 +4340,44 @@ RMTP.views.rota = (function () {
         } else if (userId) {
           const techObj = allUsers.find((u) => u.id === userId);
           finalUserId = userId;
-          finalUserName = techObj ? auth.displayName(techObj) : '';
+          finalUserName = techObj ? auth.displayName(techObj) : (initialData.userName || 'Technician');
           isFreelancerFlag = techObj ? (techObj.position === 'Freelancer') : false;
         } else {
-          finalUserId = '';
-          finalUserName = initialData.userName || 'Unassigned';
-          isFreelancerFlag = false;
+          ui.toast('Please select a technician / freelancer (or mark No Tech Needed)', 'danger');
+          userSel.focus();
+          return;
         }
 
+        const bookedSpace = normalizeSpace(spaceSel.value) || 'The Stage';
+        const bookedTitle = eventNameInp.value.trim() || 'Venue Shift';
+
+        // Auto-link to an existing active Advancing event when none explicitly selected but exact date + space + name match
+        let resolvedEventId = eventSel.value || '';
+        if (!resolvedEventId && bookedTitle !== 'Venue Shift') {
+          const titleLower = bookedTitle.toLowerCase();
+          const matchedAdv = (store.all('advancing') || []).find((ev) => {
+            if (!ev || ev.deleted) return false;
+            const st = String(ev.status || '').trim().toLowerCase();
+            if (st === 'cancelled' || st === 'canceled') return false;
+            if (normalizeDate(ev.date) !== bookingDate) return false;
+            if (String(ev.name || '').trim().toLowerCase() !== titleLower) return false;
+            const spList = Array.isArray(ev.space)
+              ? ev.space.map((s) => normalizeSpace(s))
+              : String(ev.space || '').split(',').map((s) => normalizeSpace(s)).filter(Boolean);
+            return spList.includes(bookedSpace);
+          });
+          if (matchedAdv) resolvedEventId = matchedAdv.id;
+        }
+
+        const nowIso = new Date().toISOString();
         const record = {
           id: initialData.id || store.uid('book'),
-          eventId: eventSel.value || '',
-          eventName: eventNameInp.value.trim() || 'Venue Shift',
-          space: spaceSel.value,
+          eventId: resolvedEventId,
+          eventName: bookedTitle,
+          space: bookedSpace,
           date: bookingDate,
-          startTime: m.root.querySelector('#b-start').value || '17:00',
-          finishTime: m.root.querySelector('#b-end').value || '23:30',
+          startTime: normalizeTime(m.root.querySelector('#b-start').value, '17:00'),
+          finishTime: normalizeTime(m.root.querySelector('#b-end').value, '23:30'),
           userId: isNoTechChecked ? '' : finalUserId,
           userName: isNoTechChecked ? 'No Tech Required' : finalUserName,
           isFreelancer: isFreelancerFlag,
@@ -4171,66 +4386,73 @@ RMTP.views.rota = (function () {
           status: isNoTechChecked ? 'confirmed' : (m.root.querySelector('#b-status').value || 'pencil'),
           rate: m.root.querySelector('#b-rate').value.trim(),
           notes: m.root.querySelector('#b-notes').value.trim(),
-          updatedAt: new Date().toISOString(),
+          createdAt: initialData.createdAt || nowIso,
+          updatedAt: nowIso,
         };
 
+        // Preserve handover & swap metadata when editing an existing shift
+        if (initialData.penciledAt) record.penciledAt = initialData.penciledAt;
+        if (initialData.confirmedAt) record.confirmedAt = initialData.confirmedAt;
+        if (initialData.splitFromId) record.splitFromId = initialData.splitFromId;
+        if (initialData.legIndex) record.legIndex = initialData.legIndex;
+        if (initialData.swapRequested) {
+          record.swapRequested = initialData.swapRequested;
+          if (initialData.swapOfferedBy) record.swapOfferedBy = initialData.swapOfferedBy;
+          if (initialData.swapOfferedByName) record.swapOfferedByName = initialData.swapOfferedByName;
+          if (initialData.swapOfferedAt) record.swapOfferedAt = initialData.swapOfferedAt;
+          if (initialData.swapReason) record.swapReason = initialData.swapReason;
+        }
+
         if (record.status === 'confirmed' && !record.confirmedAt) {
-          record.confirmedAt = new Date().toISOString();
+          record.confirmedAt = nowIso;
         } else if (record.status === 'pencil' && !record.penciledAt) {
-          record.penciledAt = new Date().toISOString();
+          record.penciledAt = nowIso;
         }
 
         store.upsert('bookings', record);
 
-        // If linked to advancing event, ensure advancing record's technicians array is also updated!
-        if (record.eventId) {
-          const advEv = store.find('advancing', record.eventId);
-          if (advEv) {
-            if (isNoTechChecked) {
-              advEv.noTechNeeded = true;
-            }
-            advEv.technicians = advEv.technicians || [];
-            if (record.userId) {
-              const existingTech = advEv.technicians.find((t) => t.userId === record.userId);
-              if (existingTech) {
-                existingTech.role = record.role;
-                existingTech.startTime = record.startTime;
-                existingTech.finishTime = record.finishTime;
-                existingTech.bookingStatus = record.status;
-                existingTech.isFreelancer = record.isFreelancer;
-              } else {
-                advEv.technicians.push({
-                  userId: record.userId,
-                  role: record.role,
-                  startTime: record.startTime,
-                  finishTime: record.finishTime,
-                  bookingStatus: record.status,
-                  isFreelancer: record.isFreelancer,
-                });
-              }
-            } else if (record.userName && record.userName !== 'Unassigned') {
-              const existingTech = advEv.technicians.find((t) => t.isFreelancer && t.freelancerName === record.userName);
-              if (existingTech) {
-                existingTech.role = record.role;
-                existingTech.startTime = record.startTime;
-                existingTech.finishTime = record.finishTime;
-                existingTech.bookingStatus = record.status;
-              } else {
-                advEv.technicians.push({
-                  isFreelancer: true,
-                  freelancerName: record.userName,
-                  role: record.role,
-                  startTime: record.startTime,
-                  finishTime: record.finishTime,
-                  bookingStatus: record.status,
-                });
-              }
-            }
-            store.upsert('advancing', advEv);
+        // Synchronize booking changes cleanly back into Advancing (handles staff, freelancers, reassignments, noTechNeeded)
+        if (RMTP.syncRotaToAdvancing) {
+          if (record.eventId) {
+            RMTP.syncRotaToAdvancing(record.eventId, {
+              prevBookingId: initialData.id,
+              prevUserId: initialData.userId,
+              prevUserName: initialData.userName,
+              clearNoTech: !isNoTechChecked,
+            });
+          }
+          if (initialData.eventId && initialData.eventId !== record.eventId) {
+            RMTP.syncRotaToAdvancing(initialData.eventId, {
+              prevBookingId: initialData.id,
+              prevUserId: initialData.userId,
+              prevUserName: initialData.userName,
+            });
           }
         }
 
-        ui.toast('Shift booking saved', 'ok');
+        if (RMTP.syncSb && typeof RMTP.syncSb.drain === 'function') {
+          try { RMTP.syncSb.drain(); } catch (e) {}
+        }
+
+        // Keep the booked date visible on the active Rota Board view
+        if (state.tab === 'board') {
+          if (state.boardView === 'month' && bookingDate.slice(0, 7) !== state.rotaMonth) {
+            state.rotaMonth = bookingDate.slice(0, 7);
+          } else if (state.boardView === 'day' || state.boardView === 'timeline') {
+            state.selectedDay = bookingDate;
+            state.weekOffset = getWeekOffsetForDate(bookingDate);
+          } else if (state.boardView === 'week' || state.boardView === 'agenda') {
+            const weekDates = getCurrentWeekDays().map((d) => d.date);
+            if (!weekDates.includes(bookingDate)) {
+              state.weekOffset = getWeekOffsetForDate(bookingDate);
+            }
+          }
+        }
+
+        const toastSummary = isNoTechChecked
+          ? `Marked Self-Service (No Tech Needed) · ${record.eventName} on ${formatDisplayDate(bookingDate)}`
+          : `Booked ${finalUserName} (${record.role}) · ${record.eventName} on ${formatDisplayDate(bookingDate)}`;
+        ui.toast(toastSummary, 'ok');
         m.close();
         renderActiveTab();
       });
@@ -4238,9 +4460,24 @@ RMTP.views.rota = (function () {
       // Delete
       const delBtn = m.root.querySelector('#b-delete');
       if (delBtn) {
-        delBtn.addEventListener('click', () => {
-          if (confirm('Delete this shift booking record?')) {
+        delBtn.addEventListener('click', async () => {
+          const ok = await ui.confirm('Delete this shift booking record? This will also update the linked event crew list.', {
+            title: 'Delete Shift Booking',
+            confirmLabel: 'Delete',
+            danger: true,
+          });
+          if (ok) {
             store.remove('bookings', initialData.id);
+            if (initialData.eventId && RMTP.syncRotaToAdvancing) {
+              RMTP.syncRotaToAdvancing(initialData.eventId, {
+                prevBookingId: initialData.id,
+                prevUserId: initialData.userId,
+                prevUserName: initialData.userName,
+              });
+            }
+            if (RMTP.syncSb && typeof RMTP.syncSb.drain === 'function') {
+              try { RMTP.syncSb.drain(); } catch (e) {}
+            }
             ui.toast('Shift booking removed', 'ok');
             m.close();
             renderActiveTab();
@@ -4256,11 +4493,11 @@ RMTP.views.rota = (function () {
       const allUsers = getAllUsers();
       const events = getAllEvents();
       const linkedEvent = initialShift.eventId ? store.find('advancing', initialShift.eventId) : null;
-      const space = initialShift.space || (linkedEvent && linkedEvent.space ? (Array.isArray(linkedEvent.space) ? linkedEvent.space[0] : linkedEvent.space) : 'The Stage');
+      const space = normalizeSpace(initialShift.space || (linkedEvent && linkedEvent.space ? (Array.isArray(linkedEvent.space) ? linkedEvent.space[0] : linkedEvent.space) : 'The Stage')) || 'The Stage';
       const eventName = initialShift.eventName || (linkedEvent ? linkedEvent.name : 'Shift');
-      const date = initialShift.date || (linkedEvent ? linkedEvent.date : (state.selectedDay || formatDate(new Date())));
-      const origStart = initialShift.startTime || (linkedEvent ? linkedEvent.startTime : '10:00') || '10:00';
-      const origEnd = initialShift.finishTime || (linkedEvent ? linkedEvent.finishTime : '22:00') || '22:00';
+      const date = normalizeDate(initialShift.date || (linkedEvent ? linkedEvent.date : (state.selectedDay || formatDate(new Date())))) || formatDate(new Date());
+      const origStart = normalizeTime(initialShift.startTime || (linkedEvent ? linkedEvent.startTime : '10:00'), '10:00');
+      const origEnd = normalizeTime(initialShift.finishTime || (linkedEvent ? linkedEvent.finishTime : '22:00'), '22:00');
       const role = initialShift.role || 'Sound';
       const originalDur = RMTP.getShiftDurationHours ? RMTP.getShiftDurationHours(origStart, origEnd) : 12;
 
@@ -4676,44 +4913,17 @@ RMTP.views.rota = (function () {
         };
         store.upsert('bookings', bookingLeg2);
 
-        // Keep linked advancing event updated in store
-        if (initialShift.eventId) {
-          const advEv = store.find('advancing', initialShift.eventId);
-          if (advEv) {
-            advEv.technicians = advEv.technicians || [];
-            const leg1Tech = {
-              userId: u1Id,
-              freelancerName: isFreelancer1 ? u1Name : '',
-              isFreelancer: isFreelancer1,
-              role: leg1Role,
-              startTime: leg1Start,
-              finishTime: leg1End,
-              bookingStatus: leg1Status,
-              splitFromId: splitGroupId,
-              legIndex: 1,
-              notes: leg1Notes,
-            };
-            const leg2Tech = {
-              userId: u2Id,
-              freelancerName: isFreelancer2 ? u2Name : '',
-              isFreelancer: isFreelancer2,
-              role: leg2Role,
-              startTime: leg2Start,
-              finishTime: leg2End,
-              bookingStatus: leg2Status,
-              splitFromId: splitGroupId,
-              legIndex: 2,
-              notes: leg2Notes,
-            };
-
-            const matchIdx = advEv.technicians.findIndex((t) => (t.userId && t.userId === initialShift.userId) || (t.role === role));
-            if (matchIdx > -1) {
-              advEv.technicians.splice(matchIdx, 1, leg1Tech, leg2Tech);
-            } else {
-              advEv.technicians.push(leg1Tech, leg2Tech);
-            }
-            store.upsert('advancing', advEv);
-          }
+        // Keep linked advancing event cleanly synchronized from all active bookings
+        if (initialShift.eventId && RMTP.syncRotaToAdvancing) {
+          RMTP.syncRotaToAdvancing(initialShift.eventId, {
+            prevBookingId: initialShift.id,
+            prevUserId: initialShift.userId,
+            prevUserName: initialShift.userName,
+            clearNoTech: true,
+          });
+        }
+        if (RMTP.syncSb && typeof RMTP.syncSb.drain === 'function') {
+          try { RMTP.syncSb.drain(); } catch (e) {}
         }
 
         ui.toast(`Split ${role} into 2 shifts: ${leg1Start}–${leg1End} and ${leg2Start}–${leg2End}`, 'ok');
@@ -4825,6 +5035,7 @@ RMTP.views.rota = (function () {
       });
 
       m.root.querySelector('#claim-confirm-btn')?.addEventListener('click', () => {
+        const prevUserId = booking.userId || '';
         const prevName = booking.swapOfferedByName || booking.userName || 'Colleague';
         const myName = me ? auth.displayName(me) : 'You';
         booking.userId = me ? me.id : 'user-3';
@@ -4834,8 +5045,12 @@ RMTP.views.rota = (function () {
         booking.swapClaimedByName = myName;
         booking.swapClaimedAt = new Date().toISOString();
         booking.status = 'confirmed';
+        booking.updatedAt = new Date().toISOString();
         booking.notes = (booking.notes ? booking.notes + ' | ' : '') + `Cover taken over by ${myName} (swapped from ${prevName})`;
         store.upsert('bookings', booking);
+        if (booking.eventId && RMTP.syncRotaToAdvancing) {
+          RMTP.syncRotaToAdvancing(booking.eventId, { prevUserId, prevUserName: prevName, clearNoTech: true });
+        }
         ui.toast('Shift claimed successfully! It is now on your personal schedule.', 'ok');
         m.close();
         renderActiveTab();
@@ -4845,7 +5060,8 @@ RMTP.views.rota = (function () {
     function openShiftDetailModal(booking) {
       if (!booking) return;
       const isMine = me && booking.userId === me.id;
-      const isSwap = !!booking.swapRequested;
+      const isUpcoming = isUpcomingShiftDate(booking.date);
+      const isSwap = isActiveOpenSwap(booking);
       const m = ui.modal({
         title: `Shift Details · ${ui.esc(booking.space || 'Venue')}`,
         body: `
@@ -4899,7 +5115,7 @@ RMTP.views.rota = (function () {
             </div>
             <div class="flex items-center gap-2">
               <button type="button" class="btn btn-ghost" data-close>Close</button>
-              ${isMine && !isSwap ? `
+              ${isMine && !isSwap && isUpcoming ? `
                 <button type="button" id="sd-swap-btn" class="btn btn-primary text-xs flex items-center gap-1.5">
                   ${ui.icon('refresh', 'w-3.5 h-3.5')}
                   <span>Offer for Swap</span>
@@ -4943,10 +5159,11 @@ RMTP.views.rota = (function () {
     }
 
     function openDayScheduleModal(dateStr) {
-      const dObj = parseDate(dateStr);
+      const normDate = normalizeDate(dateStr) || formatDate(new Date());
+      const dObj = parseDate(normDate);
       const formattedDate = dObj.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-      const dayItems = getDaySchedule(dateStr);
-      const allB = getAllBookings().filter((b) => b.date === dateStr && b.status !== 'cancelled');
+      const dayItems = getDaySchedule(normDate);
+      const allB = getAllBookings().filter((b) => normalizeDate(b.date) === normDate && b.status !== 'cancelled');
       const gaps = dayItems.filter((i) => i.isUnfilled && !i.isNoTech);
 
       const m = ui.modal({
@@ -5050,7 +5267,8 @@ RMTP.views.rota = (function () {
                   // Regular booking or adv_tech
                   const b = item.booking || allB.find((x) => x.id === item.id) || item;
                   const isMine = me && b.userId === me.id;
-                  const isSwap = !!b.swapRequested;
+                  const isUpcoming = isUpcomingShiftDate(b.date);
+                  const isSwap = isActiveOpenSwap(b);
                   return `
                     <div class="p-3 rounded-xl border bg-panel2 space-y-2 ${isMine ? 'border-accent/50 bg-accent/5 shadow-2xs' : (isSwap ? 'border-amber-500/50 bg-amber-500/5 shadow-2xs' : 'border-line')}">
                       <div class="flex items-start justify-between gap-2">
@@ -5071,18 +5289,20 @@ RMTP.views.rota = (function () {
                       <div class="flex items-center justify-between text-xs pt-1 border-t border-line/40">
                         <span class="text-muted">Tech: <strong class="text-ink">${isMine ? '⭐ You (' + ui.esc(auth.displayName(me)) + ')' : ui.esc(b.userName || 'Unassigned')}</strong></span>
                         <div class="flex items-center gap-1.5">
-                          ${isMine && !isSwap ? `
+                          ${isMine && !isSwap && isUpcoming && b.id ? `
                             <button type="button" class="btn btn-ghost text-[10px] text-accent !py-0.5 !px-2 font-semibold" data-day-swap="${b.id}">Offer Swap</button>
                           ` : ''}
-                          ${isMine && isSwap ? `
+                          ${isMine && isSwap && b.id ? `
                             <button type="button" class="btn btn-ghost text-[10px] text-danger !py-0.5 !px-2 font-semibold" data-day-cancel-swap="${b.id}">Cancel Swap</button>
                           ` : ''}
-                          ${!isMine && isSwap ? `
+                          ${!isMine && isSwap && b.id ? `
                             <button type="button" class="btn btn-primary text-[10px] !py-0.5 !px-2 font-semibold" data-day-claim="${b.id}">Claim Cover</button>
                           ` : ''}
                           ${(isTechManager || isAdmin) && b.id ? `
                             <button type="button" class="btn btn-ghost text-[10px] !py-0.5 !px-2" data-day-edit="${b.id}">Edit</button>
-                          ` : ''}
+                          ` : ((isTechManager || isAdmin) && item.key ? `
+                            <button type="button" class="btn btn-ghost text-[10px] !py-0.5 !px-2" data-day-edit-item="${item.key}">Book / Edit</button>
+                          ` : '')}
                         </div>
                       </div>
                     </div>
@@ -5111,13 +5331,17 @@ RMTP.views.rota = (function () {
           const item = allScheduleItemsMap.get(key);
           m.close();
           if (item) {
+            const targetSpace = item.type === 'takeover'
+              ? normalizeSpace((item.unfilledSpaces && item.unfilledSpaces[0]) || (item.spaces && item.spaces[0]) || 'The Stage')
+              : normalizeSpace(item.space || 'The Stage');
             openBookingModal({
-              eventId: item.eventId,
+              id: (item.type === 'booking' && item.booking && item.booking.id) ? item.booking.id : undefined,
+              eventId: item.type === 'takeover' ? resolveTakeoverEventId(item, targetSpace) : item.eventId,
               eventName: item.eventName,
-              space: item.space,
-              date: item.date,
-              startTime: item.startTime,
-              finishTime: item.finishTime,
+              space: targetSpace,
+              date: normalizeDate(item.date) || normDate,
+              startTime: normalizeTime(item.startTime, '17:00'),
+              finishTime: normalizeTime(item.finishTime, '23:30'),
               role: item.role || 'Sound',
               status: 'pencil',
             });
@@ -5159,12 +5383,33 @@ RMTP.views.rota = (function () {
           const bid = btn.getAttribute('data-day-edit');
           const b = allB.find((x) => x.id === bid);
           m.close();
-          openBookingModal(b);
+          if (b) openBookingModal(b);
+        });
+      });
+      m.root.querySelectorAll('[data-day-edit-item]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const key = btn.getAttribute('data-day-edit-item');
+          const item = allScheduleItemsMap.get(key);
+          m.close();
+          if (item) {
+            openBookingModal({
+              eventId: item.eventId,
+              eventName: item.eventName,
+              space: normalizeSpace(item.space || 'The Stage'),
+              date: normalizeDate(item.date) || normDate,
+              startTime: normalizeTime(item.startTime, '17:00'),
+              finishTime: normalizeTime(item.finishTime, '23:30'),
+              userId: item.userId || '',
+              userName: item.userName || '',
+              role: item.role || 'Sound',
+              status: item.status || 'pencil',
+            });
+          }
         });
       });
       m.root.querySelector('#day-add-shift-btn')?.addEventListener('click', () => {
         m.close();
-        openBookingModal({ date: dateStr, startTime: '17:00', finishTime: '23:30', status: 'pencil' });
+        openBookingModal({ date: normDate, startTime: '17:00', finishTime: '23:30', status: 'pencil' });
       });
     }
 
@@ -5745,8 +5990,16 @@ RMTP.views.rota = (function () {
 
         booking.status = 'cancelled';
         booking.cancelledAt = new Date().toISOString();
+        booking.updatedAt = new Date().toISOString();
         booking.cancellationReason = reason;
         store.upsert('bookings', booking);
+        if (booking.eventId && RMTP.syncRotaToAdvancing) {
+          RMTP.syncRotaToAdvancing(booking.eventId, {
+            prevBookingId: booking.id,
+            prevUserId: booking.userId,
+            prevUserName: booking.userName,
+          });
+        }
 
         ui.toast('Shift cancelled', 'ok');
         m.close();

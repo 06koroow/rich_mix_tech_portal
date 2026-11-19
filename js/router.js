@@ -21,32 +21,37 @@ RMTP.router = (function () {
     return { view, params: segments.slice(1), query };
   }
 
+  function getDefaultHome() {
+    if (RMTP.auth && typeof RMTP.auth.getDefaultHome === 'function' && RMTP.auth.current()) {
+      return RMTP.auth.getDefaultHome();
+    }
+    const isHires = RMTP.auth && RMTP.auth.isHiresTeam && RMTP.auth.isHiresTeam();
+    return isHires ? 'hires' : RMTP.HOME;
+  }
+
   function render() {
     const { view, params, query } = parse();
-    let id = RMTP.views[view] ? view : RMTP.HOME;
+    const defaultHome = getDefaultHome();
+    let id = RMTP.views[view] ? view : defaultHome;
 
-    // Guard restricted views: Patch & Preset Manager and Venues & Spaces are Technical Manager and Admin only
-    if (id === 'presets' || id === 'venues') {
-      const isTMOrAdmin = RMTP.auth && (RMTP.auth.isTechManagerOrAdmin ? RMTP.auth.isTechManagerOrAdmin() : (RMTP.auth.isTechManager() || RMTP.auth.isAdmin()));
-      if (!isTMOrAdmin) {
-        if (RMTP.ui && RMTP.ui.toast) {
-          RMTP.ui.toast('Access to ' + (id === 'presets' ? 'Patch & Preset Manager' : 'Venues & Spaces') + ' is restricted to Technical Managers.', 'info');
+    // Unified configurable role-view access guard
+    if (RMTP.auth && RMTP.auth.current && RMTP.auth.current() && typeof RMTP.auth.canAccessView === 'function') {
+      if (!RMTP.auth.canAccessView(id)) {
+        const navItem = (RMTP.nav || []).find((n) => n.id === id);
+        const rawHash = (location.hash || '').replace(/^#\/?/, '');
+        if (!RMTP._suppressAccessToast && rawHash && id !== RMTP.HOME && RMTP.ui && RMTP.ui.toast) {
+          RMTP.ui.toast('Access to ' + (navItem ? navItem.label : id) + ' is currently disabled for your user level.', 'info');
         }
-        location.replace('#/' + RMTP.HOME);
-        return;
+        if (id !== defaultHome) {
+          location.replace('#/' + defaultHome);
+          return;
+        }
       }
     }
 
-    // Guard DCP Tracker: viewable by everyone except Freelancers
-    if (id === 'dcp') {
-      const isFreelancer = RMTP.auth && (RMTP.auth.isFreelancer ? RMTP.auth.isFreelancer() : (RMTP.auth.current() && RMTP.auth.current().position === 'Freelancer'));
-      if (isFreelancer) {
-        if (RMTP.ui && RMTP.ui.toast) {
-          RMTP.ui.toast('Access to the DCP Tracker & Cinema QC Console is restricted to staff technicians.', 'info');
-        }
-        location.replace('#/' + RMTP.HOME);
-        return;
-      }
+    // Background-check latest role views on navigation in Supabase mode (throttled)
+    if (RMTP.syncSb && typeof RMTP.syncSb.pullRoleViews === 'function') {
+      RMTP.syncSb.pullRoleViews({ minGapMs: 5000 }).catch(() => {});
     }
 
     const content = document.getElementById('content');
@@ -86,7 +91,7 @@ RMTP.router = (function () {
 
   function start() {
     window.addEventListener('hashchange', render);
-    if (!location.hash) location.replace('#/' + RMTP.HOME);
+    if (!location.hash) location.replace('#/' + getDefaultHome());
     render();
   }
 

@@ -9,8 +9,9 @@
   const ui = RMTP.ui, auth = RMTP.auth;
 
   function brand(compact) {
+    const home = (auth.getDefaultHome && auth.current()) ? auth.getDefaultHome() : RMTP.HOME;
     return (
-      '<a href="#/' + RMTP.HOME + '" class="flex items-center gap-2.5 group">' +
+      '<a href="#/' + home + '" data-brand-home class="flex items-center gap-2.5 group">' +
         '<span class="w-9 h-9 rounded-xl bg-white overflow-hidden flex items-center justify-center shrink-0 ring-1 ring-line">' +
           '<img src="assets/rm-logo.jpg" alt="Rich Mix" class="w-full h-full object-contain" />' +
         '</span>' +
@@ -24,15 +25,20 @@
   }
 
   function getVisibleNav() {
+    if (auth.getAllowedViews && auth.current()) {
+      const allowed = new Set(auth.getAllowedViews());
+      return RMTP.nav.filter((n) => allowed.has(n.id));
+    }
+    const isHires = auth.isHiresTeam ? auth.isHiresTeam() : (auth.current() && auth.current().position === 'Hires Team');
+    if (isHires) {
+      const allowed = new Set(['hires', 'advancing', 'guides']);
+      return RMTP.nav.filter((n) => allowed.has(n.id));
+    }
     const isTMOrAdmin = auth.isTechManagerOrAdmin ? auth.isTechManagerOrAdmin() : (auth.isTechManager() || auth.isAdmin());
     const isFreelancer = auth.isFreelancer ? auth.isFreelancer() : (auth.current() && auth.current().position === 'Freelancer');
     return RMTP.nav.filter((n) => {
-      if (n.id === 'presets' || n.id === 'venues') {
-        return isTMOrAdmin;
-      }
-      if (n.id === 'dcp') {
-        return !isFreelancer;
-      }
+      if (n.id === 'presets' || n.id === 'venues') return isTMOrAdmin;
+      if (n.id === 'dcp') return !isFreelancer;
       return true;
     });
   }
@@ -48,6 +54,11 @@
         const myOpenCount = RMTP.tasks.forUser(me).filter(t => t.status !== 'Completed').length;
         if (myOpenCount > 0) {
           badgeHtml = '<span class="ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-accent text-accent-ink">' + myOpenCount + '</span>';
+        }
+      } else if (n.id === 'hires' && me && RMTP.hires && typeof RMTP.hires.openCount === 'function') {
+        const hiresOpen = RMTP.hires.openCount(me);
+        if (hiresOpen > 0) {
+          badgeHtml = '<span class="ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-accent text-accent-ink">' + hiresOpen + '</span>';
         }
       }
       return (
@@ -71,6 +82,15 @@
         });
       });
     }
+
+    const canGuides = !me || !auth.canAccessView || auth.canAccessView('guides');
+    document.querySelectorAll('[data-guides-shortcut]').forEach((lnk) => {
+      lnk.classList.toggle('hidden', !canGuides);
+    });
+    const homeView = (me && auth.getDefaultHome) ? auth.getDefaultHome() : RMTP.HOME;
+    document.querySelectorAll('[data-brand-home]').forEach((lnk) => {
+      lnk.setAttribute('href', '#/' + homeView);
+    });
   }
 
   document.getElementById('app').innerHTML =
@@ -80,7 +100,7 @@
       '<aside class="hidden md:flex flex-col w-[var(--sidebar-w)] shrink-0 border-r border-line bg-panel/40 sticky top-0 h-screen">' +
         '<div class="px-4 h-16 flex items-center justify-between border-b border-line">' +
           brand(false) +
-          '<a href="#/guides" class="p-1.5 text-muted hover:text-accent rounded-lg hover:bg-panel2 transition-colors flex items-center justify-center shrink-0" title="User Guides &amp; Documentation">' + ui.icon('book', 'w-4 h-4') + '</a>' +
+          '<a href="#/guides" data-guides-shortcut class="p-1.5 text-muted hover:text-accent rounded-lg hover:bg-panel2 transition-colors flex items-center justify-center shrink-0" title="User Guides &amp; Documentation">' + ui.icon('book', 'w-4 h-4') + '</a>' +
         '</div>' +
         '<nav id="desktop-side-nav" class="flex-1 p-3 space-y-1 overflow-y-auto"></nav>' +
         '<div id="sidebar-identity" class="p-3 border-t border-line"></div>' +
@@ -115,7 +135,7 @@
           '</div>' +
           '<div class="flex items-center gap-2 min-w-0">' +
             '<span id="section-title" class="font-display font-semibold text-xs sm:text-sm truncate max-w-[125px] sm:max-w-[200px] text-right text-muted"></span>' +
-            '<a href="#/guides" class="p-1 text-muted hover:text-accent rounded-lg hover:bg-panel2 transition-colors flex items-center justify-center shrink-0" title="User Guides">' + ui.icon('book', 'w-4 h-4') + '</a>' +
+            '<a href="#/guides" data-guides-shortcut class="p-1 text-muted hover:text-accent rounded-lg hover:bg-panel2 transition-colors flex items-center justify-center shrink-0" title="User Guides">' + ui.icon('book', 'w-4 h-4') + '</a>' +
             '<div id="mobile-identity" class="shrink-0"></div>' +
           '</div>' +
         '</header>' +
@@ -267,6 +287,9 @@
               '<button type="button" id="dev-quick-senior" class="btn btn-xs border border-purple-400/40 bg-purple-900/60 hover:bg-purple-800 text-purple-100 !py-0.5 !px-2 text-[11px] ' + (curPos === 'Senior Tech' ? 'ring-1 ring-white font-bold bg-purple-800' : '') + '">' +
                 'Senior Tech' +
               '</button>' +
+              '<button type="button" id="dev-quick-hires" class="btn btn-xs border border-purple-400/40 bg-purple-900/60 hover:bg-purple-800 text-purple-100 !py-0.5 !px-2 text-[11px] ' + (curPos === 'Hires Team' ? 'ring-1 ring-white font-bold bg-purple-800' : '') + '">' +
+                'Hires Team' +
+              '</button>' +
               '<button type="button" id="dev-banner-options" class="btn btn-xs border border-purple-400/40 bg-purple-900/60 hover:bg-purple-800 text-purple-100 !py-0.5 !px-2 text-[11px]" title="Open Dev Sandbox">' +
                 '⚙️ Sandbox' +
               '</button>' +
@@ -291,6 +314,11 @@
           auth.setDevOverride({ type: 'preset', position: 'Senior Tech', admin: true, trainer: true, label: 'Senior Tech' });
           ui.toast('Switched preview to Senior Tech', 'ok');
         });
+        const qHires = slot.querySelector('#dev-quick-hires');
+        if (qHires) qHires.addEventListener('click', () => {
+          auth.setDevOverride({ type: 'preset', position: 'Hires Team', admin: false, trainer: false, label: 'Hires Team' });
+          ui.toast('Switched preview to Hires Team', 'ok');
+        });
         const bOpt = slot.querySelector('#dev-banner-options');
         if (bOpt) bOpt.addEventListener('click', () => auth.openDevModal());
         const bExit = slot.querySelector('#dev-banner-exit');
@@ -306,6 +334,27 @@
   }
   RMTP.shell = { refreshIdentity, renderNavigation };
 
+  // Propagate role-view changes immediately across open browser tabs on the same device
+  window.addEventListener('storage', (e) => {
+    if (!e || !e.key || !e.newValue) return;
+    const prefix = (RMTP.meta.storageKey || 'rmtp') + ':';
+    const rvKey = prefix + (auth.ROLE_VIEWS_KEY || 'role_views');
+    const ppKey = prefix + 'patch_presets';
+    try {
+      if (e.key === rvKey) {
+        const parsed = JSON.parse(e.newValue);
+        if (parsed && auth.applyRemoteRoleViews) auth.applyRemoteRoleViews(parsed, { force: true });
+      } else if (e.key === ppKey) {
+        const arr = JSON.parse(e.newValue);
+        const rvId = auth.ROLE_VIEWS_RECORD_ID || '__rmtp_role_views__';
+        const rec = Array.isArray(arr) ? arr.find((r) => r && r.id === rvId) : null;
+        if (rec && rec.channels && auth.applyRemoteRoleViews) {
+          auth.applyRemoteRoleViews(rec.channels, { force: true });
+        }
+      }
+    } catch (err) { /* ignore malformed storage payload */ }
+  });
+
   // Seed first-run data, establish identity, draw chips, then route.
   (async function boot() {
     const sbOn = RMTP.supabase && RMTP.supabase.isConfigured();
@@ -318,6 +367,9 @@
         const email = await RMTP.supabase.restoreSession();   // existing session?
         await RMTP.syncSb.pullAll();                          // hydrate cache from Supabase
         RMTP.syncSb.wire();                                   // push local changes back
+        if (RMTP.syncSb.startRoleViewsLiveSync) {
+          RMTP.syncSb.startRoleViewsLiveSync();               // realtime + fallback sync for user views
+        }
         if (!(email && RMTP.auth.signInEmail(email))) {
           RMTP.auth.showLogin();                              // locked login (Supabase Auth)
         }
@@ -417,6 +469,7 @@
       return wa !== wb ? wa - wb : a.localeCompare(b);
     });
     RMTP.LOCATIONS = RMTP.SPACES.concat(RMTP.STORES || []);
+    if (auth.getRoleViewsConfig) auth.getRoleViewsConfig();
     refreshIdentity();
     RMTP.router.start();
     

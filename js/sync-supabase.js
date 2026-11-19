@@ -18,6 +18,17 @@ RMTP.syncSb = (function () {
   try {
     const savedT = localStorage.getItem('rmtp_unsupported_tables');
     if (savedT) unsupportedTables = JSON.parse(savedT);
+    // Heal previously poisoned core tables that were falsely marked missing due to PGRST204 column cache errors
+    let healed = false;
+    ['bookings', 'availability', 'advancing', 'tasks', 'dcps'].forEach((t) => {
+      if (unsupportedTables[t]) {
+        delete unsupportedTables[t];
+        healed = true;
+      }
+    });
+    if (healed) {
+      localStorage.setItem('rmtp_unsupported_tables', JSON.stringify(unsupportedTables));
+    }
   } catch (e) {}
   
   function tables() {
@@ -38,9 +49,12 @@ RMTP.syncSb = (function () {
     const msg = String(err.message || (err.error && err.error.message) || err.details || err.hint || '');
     let fullStr = '';
     try { fullStr = typeof err === 'object' ? JSON.stringify(err) : String(err); } catch (e) { fullStr = msg; }
+    // Never confuse a missing-column error (PGRST204 / 42703) with a missing table
+    if (code === 'PGRST204' || code === '42703') return false;
+    if (/Could not find the '[^']+' column of/i.test(msg) || /column "[^"]+" of relation/i.test(msg)) return false;
     if (code === '42P01' || code === 'PGRST205' || code === 'PGRST200') return true;
-    if (/Could not find the table/i.test(msg) || /relation .* does not exist/i.test(msg) || /in the schema cache/i.test(msg)) return true;
-    if (/Could not find the table/i.test(fullStr) || /schema cache/i.test(fullStr) || /PGRST205/i.test(fullStr) || /42P01/i.test(fullStr)) return true;
+    if (/Could not find the table/i.test(msg) || /relation .* does not exist/i.test(msg)) return true;
+    if (/Could not find the table/i.test(fullStr) || /PGRST205/i.test(fullStr) || /42P01/i.test(fullStr)) return true;
     return false;
   }
   function isTableUnsupported(table) { return !!unsupportedTables[table]; }
@@ -197,6 +211,12 @@ RMTP.syncSb = (function () {
             r.artifaxHistory = existing.artifaxHistory;
           }
         }
+        if (existing.production_package && existing.production_package.hiresThreads && Object.keys(existing.production_package.hiresThreads).length > 0) {
+          r.production_package = (r.production_package && typeof r.production_package === 'object' && !Array.isArray(r.production_package))
+            ? Object.assign({}, r.production_package)
+            : {};
+          r.production_package.hiresThreads = Object.assign({}, existing.production_package.hiresThreads, r.production_package.hiresThreads || {});
+        }
       } else if (coll === 'tasks' && existing) {
         // If local task was completed or updated more recently, keep local state
         const localTime = existing.updatedAt || existing.createdAt || 0;
@@ -205,6 +225,9 @@ RMTP.syncSb = (function () {
           r.status = existing.status;
           r.completedAt = existing.completedAt;
           r.completedBy = existing.completedBy;
+        }
+        if (existing.hiresMeta && !r.hiresMeta) {
+          r.hiresMeta = existing.hiresMeta;
         }
       } else if (coll === 'dcps' && existing) {
         // If local pre-screening check has testing completed, retain local outcomes
@@ -222,6 +245,19 @@ RMTP.syncSb = (function () {
 
       store.write(coll, store.all(coll).filter(curr => curr.id !== r.id).concat(r));
     });
+    if ((coll === 'tasks' || coll === 'advancing') && RMTP.hires && typeof RMTP.hires.hydrateAll === 'function') {
+      RMTP.hires.hydrateAll();
+    }
+    if (coll === 'patch_presets' && RMTP.auth && typeof RMTP.auth.applyRemoteRoleViews === 'function') {
+      const rvId = RMTP.auth.ROLE_VIEWS_RECORD_ID || '__rmtp_role_views__';
+      const rvRow = rows.find((r) => r && r.id === rvId);
+      if (rvRow && rvRow.channels && typeof rvRow.channels === 'object' && !Array.isArray(rvRow.channels)) {
+        const merged = Object.assign({}, rvRow.channels, {
+          updatedAt: Math.max(Number(rvRow.channels.updatedAt || 0), Number(rvRow.updatedAt || 0))
+        });
+        RMTP.auth.applyRemoteRoleViews(merged);
+      }
+    }
   }
 
   async function pull() {
@@ -275,33 +311,27 @@ RMTP.syncSb = (function () {
              });
            }
            
-           sb.upsertRow(table, payload).then(result => {
-              if (result && !result.ok) {
-                 if (result.error && isTableMissingError(result.error)) {
-                    markTableUnsupported(table);
-                    console.warn('[syncSb] Table missing in Supabase: ' + table + '. Using local cache.');
-                    return;
-                 } else if (result.error && (result.error.code === 'PGRST204' || result.error.code === '42703')) {
-                    const missingCol = extractMissingColumn(result.error);
-                    if (missingCol) {
-                       markColumnUnsupported(table, missingCol);
-                       const retryPayload = { ...payload };
-                       delete retryPayload[missingCol];
-                       sb.upsertRow(table, retryPayload).then(retryRes => {
-                          if (retryRes && !retryRes.ok) {
-                             if (retryRes.error && isTableMissingError(retryRes.error)) {
-                                markTableUnsupported(table);
-                             } else {
-                                console.warn('[syncSb] Retry failed after stripping ' + missingCol + ' for ' + name, retryRes.message || retryRes.error);
-                             }
-                          }
-                       }).catch(e => console.error(e));
-                       return;
-                    }
-                 }
-                 console.warn('[syncSb] Optimistic sync skipped for ' + name, result.message || result.error);
-              }
-           }).catch(e => console.error(e));
+           const attemptUpsert = async (currentPayload, attempt) => {
+             const result = await sb.upsertRow(table, currentPayload);
+             if (!result || result.ok) return;
+             if (result.error && (result.error.code === 'PGRST204' || result.error.code === '42703')) {
+               const missingCol = extractMissingColumn(result.error);
+               if (missingCol && attempt < 15 && Object.prototype.hasOwnProperty.call(currentPayload, missingCol)) {
+                 markColumnUnsupported(table, missingCol);
+                 const nextPayload = { ...currentPayload };
+                 delete nextPayload[missingCol];
+                 return attemptUpsert(nextPayload, attempt + 1);
+               }
+             }
+             if (result.error && isTableMissingError(result.error)) {
+               markTableUnsupported(table);
+               console.warn('[syncSb] Table missing in Supabase: ' + table + '. Using local cache.');
+               return;
+             }
+             console.warn('[syncSb] Optimistic sync skipped for ' + name, result.message || result.error);
+           };
+
+           attemptUpsert(payload, 0).catch(e => console.error(e));
         }
       }
       return res;
@@ -350,5 +380,104 @@ RMTP.syncSb = (function () {
     return result;
   }
 
-  return { pull, pullAll: pull, pullCollection, wire, verifySync, drain: async () => {}, deleteProcedureRow: (id) => RMTP.supabase.deleteRow("procedures", id) };
+  let roleViewsPulling = false;
+  let lastRoleViewsPullAt = 0;
+  let roleViewsLiveStarted = false;
+  let roleViewsChannel = null;
+
+  async function pullRoleViews(opts) {
+    if (!sb || !sb.isConfigured()) return false;
+    const table = tables().patch_presets || 'patch_presets';
+    if (isTableUnsupported(table)) return false;
+    const now = Date.now();
+    const minGap = (opts && typeof opts.minGapMs === 'number') ? opts.minGapMs : 3000;
+    if (roleViewsPulling || (!(opts && opts.force) && (now - lastRoleViewsPullAt) < minGap)) return false;
+    roleViewsPulling = true;
+    lastRoleViewsPullAt = now;
+    try {
+      const client = sb.getClient && sb.getClient();
+      if (!client) return false;
+      const rvId = (RMTP.auth && RMTP.auth.ROLE_VIEWS_RECORD_ID) || '__rmtp_role_views__';
+      const { data, error } = await client.from(table).select('*').eq('id', rvId).maybeSingle();
+      if (error || !data) return false;
+      if (data.channels && typeof data.channels === 'object' && !Array.isArray(data.channels)) {
+        const merged = Object.assign({}, data.channels, {
+          updatedAt: Math.max(Number(data.channels.updatedAt || 0), Number(data.updatedAt || 0))
+        });
+        const existing = store.all('patch_presets').filter((curr) => curr.id !== data.id);
+        store.write('patch_presets', existing.concat(data));
+        if (RMTP.auth && typeof RMTP.auth.applyRemoteRoleViews === 'function') {
+          return RMTP.auth.applyRemoteRoleViews(merged);
+        }
+      }
+      return false;
+    } catch (e) {
+      return false;
+    } finally {
+      roleViewsPulling = false;
+    }
+  }
+
+  function startRoleViewsLiveSync() {
+    if (roleViewsLiveStarted || !sb || !sb.isConfigured()) return;
+    roleViewsLiveStarted = true;
+    const table = tables().patch_presets || 'patch_presets';
+    const rvId = (RMTP.auth && RMTP.auth.ROLE_VIEWS_RECORD_ID) || '__rmtp_role_views__';
+
+    try {
+      const client = sb.getClient && sb.getClient();
+      if (client && typeof client.channel === 'function') {
+        roleViewsChannel = client
+          .channel('rmtp-role-views-live')
+          .on('postgres_changes', {
+            event: '*',
+            schema: 'public',
+            table: table,
+            filter: 'id=eq.' + rvId,
+          }, (payload) => {
+            const row = payload && (payload.new || payload.record);
+            if (row && row.channels && typeof row.channels === 'object' && !Array.isArray(row.channels)) {
+              const merged = Object.assign({}, row.channels, {
+                updatedAt: Math.max(Number(row.channels.updatedAt || 0), Number(row.updatedAt || 0))
+              });
+              const existing = store.all('patch_presets').filter((curr) => curr.id !== row.id);
+              store.write('patch_presets', existing.concat(row));
+              if (RMTP.auth && typeof RMTP.auth.applyRemoteRoleViews === 'function') {
+                RMTP.auth.applyRemoteRoleViews(merged);
+              }
+            }
+          })
+          .subscribe();
+      }
+    } catch (e) {
+      console.warn('[syncSb] Realtime role views channel unavailable, using polling fallback');
+    }
+
+    // Lightweight single-row fallback poll + focus/visibility refresh so updates propagate
+    // promptly even if Supabase Realtime replication is disabled on patch_presets.
+    setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      pullRoleViews({ minGapMs: 12000 }).catch(() => {});
+    }, 15000);
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', () => {
+        pullRoleViews({ minGapMs: 4000 }).catch(() => {});
+      });
+    }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          pullRoleViews({ minGapMs: 4000 }).catch(() => {});
+        }
+      });
+    }
+  }
+
+  return {
+    pull, pullAll: pull, pullCollection, wire, verifySync,
+    pullRoleViews, startRoleViewsLiveSync,
+    drain: async () => {},
+    deleteProcedureRow: (id) => RMTP.supabase.deleteRow("procedures", id)
+  };
 })();

@@ -7,6 +7,8 @@ RMTP.views.dashboard = function (el) {
   const cards = [
     { id: 'advancing',   desc: 'Gather show info, assign techs and file shift reports.',
       stat: () => store.all('advancing').filter(e => !e.deleted && String(e.status || '').trim().toLowerCase() !== 'cancelled').length, unit: 'events' },
+    { id: 'hires',       desc: 'Event questions, quote checks, tech tasks & changes from the Hires Team.',
+      stat: () => (RMTP.hires && RMTP.hires.totalOpenCount) ? RMTP.hires.totalOpenCount() : 0, unit: 'open requests' },
     { id: 'dcp',         desc: 'Pre-screening checklists, media ingest, KDMs and projection QC.',
       stat: () => (store.all('dcps') || []).filter(d => !d.isCancelled && d.outcome !== 'Cancelled').length, unit: 'screenings' },
     { id: 'tasks',       desc: 'Full-page assignable jobs, pre-screening actions & team tasks.',
@@ -19,7 +21,7 @@ RMTP.views.dashboard = function (el) {
       stat: () => store.all('procedures').reduce((n, c) => n + (c.items ? c.items.length : 0), 0), unit: 'documents' },
     { id: 'users',       desc: 'Manage the team, roles and training sign-off.',
       stat: () => store.all('users').length, unit: 'users' },
-  ].sort((a, b) => {
+  ].filter((c) => !auth.canAccessView || auth.canAccessView(c.id)).sort((a, b) => {
     const navA = RMTP.nav.find((n) => n.id === a.id);
     const navB = RMTP.nav.find((n) => n.id === b.id);
     return (navA ? navA.label : a.id).localeCompare(navB ? navB.label : b.id);
@@ -77,10 +79,21 @@ RMTP.views.dashboard = function (el) {
   function inTray() {
     if (!me) return '';
     const today = new Date().toISOString().slice(0, 10);
+    const normD = (v) => RMTP.normalizeDateStr ? RMTP.normalizeDateStr(v) : String(v || '').slice(0, 10);
+    const myActiveBookings = (store.all('bookings') || [])
+      .filter((b) => b && b.userId === me.id && !b.isNoTech && b.status !== 'cancelled' && b.status !== 'declined')
+      .filter((b) => !b.date || normD(b.date) >= today)
+      .sort((a, b) => {
+        const da = normD(a.date) || '9999';
+        const db = normD(b.date) || '9999';
+        if (da !== db) return da.localeCompare(db);
+        return (a.startTime || '').localeCompare(b.startTime || '');
+      });
+    const myBookedEventIds = new Set(myActiveBookings.map((b) => b.eventId).filter(Boolean));
     const myAdvances = store.all('advancing')
-      .filter((e) => !e.deleted && String(e.status || '').trim().toLowerCase() !== 'cancelled' && (RMTP.eventAssignedTo(e, me.id) || RMTP.isAdvancingLead(e, me.id)) && e.status !== 'Complete' && e.category !== 'DCP Test' && e.category !== 'Maintenance')
-      .filter((e) => !e.date || String(e.date).slice(0, 10) >= today)
-      .sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
+      .filter((e) => !e.deleted && String(e.status || '').trim().toLowerCase() !== 'cancelled' && (RMTP.eventAssignedTo(e, me.id) || RMTP.isAdvancingLead(e, me.id) || myBookedEventIds.has(e.id)) && e.status !== 'Complete' && e.category !== 'DCP Test' && e.category !== 'Maintenance')
+      .filter((e) => !e.date || normD(e.date) >= today)
+      .sort((a, b) => (normD(a.date) || '9999').localeCompare(normD(b.date) || '9999'));
 
     // DCP Tests: both dedicated 'DCP Test' shifts and screenings with scheduled DCP test
     const allAdv = store.all('advancing').filter(e => !e.deleted && String(e.status || '').trim().toLowerCase() !== 'cancelled');
@@ -139,6 +152,57 @@ RMTP.views.dashboard = function (el) {
     const myJobs = (RMTP.tasks && RMTP.tasks.forUser)
       ? RMTP.tasks.forUser(me).filter((t) => t.status !== 'Completed')
       : [];
+
+    // Open Hires Desk requests needing technical attention
+    const allOpenHires = (RMTP.hires && RMTP.hires.all)
+      ? RMTP.hires.all().filter((t) => {
+          const meta = RMTP.hires.getMeta(t);
+          if (meta.hiresStatus === 'Answered') return false;
+          if (isTechLead) return meta.hiresStatus === 'Open' || meta.hiresStatus === 'Awaiting Tech';
+          if (t.assignedTechId === me.id) return true;
+          if (t.linkedEventId) {
+            const ev = store.find('advancing', t.linkedEventId);
+            if (ev && RMTP.isAdvancingLead && RMTP.isAdvancingLead(ev, me.id)) return true;
+          }
+          return false;
+        })
+      : [];
+
+    if (allOpenHires.length) {
+      sections.push('<div>' +
+        '<div class="flex items-center justify-between gap-2 mb-2.5">' +
+          '<div class="flex items-center gap-2">' +
+            ui.icon('chat', 'w-4 h-4 text-accent') +
+            '<p class="eyebrow !text-ink font-semibold">Open Hires Desk Requests \u00b7 ' + allOpenHires.length + '</p>' +
+          '</div>' +
+          '<a href="#/hires" class="text-xs text-accent hover:underline flex items-center gap-1 font-semibold">Open Hires Desk \u2192</a>' +
+        '</div>' +
+        '<div class="divide-y divide-line border border-line rounded-xl bg-panel2/40 overflow-hidden">' +
+          allOpenHires.slice(0, 5).map((h) => {
+            const hm = RMTP.hires.getMeta(h);
+            const isOverdue = h.dueDate && normD(h.dueDate) < today;
+            const isDueToday = h.dueDate && normD(h.dueDate) === today;
+            const urgCls = h.priority === 'Urgent' ? 'text-danger font-semibold' : (h.priority === 'High' ? 'text-amber-400 font-semibold' : 'text-muted');
+            return (
+              '<a href="#/hires?id=' + encodeURIComponent(h.id) + '" class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3.5 py-2.5 hover:bg-panel2 transition-colors">' +
+                '<div class="min-w-0 flex-1">' +
+                  '<div class="font-medium text-sm text-ink truncate">' + ui.esc(h.title) + '</div>' +
+                  '<div class="text-xs text-muted mt-0.5 flex items-center gap-1.5 flex-wrap">' +
+                    '<span>' + ui.esc(h.filmTitle || 'General Hires') + '</span>' +
+                    '<span aria-hidden="true">\u00b7</span>' +
+                    '<span>' + ui.esc(hm.requestType) + '</span>' +
+                    '<span aria-hidden="true">\u00b7</span>' +
+                    '<span class="' + urgCls + '">' + ui.esc(h.priority || 'Medium') + '</span>' +
+                    (h.dueDate ? '<span aria-hidden="true">\u00b7</span><span class="font-mono tabular-nums ' + (isOverdue ? 'text-danger font-semibold' : (isDueToday ? 'text-amber-400 font-semibold' : '')) + '">Reply by ' + ui.esc(ui.formatDate(normD(h.dueDate))) + '</span>' : '') +
+                  '</div>' +
+                '</div>' +
+                '<span class="text-xs text-accent font-medium shrink-0">Reply \u2192</span>' +
+              '</a>'
+            );
+          }).join('') +
+        '</div>' +
+      '</div>');
+    }
 
     if (myJobs.length) {
       sections.push('<div>' +
@@ -400,6 +464,36 @@ RMTP.views.dashboard = function (el) {
         )).join('') + '</div></div>');
     }
 
+    if (myActiveBookings.length) {
+      sections.push('<div>' +
+        '<div class="flex items-center justify-between gap-2 mb-2">' +
+          '<div class="flex items-center gap-2">' + ui.icon('calendar', 'w-4 h-4 text-accent') +
+            '<p class="eyebrow">Your booked rota shifts \u00b7 ' + myActiveBookings.length + '</p></div>' +
+          '<a href="#/rota" class="text-[11px] text-accent hover:underline">Open Rota \u2192</a>' +
+        '</div>' +
+        '<div class="grid gap-1.5">' + myActiveBookings.slice(0, 5).map((b) => {
+          const href = b.eventId ? '#/advancing/' + encodeURIComponent(b.eventId) : '#/rota';
+          const times = [b.startTime, b.finishTime].filter(Boolean).join('\u2013');
+          const statusCls = b.status === 'confirmed'
+            ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+            : 'bg-amber-500/15 text-amber-400 border-amber-500/30';
+          return (
+            '<a href="' + href + '" class="flex items-center justify-between gap-3 text-sm p-2 rounded-lg bg-panel2/40 border border-line hover:border-accent hover:bg-panel2 transition-all group">' +
+              '<div class="min-w-0 truncate flex items-center gap-2">' +
+                '<span class="font-medium text-ink group-hover:text-accent transition-colors">' + ui.esc(b.eventName || 'Venue Shift') + '</span>' +
+                (b.space ? '<span class="text-muted text-xs"> \u00b7 ' + ui.esc(b.space) + '</span>' : '') +
+                (b.role ? '<span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-panel border border-line text-muted shrink-0">' + ui.esc(b.role) + '</span>' : '') +
+                '<span class="px-1.5 py-0.2 rounded text-[10px] font-semibold border shrink-0 ' + statusCls + '">' + (b.status === 'confirmed' ? 'Confirmed' : 'Pencil') + '</span>' +
+              '</div>' +
+              '<div class="flex items-center gap-2 shrink-0">' +
+                '<span class="text-xs text-muted font-medium">' + (b.date ? ui.formatDate(b.date) : '') + (times ? ' \u00b7 ' + ui.esc(times) : '') + '</span>' +
+                '<span class="text-muted group-hover:text-accent group-hover:translate-x-0.5 transition-all">' + ui.icon('arrowR', 'w-3.5 h-3.5') + '</span>' +
+              '</div>' +
+            '</a>'
+          );
+        }).join('') + '</div></div>');
+    }
+
     if (myAdvances.length) {
       sections.push('<div>' +
         '<div class="flex items-center gap-2 mb-2">' + ui.icon('clip', 'w-4 h-4 text-accent') +
@@ -436,29 +530,97 @@ RMTP.views.dashboard = function (el) {
 
   function todaysShifts() {
     const today = new Date().toISOString().slice(0, 10);
-    let list = store.all('advancing').filter((e) => !e.deleted && String(e.status || '').trim().toLowerCase() !== 'cancelled' && e.date === today);
-    if (me && !me.admin) list = list.filter((e) => RMTP.eventAssignedTo(e, me.id));
-    return list.sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
+    const normD = (v) => RMTP.normalizeDateStr ? RMTP.normalizeDateStr(v) : String(v || '').slice(0, 10);
+    const todayBookings = (store.all('bookings') || []).filter((b) => b && !b.isNoTech && b.status !== 'cancelled' && b.status !== 'declined' && normD(b.date) === today);
+    const bookingsByEvent = new Map();
+    const standaloneBookings = [];
+
+    todayBookings.forEach((b) => {
+      if (b.eventId) {
+        if (!bookingsByEvent.has(b.eventId)) bookingsByEvent.set(b.eventId, []);
+        bookingsByEvent.get(b.eventId).push(b);
+      } else {
+        standaloneBookings.push(b);
+      }
+    });
+
+    let advList = store.all('advancing').filter((e) => !e.deleted && String(e.status || '').trim().toLowerCase() !== 'cancelled' && normD(e.date) === today);
+    if (me && !me.admin) {
+      advList = advList.filter((e) => {
+        if (RMTP.eventAssignedTo(e, me.id)) return true;
+        const evB = bookingsByEvent.get(e.id) || [];
+        return evB.some((b) => b.userId === me.id);
+      });
+    }
+
+    const combined = advList.map((e) => ({
+      kind: 'advancing',
+      id: e.id,
+      name: e.name,
+      space: Array.isArray(e.space) ? e.space.join(', ') : (e.space || ''),
+      startTime: e.startTime || '',
+      finishTime: e.finishTime || '',
+      status: e.status || '',
+      event: e,
+      bookings: bookingsByEvent.get(e.id) || [],
+    }));
+
+    standaloneBookings
+      .filter((b) => (me && me.admin) || (me && b.userId === me.id))
+      .forEach((b) => {
+        combined.push({
+          kind: 'booking',
+          id: b.id,
+          name: b.eventName || 'Venue Shift',
+          space: b.space || '',
+          startTime: b.startTime || '',
+          finishTime: b.finishTime || '',
+          status: b.status || 'pencil',
+          role: b.role || '',
+          bookings: [b],
+        });
+      });
+
+    return combined.sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
   }
   function todayInner(list) {
     if (!list.length) return '<p class="text-sm text-muted">No shifts scheduled today.</p>';
-    return '<div class="grid gap-1.5">' + list.map((e) => {
-      const times = [e.startTime, e.finishTime].filter(Boolean).join(' \u2013 ');
+    return '<div class="grid gap-1.5">' + list.map((item) => {
+      const times = [item.startTime, item.finishTime].filter(Boolean).join(' \u2013 ');
       let who = '';
-      if (me && me.admin) {
-        const techs = RMTP.eventTechnicians(e);
-        if (techs.length) {
-          who = techs.map((t) => { const u = store.find('users', t.userId); return u ? RMTP.auth.displayName(u) : 'Unknown'; }).join(', ');
+      const names = [];
+      const seen = new Set();
+      (item.bookings || []).forEach((b) => {
+        const u = b.userId ? store.find('users', b.userId) : null;
+        const nm = u ? RMTP.auth.displayName(u) : (b.userName && !/^unassigned/i.test(b.userName) ? b.userName : '');
+        if (nm && !seen.has(nm.toLowerCase())) {
+          seen.add(nm.toLowerCase());
+          names.push(nm + (b.role ? ' (' + b.role + ')' : ''));
         }
+      });
+      if (item.event) {
+        RMTP.eventTechnicians(item.event).forEach((t) => {
+          if (t.isNoTech) return;
+          const u = t.userId ? store.find('users', t.userId) : null;
+          const nm = t.isFreelancer ? (t.freelancerName || '') : (u ? RMTP.auth.displayName(u) : '');
+          if (nm && !seen.has(nm.toLowerCase())) {
+            seen.add(nm.toLowerCase());
+            names.push(nm + (t.role ? ' (' + t.role + ')' : ''));
+          }
+        });
       }
-      return '<a href="#/advancing/' + encodeURIComponent(e.id) + '" class="flex items-center justify-between gap-3 text-sm p-2 rounded-lg bg-panel2/40 border border-line hover:border-accent hover:bg-panel2 transition-all group">' +
+      if (names.length && ((me && me.admin) || item.kind === 'booking')) {
+        who = names.join(', ');
+      }
+      const href = item.kind === 'advancing' ? '#/advancing/' + encodeURIComponent(item.id) : '#/rota';
+      return '<a href="' + href + '" class="flex items-center justify-between gap-3 text-sm p-2 rounded-lg bg-panel2/40 border border-line hover:border-accent hover:bg-panel2 transition-all group">' +
         '<div class="min-w-0 truncate flex items-center gap-2">' +
-          '<span class="font-medium text-ink group-hover:text-accent transition-colors">' + ui.esc(e.name) + '</span>' +
-          (e.space ? '<span class="text-muted text-xs"> \u00b7 ' + ui.esc(e.space) + '</span>' : '') +
+          '<span class="font-medium text-ink group-hover:text-accent transition-colors">' + ui.esc(item.name) + '</span>' +
+          (item.space ? '<span class="text-muted text-xs"> \u00b7 ' + ui.esc(item.space) + '</span>' : '') +
           (who ? '<span class="text-muted text-xs"> \u00b7 ' + ui.esc(who) + '</span>' : '') +
         '</div>' +
         '<div class="flex items-center gap-2 shrink-0">' +
-          '<span class="text-xs text-muted font-medium">' + ui.esc(times || e.status || '') + '</span>' +
+          '<span class="text-xs text-muted font-medium">' + ui.esc(times || item.status || '') + '</span>' +
           '<span class="text-muted group-hover:text-accent group-hover:translate-x-0.5 transition-all">' + ui.icon('arrowR', 'w-3.5 h-3.5') + '</span>' +
         '</div>' +
       '</a>';

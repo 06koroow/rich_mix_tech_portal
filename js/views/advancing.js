@@ -10,33 +10,78 @@
 RMTP.views.advancing = function (el, params, query) {
   const ui = RMTP.ui, store = RMTP.store, auth = RMTP.auth, files = RMTP.files;
 
-  // One-time migration for legacy Artifax techInfo strings
-  if (!RMTP._multiRoomMigrated) {
-    let migratedMulti = false;
-    const allAdv = store.all('advancing');
-    const groups = {};
-    allAdv.forEach(ev => {
-      if (ev.groupId && !ev.groupId.startsWith('implicit-')) {
-        if (!groups[ev.groupId]) groups[ev.groupId] = [];
-        groups[ev.groupId].push(ev);
+  // Parse, normalize, and deduplicate space values (handles plain strings, comma-separated lists,
+  // JSON-encoded array strings from text columns, or arrays like ["Screen One", "Screen One"]).
+  function parseUniqueSpaces(spaceVal) {
+    const rawList = [];
+    const pushValue = (val) => {
+      if (val == null) return;
+      if (Array.isArray(val)) {
+        val.forEach(pushValue);
+        return;
       }
-    });
-    for (const gid in groups) {
-      if (groups[gid].length >= 1) {
-        migratedMulti = true;
-        const evts = groups[gid];
-        const primary = evts[0];
-        primary.space = evts.map(e => Array.isArray(e.space) ? e.space[0] : e.space).filter(Boolean);
-        delete primary.groupId;
-        store.upsert('advancing', primary);
-        for (let i = 1; i < evts.length; i++) {
-          store.remove('advancing', evts[i].id);
-        }
+      const str = String(val).trim();
+      if (!str) return;
+      if (str.startsWith('[') && str.endsWith(']')) {
+        try {
+          const parsed = JSON.parse(str);
+          if (Array.isArray(parsed)) {
+            parsed.forEach(pushValue);
+            return;
+          }
+        } catch (e) { /* fall through to comma split */ }
+      }
+      if (str.includes(',')) {
+        str.split(',').forEach(part => {
+          const cleaned = part.trim();
+          if (cleaned) rawList.push(cleaned);
+        });
+      } else {
+        rawList.push(str);
+      }
+    };
+    pushValue(spaceVal);
+
+    const seen = new Set();
+    const unique = [];
+    for (const item of rawList) {
+      const normalized = normalizeSpaceName(item);
+      if (!normalized) continue;
+      const key = normalized.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        unique.push(normalized);
       }
     }
-    RMTP._multiRoomMigrated = true;
-    if (migratedMulti) {
-      console.log('[Phase 3] Auto-migrated manual multi-room groups to single rows');
+    return unique;
+  }
+
+  function formatSpaceLabel(spaceVal) {
+    const unique = parseUniqueSpaces(spaceVal);
+    return unique.length ? unique.join(', ') : (typeof spaceVal === 'string' ? spaceVal : '');
+  }
+
+  // Heal previously corrupted event.space values (e.g. ["Screen One", "Screen One"] or
+  // "Screen One, Screen One" caused by the legacy groupId collapse loop) without merging
+  // or deleting separate Artifax screenings or multi-room event rows.
+  if (!RMTP._duplicateSpacesHealed) {
+    let healedCount = 0;
+    const allAdv = store.all('advancing') || [];
+    allAdv.forEach(ev => {
+      if (!ev || ev.space == null) return;
+      const unique = parseUniqueSpaces(ev.space);
+      if (!unique.length) return;
+      const cleanedSpace = unique.join(', ');
+      const needsHeal = Array.isArray(ev.space) || ev.space !== cleanedSpace;
+      if (needsHeal) {
+        ev.space = cleanedSpace;
+        store.upsert('advancing', ev);
+        healedCount++;
+      }
+    });
+    RMTP._duplicateSpacesHealed = true;
+    if (healedCount > 0) {
+      console.log('[Advancing] Healed duplicate/malformed space values on ' + healedCount + ' event(s)');
     }
   }
 
@@ -121,6 +166,7 @@ RMTP.views.advancing = function (el, params, query) {
   const canManageEvents = isTMOrAdmin;
   const canReport = auth.can('report.edit');
   const isFreelancer = auth.isFreelancer ? auth.isFreelancer(me) : (me && me.position === 'Freelancer');
+  const isHires = auth.isHiresTeam ? auth.isHiresTeam(me) : (me && me.position === 'Hires Team');
   const filters = (RMTP._advFilters = RMTP._advFilters || { space: 'standard', date: '', tab: 'upcoming' });
   if (!filters.space && filters.space !== 'all') {
     filters.space = 'standard';
@@ -197,15 +243,90 @@ RMTP.views.advancing = function (el, params, query) {
     return norm < today;
   }
 
+  function parseIsoDateUtc(d) {
+    const norm = normalizeDateStr(d);
+    if (!norm) return null;
+    const m = norm.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    return Date.UTC(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+  }
+
+  function calendarDaysDiff(d1, d2) {
+    const t1 = parseIsoDateUtc(d1);
+    const t2 = parseIsoDateUtc(d2);
+    if (t1 === null || t2 === null) return null;
+    return Math.round((t2 - t1) / 86400000);
+  }
+
+  function addCalendarDays(d, days) {
+    const t = parseIsoDateUtc(d);
+    if (t === null) return normalizeDateStr(d) || getTodayString();
+    const dt = new Date(t + (days * 86400000));
+    const y = dt.getUTCFullYear();
+    const mo = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    const da = String(dt.getUTCDate()).padStart(2, '0');
+    return `${y}-${mo}-${da}`;
+  }
+
+  function formatShortDayDate(d, includeYear = false) {
+    const t = parseIsoDateUtc(d);
+    if (t === null) return String(d || 'TBD');
+    const dt = new Date(t);
+    const wd = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dt.getUTCDay()];
+    const mo = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][dt.getUTCMonth()];
+    const dayNum = dt.getUTCDate();
+    return includeYear ? `${wd} ${dayNum} ${mo} ${dt.getUTCFullYear()}` : `${wd} ${dayNum} ${mo}`;
+  }
+
+  function formatDateRangeLabel(startDate, endDate) {
+    const s = normalizeDateStr(startDate);
+    const e = normalizeDateStr(endDate);
+    if (!s && !e) return 'Date TBD';
+    if (!e || s === e) return formatShortDayDate(s || e);
+    const ts = parseIsoDateUtc(s);
+    const te = parseIsoDateUtc(e);
+    if (ts === null || te === null) return `${s} – ${e}`;
+    const ds = new Date(ts);
+    const de = new Date(te);
+    const wds = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const mos = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    if (ds.getUTCFullYear() === de.getUTCFullYear() && ds.getUTCMonth() === de.getUTCMonth()) {
+      return `${wds[ds.getUTCDay()]} ${ds.getUTCDate()} – ${wds[de.getUTCDay()]} ${de.getUTCDate()} ${mos[de.getUTCMonth()]}`;
+    }
+    if (ds.getUTCFullYear() === de.getUTCFullYear()) {
+      return `${wds[ds.getUTCDay()]} ${ds.getUTCDate()} ${mos[ds.getUTCMonth()]} – ${wds[de.getUTCDay()]} ${de.getUTCDate()} ${mos[de.getUTCMonth()]}`;
+    }
+    return `${formatShortDayDate(s, true)} – ${formatShortDayDate(e, true)}`;
+  }
+
   function compareEventsByDate(a, b, tab) {
-    const da = normalizeDateStr(a.date || (a.isGroup && a.events && a.events[0]?.date));
-    const db = normalizeDateStr(b.date || (b.isGroup && b.events && b.events[0]?.date));
-    const ta = a.startTime || (a.isGroup && a.events && a.events[0]?.startTime) || '';
-    const tb = b.startTime || (b.isGroup && b.events && b.events[0]?.startTime) || '';
+    const isPastTab = (tab === 'past' || tab === 'deleted');
+    const getSortDate = (item) => {
+      if (!item) return '';
+      if (isPastTab) {
+        return normalizeDateStr(item.endDate || item.date || (item.isGroup && item.events && item.events[item.events.length - 1]?.date));
+      }
+      return normalizeDateStr(item.nextActiveDate || item.date || (item.isGroup && item.events && item.events[0]?.date));
+    };
+    const getSortTime = (item, sortDate) => {
+      if (!item) return '';
+      if (item.isGroup && Array.isArray(item.events) && item.events.length > 0) {
+        const dayEvs = sortDate ? item.events.filter(ev => normalizeDateStr(ev.date) === sortDate) : item.events;
+        const pool = dayEvs.length > 0 ? dayEvs : item.events;
+        const times = pool.map(ev => ev.startTime || '').filter(Boolean).sort();
+        if (times.length > 0) return isPastTab ? times[times.length - 1] : times[0];
+      }
+      return item.startTime || (item.isGroup && item.events && item.events[0]?.startTime) || '';
+    };
+
+    const da = getSortDate(a);
+    const db = getSortDate(b);
+    const ta = getSortTime(a, da);
+    const tb = getSortTime(b, db);
     const na = a.name || '';
     const nb = b.name || '';
 
-    if (tab === 'past' || tab === 'deleted') {
+    if (isPastTab) {
       if (!da && db) return 1;
       if (da && !db) return -1;
       const dateCmp = (db || '').localeCompare(da || '');
@@ -249,7 +370,7 @@ RMTP.views.advancing = function (el, params, query) {
 
   function eventMatchesSpace(e, spaceFilter) {
     if (!spaceFilter || spaceFilter === 'all') return true;
-    const rawSpaces = Array.isArray(e.space) ? e.space : (e.space ? [e.space] : []);
+    const rawSpaces = parseUniqueSpaces(e.space);
     if (!rawSpaces.length) return false;
 
     if (spaceFilter === 'standard') {
@@ -303,14 +424,11 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   function isScreenSpace(spaceName) {
-    if (Array.isArray(spaceName)) {
-      return spaceName.some(s => {
-        const norm = normalizeSpaceName(s);
-        return norm === 'Screen One' || norm === 'Screen Two' || norm === 'Screen Three';
-      });
-    }
-    const norm = normalizeSpaceName(spaceName);
-    return norm === 'Screen One' || norm === 'Screen Two' || norm === 'Screen Three';
+    const spaces = parseUniqueSpaces(spaceName);
+    return spaces.some(s => {
+      const norm = normalizeSpaceName(s);
+      return norm === 'Screen One' || norm === 'Screen Two' || norm === 'Screen Three';
+    });
   }
 
   /* ---- Production Package Helpers ---- */
@@ -551,42 +669,405 @@ RMTP.views.advancing = function (el, params, query) {
     return s === 'cancelled' || s === 'canceled';
   };
 
-  const upcomingCount = base.filter((e) => e.deleted !== true && !isEvCancelled(e) && !isPastEvent(e.date)).length;
-  const pastCount = base.filter((e) => e.deleted !== true && !isEvCancelled(e) && isPastEvent(e.date)).length;
-  const cancelledCount = base.filter((e) => e.deleted !== true && isEvCancelled(e)).length;
-  const deletedCount = base.filter((e) => e.deleted === true).length;
-
   const currentTab = filters.tab || 'upcoming';
 
-  const shown = base
-    .filter((e) => {
-      if (currentTab === 'deleted') return e.deleted === true;
-      if (e.deleted === true) return false;
-      if (currentTab === 'cancelled') return isEvCancelled(e);
-      if (isEvCancelled(e)) return false;
-      if (currentTab === 'past') return isPastEvent(e.date);
-      return !isPastEvent(e.date);
-    })
-    .filter((e) => {
-      if (filterRequiresCrew) {
-        const evTechs = RMTP.eventTechnicians(e);
-        const leadId = RMTP.getAdvancingLeadId(e);
-        if (evTechs.length > 0 || leadId) return false;
+  // Helpers to detect and consolidate simultaneous/overlapping bookings of the same space
+  function parseTimeToMins(t) {
+    if (!t) return null;
+    const m = String(t).trim().match(/^(\d{1,2}):(\d{2})/);
+    if (!m) return null;
+    return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  }
+
+  function bookingsOverlapSimultaneously(a, b) {
+    const sA = parseTimeToMins(a.startTime);
+    const eA = parseTimeToMins(a.finishTime);
+    const sB = parseTimeToMins(b.startTime);
+    const eB = parseTimeToMins(b.finishTime);
+
+    // If either booking has no time bounds on the same date, treat as simultaneous
+    if ((sA == null && eA == null) || (sB == null && eB == null)) return true;
+
+    const startA = sA != null ? sA : eA;
+    const startB = sB != null ? sB : eB;
+    if (startA === startB) return true;
+
+    let endA = eA != null ? eA : startA + 1;
+    let endB = eB != null ? eB : startB + 1;
+    if (endA <= startA) endA += 1440;
+    if (endB <= startB) endB += 1440;
+
+    return startA < endB && startB < endA;
+  }
+
+  function mergeSimultaneousSpaceCluster(cluster) {
+    if (cluster.length === 1) return cluster[0];
+
+    const scoreEvent = (ev) => {
+      const techs = RMTP.eventTechnicians(ev).filter(t => !t.isNoTech);
+      return (techs.length * 100) +
+        (ev.techSpec ? 30 : 0) +
+        ((ev.techInfo || '').trim() ? 20 : 0) +
+        (ev.finishTime ? 10 : 0) +
+        (ev.startTime ? 5 : 0);
+    };
+    const sorted = cluster.slice().sort((a, b) => scoreEvent(b) - scoreEvent(a));
+    const primary = sorted[0];
+
+    let minStart = null;
+    let maxEnd = null;
+    let earliestStartStr = primary.startTime || '';
+    let latestFinishStr = primary.finishTime || '';
+
+    cluster.forEach((ev) => {
+      const s = parseTimeToMins(ev.startTime);
+      const f = parseTimeToMins(ev.finishTime);
+      if (s != null) {
+        if (minStart == null || s < minStart) {
+          minStart = s;
+          earliestStartStr = ev.startTime;
+        }
+        if (f != null) {
+          const adjF = f <= s ? f + 1440 : f;
+          if (maxEnd == null || adjF > maxEnd) {
+            maxEnd = adjF;
+            latestFinishStr = ev.finishTime;
+          }
+        }
+      } else if (f != null && maxEnd == null) {
+        maxEnd = f;
+        latestFinishStr = ev.finishTime;
       }
-      if (filters.space) {
-        if (!eventMatchesSpace(e, filters.space)) return false;
+    });
+
+    const mergedTechs = [];
+    const seenTechKeys = new Set();
+    let anyNeedsTech = false;
+    const mergedIds = [];
+    cluster.forEach((ev) => {
+      if (Array.isArray(ev._mergedIds)) {
+        ev._mergedIds.forEach(id => { if (!mergedIds.includes(id)) mergedIds.push(id); });
+      } else if (ev.id && !mergedIds.includes(ev.id)) {
+        mergedIds.push(ev.id);
       }
-      if (filters.date && normalizeDateStr(e.date) !== normalizeDateStr(filters.date)) return false;
+      if (!ev.noTechNeeded) anyNeedsTech = true;
+      RMTP.eventTechnicians(ev).forEach((t) => {
+        if (t.isNoTech) return;
+        const key = (t.userId || t.freelancerName || '').toLowerCase() + '|' + (t.role || '').toLowerCase();
+        if (!seenTechKeys.has(key)) {
+          seenTechKeys.add(key);
+          mergedTechs.push(t);
+        }
+      });
+    });
+
+    const preservedGroupId = primary.groupId || (cluster.find(e => e.groupId) || {}).groupId || null;
+    const merged = Object.assign({}, primary, {
+      groupId: preservedGroupId,
+      startTime: earliestStartStr,
+      finishTime: latestFinishStr,
+      _mergedIds: mergedIds
+    });
+    if (mergedTechs.length > 0) {
+      merged.technicians = mergedTechs;
+      merged.noTechNeeded = false;
+    } else if (!anyNeedsTech) {
+      merged.noTechNeeded = true;
+    }
+    return merged;
+  }
+
+  function consolidateSimultaneousSpaceBookings(events) {
+    if (!Array.isArray(events) || events.length <= 1) return events || [];
+
+    const bySpace = new Map();
+    events.forEach((ev) => {
+      const spKey = (formatSpaceLabel(ev.space) || '').toLowerCase();
+      if (!bySpace.has(spKey)) bySpace.set(spKey, []);
+      bySpace.get(spKey).push(ev);
+    });
+
+    const result = [];
+    bySpace.forEach((list) => {
+      if (list.length === 1) {
+        result.push(list[0]);
+        return;
+      }
+      const sorted = list.slice().sort((a, b) => {
+        const sA = parseTimeToMins(a.startTime);
+        const sB = parseTimeToMins(b.startTime);
+        if (sA == null && sB == null) return 0;
+        if (sA == null) return -1;
+        if (sB == null) return 1;
+        return sA - sB;
+      });
+
+      const clusters = [];
+      sorted.forEach((ev) => {
+        const matchCluster = clusters.find((cl) => cl.some((existing) => bookingsOverlapSimultaneously(existing, ev)));
+        if (matchCluster) {
+          matchCluster.push(ev);
+        } else {
+          clusters.push([ev]);
+        }
+      });
+
+      clusters.forEach((cl) => result.push(mergeSimultaneousSpaceCluster(cl)));
+    });
+
+    return result;
+  }
+
+  const SPACE_SORT_ORDER = {
+    'The Stage': 1, 'The Studio': 2, 'The Mix': 3,
+    'Screen One': 4, 'Screen Two': 5, 'Screen Three': 6
+  };
+
+  function sortEventsInDay(list) {
+    return list.slice().sort((a, b) => {
+      const sa = formatSpaceLabel(a.space) || '';
+      const sb = formatSpaceLabel(b.space) || '';
+      const wa = SPACE_SORT_ORDER[sa] || 99;
+      const wb = SPACE_SORT_ORDER[sb] || 99;
+      if (wa !== wb) return wa - wb;
+      const spCmp = sa.localeCompare(sb);
+      if (spCmp !== 0) return spCmp;
+      return (a.startTime || '23:59').localeCompare(b.startTime || '23:59');
+    });
+  }
+
+  function getRunIdentityKey(ev) {
+    if (ev.groupId && !String(ev.groupId).startsWith('implicit-')) {
+      return 'gid:' + String(ev.groupId).trim();
+    }
+    const normName = (ev.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    if (normName && normName !== 'untitled') {
+      return 'name:' + normName;
+    }
+    return 'solo:' + ev.id;
+  }
+
+  // Group events into consecutive-day runs (gap <= 1 calendar day) and multi-room takeovers.
+  // Excludes weekly or spaced recurring bookings from merging across gaps > 1 day.
+  function buildConsecutiveDayRuns(eventsList) {
+    const todayStr = getTodayString();
+
+    // Step 1: Consolidate simultaneous same-space duplicates sharing event name & date
+    const preDeduped = [];
+    const byNameDate = new Map();
+    for (const e of eventsList) {
+      const normName = (e.name || '').trim().toLowerCase();
+      const eDate = normalizeDateStr(e.date);
+      if (normName && normName !== 'untitled' && eDate) {
+        const ndKey = normName + '|' + eDate;
+        if (!byNameDate.has(ndKey)) byNameDate.set(ndKey, []);
+        byNameDate.get(ndKey).push(e);
+      } else {
+        preDeduped.push(e);
+      }
+    }
+    byNameDate.forEach((bucket) => {
+      consolidateSimultaneousSpaceBookings(bucket).forEach((ev) => preDeduped.push(ev));
+    });
+
+    // Step 2: Bucket by stable run identity (groupId or normalized name)
+    const buckets = new Map();
+    const undated = [];
+    for (const e of preDeduped) {
+      const eDate = normalizeDateStr(e.date);
+      if (!eDate) {
+        undated.push(e);
+        continue;
+      }
+      const key = getRunIdentityKey(e);
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(e);
+    }
+
+    const runs = [];
+    buckets.forEach((bucketEvents, bucketKey) => {
+      // Group bucket events by ISO date and consolidate simultaneous spaces per day
+      const byDate = new Map();
+      bucketEvents.forEach((ev) => {
+        const d = normalizeDateStr(ev.date);
+        if (!byDate.has(d)) byDate.set(d, []);
+        byDate.get(d).push(ev);
+      });
+
+      const sortedDates = Array.from(byDate.keys()).sort();
+
+      // Partition sortedDates into contiguous consecutive-day slices (gap === 1 calendar day)
+      const slices = [];
+      let currentSlice = [];
+      sortedDates.forEach((d) => {
+        if (!currentSlice.length) {
+          currentSlice.push(d);
+        } else {
+          const prev = currentSlice[currentSlice.length - 1];
+          if (calendarDaysDiff(prev, d) === 1) {
+            currentSlice.push(d);
+          } else {
+            slices.push(currentSlice);
+            currentSlice = [d];
+          }
+        }
+      });
+      if (currentSlice.length) slices.push(currentSlice);
+
+      slices.forEach((sliceDates) => {
+        const days = sliceDates.map((d, idx) => {
+          const dayEvs = sortEventsInDay(consolidateSimultaneousSpaceBookings(byDate.get(d) || []));
+          return {
+            date: d,
+            dayNumber: idx + 1,
+            isToday: d === todayStr,
+            isPast: d < todayStr,
+            events: dayEvs
+          };
+        });
+
+        const flatEvents = [];
+        const allSpacesOrderMap = new Map();
+        days.forEach((day) => {
+          day.events.forEach((ev) => {
+            flatEvents.push(ev);
+            parseUniqueSpaces(ev.space).forEach((sp) => {
+              const lk = sp.toLowerCase();
+              if (!allSpacesOrderMap.has(lk)) allSpacesOrderMap.set(lk, sp);
+            });
+          });
+        });
+
+        const distinctSpaces = Array.from(allSpacesOrderMap.values()).sort((a, b) => {
+          const wa = SPACE_SORT_ORDER[a] || 99;
+          const wb = SPACE_SORT_ORDER[b] || 99;
+          return wa !== wb ? wa - wb : a.localeCompare(b);
+        });
+
+        const isMultiDay = days.length > 1;
+        const isMultiRoom = days.some((day) => {
+          const daySp = new Set(day.events.map(e => formatSpaceLabel(e.space).toLowerCase()).filter(Boolean));
+          return daySp.size > 1;
+        });
+
+        if (!isMultiDay && !isMultiRoom) {
+          // Single-day, single-space (or non-overlapping showings in 1 space): render as standard event cards
+          flatEvents.forEach((ev) => runs.push(ev));
+          return;
+        }
+
+        const startDate = sliceDates[0];
+        const endDate = sliceDates[sliceDates.length - 1];
+        const nextActiveDate = sliceDates.find((d) => d >= todayStr) || startDate;
+        const anchorDay = days.find((d) => d.date === nextActiveDate) || days[0];
+        let anchorStartTime = '';
+        (anchorDay ? anchorDay.events : flatEvents).forEach((ev) => {
+          if (ev.startTime && (!anchorStartTime || ev.startTime < anchorStartTime)) anchorStartTime = ev.startTime;
+        });
+
+        const firstEv = flatEvents[0] || {};
+        const explicitGid = (flatEvents.find((e) => e.groupId && !String(e.groupId).startsWith('implicit-')) || {}).groupId;
+        const safeSlug = (firstEv.name || 'event').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').slice(0, 40) || 'event';
+        const resolvedGroupId = explicitGid || ('run-' + safeSlug + '-' + startDate);
+        const runKey = (explicitGid || bucketKey.replace(/[^a-z0-9:_-]/gi, '')) + '|' + startDate + '|' + endDate;
+
+        runs.push({
+          isGroup: true,
+          isMultiDay,
+          isMultiRoom,
+          groupId: resolvedGroupId,
+          runKey,
+          date: nextActiveDate,
+          startDate,
+          endDate,
+          nextActiveDate,
+          startTime: anchorStartTime,
+          name: firstEv.name || 'Untitled Event',
+          days,
+          events: flatEvents,
+          distinctSpaces
+        });
+      });
+    });
+
+    // Include undated events as standalone cards
+    undated.forEach((ev) => runs.push(ev));
+    return runs;
+  }
+
+  // Build runs per status pool BEFORE tab split so active multi-day runs (where startDate < today <= endDate)
+  // stay intact in Upcoming until their final day passes.
+  const activePool = allEvents.filter((e) => e.deleted !== true && !isEvCancelled(e));
+  const cancelledPool = allEvents.filter((e) => e.deleted !== true && isEvCancelled(e));
+  const deletedPool = allEvents.filter((e) => e.deleted === true);
+
+  const runMatchesTech = (item) => {
+    if (!item.isGroup) return matchesTechFilter(item);
+    return item.events.some(matchesTechFilter);
+  };
+
+  const activeRuns = buildConsecutiveDayRuns(activePool).filter(runMatchesTech);
+  const cancelledRuns = buildConsecutiveDayRuns(cancelledPool).filter(runMatchesTech);
+  const deletedRuns = buildConsecutiveDayRuns(deletedPool).filter(runMatchesTech);
+
+  const isRunPast = (item) => {
+    const finalDate = item.isGroup ? item.endDate : item.date;
+    return isPastEvent(finalDate);
+  };
+
+  const upcomingRuns = activeRuns.filter((item) => !isRunPast(item));
+  const pastRuns = activeRuns.filter((item) => isRunPast(item));
+
+  const upcomingCount = upcomingRuns.length;
+  const pastCount = pastRuns.length;
+  const cancelledCount = cancelledRuns.length;
+  const deletedCount = deletedRuns.length;
+
+  const tabPoolRuns = currentTab === 'deleted'
+    ? deletedRuns
+    : (currentTab === 'cancelled'
+      ? cancelledRuns
+      : (currentTab === 'past' ? pastRuns : upcomingRuns));
+
+  const eventMatchesFilters = (e) => {
+    if (filterRequiresCrew) {
+      const evTechs = RMTP.eventTechnicians(e);
+      const leadId = RMTP.getAdvancingLeadId(e);
+      if (evTechs.length > 0 || leadId) return false;
+    }
+    if (filters.space && !eventMatchesSpace(e, filters.space)) return false;
+    if (filters.date && normalizeDateStr(e.date) !== normalizeDateStr(filters.date)) return false;
+    if (quickSearch) {
+      const q = quickSearch.toLowerCase();
+      const evName = (e.name || '').toLowerCase();
+      const evSpace = formatSpaceLabel(e.space).toLowerCase();
+      const evDate = (e.date ? ui.formatDate(e.date).toLowerCase() : '');
+      if (!evName.includes(q) && !evSpace.includes(q) && !evDate.includes(q)) return false;
+    }
+    return true;
+  };
+
+  const finalShown = tabPoolRuns
+    .filter((item) => {
+      if (!item.isGroup) return eventMatchesFilters(item);
       if (quickSearch) {
         const q = quickSearch.toLowerCase();
-        const evName = (e.name || '').toLowerCase();
-        const evSpace = (Array.isArray(e.space) ? e.space.join(', ') : (e.space || '')).toLowerCase();
-        const evDate = (e.date ? ui.formatDate(e.date).toLowerCase() : '');
-        if (!evName.includes(q) && !evSpace.includes(q) && !evDate.includes(q)) {
-          return false;
+        const rangeTxt = formatDateRangeLabel(item.startDate, item.endDate).toLowerCase();
+        if ((item.name || '').toLowerCase().includes(q) || rangeTxt.includes(q)) {
+          // Still honor non-search filters if active
+          return item.events.some((e) => {
+            if (filterRequiresCrew) {
+              const evTechs = RMTP.eventTechnicians(e);
+              const leadId = RMTP.getAdvancingLeadId(e);
+              if (evTechs.length > 0 || leadId) return false;
+            }
+            if (filters.space && !eventMatchesSpace(e, filters.space)) return false;
+            if (filters.date && normalizeDateStr(e.date) !== normalizeDateStr(filters.date)) return false;
+            return true;
+          });
         }
       }
-      return true;
+      return item.events.some(eventMatchesFilters);
     })
     .sort((a, b) => compareEventsByDate(a, b, currentTab));
 
@@ -594,7 +1075,7 @@ RMTP.views.advancing = function (el, params, query) {
     ? (!allEvents.length ? ['clip', 'No events yet', 'Add an event to start advancing it.']
                          : ['user', 'No shifts found for selected technician(s)', 'Try selecting "All Team Shifts" or a different technician filter.'])
     : (currentTab === 'past'
-      ? ['clip', 'No past events found', 'Past events will appear here once their date has passed.']
+      ? ['clip', 'No past events found', 'Past events will appear here once their final date has passed.']
       : currentTab === 'cancelled'
         ? ['x', 'No cancelled events', 'Events marked as cancelled in Artifax will appear here.']
         : currentTab === 'deleted' 
@@ -608,53 +1089,6 @@ RMTP.views.advancing = function (el, params, query) {
   if (selectedTechs && selectedTechs.length > 0) activeFilterCount++;
   if (!includeUnassigned) activeFilterCount++;
   if (filterRequiresCrew) activeFilterCount++;
-
-  // Group Multi-Room Events
-  const groupedShown = [];
-  const groupMap = {};
-  
-  for (const e of shown) {
-    const eDate = normalizeDateStr(e.date);
-    // Smart Fallback: if no explicit groupId exists, but it's an Artifax event, implicitly group by Name + Date
-    const effectiveGroupId = e.groupId || (e.artifaxId && e.name && e.name !== "Untitled" ? 'implicit-' + e.name.toLowerCase().trim().replace(/[^a-z0-9]/g, '-') + '-' + (eDate || 'nodate') : null);
-    
-    if (effectiveGroupId) {
-      const key = effectiveGroupId + '|' + (eDate || 'TBC');
-      if (!groupMap[key]) {
-        groupMap[key] = { isGroup: true, groupId: effectiveGroupId, date: eDate || e.date, startTime: e.startTime || '', name: e.name, events: [] };
-        groupedShown.push(groupMap[key]);
-      }
-      groupMap[key].events.push(e);
-      if (e.startTime && (!groupMap[key].startTime || e.startTime < groupMap[key].startTime)) {
-        groupMap[key].startTime = e.startTime;
-      }
-    } else {
-      groupedShown.push(e);
-    }
-  }
-
-  const finalShown = groupedShown.map(item => {
-    if (item.isGroup && item.events.length === 1) {
-      return item.events[0];
-    }
-    if (item.isGroup && item.events.length > 1) {
-       const spaceOrder = {
-        'The Stage': 1, 'The Studio': 2, 'The Mix': 3, 
-        'Screen One': 4, 'Screen Two': 5, 'Screen Three': 6
-      };
-      item.events.sort((a, b) => {
-        const sa = a.space || '';
-        const sb = b.space || '';
-        const wa = spaceOrder[sa] || 99;
-        const wb = spaceOrder[sb] || 99;
-        return wa !== wb ? wa - wb : sa.localeCompare(sb);
-      });
-    }
-    return item;
-  });
-
-  // Strict date sorting for all cards displayed in advancing view
-  finalShown.sort((a, b) => compareEventsByDate(a, b, currentTab));
 
   el.innerHTML =
     '<div class="' + (RMTP._isSoftRender ? '' : 'view-enter') + '">' +
@@ -730,7 +1164,7 @@ RMTP.views.advancing = function (el, params, query) {
             const unscheduled = [];
 
             finalShown.forEach(item => {
-              const d = normalizeDateStr(item.date || (item.isGroup && item.events && item.events[0]?.date));
+              const d = normalizeDateStr(item.nextActiveDate || item.date || (item.isGroup && item.events && item.events[0]?.date));
               if (!d) {
                 unscheduled.push(item);
               } else if (d <= todayStr) {
@@ -798,11 +1232,7 @@ RMTP.views.advancing = function (el, params, query) {
       if (n) allSpacesSet.add(n);
     });
     allEvents.forEach(e => {
-      if (Array.isArray(e.space)) {
-        e.space.forEach(s => s && allSpacesSet.add(s));
-      } else if (e.space) {
-        allSpacesSet.add(e.space);
-      }
+      parseUniqueSpaces(e.space).forEach(s => s && allSpacesSet.add(s));
     });
 
     const spacePriority = {
@@ -1929,36 +2359,82 @@ RMTP.views.advancing = function (el, params, query) {
     const q = (sel) => el.querySelector(sel);
     
     if (item.isGroup) {
-      const card = q('[data-group-card="' + item.groupId + '"][data-group-date="' + item.date + '"]');
+      const runAttr = CSS.escape ? CSS.escape(item.runKey || (item.groupId + '|' + item.date)) : (item.runKey || (item.groupId + '|' + item.date));
+      const card = q('[data-run-card="' + runAttr + '"]') || q('[data-group-card="' + item.groupId + '"][data-group-date="' + item.date + '"]');
+      const defaultIdx = Math.max(0, item.events.findIndex((ev) => normalizeDateStr(ev.date) === item.nextActiveDate));
+      const defaultEv = item.events[defaultIdx] || item.events[0];
+
       const openPop = (e) => {
-        if (e.target.closest('button') || e.target.closest('input')) return;
-        openEventModal(item.events[0], item, 0);
+        if (e.target.closest('button') || e.target.closest('input') || e.target.closest('select')) return;
+        const dayTrigger = e.target.closest('[data-open-run-ev-idx]');
+        if (dayTrigger) {
+          const idx = parseInt(dayTrigger.getAttribute('data-open-run-ev-idx'), 10);
+          if (!isNaN(idx) && item.events[idx]) {
+            openEventModal(item.events[idx], item, idx);
+            return;
+          }
+        }
+        openEventModal(defaultEv, item, defaultIdx);
       };
       if (card) card.addEventListener('click', openPop);
 
-      const printGrpBtn = q('[data-print-group="' + item.groupId + '|' + item.date + '"]');
+      if (card) {
+        const expandBtn = card.querySelector('[data-toggle-expand-run]');
+        if (expandBtn) {
+          expandBtn.addEventListener('click', (evt) => {
+            evt.stopPropagation();
+            const isExpanded = expandBtn.getAttribute('data-expanded') === 'true';
+            card.querySelectorAll('[data-overflow-day-row]').forEach((row) => {
+              row.classList.toggle('hidden', isExpanded);
+            });
+            expandBtn.setAttribute('data-expanded', isExpanded ? 'false' : 'true');
+            const totalDays = expandBtn.getAttribute('data-total-days') || '';
+            expandBtn.querySelector('span').textContent = isExpanded ? ('Show all ' + totalDays + ' days') : 'Show fewer days';
+          });
+        }
+
+        const quickStatusSel = card.querySelector('[data-group-quick-status]');
+        if (quickStatusSel) {
+          quickStatusSel.addEventListener('change', (evt) => {
+            evt.stopPropagation();
+            const newStatus = evt.target.value;
+            const idsToUpdate = new Set();
+            item.events.forEach((ev) => (ev._mergedIds || [ev.id]).forEach((id) => idsToUpdate.add(id)));
+            idsToUpdate.forEach((id) => {
+              const rec = store.find('advancing', id);
+              if (rec) store.upsert('advancing', Object.assign({}, rec, { status: newStatus }));
+            });
+            ui.toast('Updated status to ' + newStatus + ' across ' + (item.isMultiDay ? (item.days.length + ' days') : (item.events.length + ' spaces')), 'ok');
+            RMTP._isSoftRender = true;
+            RMTP.router.render();
+            RMTP._isSoftRender = false;
+          });
+        }
+      }
+
+      const printGrpBtn = card ? card.querySelector('[data-print-group]') : q('[data-print-group="' + item.groupId + '|' + item.date + '"]');
       if (printGrpBtn) {
         printGrpBtn.addEventListener('click', (evt) => {
           evt.stopPropagation();
-          printAdvance(item.events[0], item);
+          printAdvance(defaultEv, item);
         });
       }
 
-      const editGrpBtn = q('[data-edit-group="' + item.groupId + '|' + item.date + '"]');
+      const editGrpBtn = card ? card.querySelector('[data-edit-group]') : q('[data-edit-group="' + item.groupId + '|' + item.date + '"]');
       if (editGrpBtn) {
         editGrpBtn.addEventListener('click', (evt) => {
           evt.stopPropagation();
-          openForm(item.events[0], item, 0);
+          openForm(defaultEv, item, defaultIdx);
         });
       }
 
-      const bulkCb = q('[data-bulk-select-group="' + item.groupId + '|' + item.date + '"]');
+      const bulkCb = card ? card.querySelector('[data-bulk-select-group]') : q('[data-bulk-select-group="' + item.groupId + '|' + item.date + '"]');
       if (bulkCb) bulkCb.addEventListener('change', (evt) => {
         if (evt.target.checked) {
-          item.events.forEach(ev => selectedForBulkDelete.add(ev.id));
+          item.events.forEach(ev => (ev._mergedIds || [ev.id]).forEach(id => selectedForBulkDelete.add(id)));
           if (card) card.classList.add('border-danger', 'bg-danger/5');
         } else {
-          item.events.forEach(ev => selectedForBulkDelete.delete(ev.id));
+          item.events.forEach(ev => (ev._mergedIds || [ev.id]).forEach(id => selectedForBulkDelete.delete(id)));
           if (card) card.classList.remove('border-danger', 'bg-danger/5');
         }
         updateBulkDeleteButton();
@@ -2229,6 +2705,9 @@ RMTP.views.advancing = function (el, params, query) {
     const bkgPill = bkgCount ? ('<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-accent/15 text-accent border border-accent/30" title="' + bkgCount + ' shared equipment item' + (bkgCount === 1 ? '' : 's') + ' booked">' + ui.icon('box', 'w-3 h-3 text-accent') + bkgCount + ' Kit</span>') : '';
     const maintCount = (Array.isArray(ev.linked_maintenance_ids) ? ev.linked_maintenance_ids : (Array.isArray(ev.linkedMaintenanceIds) ? ev.linkedMaintenanceIds : [])).length;
     const maintPill = maintCount ? ('<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-warning/15 text-warning border border-warning/30" title="' + maintCount + ' maintenance tasks linked to this shift">' + ui.icon('tool', 'w-3 h-3 text-warning') + maintCount + ' Task' + (maintCount === 1 ? '' : 's') + '</span>') : '';
+    const openHiresCount = (RMTP.hires && RMTP.hires.forEvent)
+      ? RMTP.hires.forEvent(ev.id).filter((h) => RMTP.hires.getMeta(h).hiresStatus !== 'Answered').length
+      : 0;
 
     return (
       '<div data-event-card="' + ev.id + '" class="panel w-full p-4 sm:p-5 transition-all hover:border-accent hover:shadow-lg cursor-pointer group select-none relative flex flex-col justify-between gap-3 ' + (bulkDeleteMode && selectedForBulkDelete.has(ev.id) ? 'border-danger bg-danger/5' : '') + '">' +
@@ -2238,7 +2717,7 @@ RMTP.views.advancing = function (el, params, query) {
             '<div class="flex items-center gap-2 flex-wrap mb-1.5">' +
               '<h3 class="font-display text-base sm:text-lg font-semibold text-ink group-hover:text-accent transition-colors break-words">' + ui.esc(ev.name) + '</h3>' +
               statusControl +
-              ui.pill(Array.isArray(ev.space) ? ev.space.join(', ') : ev.space, isCinema ? 'var(--accent)' : 'var(--info)') +
+              ui.pill(formatSpaceLabel(ev.space), isCinema ? 'var(--accent)' : 'var(--info)') +
               (leadName ? ui.pill('Lead: ' + leadName, 'var(--accent)') : '') +
               (ev.category ? ui.pill(ev.category, (ev.category === 'Maintenance' || ev.category === 'Maintenance Shift') ? 'var(--warning)' : 'var(--muted)') : '') +
               bkgPill +
@@ -2287,10 +2766,17 @@ RMTP.views.advancing = function (el, params, query) {
                 '</div>' 
               : '') +
               
-              (reports.length ? 
+              (reports.length && !isHires ? 
                 '<div class="flex items-center gap-1.5">' + 
                   ui.icon('clip', 'w-3.5 h-3.5 text-ok') + 
                   '<span class="text-ok font-semibold">' + reports.length + ' report' + (reports.length > 1 ? 's' : '') + '</span>' + 
+                '</div>' 
+              : '') +
+
+              (openHiresCount ? 
+                '<div class="flex items-center gap-1.5">' + 
+                  ui.icon('chat', 'w-3.5 h-3.5 text-info') + 
+                  '<span class="text-info font-semibold">' + openHiresCount + ' Hires ' + (openHiresCount === 1 ? 'query' : 'queries') + '</span>' + 
                 '</div>' 
               : '') +
             '</div>' +
@@ -2301,11 +2787,11 @@ RMTP.views.advancing = function (el, params, query) {
             (ev.deleted ? 
               '<button data-reinstate="' + ev.id + '" class="btn btn-ok !py-1.5 !px-3 text-xs font-semibold flex items-center gap-1.5 rounded-lg flex-1 sm:flex-initial justify-center">' + ui.icon('refresh', 'w-4 h-4') + '<span>Reinstate Event</span></button>' 
             :
-              ((ev.category === 'Maintenance Shift' || ev.category === 'Maintenance') ?
+              (!isHires && (ev.category === 'Maintenance Shift' || ev.category === 'Maintenance') ?
                 '<button type="button" data-add-maint-tickets="' + ev.id + '" class="btn btn-secondary !py-1.5 !px-3 text-xs font-semibold text-warning flex items-center gap-1.5 hover:bg-warning/10 rounded-lg flex-1 sm:flex-initial justify-center" title="Add maintenance tickets or consumable orders to this shift">' +
                   ui.icon('tool', 'w-3.5 h-3.5 text-warning') + '<span>+ Add Tickets</span>' +
                 '</button>' : '') +
-              (ev.noTechNeeded ? 
+              (!isHires ? (ev.noTechNeeded ? 
                 '<button type="button" data-toggle-tech-req="' + ev.id + '" class="btn btn-ghost !py-1.5 !px-2.5 text-xs font-semibold text-amber-400 hover:bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-center gap-1.5 flex-1 sm:flex-initial justify-center" title="Reverse Self-Service: Require Technician Coverage (TM/ST)">' + 
                   ui.icon('wrench', 'w-3.5 h-3.5 text-amber-400') + '<span>Require Tech</span>' + 
                 '</button>' : 
@@ -2313,12 +2799,12 @@ RMTP.views.advancing = function (el, params, query) {
                   '<button type="button" data-toggle-tech-req="' + ev.id + '" class="btn btn-ghost !py-1.5 !px-2.5 text-xs font-medium text-muted hover:text-ink hover:bg-panel2 border border-line rounded-lg flex items-center gap-1.5 flex-1 sm:flex-initial justify-center" title="Set to Self-Service / No Tech Needed (TM/ST)">' + 
                     ui.icon('slash', 'w-3.5 h-3.5') + '<span>No Tech</span>' + 
                   '</button>' : '')
-              ) +
+              ) : '') +
               '<button data-open-modal="' + ev.id + '" class="btn btn-ghost !py-1.5 !px-3 text-xs font-semibold text-accent flex items-center gap-1.5 hover:bg-accent/10 rounded-lg flex-1 sm:flex-initial justify-center">' +
                 ui.icon('eye', 'w-4 h-4') + '<span>View Advance</span>' +
               '</button>' +
               '<button data-print="' + ev.id + '" class="btn btn-ghost !p-2" title="Export Advance PDF">' + ui.icon('print', 'w-4 h-4') + '</button>' +
-              '<button data-reports="' + ev.id + '" class="btn btn-ghost !p-2" title="Shift Reports">' + ui.icon('clip', 'w-4 h-4') + '</button>' +
+              (!isHires ? '<button data-reports="' + ev.id + '" class="btn btn-ghost !p-2" title="Shift Reports">' + ui.icon('clip', 'w-4 h-4') + '</button>' : '') +
               (canManageEvents ?
                 '<button data-edit="' + ev.id + '" class="btn btn-ghost !p-2" title="Edit Event">' + ui.icon('pen', 'w-4 h-4') + '</button>' +
                 '<button data-del="' + ev.id + '" class="btn btn-danger !p-2" title="Delete Event">' + ui.icon('trash', 'w-4 h-4') + '</button>' : '')
@@ -2329,85 +2815,203 @@ RMTP.views.advancing = function (el, params, query) {
     );
   }
 
-  /* ---- Compact Grouped Event Card (Multi-Room) ---- */
+  /* ---- Compact Grouped Event Card (Multi-Day Run & Multi-Room Takeover) ---- */
   function renderGroupedCard(group) {
+    const isMultiDay = !!(group.isMultiDay && Array.isArray(group.days) && group.days.length > 1);
+    const isMultiRoom = !!group.isMultiRoom;
+    const allRunEvents = Array.isArray(group.events) ? group.events : [];
+    const displayEvents = isMultiDay ? allRunEvents : consolidateSimultaneousSpaceBookings(allRunEvents);
+    const distinctSpaces = Array.isArray(group.distinctSpaces) && group.distinctSpaces.length
+      ? group.distinctSpaces
+      : Array.from(new Set(displayEvents.map(e => formatSpaceLabel(e.space)).filter(Boolean)));
+    const uniqueSpaceCount = distinctSpaces.length || 1;
+    const runKeyAttr = ui.esc(group.runKey || (group.groupId + '|' + group.date));
+
     let reportsCount = 0;
-    group.events.forEach(e => { reportsCount += reportsFor(e.id).length; });
+    displayEvents.forEach(e => { reportsCount += reportsFor(e.id).length; });
+    const groupHiresOpen = (RMTP.hires && RMTP.hires.forEvents)
+      ? RMTP.hires.forEvents(allRunEvents.map(e => e.id)).filter((h) => RMTP.hires.getMeta(h).hiresStatus !== 'Answered').length
+      : 0;
+
+    // Primary lead & status across the run
+    let leadName = '';
+    for (const ge of displayEvents) {
+      const lid = RMTP.getAdvancingLeadId(ge);
+      if (lid) {
+        const lu = store.find('users', lid);
+        if (lu) { leadName = auth.displayName(lu); break; }
+      }
+    }
+    const primaryStatus = (displayEvents[0] && displayEvents[0].status) || 'Advancing';
+
+    const statusControl = canManageEvents
+      ? '<div class="inline-flex items-center gap-1" onclick="event.stopPropagation()">' +
+          '<select data-group-quick-status="' + runKeyAttr + '" class="field !py-1 !pl-2.5 !pr-7 text-xs font-semibold rounded-md border cursor-pointer hover:border-accent shadow-2xs" style="color:' + (statusColour[primaryStatus] || 'var(--ink)') + ';background-position:right 8px center;" title="Update status across all days/spaces in this run">' +
+            STATUSES.map((st) => '<option value="' + st + '" ' + (st === primaryStatus ? 'selected' : '') + '>' + st + '</option>').join('') +
+          '</select>' +
+        '</div>'
+      : '<span class="text-xs font-semibold" style="color:' + (statusColour[primaryStatus] || 'var(--muted)') + '">' + ui.esc(primaryStatus) + '</span>';
 
     const checkboxHtml = (canManageEvents && bulkDeleteMode) ?
       '<div class="pr-3 flex items-center justify-center shrink-0" onclick="event.stopPropagation()">' +
-        '<input type="checkbox" data-bulk-select-group="' + group.groupId + '|' + group.date + '" class="w-4 h-4 rounded accent-[var(--danger)] cursor-pointer" />' +
+        '<input type="checkbox" data-bulk-select-group="' + runKeyAttr + '" class="w-4 h-4 rounded accent-[var(--danger)] cursor-pointer" />' +
       '</div>' : '';
 
-    const spacesBreakdown = group.events.map(e => {
-       const times = [e.startTime, e.finishTime].filter(Boolean).join(' \u2013 ');
-       const techs = RMTP.eventTechnicians(e).map(techLabel).filter(Boolean);
-       const techStr = techs.length ? techs.join(', ') : 'Unassigned';
-       const isCinema = isScreenSpace(e.space);
-       const spLabel = Array.isArray(e.space) ? e.space.join(', ') : e.space;
-       return (
-         '<div class="flex flex-col sm:flex-row sm:items-center justify-between text-xs py-2 border-t border-line/60 first:border-0 gap-2">' +
-           '<div class="font-medium text-ink flex items-center gap-2.5">' + 
-             ui.pill(spLabel, isCinema ? 'var(--accent)' : 'var(--info)') + 
-             (times ? '<div class="flex items-center gap-1.5 text-muted">' + ui.icon('clock', 'w-3 h-3') + '<span>' + ui.esc(times) + '</span></div>' : '') +
-           '</div>' +
-           '<div class="flex items-center gap-2 text-muted flex-wrap">' + 
-             '<div class="flex items-center gap-1.5">' + 
-               ui.icon('wrench', 'w-3 h-3') + 
-               '<span>Techs:</span>' + 
-               '<div class="flex items-center gap-1 flex-wrap">' + 
-                  (techs.length 
-                    ? techs.map(t => t === 'No Tech Needed' ? ui.pill(t, 'var(--muted)') : ui.pill(t, 'var(--info)')).join('')
-                    : (e.noTechNeeded ? ui.pill('Self-Service (No Tech)', 'var(--muted)') : ui.pill('Unassigned', 'var(--danger)'))) + 
-               '</div>' +
-             '</div>' +
-             (e.noTechNeeded ? 
-               '<button type="button" data-toggle-tech-req="' + e.id + '" class="btn btn-ghost !py-0.5 !px-2 text-[11px] font-semibold text-amber-400 hover:bg-amber-500/10 border border-amber-500/30 rounded flex items-center gap-1" title="Reverse Self-Service: Require Technician Coverage (TM/ST)">' + ui.icon('wrench', 'w-3 h-3') + '<span>Require Tech</span></button>' : 
-               (RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(e.space) ? '<button type="button" data-toggle-tech-req="' + e.id + '" class="btn btn-ghost !py-0.5 !px-2 text-[11px] font-medium text-muted hover:text-ink hover:bg-panel2 border border-line rounded flex items-center gap-1" title="Set to No Tech Needed (TM/ST)">' + ui.icon('slash', 'w-3 h-3') + '<span>No Tech</span></button>' : '')
-             ) +
-           '</div>' +
-         '</div>'
-       );
-    }).join('');
+    let breakdownHtml = '';
+    let progressLabel = '';
+
+    if (isMultiDay) {
+      const todayStr = getTodayString();
+      const activeDayObj = group.days.find((d) => d.date === todayStr);
+      if (activeDayObj) {
+        progressLabel = 'Day ' + activeDayObj.dayNumber + ' of ' + group.days.length;
+      }
+
+      // If run > 4 days, prioritize showing active/next 3 days + an inline expand toggle
+      const collapseLongRun = group.days.length > 4;
+      let startVisibleIdx = 0;
+      if (collapseLongRun) {
+        const nextIdx = group.days.findIndex((d) => d.date >= todayStr);
+        startVisibleIdx = nextIdx >= 0 ? Math.min(nextIdx, Math.max(0, group.days.length - 3)) : 0;
+      }
+      const visibleIndices = new Set();
+      if (collapseLongRun) {
+        for (let i = startVisibleIdx; i < Math.min(group.days.length, startVisibleIdx + 3); i++) {
+          visibleIndices.add(i);
+        }
+      }
+
+      const dayRowsHtml = group.days.map((day, dIdx) => {
+        const isOverflow = collapseLongRun && !visibleIndices.has(dIdx);
+        const firstEvInRunIdx = allRunEvents.findIndex((ev) => normalizeDateStr(ev.date) === day.date);
+        const daySpaces = Array.from(new Set(day.events.map(e => formatSpaceLabel(e.space)).filter(Boolean)));
+        let minStart = '';
+        let maxEnd = '';
+        const dayTechSet = new Set();
+        let allNoTech = true;
+        day.events.forEach((e) => {
+          if (e.startTime && (!minStart || e.startTime < minStart)) minStart = e.startTime;
+          if (e.finishTime && (!maxEnd || e.finishTime > maxEnd)) maxEnd = e.finishTime;
+          const tList = RMTP.eventTechnicians(e).map(techLabel).filter(Boolean);
+          if (tList.length) {
+            tList.forEach((t) => dayTechSet.add(t));
+            if (tList.some((t) => t !== 'No Tech Needed')) allNoTech = false;
+          } else if (!e.noTechNeeded) {
+            allNoTech = false;
+          }
+        });
+        const times = [minStart, maxEnd].filter(Boolean).join(' \u2013 ');
+        const dayTechs = Array.from(dayTechSet);
+        const dayCrewText = dayTechs.length
+          ? dayTechs.join(', ')
+          : (allNoTech ? 'Self-Service (No Tech)' : 'Unassigned');
+
+        return (
+          '<div data-open-run-ev-idx="' + Math.max(0, firstEvInRunIdx) + '" ' + (isOverflow ? 'data-overflow-day-row="1" ' : '') +
+            'class="flex flex-col sm:flex-row sm:items-center justify-between text-xs py-2 px-2.5 gap-2 rounded-md hover:bg-panel/80 transition-colors cursor-pointer ' +
+            (isOverflow ? 'hidden ' : '') + (day.isPast ? 'opacity-65' : '') + '">' +
+            '<div class="flex items-center gap-2.5 flex-wrap min-w-0">' +
+              '<span class="font-mono tabular-nums font-semibold whitespace-nowrap ' + (day.isToday ? 'text-accent' : 'text-ink') + '">' +
+                'Day ' + day.dayNumber + ' \u00b7 ' + ui.esc(formatShortDayDate(day.date)) +
+              '</span>' +
+              (day.isToday ? '<span class="text-[11px] font-semibold text-accent whitespace-nowrap">(Today)</span>' : '') +
+              (day.isPast ? '<span class="text-[11px] text-muted whitespace-nowrap">(Completed)</span>' : '') +
+              '<span class="text-muted/50" aria-hidden="true">\u00b7</span>' +
+              '<span class="font-medium text-ink/90 truncate">' + ui.esc(daySpaces.join(', ') || 'Venue') + '</span>' +
+              (times ? '<span class="text-muted/50" aria-hidden="true">\u00b7</span><span class="font-mono tabular-nums text-muted whitespace-nowrap">' + ui.esc(times) + '</span>' : '') +
+            '</div>' +
+            '<div class="flex items-center gap-2 text-muted shrink-0">' +
+              '<span class="text-[11px] ' + (!dayTechs.length && !allNoTech ? 'text-danger font-semibold' : 'text-muted') + ' truncate max-w-[240px]" title="' + ui.esc(dayCrewText) + '">' +
+                ui.esc(dayCrewText) +
+              '</span>' +
+            '</div>' +
+          '</div>'
+        );
+      }).join('');
+
+      const expandBtnHtml = collapseLongRun
+        ? '<div class="pt-1.5 px-2.5 border-t border-line/50 flex justify-end">' +
+            '<button type="button" data-toggle-expand-run="1" data-expanded="false" data-total-days="' + group.days.length + '" class="text-[11px] font-semibold text-accent hover:underline cursor-pointer flex items-center gap-1">' +
+              '<span>Show all ' + group.days.length + ' days</span>' +
+            '</button>' +
+          '</div>'
+        : '';
+
+      breakdownHtml =
+        '<div class="bg-panel2/60 rounded-lg border border-line/60 p-1.5 divide-y divide-line/50 mt-2">' +
+          dayRowsHtml +
+          expandBtnHtml +
+        '</div>';
+    } else {
+      const spacesBreakdown = displayEvents.map((e, idx) => {
+        const times = [e.startTime, e.finishTime].filter(Boolean).join(' \u2013 ');
+        const techs = RMTP.eventTechnicians(e).map(techLabel).filter(Boolean);
+        const isCinema = isScreenSpace(e.space);
+        const spLabel = formatSpaceLabel(e.space);
+        return (
+          '<div data-open-run-ev-idx="' + idx + '" class="flex flex-col sm:flex-row sm:items-center justify-between text-xs py-2 border-t border-line/60 first:border-0 gap-2 hover:bg-panel/60 rounded px-1.5 transition-colors cursor-pointer">' +
+            '<div class="font-medium text-ink flex items-center gap-2.5">' + 
+              ui.pill(spLabel, isCinema ? 'var(--accent)' : 'var(--info)') + 
+              (times ? '<div class="flex items-center gap-1.5 text-muted font-mono tabular-nums">' + ui.icon('clock', 'w-3 h-3') + '<span>' + ui.esc(times) + '</span></div>' : '') +
+            '</div>' +
+            '<div class="flex items-center gap-2 text-muted flex-wrap">' + 
+              '<div class="flex items-center gap-1.5">' + 
+                ui.icon('wrench', 'w-3 h-3') + 
+                '<span>Techs:</span>' + 
+                '<div class="flex items-center gap-1 flex-wrap">' + 
+                   (techs.length 
+                     ? techs.map(t => t === 'No Tech Needed' ? ui.pill(t, 'var(--muted)') : ui.pill(t, 'var(--info)')).join('')
+                     : (e.noTechNeeded ? ui.pill('Self-Service (No Tech)', 'var(--muted)') : ui.pill('Unassigned', 'var(--danger)'))) + 
+                '</div>' +
+              '</div>' +
+              (!isHires ? (e.noTechNeeded ? 
+                '<button type="button" data-toggle-tech-req="' + e.id + '" class="btn btn-ghost !py-0.5 !px-2 text-[11px] font-semibold text-amber-400 hover:bg-amber-500/10 border border-amber-500/30 rounded flex items-center gap-1" title="Reverse Self-Service: Require Technician Coverage (TM/ST)">' + ui.icon('wrench', 'w-3 h-3') + '<span>Require Tech</span></button>' : 
+                (RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(e.space) ? '<button type="button" data-toggle-tech-req="' + e.id + '" class="btn btn-ghost !py-0.5 !px-2 text-[11px] font-medium text-muted hover:text-ink hover:bg-panel2 border border-line rounded flex items-center gap-1" title="Set to No Tech Needed (TM/ST)">' + ui.icon('slash', 'w-3 h-3') + '<span>No Tech</span></button>' : '')
+              ) : '') +
+            '</div>' +
+          '</div>'
+        );
+      }).join('');
+
+      breakdownHtml =
+        '<div class="bg-panel2 rounded-lg p-2.5 space-y-1 mt-2">' +
+          spacesBreakdown +
+        '</div>';
+    }
+
+    const editBtnLabel = isMultiDay ? (isMultiRoom ? 'Edit Run' : 'Edit Days') : 'Edit Spaces';
+    const dateRangeDisplay = isMultiDay
+      ? formatDateRangeLabel(group.startDate, group.endDate)
+      : (group.date ? ui.formatDate(group.date) : 'TBC');
 
     return (
-      '<div data-group-card="' + group.groupId + '" data-group-date="' + group.date + '" class="panel w-full p-4 sm:p-5 transition-all hover:border-accent hover:shadow-lg cursor-pointer group select-none relative flex flex-col justify-between gap-3">' +
+      '<div data-run-card="' + runKeyAttr + '" data-group-card="' + ui.esc(group.groupId) + '" data-group-date="' + ui.esc(group.date) + '" class="panel w-full p-4 sm:p-5 transition-all hover:border-accent hover:shadow-lg cursor-pointer group select-none relative flex flex-col justify-between gap-3">' +
         '<div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3 w-full">' +
           checkboxHtml +
           '<div class="min-w-0 flex-1 w-full">' +
-            '<div class="flex items-center gap-2 flex-wrap mb-1.5">' +
+            '<div class="flex items-center gap-2.5 flex-wrap mb-1.5">' +
               '<h3 class="font-display text-base sm:text-lg font-semibold text-ink group-hover:text-accent transition-colors break-words">' + ui.esc(group.name) + '</h3>' +
-              ui.pill('Multi-Room Takeover', 'var(--warning)') +
+              statusControl +
+              '<span class="text-xs font-semibold text-warning whitespace-nowrap">' +
+                (isMultiDay && isMultiRoom ? ('Multi-Day Takeover \u00b7 ' + group.days.length + ' Days') : (isMultiDay ? ('Multi-Day Run \u00b7 ' + group.days.length + ' Days') : 'Multi-Room Takeover')) +
+              '</span>' +
               '<div class="flex items-center gap-1.5 ml-auto flex-wrap">' +
-                '<button type="button" data-print-group="' + group.groupId + '|' + group.date + '" class="btn btn-ghost !py-1 !px-2.5 text-xs text-ink hover:bg-accent/10 flex items-center gap-1.5 font-semibold border border-line bg-panel2/80 rounded-lg" title="Export Advances PDF">' +
+                '<button type="button" data-print-group="' + runKeyAttr + '" class="btn btn-ghost !py-1 !px-2.5 text-xs text-ink hover:bg-accent/10 flex items-center gap-1.5 font-semibold border border-line bg-panel2/80 rounded-lg whitespace-nowrap shrink-0" title="Export Consolidated Advance PDF">' +
                   ui.icon('print', 'w-3.5 h-3.5 text-accent') + '<span>Export PDF</span>' +
                 '</button>' +
-                (canManageEvents ? '<button type="button" data-edit-group="' + group.groupId + '|' + group.date + '" class="btn btn-ghost !py-1 !px-2.5 text-xs text-accent hover:bg-accent/10 flex items-center gap-1.5 font-semibold border border-accent/20 bg-accent/5 rounded-lg" title="Edit All Spaces in Multi-Room Event">' + ui.icon('pen', 'w-3.5 h-3.5') + '<span>Edit Spaces</span></button>' : '') +
+                (canManageEvents ? '<button type="button" data-edit-group="' + runKeyAttr + '" class="btn btn-ghost !py-1 !px-2.5 text-xs text-accent hover:bg-accent/10 flex items-center gap-1.5 font-semibold border border-accent/20 bg-accent/5 rounded-lg whitespace-nowrap shrink-0" title="Edit All Days & Spaces">' + ui.icon('pen', 'w-3.5 h-3.5') + '<span>' + editBtnLabel + '</span></button>' : '') +
               '</div>' +
             '</div>' +
-            '<div class="flex flex-wrap items-center gap-x-4 gap-y-2.5 mt-1 text-xs mb-3">' +
-              (group.date ? 
-                '<div class="flex items-center gap-1.5 font-medium text-ink">' + 
-                  ui.icon('clock', 'w-3.5 h-3.5 text-accent') + 
-                  '<span>' + ui.formatDate(group.date) + '</span>' + 
-                '</div>' 
-              : '') +
-              
-              '<div class="flex items-center gap-1.5">' + 
-                ui.icon('grid', 'w-3.5 h-3.5 text-muted') + 
-                '<strong class="text-ink font-medium">' + group.events.length + ' Spaces</strong>' + 
-              '</div>' +
-              
-              (reportsCount ? 
-                '<div class="flex items-center gap-1.5">' + 
-                  ui.icon('clip', 'w-3.5 h-3.5 text-ok') + 
-                  '<span class="text-ok font-semibold">' + reportsCount + ' report' + (reportsCount > 1 ? 's' : '') + '</span>' + 
-                '</div>' 
-              : '') +
+            '<div class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 mt-1 text-xs text-muted mb-2">' +
+              '<span class="font-mono tabular-nums font-medium text-ink">' + ui.esc(dateRangeDisplay) + '</span>' +
+              (progressLabel ? '<span aria-hidden="true">\u00b7</span><span class="font-semibold text-accent">' + ui.esc(progressLabel) + '</span>' : '') +
+              '<span aria-hidden="true">\u00b7</span>' +
+              '<span class="font-medium text-ink/90">' + ui.esc(distinctSpaces.join(', ') || (uniqueSpaceCount + ' Spaces')) + '</span>' +
+              (leadName ? '<span aria-hidden="true">\u00b7</span><span>Lead: <strong class="text-ink font-medium">' + ui.esc(leadName) + '</strong></span>' : '') +
+              (reportsCount && !isHires ? '<span aria-hidden="true">\u00b7</span><span class="text-ok font-semibold">' + reportsCount + ' report' + (reportsCount > 1 ? 's' : '') + '</span>' : '') +
+              (groupHiresOpen ? '<span aria-hidden="true">\u00b7</span><span class="text-info font-semibold">' + groupHiresOpen + ' Hires ' + (groupHiresOpen === 1 ? 'query' : 'queries') + '</span>' : '') +
             '</div>' +
-            '<div class="bg-panel2 rounded-lg p-2.5 space-y-1 mt-2">' +
-              spacesBreakdown +
-            '</div>' +
+            breakdownHtml +
           '</div>' +
         '</div>' +
       '</div>'
@@ -2546,6 +3150,22 @@ RMTP.views.advancing = function (el, params, query) {
 
   /* ---- Pop-over Detail Modal with Darkened Backdrop ---- */
   function openEventModal(ev, group = null, activeIndex = 0) {
+    group = resolveEventGroup(ev, group);
+    if (group && Array.isArray(group.events) && group.events.length > 1) {
+      let resolvedIdx = (typeof activeIndex === 'number' && activeIndex >= 0 && activeIndex < group.events.length) ? activeIndex : -1;
+      if (resolvedIdx === -1 || (ev && ev.id && group.events[resolvedIdx] && group.events[resolvedIdx].id !== ev.id && !(Array.isArray(group.events[resolvedIdx]._mergedIds) && group.events[resolvedIdx]._mergedIds.includes(ev.id)))) {
+        const foundIdx = ev && ev.id ? group.events.findIndex(x => x.id === ev.id || (Array.isArray(x._mergedIds) && x._mergedIds.includes(ev.id))) : -1;
+        if (foundIdx !== -1) {
+          resolvedIdx = foundIdx;
+        } else if (resolvedIdx === -1) {
+          const nextDate = group.nextActiveDate || group.startDate;
+          const nextIdx = nextDate ? group.events.findIndex(x => normalizeDateStr(x.date) === nextDate) : 0;
+          resolvedIdx = nextIdx !== -1 ? nextIdx : 0;
+        }
+      }
+      activeIndex = resolvedIdx;
+      ev = group.events[activeIndex] || ev;
+    }
     const reports = reportsFor(ev.id);
     const times = [ev.startTime, ev.finishTime].filter(Boolean).join(' \u2013 ');
     const techs = RMTP.eventTechnicians(ev).map(techLabel).filter(Boolean);
@@ -3034,13 +3654,74 @@ RMTP.views.advancing = function (el, params, query) {
 
     let groupTabsHtml = '';
     if (group && group.events.length > 1) {
-      groupTabsHtml = '<div class="flex items-center gap-1 overflow-x-auto border-b border-line mb-4 pb-0 hide-scrollbar">';
-      group.events.forEach((gev, i) => {
-        const isActive = i === activeIndex;
-        groupTabsHtml += '<button data-group-tab="' + i + '" class="px-4 py-2.5 text-sm font-semibold transition whitespace-nowrap ' + (isActive ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-ink') + '">' + ui.esc(gev.space) + '</button>';
-      });
-      groupTabsHtml += '</div>';
+      if (group.isMultiDay && Array.isArray(group.days) && group.days.length > 1) {
+        const activeEvDate = normalizeDateStr(ev.date);
+        const activeDayIdx = Math.max(0, group.days.findIndex(d => d.date === activeEvDate));
+        const activeDayObj = group.days[activeDayIdx] || group.days[0];
+        const runRangeLabel = formatDateRangeLabel(group.startDate || group.days[0].date, group.endDate || group.days[group.days.length - 1].date);
+        const spacesSummary = (group.distinctSpaces && group.distinctSpaces.length)
+          ? group.distinctSpaces.join(', ')
+          : Array.from(new Set(group.events.map(x => formatSpaceLabel(x.space)).filter(Boolean))).join(', ');
+
+        // Shared Run Overview Header
+        groupTabsHtml +=
+          '<div class="p-3 rounded-xl bg-panel2/50 border border-line mb-3">' +
+            '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+              '<div class="flex items-center gap-2 flex-wrap text-xs">' +
+                '<span class="font-semibold text-accent font-mono tabular-nums">' + ui.esc(runRangeLabel) + '</span>' +
+                '<span class="text-muted">\u00b7</span>' +
+                '<span class="font-semibold text-ink">' + group.days.length + ' Days</span>' +
+                (spacesSummary ? '<span class="text-muted">\u00b7</span><span class="text-muted">' + ui.esc(spacesSummary) + '</span>' : '') +
+              '</div>' +
+              '<span class="text-[11px] font-mono tabular-nums text-muted">Viewing Day ' + (activeDayObj.dayNumber || (activeDayIdx + 1)) + ' of ' + group.days.length + '</span>' +
+            '</div>' +
+          '</div>';
+
+        // Day-by-Day Tab Bar
+        groupTabsHtml += '<div class="flex items-center gap-1 overflow-x-auto border-b border-line mb-3 pb-0 hide-scrollbar">';
+        group.days.forEach((day, dIdx) => {
+          const isDayActive = dIdx === activeDayIdx;
+          groupTabsHtml +=
+            '<button type="button" data-modal-day-idx="' + dIdx + '" class="px-3.5 py-2 text-xs font-semibold transition whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 ' +
+              (isDayActive
+                ? 'text-accent border-b-2 border-accent'
+                : (day.isPast ? 'text-muted/60 hover:text-ink border-b-2 border-transparent' : 'text-muted hover:text-ink border-b-2 border-transparent')) + '">' +
+              '<span class="font-mono tabular-nums">Day ' + day.dayNumber + '</span>' +
+              '<span class="opacity-60">\u00b7</span>' +
+              '<span>' + ui.esc(formatShortDayDate(day.date)) + '</span>' +
+              (day.isToday ? '<span class="text-[10px] font-bold uppercase tracking-wider text-accent">(Today)</span>' : '') +
+            '</button>';
+        });
+        groupTabsHtml += '</div>';
+
+        // Secondary Room Sub-Tabs if the active day spans multiple spaces
+        if (activeDayObj && Array.isArray(activeDayObj.events) && activeDayObj.events.length > 1) {
+          groupTabsHtml += '<div class="flex items-center gap-1.5 overflow-x-auto mb-3 hide-scrollbar">';
+          groupTabsHtml += '<span class="text-[10px] font-semibold uppercase tracking-wider text-muted mr-1 shrink-0">Rooms:</span>';
+          activeDayObj.events.forEach((dayEv) => {
+            const flatIdx = group.events.findIndex(x => x.id === dayEv.id);
+            const isRoomActive = flatIdx === activeIndex;
+            groupTabsHtml +=
+              '<button type="button" data-group-tab="' + flatIdx + '" class="px-2.5 py-1 rounded-md text-xs font-semibold border transition whitespace-nowrap shrink-0 cursor-pointer ' +
+                (isRoomActive ? 'bg-accent text-accent-ink border-accent' : 'bg-panel2/60 border-line text-muted hover:text-ink') + '">' +
+                ui.esc(formatSpaceLabel(dayEv.space)) +
+              '</button>';
+          });
+          groupTabsHtml += '</div>';
+        }
+      } else {
+        groupTabsHtml = '<div class="flex items-center gap-1 overflow-x-auto border-b border-line mb-4 pb-0 hide-scrollbar">';
+        group.events.forEach((gev, i) => {
+          const isActive = i === activeIndex;
+          groupTabsHtml += '<button data-group-tab="' + i + '" class="px-4 py-2.5 text-sm font-semibold transition whitespace-nowrap shrink-0 cursor-pointer ' + (isActive ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-ink') + '">' + ui.esc(formatSpaceLabel(gev.space)) + '</button>';
+        });
+        groupTabsHtml += '</div>';
+      }
     }
+
+    const modalHiresIds = (group && Array.isArray(group.events) && group.events.length) ? group.events.map(e => e.id) : [ev.id];
+    const modalHiresAll = (RMTP.hires && RMTP.hires.forEvents) ? RMTP.hires.forEvents(modalHiresIds) : [];
+    const modalHiresOpen = modalHiresAll.filter((h) => RMTP.hires.getMeta(h).hiresStatus !== 'Answered').length;
 
     const bodyHtml =
       groupTabsHtml +
@@ -3048,7 +3729,8 @@ RMTP.views.advancing = function (el, params, query) {
         '<button data-modal-tab="overview" class="pb-2 text-xs font-semibold text-accent border-b-2 border-accent transition-colors shrink-0">Overview</button>' +
         '<button data-modal-tab="schedule" class="pb-2 text-xs font-semibold text-muted border-b-2 border-transparent hover:text-ink transition-colors shrink-0">Schedule</button>' +
         '<button data-modal-tab="tech" class="pb-2 text-xs font-semibold text-muted border-b-2 border-transparent hover:text-ink transition-colors shrink-0">Tech Specs</button>' +
-        '<button data-modal-tab="reports" class="pb-2 text-xs font-semibold text-muted border-b-2 border-transparent hover:text-ink transition-colors shrink-0">Reports</button>' +
+        '<button data-modal-tab="hires" class="pb-2 text-xs font-semibold text-muted border-b-2 border-transparent hover:text-ink transition-colors shrink-0">Hires Desk' + (modalHiresAll.length ? ' (' + (modalHiresOpen > 0 ? modalHiresOpen + ' open' : modalHiresAll.length) + ')' : '') + '</button>' +
+        (!isHires ? '<button data-modal-tab="reports" class="pb-2 text-xs font-semibold text-muted border-b-2 border-transparent hover:text-ink transition-colors shrink-0">Reports</button>' : '') +
       '</div>' +
       '<div id="modal-tab-content-overview" class="modal-tab-content grid gap-4">' +
         // Top summary metadata
@@ -3113,6 +3795,7 @@ RMTP.views.advancing = function (el, params, query) {
         ) : '') +
 
         '</div>' + // end tech tab
+      '<div id="modal-tab-content-hires" class="modal-tab-content hidden grid gap-4"></div>' +
       '<div id="modal-tab-content-reports" class="modal-tab-content hidden grid gap-4">' +
         // Shift Reports Section
         '<div class="p-3.5 rounded-xl bg-panel2/40 border border-line">' +
@@ -3142,18 +3825,22 @@ RMTP.views.advancing = function (el, params, query) {
         '</div>' +
       '</div>';
 
-    '</div>'; // end reports tab
-
     const footerHtml =
       '<div class="flex items-center justify-between w-full gap-2 flex-wrap">' +
         '<div class="flex items-center gap-2">' +
           '<button id="modal-print-btn" class="btn btn-primary text-xs flex items-center gap-1.5 font-semibold shadow-2xs">' +
             ui.icon('print', 'w-4 h-4') + '<span>Print Advance</span>' +
           '</button>' +
-          '<button id="modal-reports-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
-            ui.icon('clip', 'w-4 h-4') + '<span>Reports (' + reports.length + ')</span>' +
-          '</button>' +
-          (!isFreelancer && (isCinema || (ev.media_type || ev.mediaType) || ev.dcp_received || ev.checks_completed) ?
+          (isHires ? (
+            '<button id="modal-hires-new-btn" class="btn btn-ghost text-xs flex items-center gap-1.5 text-info border border-line">' +
+              ui.icon('chat', 'w-4 h-4') + '<span>+ Hires Request</span>' +
+            '</button>'
+          ) : (
+            '<button id="modal-reports-btn" class="btn btn-ghost text-xs flex items-center gap-1.5">' +
+              ui.icon('clip', 'w-4 h-4') + '<span>Reports (' + reports.length + ')</span>' +
+            '</button>'
+          )) +
+          (!isFreelancer && !isHires && (isCinema || (ev.media_type || ev.mediaType) || ev.dcp_received || ev.checks_completed) ?
             '<button id="modal-dcp-btn" class="btn btn-ghost text-xs flex items-center gap-1.5 text-accent border border-accent/20 bg-accent/5 hover:bg-accent/10" title="Open Pre-Screening Tracker for this event">' +
               ui.icon('film', 'w-4 h-4') + '<span>Pre-Screening Tracker</span>' +
             '</button>' : '') +
@@ -3197,6 +3884,55 @@ RMTP.views.advancing = function (el, params, query) {
       });
     });
 
+    const modalHiresContainer = m.root.querySelector('#modal-tab-content-hires');
+    if (modalHiresContainer && RMTP.hires && typeof RMTP.hires.renderEventHiresPanel === 'function') {
+      RMTP.hires.renderEventHiresPanel(modalHiresContainer, ev, group, () => {
+        // Update tab count label & refresh list behind modal
+        const latest = RMTP.hires.forEvents(modalHiresIds);
+        const openN = latest.filter((h) => RMTP.hires.getMeta(h).hiresStatus !== 'Answered').length;
+        const tabBtn = m.root.querySelector('[data-modal-tab="hires"]');
+        if (tabBtn) {
+          tabBtn.textContent = 'Hires Desk' + (latest.length ? ' (' + (openN > 0 ? openN + ' open' : latest.length) + ')' : '');
+        }
+        render();
+      });
+    }
+
+    const modalHiresNewBtn = m.root.querySelector('#modal-hires-new-btn');
+    if (modalHiresNewBtn && RMTP.hires && typeof RMTP.hires.openRequestModal === 'function') {
+      modalHiresNewBtn.addEventListener('click', () => {
+        RMTP.hires.openRequestModal(null, { linkedEventId: ev.id }, () => {
+          if (modalHiresContainer && RMTP.hires.renderEventHiresPanel) {
+            RMTP.hires.renderEventHiresPanel(modalHiresContainer, ev, group, () => render());
+          }
+          const tabBtn = m.root.querySelector('[data-modal-tab="hires"]');
+          if (tabBtn) {
+            const latest = RMTP.hires.forEvents(modalHiresIds);
+            const openN = latest.filter((h) => RMTP.hires.getMeta(h).hiresStatus !== 'Answered').length;
+            tabBtn.textContent = 'Hires Desk' + (latest.length ? ' (' + (openN > 0 ? openN + ' open' : latest.length) + ')' : '');
+            tabBtn.click();
+          }
+          render();
+        });
+      });
+    }
+
+
+    m.root.querySelectorAll('[data-modal-day-idx]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const dIdx = +btn.getAttribute('data-modal-day-idx');
+        if (group && Array.isArray(group.days) && group.days[dIdx]) {
+          const targetDay = group.days[dIdx];
+          const curSpaceNorm = formatSpaceLabel(ev.space).toLowerCase();
+          const preferredEv = targetDay.events.find(x => formatSpaceLabel(x.space).toLowerCase() === curSpaceNorm) || targetDay.events[0];
+          if (preferredEv) {
+            const flatIdx = group.events.findIndex(x => x.id === preferredEv.id);
+            m.close();
+            openEventModal(preferredEv, group, flatIdx !== -1 ? flatIdx : 0);
+          }
+        }
+      });
+    });
 
     m.root.querySelectorAll('[data-group-tab]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -3465,71 +4201,68 @@ RMTP.views.advancing = function (el, params, query) {
 
   function resolveEventGroup(e, grp) {
     if (grp && Array.isArray(grp.events) && grp.events.length > 1) {
+      if (Array.isArray(grp.days) && grp.days.length > 0) return grp;
+      // Enrich legacy group objects with day-level metadata
+      const rebuilt = buildConsecutiveDayRuns(grp.events);
+      const matchedRun = rebuilt.find(item => item && item.isGroup);
+      if (matchedRun) return matchedRun;
       return grp;
     }
     if (!e) return null;
 
-    // Handle multi-room array space inside single record
-    if (Array.isArray(e.space) && e.space.length > 1) {
-      const subEvs = e.space.map((sp, idx) => Object.assign({}, e, {
+    // Handle multi-room spaces inside single record
+    const parsedSpaces = parseUniqueSpaces(e.space);
+    if (parsedSpaces.length > 1) {
+      const subEvs = parsedSpaces.map((sp, idx) => Object.assign({}, e, {
         id: idx === 0 ? e.id : (e.id + '__space_' + idx),
         space: sp,
         _subIndex: idx
       }));
+      const normD = normalizeDateStr(e.date);
+      const todayStr = getTodayString();
       return {
         isGroup: true,
+        isMultiDay: false,
+        isMultiRoom: true,
         groupId: e.groupId || ('multi-' + e.id),
-        date: e.date,
+        date: normD || e.date,
+        startDate: normD || e.date,
+        endDate: normD || e.date,
+        nextActiveDate: normD || e.date,
         name: e.name,
+        distinctSpaces: parsedSpaces,
+        days: [{ date: normD || e.date, dayNumber: 1, isToday: normD === todayStr, isPast: !!(normD && normD < todayStr), events: subEvs }],
         events: subEvs
       };
     }
 
-    // Check siblings in store sharing groupId, artifaxId, or matching (name, date)
-    const all = store.all('advancing').filter(x => !x.deleted);
-    let matches = [];
-    if (e.groupId) {
-      matches = all.filter(x => x.groupId === e.groupId);
-    } else if (e.artifaxId && e.name && e.name !== 'Untitled') {
-      matches = all.filter(x => x.artifaxId === e.artifaxId || (x.name && x.name.toLowerCase().trim() === e.name.toLowerCase().trim() && x.date === e.date));
-    } else if (e.name && e.name.trim() && e.name !== 'Untitled' && e.date) {
-      matches = all.filter(x => x.name && x.name.toLowerCase().trim() === e.name.toLowerCase().trim() && x.date === e.date);
-    }
+    // Resolve consecutive-day run or same-day multi-room takeover from store
+    const targetDeleted = !!e.deleted;
+    const targetCancelled = isEvCancelled(e);
+    const targetKey = getRunIdentityKey(e);
+    const targetNameNorm = (e.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
-    const uniqueBySpace = [];
-    const seen = new Set();
-    matches.forEach(m => {
-      const sp = Array.isArray(m.space) ? m.space[0] : m.space;
-      if (sp && !seen.has(sp)) {
-        seen.add(sp);
-        uniqueBySpace.push(m);
+    const candidates = (store.all('advancing') || []).filter((x) => {
+      if (!!x.deleted !== targetDeleted) return false;
+      if (isEvCancelled(x) !== targetCancelled) return false;
+      if (x.id === e.id) return true;
+      if (getRunIdentityKey(x) === targetKey) return true;
+      if (e.artifaxId && x.artifaxId && x.artifaxId === e.artifaxId) return true;
+      if (targetNameNorm && targetNameNorm !== 'untitled') {
+        const xNameNorm = (x.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+        if (xNameNorm === targetNameNorm) return true;
       }
+      return false;
     });
 
-    if (uniqueBySpace.length > 1) {
-      const spaceOrder = {
-        'The Stage': 1, 'The Studio': 2, 'The Mix': 3, 
-        'Cinema 1': 4, 'Screen One': 4, 'Screen 1': 4,
-        'Cinema 2': 5, 'Screen Two': 5, 'Screen 2': 5,
-        'Cinema 3': 6, 'Screen Three': 6, 'Screen 3': 6,
-        'Bar & Kitchen': 7
-      };
-      uniqueBySpace.sort((a, b) => {
-        const sa = a.space || '';
-        const sb = b.space || '';
-        const wa = spaceOrder[sa] || 99;
-        const wb = spaceOrder[sb] || 99;
-        return wa !== wb ? wa - wb : sa.localeCompare(sb);
-      });
-      return {
-        isGroup: true,
-        groupId: e.groupId || ('implicit-' + (e.name || '').toLowerCase().trim().replace(/[^a-z0-9]/g, '-') + '-' + e.date),
-        date: e.date,
-        name: e.name,
-        events: uniqueBySpace
-      };
-    }
-    return null;
+    if (candidates.length <= 1) return null;
+
+    const runs = buildConsecutiveDayRuns(candidates);
+    const match = runs.find((item) =>
+      item && item.isGroup && Array.isArray(item.events) && item.events.length > 1 &&
+      item.events.some((evItem) => evItem.id === e.id || (Array.isArray(evItem._mergedIds) && evItem._mergedIds.includes(e.id)))
+    );
+    return match || null;
   }
 
   function buildSingleRoomPrintHtml(ev, isFirstPage = true) {
@@ -3869,8 +4602,24 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   function buildWholeVenuePrintHtml(group, selectedRoomEvents = [], isFirstPage = true) {
-    const dateStr = group.date ? ui.formatDate(group.date) : 'TBC';
-    const spacesList = group.events.map(e => e.space || 'Space').join(', ');
+    const distinctDates = Array.from(new Set(group.events.map(e => normalizeDateStr(e.date)).filter(Boolean))).sort();
+    const isMultiDay = !!(group.isMultiDay || distinctDates.length > 1);
+    const dayNumByDate = new Map();
+    distinctDates.forEach((d, idx) => dayNumByDate.set(d, idx + 1));
+
+    const dateStr = isMultiDay
+      ? formatDateRangeLabel(group.startDate || distinctDates[0], group.endDate || distinctDates[distinctDates.length - 1])
+      : (group.date ? ui.formatDate(group.date) : 'TBC');
+    const distinctSpaces = (group.distinctSpaces && group.distinctSpaces.length)
+      ? group.distinctSpaces
+      : Array.from(new Set(group.events.map(e => formatSpaceLabel(e.space)).filter(Boolean)));
+    const spacesList = distinctSpaces.join(', ');
+
+    const dayLabelFor = (ev) => {
+      const nd = normalizeDateStr(ev.date);
+      const dNum = dayNumByDate.get(nd);
+      return (dNum ? ('Day ' + dNum + ' \u00b7 ') : '') + formatShortDayDate(nd || ev.date);
+    };
 
     // Primary Lead
     let leadLabel = 'Unassigned';
@@ -3907,7 +4656,7 @@ RMTP.views.advancing = function (el, params, query) {
       });
     });
 
-    // Cross-room specials & hazards compilation
+    // Cross-room/cross-day specials & hazards compilation
     const specialsHazards = [
       { key: 'hazer', label: 'Hazer / Fogger', rooms: [] },
       { key: 'lasers', label: 'Lasers', rooms: [] },
@@ -3918,22 +4667,27 @@ RMTP.views.advancing = function (el, params, query) {
     const allFloorTags = [];
     const specialNotesList = [];
 
+    const pushUniqueRoom = (arr, label) => {
+      if (label && !arr.includes(label)) arr.push(label);
+    };
+
     group.events.forEach(ge => {
-      const sp = ge.space || 'Space';
+      const sp = formatSpaceLabel(ge.space) || 'Space';
+      const tagLabel = isMultiDay ? ('Day ' + (dayNumByDate.get(normalizeDateStr(ge.date)) || '?') + ' ' + sp) : sp;
       const prod = getProductionPackage(ge);
       const s = prod.specials || {};
-      if (s.hazer) specialsHazards[0].rooms.push(sp);
-      if (s.lasers) specialsHazards[1].rooms.push(sp);
+      if (s.hazer) pushUniqueRoom(specialsHazards[0].rooms, tagLabel);
+      if (s.lasers) pushUniqueRoom(specialsHazards[1].rooms, tagLabel);
       if (s.heavy_power || (prod.floor_tags && prod.floor_tags.some(t => /32A|63A|3-Phase|Power/i.test(t)))) {
-        specialsHazards[2].rooms.push(sp);
+        pushUniqueRoom(specialsHazards[2].rooms, tagLabel);
       }
-      if (s.video) specialsHazards[3].rooms.push(sp);
-      if (s.pyro) specialsHazards[4].rooms.push(sp);
+      if (s.video) pushUniqueRoom(specialsHazards[3].rooms, tagLabel);
+      if (s.pyro) pushUniqueRoom(specialsHazards[4].rooms, tagLabel);
       if (Array.isArray(prod.floor_tags)) {
         prod.floor_tags.forEach(t => { if (!allFloorTags.includes(t)) allFloorTags.push(t); });
       }
       if (prod.special_notes && prod.special_notes.trim()) {
-        specialNotesList.push('<strong>' + ui.esc(sp) + ':</strong> ' + ui.esc(prod.special_notes.trim()));
+        specialNotesList.push('<strong>' + ui.esc(tagLabel) + ':</strong> ' + ui.esc(prod.special_notes.trim()));
       }
     });
 
@@ -3942,10 +4696,14 @@ RMTP.views.advancing = function (el, params, query) {
     // Master Chronological Schedule Compilation
     const masterScheduleItems = [];
     group.events.forEach(ge => {
-      const sp = ge.space || 'General';
+      const sp = formatSpaceLabel(ge.space) || 'General';
+      const nd = normalizeDateStr(ge.date) || '';
+      const dLabel = isMultiDay ? dayLabelFor(ge) : '';
       const sItems = Array.isArray(ge.schedule_items) ? ge.schedule_items : (Array.isArray(ge.scheduleItems) ? ge.scheduleItems : []);
       sItems.forEach(it => {
         masterScheduleItems.push({
+          date: nd,
+          dayLabel: dLabel,
           time: it.time || '\u2014',
           space: sp,
           label: it.customName || it.label || it.type || 'Item',
@@ -3956,6 +4714,8 @@ RMTP.views.advancing = function (el, params, query) {
       });
       if (isScreenSpace(sp) && (ge.screening_starts || ge.startTime)) {
         masterScheduleItems.push({
+          date: nd,
+          dayLabel: dLabel,
           time: ge.screening_starts || ge.startTime || '\u2014',
           space: sp,
           label: ge.name + ' (Film Screening)',
@@ -3967,6 +4727,10 @@ RMTP.views.advancing = function (el, params, query) {
     });
 
     masterScheduleItems.sort((a, b) => {
+      if (isMultiDay) {
+        const dCmp = (a.date || '9999').localeCompare(b.date || '9999');
+        if (dCmp !== 0) return dCmp;
+      }
       if (!a.time || a.time === '\u2014') return 1;
       if (!b.time || b.time === '\u2014') return -1;
       return a.time.localeCompare(b.time);
@@ -3981,18 +4745,21 @@ RMTP.views.advancing = function (el, params, query) {
             '<img src="assets/rm-logo.jpg" alt="Rich Mix" class="adv-print-logo" style="width:44px;height:44px;border-radius:6px;object-fit:cover;border:1px solid #cbd5e1;flex-shrink:0;" />' +
             '<div>' +
               '<div class="adv-print-brand" style="font-family:\'Space Grotesk\',sans-serif;font-size:18px;font-weight:800;color:#0f172a;line-height:1.2;letter-spacing:-0.02em;">RICH MIX</div>' +
-              '<div class="adv-print-sub" style="font-family:\'IBM Plex Mono\',monospace;font-size:10px;color:#64748b;letter-spacing:0.08em;text-transform:uppercase;margin-top:2px;">Tech Portal \u00b7 Whole Venue Technical Advance</div>' +
+              '<div class="adv-print-sub" style="font-family:\'IBM Plex Mono\',monospace;font-size:10px;color:#64748b;letter-spacing:0.08em;text-transform:uppercase;margin-top:2px;">Tech Portal \u00b7 ' + (isMultiDay ? 'Multi-Day Technical Advance' : 'Whole Venue Technical Advance') + '</div>' +
             '</div>' +
           '</div>' +
           '<div style="text-align:right;">' +
-            '<span class="adv-print-badge" style="display:inline-block;padding:3px 8px;border:1.5px solid #d97706;border-radius:6px;font-weight:700;font-size:11px;text-transform:uppercase;background:#fef3c7;color:#92400e;">Master Takeover Brief</span>' +
-            '<div style="font-size:10px;font-family:\'IBM Plex Mono\',monospace;color:#64748b;margin-top:4px;">Date: <strong>' + ui.esc(dateStr) + '</strong></div>' +
+            '<span class="adv-print-badge" style="display:inline-block;padding:3px 8px;border:1.5px solid #d97706;border-radius:6px;font-weight:700;font-size:11px;text-transform:uppercase;background:#fef3c7;color:#92400e;">' + (isMultiDay ? 'Multi-Day Master Brief' : 'Master Takeover Brief') + '</span>' +
+            '<div style="font-size:10px;font-family:\'IBM Plex Mono\',monospace;color:#64748b;margin-top:4px;">' + (isMultiDay ? 'Run: ' : 'Date: ') + '<strong>' + ui.esc(dateStr) + '</strong></div>' +
           '</div>' +
         '</div>' +
 
         '<div class="adv-print-title" style="margin-bottom:4px;font-size:24px;">' + ui.esc(group.name) + '</div>' +
         '<div style="font-size:13px;font-weight:600;color:#334155;margin-bottom:14px;">' +
-          ui.esc(dateStr) + ' \u2014 Whole Venue Takeover \u00b7 ' + group.events.length + ' Spaces (' + ui.esc(spacesList) + ')' +
+          ui.esc(dateStr) + ' \u2014 ' +
+          (isMultiDay
+            ? (distinctDates.length + ' Consecutive Days \u00b7 ' + distinctSpaces.length + ' Space' + (distinctSpaces.length === 1 ? '' : 's') + ' (' + ui.esc(spacesList) + ')')
+            : ('Whole Venue Takeover \u00b7 ' + group.events.length + ' Spaces (' + ui.esc(spacesList) + ')')) +
         '</div>' +
 
         '<div class="adv-print-section">' +
@@ -4011,17 +4778,18 @@ RMTP.views.advancing = function (el, params, query) {
               '<div class="adv-print-val">' + ui.esc(clientContact) + '</div>' +
             '</div>' +
             '<div class="adv-print-field">' +
-              '<div class="adv-print-label">Active Spaces</div>' +
-              '<div class="adv-print-val">' + group.events.length + ' Rooms In Use</div>' +
+              '<div class="adv-print-label">' + (isMultiDay ? 'Run Span' : 'Active Spaces') + '</div>' +
+              '<div class="adv-print-val">' + (isMultiDay ? (distinctDates.length + ' Days / ' + group.events.length + ' Entries') : (group.events.length + ' Rooms In Use')) + '</div>' +
             '</div>' +
           '</div>' +
         '</div>' +
 
         '<div class="adv-print-section">' +
-          '<div class="adv-print-section-title">Cross-Venue Timings & Operations Matrix</div>' +
+          '<div class="adv-print-section-title">' + (isMultiDay ? 'Day-by-Day Timings & Operations Matrix' : 'Cross-Venue Timings & Operations Matrix') + '</div>' +
           '<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:4px;">' +
             '<thead>' +
               '<tr style="border-bottom:1.5px solid #cbd5e1;text-align:left;color:#475569;font-size:10px;text-transform:uppercase;">' +
+                (isMultiDay ? '<th style="padding:4px 6px;">Day / Date</th>' : '') +
                 '<th style="padding:4px 6px;">Space / Room</th>' +
                 '<th style="padding:4px 6px;">Discipline</th>' +
                 '<th style="padding:4px 6px;">Event Times</th>' +
@@ -4041,7 +4809,8 @@ RMTP.views.advancing = function (el, params, query) {
                 const geTechStr = geTechs.length ? geTechs.join(', ') : 'Unassigned';
                 return (
                   '<tr style="border-bottom:1px solid #e2e8f0;">' +
-                    '<td style="padding:5px 6px;font-weight:700;color:#0f172a;">' + ui.esc(ge.space || 'Room') + '</td>' +
+                    (isMultiDay ? '<td style="padding:5px 6px;font-family:monospace;font-weight:700;color:#0284c7;white-space:nowrap;">' + ui.esc(dayLabelFor(ge)) + '</td>' : '') +
+                    '<td style="padding:5px 6px;font-weight:700;color:#0f172a;">' + ui.esc(formatSpaceLabel(ge.space) || 'Room') + '</td>' +
                     '<td style="padding:5px 6px;color:#475569;">' + ui.esc(ge.category || (isCin ? 'Cinema' : 'Live')) + '</td>' +
                     '<td style="padding:5px 6px;font-family:monospace;font-weight:600;">' + ui.esc(times || 'TBC') + '</td>' +
                     '<td style="padding:5px 6px;font-family:monospace;">' + ui.esc(ge.load_in || ge.loadIn || '\u2014') + '</td>' +
@@ -4090,6 +4859,7 @@ RMTP.views.advancing = function (el, params, query) {
             '<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:4px;">' +
               '<thead>' +
                 '<tr style="border-bottom:1.5px solid #cbd5e1;text-align:left;color:#475569;font-size:10px;text-transform:uppercase;">' +
+                  (isMultiDay ? '<th style="padding:4px 6px;width:110px;">Day</th>' : '') +
                   '<th style="padding:4px 6px;width:70px;">Time</th>' +
                   '<th style="padding:4px 6px;width:95px;">Space</th>' +
                   '<th style="padding:4px 6px;">Item / Performance</th>' +
@@ -4101,6 +4871,7 @@ RMTP.views.advancing = function (el, params, query) {
               '<tbody>' +
                 masterScheduleItems.map(it => (
                   '<tr style="border-bottom:1px solid #f1f5f9;">' +
+                    (isMultiDay ? '<td style="padding:4px 6px;font-family:monospace;font-weight:600;color:#475569;white-space:nowrap;">' + ui.esc(it.dayLabel) + '</td>' : '') +
                     '<td style="padding:4px 6px;font-weight:700;font-family:monospace;color:#0f172a;">' + ui.esc(it.time) + '</td>' +
                     '<td style="padding:4px 6px;font-weight:600;color:#0284c7;">' + ui.esc(it.space) + '</td>' +
                     '<td style="padding:4px 6px;font-weight:500;color:#0f172a;">' + ui.esc(it.label) + '</td>' +
@@ -4115,7 +4886,7 @@ RMTP.views.advancing = function (el, params, query) {
         ) : '') +
 
         '<div class="adv-print-section">' +
-          '<div class="adv-print-section-title">Space-by-Space Technical Summaries</div>' +
+          '<div class="adv-print-section-title">' + (isMultiDay ? 'Day-by-Day & Space Technical Summaries' : 'Space-by-Space Technical Summaries') + '</div>' +
           '<div style="display:flex;flex-direction:column;gap:8px;">' +
             group.events.map(ge => {
               const geTechs = RMTP.eventTechnicians(ge).map(techLabel).filter(Boolean);
@@ -4126,11 +4897,12 @@ RMTP.views.advancing = function (el, params, query) {
               const outLen = (tReqs.channel_list && Array.isArray(tReqs.channel_list.outputs)) ? tReqs.channel_list.outputs.length : 0;
               const prod = getProductionPackage(ge);
               const notes = (ge.techInfo || ge.notes || ge.artifaxNotes || '').trim();
+              const headerPrefix = isMultiDay ? (dayLabelFor(ge) + ' \u2014 ') : '';
 
               return (
                 '<div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;padding:8px 10px;font-size:11px;">' +
                   '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;border-bottom:1px solid #e2e8f0;padding-bottom:4px;">' +
-                    '<span style="font-weight:800;font-size:12px;color:#0f172a;">' + ui.esc(ge.space || 'Room') + ' \u2014 ' + ui.esc(ge.category || (isCin ? 'Cinema' : 'Live Music')) + '</span>' +
+                    '<span style="font-weight:800;font-size:12px;color:#0f172a;">' + ui.esc(headerPrefix + (formatSpaceLabel(ge.space) || 'Room')) + ' \u2014 ' + ui.esc(ge.category || (isCin ? 'Cinema' : 'Live Music')) + '</span>' +
                     '<span style="color:#64748b;font-size:10px;">Crew: <strong>' + ui.esc(geTechStr) + '</strong></span>' +
                   '</div>' +
                   (notes ? '<div style="white-space:pre-wrap;color:#334155;margin-bottom:4px;font-size:11px;background:#ffffff;padding:4px 6px;border-radius:4px;border:1px solid #e2e8f0;">' + ui.esc(notes) + '</div>' : '<div style="color:#94a3b8;font-style:italic;margin-bottom:4px;">No custom room notes.</div>') +
@@ -4146,7 +4918,7 @@ RMTP.views.advancing = function (el, params, query) {
         '</div>' +
 
         '<div class="adv-print-footer">' +
-          '<span>Rich Mix Tech Portal \u00b7 Whole Venue Advance Master Briefing</span>' +
+          '<span>Rich Mix Tech Portal \u00b7 ' + (isMultiDay ? 'Multi-Day Technical Advance Master Briefing' : 'Whole Venue Advance Master Briefing') + '</span>' +
           '<span>Exported on ' + new Date().toLocaleString('en-GB') + '</span>' +
         '</div>' +
       '</div>'
@@ -4156,24 +4928,43 @@ RMTP.views.advancing = function (el, params, query) {
   function openExportAdvanceModal(group, currentEv) {
     if (!group || !Array.isArray(group.events) || !group.events.length) return;
 
-    const spacesList = group.events.map(e => e.space || 'Space').join(', ');
-    const dateStr = group.date ? ui.formatDate(group.date) : 'TBC';
+    const todayStr = getTodayString();
+    const distinctDates = Array.from(new Set(group.events.map(e => normalizeDateStr(e.date)).filter(Boolean))).sort();
+    const isMultiDay = !!(group.isMultiDay || distinctDates.length > 1);
+    const daysList = (Array.isArray(group.days) && group.days.length > 0)
+      ? group.days
+      : distinctDates.map((d, i) => ({
+          date: d,
+          dayNumber: i + 1,
+          isToday: d === todayStr,
+          isPast: d < todayStr,
+          events: group.events.filter(e => normalizeDateStr(e.date) === d)
+        }));
+    const distinctSpaces = (group.distinctSpaces && group.distinctSpaces.length)
+      ? group.distinctSpaces
+      : Array.from(new Set(group.events.map(e => formatSpaceLabel(e.space)).filter(Boolean)));
+    const dateStr = isMultiDay
+      ? formatDateRangeLabel(group.startDate || distinctDates[0], group.endDate || distinctDates[distinctDates.length - 1])
+      : (group.date ? ui.formatDate(group.date) : 'TBC');
 
-    const roomCheckboxesHtml = group.events.map((e) => {
+    const renderCheckboxRow = (e) => {
       const times = [e.startTime, e.finishTime].filter(Boolean).join(' \u2013 ');
       const techs = RMTP.eventTechnicians(e).map(techLabel).filter(Boolean);
       const techStr = techs.length ? techs.join(', ') : 'Unassigned';
       const isCinema = isScreenSpace(e.space);
-      const isCurrent = currentEv && (currentEv.id === e.id || currentEv.space === e.space);
+      const isCurrent = currentEv && currentEv.id === e.id;
+      const evDate = normalizeDateStr(e.date) || '';
+      const isPastRow = !!(evDate && evDate < todayStr);
 
       return (
-        '<label class="flex items-start gap-3 p-3 rounded-lg border border-line bg-panel2/40 hover:bg-panel2 cursor-pointer transition select-none">' +
-          '<input type="checkbox" class="exp-room-cb mt-0.5 w-4 h-4 rounded accent-[var(--accent)] cursor-pointer" data-room-id="' + ui.esc(e.id) + '" checked />' +
+        '<label class="flex items-start gap-3 p-2.5 rounded-lg border border-line bg-panel2/40 hover:bg-panel2 cursor-pointer transition select-none">' +
+          '<input type="checkbox" class="exp-room-cb mt-0.5 w-4 h-4 rounded accent-[var(--accent)] cursor-pointer" data-room-id="' + ui.esc(e.id) + '" data-ev-date="' + ui.esc(evDate) + '" checked />' +
           '<div class="min-w-0 flex-1">' +
             '<div class="flex items-center gap-2 flex-wrap mb-0.5">' +
-              '<span class="font-semibold text-sm text-ink">' + ui.esc(e.space) + '</span>' +
+              '<span class="font-semibold text-sm text-ink">' + ui.esc(formatSpaceLabel(e.space)) + '</span>' +
               (isCinema ? '<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-accent/15 text-accent border border-accent/30 font-semibold">Cinema</span>' : '<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-info/15 text-info border border-info/30 font-semibold">Live Space</span>') +
-              (isCurrent ? '<span class="text-[10px] font-mono text-muted">(Current Room)</span>' : '') +
+              (isCurrent ? '<span class="text-[10px] font-mono text-muted">(Viewing)</span>' : '') +
+              (isMultiDay && isPastRow ? '<span class="text-[10px] font-mono text-muted">(Past)</span>' : '') +
             '</div>' +
             '<div class="text-xs text-muted flex items-center gap-3 flex-wrap">' +
               (times ? '<span class="flex items-center gap-1 font-mono">' + ui.icon('clock', 'w-3 h-3 text-accent') + ui.esc(times) + '</span>' : '') +
@@ -4182,7 +4973,25 @@ RMTP.views.advancing = function (el, params, query) {
           '</div>' +
         '</label>'
       );
-    }).join('');
+    };
+
+    const roomCheckboxesHtml = isMultiDay
+      ? daysList.map((day) => (
+          '<div class="space-y-1.5">' +
+            '<div class="flex items-center justify-between text-[11px] font-mono uppercase tracking-wider text-muted pt-1">' +
+              '<span class="font-semibold text-ink">Day ' + day.dayNumber + ' \u00b7 ' + ui.esc(formatShortDayDate(day.date)) + (day.isToday ? ' (Today)' : '') + '</span>' +
+              '<span>' + day.events.length + ' space' + (day.events.length === 1 ? '' : 's') + '</span>' +
+            '</div>' +
+            '<div class="grid gap-1.5">' +
+              day.events.map(renderCheckboxRow).join('') +
+            '</div>' +
+          '</div>'
+        )).join('')
+      : group.events.map(renderCheckboxRow).join('');
+
+    const masterLabel = isMultiDay ? 'Multi-Day Master Advance Brief' : 'Whole Venue Advance (Master Brief)';
+    const masterShort = isMultiDay ? 'Multi-Day Master' : 'Whole Venue Master';
+    const sheetUnit = isMultiDay ? 'Day Sheet' : 'Room Sheet';
 
     const modalBody =
       '<div class="space-y-4 text-xs">' +
@@ -4191,9 +5000,13 @@ RMTP.views.advancing = function (el, params, query) {
           '<div class="min-w-0 flex-1">' +
             '<div class="font-display text-sm sm:text-base font-bold text-ink truncate">' + ui.esc(group.name) + '</div>' +
             '<div class="text-muted text-[11px] mt-0.5 flex items-center gap-2 flex-wrap">' +
-              '<span class="font-medium text-ink">' + dateStr + '</span>' +
+              '<span class="font-medium text-ink font-mono">' + ui.esc(dateStr) + '</span>' +
               '<span>\u00b7</span>' +
-              '<span class="text-accent font-semibold">' + group.events.length + ' Spaces in Takeover</span>' +
+              '<span class="text-accent font-semibold">' +
+                (isMultiDay
+                  ? (daysList.length + ' Days \u00b7 ' + distinctSpaces.length + ' Space' + (distinctSpaces.length === 1 ? '' : 's'))
+                  : (group.events.length + ' Spaces in Takeover')) +
+              '</span>' +
             '</div>' +
           '</div>' +
         '</div>' +
@@ -4203,38 +5016,41 @@ RMTP.views.advancing = function (el, params, query) {
             '<input type="checkbox" id="exp-opt-whole-venue" checked class="mt-0.5 w-4 h-4 rounded accent-[var(--accent)] cursor-pointer" />' +
             '<div class="min-w-0 flex-1">' +
               '<div class="font-semibold text-sm text-ink flex items-center gap-2 flex-wrap">' +
-                '<span>Whole Venue Advance (Master Brief)</span>' +
+                '<span>' + masterLabel + '</span>' +
                 '<span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-accent/20 text-accent font-bold">Recommended</span>' +
               '</div>' +
               '<p class="text-[11px] text-muted mt-1 leading-relaxed">' +
-                'Cross-room master schedule matrix, consolidated crew allocation, venue-wide production specials (hazers, power drops, pyro) and executive technical notes.' +
+                (isMultiDay
+                  ? 'Consolidated run cover sheet with day-by-day timings matrix, crew assignments, production specials & hazards, and chronological master schedule.'
+                  : 'Cross-room master schedule matrix, consolidated crew allocation, venue-wide production specials (hazers, power drops, pyro) and executive technical notes.') +
               '</p>' +
             '</div>' +
           '</label>' +
         '</div>' +
 
         '<div>' +
-          '<div class="flex items-center justify-between mb-2">' +
-            '<span class="eyebrow text-ink font-semibold">Individual Room Advance Sheets</span>' +
+          '<div class="flex items-center justify-between gap-2 flex-wrap mb-2">' +
+            '<span class="eyebrow text-ink font-semibold">' + (isMultiDay ? 'Individual Day / Room Advance Sheets' : 'Individual Room Advance Sheets') + '</span>' +
             '<div class="flex items-center gap-2 text-[11px]">' +
               '<button type="button" id="exp-select-all" class="text-accent hover:underline font-semibold cursor-pointer">Select All</button>' +
+              (isMultiDay ? '<span class="text-muted">\u00b7</span><button type="button" id="exp-select-upcoming" class="text-ink hover:underline font-semibold cursor-pointer">Upcoming Days Only</button>' : '') +
               '<span class="text-muted">\u00b7</span>' +
               '<button type="button" id="exp-select-none" class="text-muted hover:text-ink cursor-pointer">Clear All</button>' +
             '</div>' +
           '</div>' +
-          '<div class="grid gap-2">' +
+          '<div class="grid gap-2 max-h-64 overflow-y-auto pr-1">' +
             roomCheckboxesHtml +
           '</div>' +
         '</div>' +
 
         '<div class="p-3 rounded-lg bg-panel border border-line text-[11px] font-mono text-muted flex items-center justify-between">' +
           '<span>Export Plan:</span>' +
-          '<span id="exp-summary-text" class="text-ink font-semibold">Whole Venue Master + ' + group.events.length + ' Room Sheet' + (group.events.length > 1 ? 's' : '') + '</span>' +
+          '<span id="exp-summary-text" class="text-ink font-semibold">' + masterShort + ' + ' + group.events.length + ' ' + sheetUnit + (group.events.length > 1 ? 's' : '') + '</span>' +
         '</div>' +
       '</div>';
 
     const m = ui.modal({
-      title: 'Export Multi-Room Advances',
+      title: isMultiDay ? 'Export Multi-Day Technical Advance' : 'Export Multi-Room Advances',
       size: 'max-w-lg',
       body: modalBody,
       footer:
@@ -4264,8 +5080,8 @@ RMTP.views.advancing = function (el, params, query) {
       if (btnPrint) btnPrint.disabled = false;
 
       let parts = [];
-      if (isWhl) parts.push('Whole Venue Master');
-      if (checkedRooms > 0) parts.push(checkedRooms + ' Room Sheet' + (checkedRooms > 1 ? 's' : ''));
+      if (isWhl) parts.push(masterShort);
+      if (checkedRooms > 0) parts.push(checkedRooms + ' ' + sheetUnit + (checkedRooms > 1 ? 's' : ''));
       if (summaryText) summaryText.textContent = parts.join(' + ');
     }
 
@@ -4275,6 +5091,15 @@ RMTP.views.advancing = function (el, params, query) {
     const btnAll = m.root.querySelector('#exp-select-all');
     if (btnAll) btnAll.addEventListener('click', () => {
       roomCbs.forEach(cb => { cb.checked = true; });
+      updateSummary();
+    });
+
+    const btnUpcoming = m.root.querySelector('#exp-select-upcoming');
+    if (btnUpcoming) btnUpcoming.addEventListener('click', () => {
+      roomCbs.forEach(cb => {
+        const d = cb.getAttribute('data-ev-date') || '';
+        cb.checked = !d || d >= todayStr;
+      });
       updateSummary();
     });
 
@@ -4320,8 +5145,12 @@ RMTP.views.advancing = function (el, params, query) {
         root.innerHTML = compiledHtml;
 
         const originalTitle = document.title;
-        const fileDate = group.date ? group.date.slice(0, 10) : 'TBC';
-        const spaceDescr = isWhl ? 'Whole Venue Advance' : selectedEvents.map(e => e.space).join(', ');
+        const fileDate = isMultiDay
+          ? ((group.startDate || distinctDates[0] || 'TBC').slice(0, 10) + '_to_' + (group.endDate || distinctDates[distinctDates.length - 1] || 'TBC').slice(0, 10))
+          : (group.date ? group.date.slice(0, 10) : 'TBC');
+        const spaceDescr = isWhl
+          ? (isMultiDay ? 'Multi-Day Technical Advance' : 'Whole Venue Advance')
+          : Array.from(new Set(selectedEvents.map(e => formatSpaceLabel(e.space)))).join(', ');
         document.title = `${fileDate} - ${group.name || 'Event'} - Rich Mix: Technical Advance - ${spaceDescr}`;
 
         document.body.classList.add('is-printing');
@@ -5115,6 +5944,7 @@ RMTP.views.advancing = function (el, params, query) {
         category: e.category || '',
         responsibleLead: RMTP.getAdvancingLeadId(e) || '',
         date: e.date || '',
+        _origDate: normalizeDateStr(e.date) || '',
         clientContact: e.clientContact || '',
         startTime: e.startTime || '',
         finishTime: e.finishTime || '',
@@ -5167,11 +5997,21 @@ RMTP.views.advancing = function (el, params, query) {
 
     if (activeGroup && Array.isArray(activeGroup.events) && activeGroup.events.length > 1) {
       spaceDrafts = activeGroup.events.map(createDraftFromEvent);
-      if (typeof initialSpaceIndex === 'number' && initialSpaceIndex >= 0 && initialSpaceIndex < spaceDrafts.length) {
+      const existingSpace = existing && existing.space ? (Array.isArray(existing.space) ? existing.space[0] : existing.space) : '';
+      const existingDate = existing && existing.date ? normalizeDateStr(existing.date) : '';
+      if (typeof initialSpaceIndex === 'number' && initialSpaceIndex >= 0 && initialSpaceIndex < spaceDrafts.length && (!existing || !existing.id || spaceDrafts[initialSpaceIndex].id === existing.id)) {
         activeSpaceIndex = initialSpaceIndex;
-      } else if (existing && existing.space) {
-        const found = spaceDrafts.findIndex(d => d.space === (Array.isArray(existing.space) ? existing.space[0] : existing.space));
-        activeSpaceIndex = found !== -1 ? found : 0;
+      } else if (existing && existing.id) {
+        const byId = spaceDrafts.findIndex(d => d.id === existing.id || (d.rawEvent && Array.isArray(d.rawEvent._mergedIds) && d.rawEvent._mergedIds.includes(existing.id)));
+        if (byId !== -1) {
+          activeSpaceIndex = byId;
+        } else {
+          const byDateSpace = spaceDrafts.findIndex(d => normalizeDateStr(d.date) === existingDate && formatSpaceLabel(d.space) === formatSpaceLabel(existingSpace));
+          const bySpace = existingSpace ? spaceDrafts.findIndex(d => formatSpaceLabel(d.space) === formatSpaceLabel(existingSpace)) : -1;
+          activeSpaceIndex = byDateSpace !== -1 ? byDateSpace : (bySpace !== -1 ? bySpace : Math.min(Math.max(0, initialSpaceIndex || 0), spaceDrafts.length - 1));
+        }
+      } else {
+        activeSpaceIndex = Math.min(Math.max(0, initialSpaceIndex || 0), spaceDrafts.length - 1);
       }
     } else {
       spaceDrafts = [createDraftFromEvent(existing || {})];
@@ -5264,25 +6104,39 @@ RMTP.views.advancing = function (el, params, query) {
 
     const artifaxHistoryHtml = renderArtifaxHistorySection(ev, true);
 
+    const initialDistinctDates = Array.from(new Set(spaceDrafts.map(d => normalizeDateStr(d.date)).filter(Boolean)));
+    const initialIsMultiDay = initialDistinctDates.length > 1;
+
     const m = ui.modal({
-      title: existing ? (spaceDrafts.length > 1 ? 'Edit Multi-Room Technical Advance' : 'Edit Technical Advance') : 'Create Technical Advance',
+      title: existing
+        ? (initialIsMultiDay ? 'Edit Multi-Day Technical Advance' : (spaceDrafts.length > 1 ? 'Edit Multi-Room Technical Advance' : 'Edit Technical Advance'))
+        : 'Create Technical Advance',
       size: 'md:max-w-4xl',
       body:
         '<div class="grid gap-4">' +
-          /* ================= MULTI-ROOM SPACE TABS BAR ================= */
-          '<div id="editor-space-tabs-bar" class="p-3 bg-panel2/60 border border-line rounded-xl ' + (spaceDrafts.length > 1 ? '' : 'hidden') + '">' +
-            '<div class="flex items-center justify-between gap-2 flex-wrap mb-2">' +
-              '<div class="flex items-center gap-1.5">' +
-                '<span class="text-[11px] font-bold text-accent uppercase tracking-wider flex items-center gap-1.5">' +
-                  ui.icon('grid', 'w-3.5 h-3.5') + '<span>Multi-Room Event Spaces</span>' +
+          /* ================= MULTI-DAY / MULTI-ROOM TABS BAR ================= */
+          '<div id="editor-space-tabs-bar" class="p-3 bg-panel2/60 border border-line rounded-xl grid gap-2">' +
+            '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+              '<div class="flex items-center gap-1.5 min-w-0">' +
+                '<span class="text-[11px] font-bold text-accent uppercase tracking-wider flex items-center gap-1.5 shrink-0">' +
+                  ui.icon('calendar', 'w-3.5 h-3.5') + '<span id="editor-tabs-heading">' + (initialIsMultiDay ? 'Multi-Day Run' : (spaceDrafts.length > 1 ? 'Multi-Room Event Spaces' : 'Run & Spaces')) + '</span>' +
                 '</span>' +
-                '<span class="text-[10px] text-muted font-medium hidden sm:inline">\u00b7 Tab between spaces to configure technical riders</span>' +
+                '<span id="editor-tabs-subtitle" class="text-[10px] text-muted font-medium hidden sm:inline truncate">\u00b7 ' + (initialIsMultiDay ? 'Switch days to configure per-day timings, crew & schedules' : 'Add consecutive days or additional rooms to this advance') + '</span>' +
               '</div>' +
-              '<button type="button" id="btn-add-space-to-event" class="btn btn-ghost !py-1 !px-2.5 text-xs text-accent font-semibold flex items-center gap-1 shrink-0 border border-line/60 bg-panel hover:bg-panel2 cursor-pointer">' +
-                ui.icon('plus', 'w-3.5 h-3.5') + '<span>Add Space</span>' +
-              '</button>' +
+              '<div class="flex items-center gap-1.5 flex-wrap shrink-0">' +
+                '<button type="button" id="btn-copy-prev-day" class="hidden btn btn-ghost !py-1 !px-2.5 text-xs text-ink font-semibold flex items-center gap-1 shrink-0 whitespace-nowrap border border-line/60 bg-panel hover:bg-panel2 cursor-pointer" title="Copy timings, schedule & technical setup from the previous day (keeps per-day crew)">' +
+                  ui.icon('clip', 'w-3.5 h-3.5 text-accent') + '<span>Copy Prev Day</span>' +
+                '</button>' +
+                '<button type="button" id="btn-add-day-to-event" class="btn btn-ghost !py-1 !px-2.5 text-xs text-accent font-semibold flex items-center gap-1 shrink-0 whitespace-nowrap border border-line/60 bg-panel hover:bg-panel2 cursor-pointer">' +
+                  ui.icon('plus', 'w-3.5 h-3.5') + '<span>Add Day</span>' +
+                '</button>' +
+                '<button type="button" id="btn-add-space-to-event" class="btn btn-ghost !py-1 !px-2.5 text-xs text-accent font-semibold flex items-center gap-1 shrink-0 whitespace-nowrap border border-line/60 bg-panel hover:bg-panel2 cursor-pointer">' +
+                  ui.icon('plus', 'w-3.5 h-3.5') + '<span>Add Space</span>' +
+                '</button>' +
+              '</div>' +
             '</div>' +
-            '<div class="flex items-center gap-1.5 overflow-x-auto hide-scrollbar pb-0.5" id="space-tabs-container"></div>' +
+            '<div class="hidden flex items-center gap-1.5 overflow-x-auto hide-scrollbar pb-0.5" id="day-tabs-container"></div>' +
+            '<div class="hidden flex items-center gap-1.5 overflow-x-auto hide-scrollbar pb-0.5" id="space-tabs-container"></div>' +
           '</div>' +
           /* ================= CORE EVENT INFO (ALWAYS VISIBLE AT TOP) ================= */
           '<div class="panel p-4 bg-panel border border-line rounded-xl grid gap-4 shadow-xs">' +
@@ -5854,17 +6708,13 @@ RMTP.views.advancing = function (el, params, query) {
         '<div class="flex items-center justify-between w-full gap-2 flex-wrap">' +
           '<div class="flex items-center gap-2">' +
             '<button type="button" id="btn-remove-active-space" class="' + (spaceDrafts.length > 1 ? '' : 'hidden') + ' btn btn-ghost !py-1.5 !px-2.5 text-xs text-danger hover:bg-danger/10 flex items-center gap-1 cursor-pointer border border-danger/30 rounded-lg">' +
-              ui.icon('trash', 'w-3.5 h-3.5') + '<span>Remove Space</span>' +
+              ui.icon('trash', 'w-3.5 h-3.5') + '<span id="btn-remove-active-space-label">Remove Space</span>' +
             '</button>' +
           '</div>' +
           '<div class="flex items-center gap-2">' +
             '<button class="btn btn-ghost" data-cancel>Cancel</button>' +
-            (spaceDrafts.length > 1 ? (
-              '<button type="button" class="btn btn-secondary text-xs font-semibold" id="btn-save-current-space">Save Current Space</button>' +
-              '<button type="button" class="btn btn-primary text-xs font-semibold" id="btn-save-all-spaces" data-primary>Save All Spaces (' + spaceDrafts.length + ')</button>'
-            ) : (
-              '<button class="btn btn-primary" data-save data-primary>' + (existing ? 'Save changes' : 'Add event') + '</button>'
-            )) +
+            '<button type="button" class="' + (spaceDrafts.length > 1 ? '' : 'hidden') + ' btn btn-secondary text-xs font-semibold" id="btn-save-current-space">Save Current</button>' +
+            '<button type="button" class="btn btn-primary text-xs font-semibold" id="btn-save-all-spaces" data-primary>' + (spaceDrafts.length > 1 ? ('Save All (' + spaceDrafts.length + ')') : (existing ? 'Save changes' : 'Add event')) + '</button>' +
           '</div>' +
         '</div>',
     });
@@ -8401,15 +9251,48 @@ RMTP.views.advancing = function (el, params, query) {
       draft.isDirty = true;
     }
 
+    function getDraftDayGroups() {
+      const byDate = new Map();
+      spaceDrafts.forEach((d, idx) => {
+        const key = normalizeDateStr(d.date) || '__undated__';
+        if (!byDate.has(key)) byDate.set(key, []);
+        byDate.get(key).push({ draft: d, idx });
+      });
+      const keys = Array.from(byDate.keys()).sort((a, b) => {
+        if (a === '__undated__') return 1;
+        if (b === '__undated__') return -1;
+        return a.localeCompare(b);
+      });
+      return keys.map((k, dIdx) => ({
+        date: k === '__undated__' ? '' : k,
+        dayNumber: dIdx + 1,
+        entries: byDate.get(k)
+      }));
+    }
+
     function syncSharedFieldsAcrossDrafts(sourceDraft) {
+      if (!sourceDraft) return;
+      const oldOrigDate = sourceDraft._origDate || '';
+      const newNormDate = normalizeDateStr(sourceDraft.date) || '';
+      const distinctDates = new Set(spaceDrafts.map(d => normalizeDateStr(d.date)).filter(Boolean));
+      const isMultiDayRun = distinctDates.size > 1;
+
       spaceDrafts.forEach((d) => {
         d.name = sourceDraft.name;
-        d.date = sourceDraft.date;
         d.clientContact = sourceDraft.clientContact;
-        d.status = sourceDraft.status;
         d.category = sourceDraft.category;
         d.responsibleLead = sourceDraft.responsibleLead;
+        // Preserve per-day dates in multi-day runs; only sync date across sibling rooms on the same day
+        if (d !== sourceDraft && !isMultiDayRun && oldOrigDate && (d._origDate === oldOrigDate || normalizeDateStr(d.date) === oldOrigDate)) {
+          d.date = sourceDraft.date;
+          d._origDate = newNormDate;
+        }
+        // Only auto-sync status across rooms on single-day takeovers (multi-day runs keep per-day status editable)
+        if (!isMultiDayRun) {
+          d.status = sourceDraft.status;
+        }
       });
+      sourceDraft._origDate = newNormDate;
     }
 
     function loadDraftIntoForm(targetDraft) {
@@ -8681,53 +9564,159 @@ RMTP.views.advancing = function (el, params, query) {
       const saveAllBtn = m.root.querySelector('#btn-save-all-spaces');
       const saveCurBtn = m.root.querySelector('#btn-save-current-space');
       const removeSpaceBtn = m.root.querySelector('#btn-remove-active-space');
-      const tabsBar = m.root.querySelector('#editor-space-tabs-bar');
+      const removeLabel = m.root.querySelector('#btn-remove-active-space-label');
+      const headingEl = m.root.querySelector('#editor-tabs-heading');
+      const subtitleEl = m.root.querySelector('#editor-tabs-subtitle');
+      const copyPrevBtn = m.root.querySelector('#btn-copy-prev-day');
 
-      if (tabsBar) {
-        tabsBar.classList.toggle('hidden', spaceDrafts.length <= 1);
+      const dayGroups = getDraftDayGroups();
+      const isMultiDay = dayGroups.length > 1;
+      const activeDayIdx = Math.max(0, dayGroups.findIndex(g => g.entries.some(en => en.idx === activeSpaceIndex)));
+      const activeDayGroup = dayGroups[activeDayIdx] || dayGroups[0];
+      const activeDraft = spaceDrafts[activeSpaceIndex];
+
+      if (headingEl) {
+        headingEl.textContent = isMultiDay
+          ? ('Multi-Day Run (' + dayGroups.length + ' Days)')
+          : (spaceDrafts.length > 1 ? ('Multi-Room Spaces (' + spaceDrafts.length + ')') : 'Run & Spaces');
+      }
+      if (subtitleEl) {
+        subtitleEl.textContent = isMultiDay
+          ? '\u00b7 Switch days to configure per-day timings, crew & schedules'
+          : (spaceDrafts.length > 1
+            ? '\u00b7 Tab between spaces to configure technical riders'
+            : '\u00b7 Add consecutive days or additional rooms to this advance');
+      }
+      if (copyPrevBtn) {
+        copyPrevBtn.classList.toggle('hidden', !(isMultiDay && activeDayIdx > 0));
+      }
+      if (saveCurBtn) {
+        saveCurBtn.classList.toggle('hidden', spaceDrafts.length <= 1);
+        if (activeDraft) {
+          if (isMultiDay) {
+            const roomSuffix = (activeDayGroup && activeDayGroup.entries.length > 1 && activeDraft.space) ? (' \u00b7 ' + activeDraft.space) : '';
+            saveCurBtn.textContent = 'Save Day ' + (activeDayGroup ? activeDayGroup.dayNumber : (activeDayIdx + 1)) + roomSuffix;
+          } else {
+            saveCurBtn.textContent = 'Save ' + (activeDraft.space || 'Current Space');
+          }
+        }
       }
       if (saveAllBtn) {
-        saveAllBtn.textContent = 'Save All Spaces (' + spaceDrafts.length + ')';
-      }
-      if (saveCurBtn && spaceDrafts[activeSpaceIndex]) {
-        saveCurBtn.textContent = 'Save ' + (spaceDrafts[activeSpaceIndex].space || 'Current Space');
+        if (spaceDrafts.length <= 1) {
+          saveAllBtn.textContent = existing ? 'Save changes' : 'Add event';
+        } else if (isMultiDay) {
+          saveAllBtn.textContent = 'Save All (' + dayGroups.length + ' Days)';
+        } else {
+          saveAllBtn.textContent = 'Save All Spaces (' + spaceDrafts.length + ')';
+        }
       }
       if (removeSpaceBtn) {
         removeSpaceBtn.classList.toggle('hidden', spaceDrafts.length <= 1);
+        if (removeLabel) {
+          removeLabel.textContent = (isMultiDay && activeDayGroup && activeDayGroup.entries.length === 1) ? 'Remove Day' : 'Remove Space';
+        }
       }
     }
 
     function renderSpaceTabs() {
-      const container = m.root.querySelector('#space-tabs-container');
-      if (!container) return;
+      const dayContainer = m.root.querySelector('#day-tabs-container');
+      const spaceContainer = m.root.querySelector('#space-tabs-container');
+      if (!spaceContainer) return;
 
-      container.innerHTML = spaceDrafts.map((d, idx) => {
-        const isActive = idx === activeSpaceIndex;
-        const isCinema = isScreenSpace(d.space);
-        return (
-          '<button type="button" data-space-tab="' + idx + '" class="px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer ' +
-            (isActive
-              ? 'bg-accent text-accent-ink border-accent shadow-2xs ring-2 ring-accent/30'
-              : 'bg-panel border-line text-muted hover:text-ink hover:border-line/80') + '">' +
-            ui.icon(isCinema ? 'film' : 'pin', 'w-3.5 h-3.5 ' + (isActive ? 'text-accent-ink' : 'text-accent')) +
-            '<span>' + ui.esc(d.space || ('Space ' + (idx + 1))) + '</span>' +
-            (d.isDirty ? '<span class="w-1.5 h-1.5 rounded-full bg-accent ring-1 ring-white/60 animate-pulse ml-0.5" title="Unsaved edits in this space"></span>' : '') +
-          '</button>'
-        );
-      }).join('');
+      const dayGroups = getDraftDayGroups();
+      const isMultiDay = dayGroups.length > 1;
+      const activeDayIdx = Math.max(0, dayGroups.findIndex(g => g.entries.some(en => en.idx === activeSpaceIndex)));
+      const activeDayGroup = dayGroups[activeDayIdx] || dayGroups[0];
+      const todayStr = getTodayString();
 
-      container.querySelectorAll('[data-space-tab]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const targetIdx = +btn.getAttribute('data-space-tab');
-          if (targetIdx === activeSpaceIndex) return;
+      // Render Day Tabs when multi-day
+      if (dayContainer) {
+        if (isMultiDay) {
+          dayContainer.classList.remove('hidden');
+          dayContainer.innerHTML = dayGroups.map((dg, dIdx) => {
+            const isActiveDay = dIdx === activeDayIdx;
+            const anyDirty = dg.entries.some(en => en.draft.isDirty);
+            const isToday = dg.date && dg.date === todayStr;
+            const dateLabel = dg.date ? formatShortDayDate(dg.date) : 'Date TBD';
+            return (
+              '<button type="button" data-editor-day-tab="' + dIdx + '" class="px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer ' +
+                (isActiveDay
+                  ? 'bg-accent text-accent-ink border-accent shadow-2xs ring-2 ring-accent/25'
+                  : 'bg-panel border-line text-muted hover:text-ink hover:border-line/80') + '">' +
+                '<span class="font-mono tabular-nums">Day ' + dg.dayNumber + '</span>' +
+                '<span class="opacity-60">\u00b7</span>' +
+                '<span>' + ui.esc(dateLabel) + '</span>' +
+                (isToday ? '<span class="text-[10px] font-bold uppercase ' + (isActiveDay ? 'opacity-90' : 'text-accent') + '">(Today)</span>' : '') +
+                (dg.entries.length > 1 ? '<span class="text-[10px] font-mono opacity-75">(' + dg.entries.length + ')</span>' : '') +
+                (anyDirty ? '<span class="text-[10px] font-bold ml-0.5" title="Unsaved edits on this day">\u2022</span>' : '') +
+              '</button>'
+            );
+          }).join('');
 
-          scrapeCurrentFormToDraft(activeSpaceIndex);
-          syncSharedFieldsAcrossDrafts(spaceDrafts[activeSpaceIndex]);
-          activeSpaceIndex = targetIdx;
-          loadDraftIntoForm(spaceDrafts[activeSpaceIndex]);
-          renderSpaceTabs();
+          dayContainer.querySelectorAll('[data-editor-day-tab]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              const targetDayIdx = +btn.getAttribute('data-editor-day-tab');
+              const dg = dayGroups[targetDayIdx];
+              if (!dg || !dg.entries.length) return;
+              if (targetDayIdx === activeDayIdx) return;
+
+              scrapeCurrentFormToDraft(activeSpaceIndex);
+              syncSharedFieldsAcrossDrafts(spaceDrafts[activeSpaceIndex]);
+
+              const curSpaceNorm = formatSpaceLabel(spaceDrafts[activeSpaceIndex].space).toLowerCase();
+              const matchingEntry = dg.entries.find(en => formatSpaceLabel(en.draft.space).toLowerCase() === curSpaceNorm) || dg.entries[0];
+              activeSpaceIndex = matchingEntry.idx;
+              loadDraftIntoForm(spaceDrafts[activeSpaceIndex]);
+              renderSpaceTabs();
+            });
+          });
+        } else {
+          dayContainer.classList.add('hidden');
+          dayContainer.innerHTML = '';
+        }
+      }
+
+      // Render Room Sub-Tabs (for active day when multi-day & >1 room on that day, or for single-day multi-room)
+      const roomEntries = isMultiDay
+        ? (activeDayGroup ? activeDayGroup.entries : [])
+        : spaceDrafts.map((d, idx) => ({ draft: d, idx }));
+      const showRoomTabs = isMultiDay ? (roomEntries.length > 1) : (roomEntries.length > 1);
+
+      if (showRoomTabs) {
+        spaceContainer.classList.remove('hidden');
+        spaceContainer.innerHTML =
+          (isMultiDay ? '<span class="text-[10px] font-semibold uppercase tracking-wider text-muted mr-1 shrink-0">Day ' + activeDayGroup.dayNumber + ' Rooms:</span>' : '') +
+          roomEntries.map(({ draft: d, idx }) => {
+            const isActive = idx === activeSpaceIndex;
+            const isCinema = isScreenSpace(d.space);
+            return (
+              '<button type="button" data-space-tab="' + idx + '" class="px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer ' +
+                (isActive
+                  ? 'bg-accent text-accent-ink border-accent shadow-2xs ring-2 ring-accent/25'
+                  : 'bg-panel border-line text-muted hover:text-ink hover:border-line/80') + '">' +
+                ui.icon(isCinema ? 'film' : 'pin', 'w-3.5 h-3.5 ' + (isActive ? 'text-accent-ink' : 'text-accent')) +
+                '<span>' + ui.esc(d.space || ('Space ' + (idx + 1))) + '</span>' +
+                (d.isDirty ? '<span class="text-[10px] font-bold ml-0.5" title="Unsaved edits in this space">\u2022</span>' : '') +
+              '</button>'
+            );
+          }).join('');
+
+        spaceContainer.querySelectorAll('[data-space-tab]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const targetIdx = +btn.getAttribute('data-space-tab');
+            if (targetIdx === activeSpaceIndex) return;
+
+            scrapeCurrentFormToDraft(activeSpaceIndex);
+            syncSharedFieldsAcrossDrafts(spaceDrafts[activeSpaceIndex]);
+            activeSpaceIndex = targetIdx;
+            loadDraftIntoForm(spaceDrafts[activeSpaceIndex]);
+            renderSpaceTabs();
+          });
         });
-      });
+      } else {
+        spaceContainer.classList.add('hidden');
+        spaceContainer.innerHTML = '';
+      }
 
       updateFooterSaveButtons();
     }
@@ -8892,6 +9881,7 @@ RMTP.views.advancing = function (el, params, query) {
       }
 
       store.upsert('advancing', record);
+      draft.rawEvent = record;
       syncPatchSheetForRecord(record, processedScheduleItems);
       syncShiftBookingsForEvent(record);
       if (RMTP.syncAdvanceToDcp) RMTP.syncAdvanceToDcp(record);
@@ -8899,7 +9889,8 @@ RMTP.views.advancing = function (el, params, query) {
       draft.isDirty = false;
       if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
 
-      ui.toast('Saved ' + (draft.space || 'current space'), 'ok');
+      const savedLabel = draft.date ? (formatShortDayDate(draft.date) + ' \u00b7 ' + (draft.space || 'Space')) : (draft.space || 'current space');
+      ui.toast('Saved ' + savedLabel, 'ok');
       renderSpaceTabs();
     }
 
@@ -8913,16 +9904,30 @@ RMTP.views.advancing = function (el, params, query) {
         m.root.querySelector('#e-name')?.focus();
         return;
       }
-      const mainDate = spaceDrafts[0].date;
-      if (!mainDate) {
-        ui.toast('Event date is required', 'danger');
-        m.root.querySelector('#e-date')?.focus();
-        return;
-      }
 
-      // Validate equipment allocations for each draft
+      // Validate date, space, and equipment allocations for each draft
       for (let i = 0; i < spaceDrafts.length; i++) {
         const d = spaceDrafts[i];
+        if (!d.date) {
+          ui.toast('Event date is required for every day', 'danger');
+          if (i !== activeSpaceIndex) {
+            activeSpaceIndex = i;
+            loadDraftIntoForm(spaceDrafts[activeSpaceIndex]);
+            renderSpaceTabs();
+          }
+          m.root.querySelector('#e-date')?.focus();
+          return;
+        }
+        if (!d.space) {
+          ui.toast('Select a space for ' + formatShortDayDate(d.date), 'danger');
+          if (i !== activeSpaceIndex) {
+            activeSpaceIndex = i;
+            loadDraftIntoForm(spaceDrafts[activeSpaceIndex]);
+            renderSpaceTabs();
+          }
+          m.root.querySelector('#e-space')?.focus();
+          return;
+        }
         for (const b of d.equipmentBookings || []) {
           const c = RMTP.equipmentBookings ? RMTP.equipmentBookings.checkConflict(b, d.id, b.id) : { hasConflict: false };
           if (c.hasConflict && !b.override) {
@@ -8974,8 +9979,15 @@ RMTP.views.advancing = function (el, params, query) {
 
       if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
 
+      const dayCount = getDraftDayGroups().length;
       m.close();
-      ui.toast(spaceDrafts.length > 1 ? ('Saved all ' + spaceDrafts.length + ' spaces for ' + mainName) : (existing ? 'Event advance updated' : 'Event advance created'), 'ok');
+      if (dayCount > 1) {
+        ui.toast('Saved all ' + dayCount + ' days (' + spaceDrafts.length + ' entries) for ' + mainName, 'ok');
+      } else if (spaceDrafts.length > 1) {
+        ui.toast('Saved all ' + spaceDrafts.length + ' spaces for ' + mainName, 'ok');
+      } else {
+        ui.toast(existing ? 'Event advance updated' : 'Event advance created', 'ok');
+      }
       RMTP._isSoftRender = true;
       RMTP.router.render();
       RMTP._isSoftRender = false;
@@ -8993,23 +10005,134 @@ RMTP.views.advancing = function (el, params, query) {
       });
     }
 
-    // Add Space button handler
+    // Date input change sync to current draft tab label
+    const dateInputEl = m.root.querySelector('#e-date');
+    if (dateInputEl) {
+      dateInputEl.addEventListener('change', () => {
+        if (spaceDrafts[activeSpaceIndex]) {
+          spaceDrafts[activeSpaceIndex].date = dateInputEl.value;
+          spaceDrafts[activeSpaceIndex].isDirty = true;
+          renderSpaceTabs();
+        }
+      });
+    }
+
+    // Add Day button handler (appends next consecutive day to the run)
+    const addDayBtn = m.root.querySelector('#btn-add-day-to-event');
+    if (addDayBtn) {
+      addDayBtn.addEventListener('click', () => {
+        scrapeCurrentFormToDraft(activeSpaceIndex);
+        syncSharedFieldsAcrossDrafts(spaceDrafts[activeSpaceIndex]);
+
+        const src = spaceDrafts[activeSpaceIndex];
+        const validDates = spaceDrafts.map(d => normalizeDateStr(d.date)).filter(Boolean).sort();
+        const lastDate = validDates.length ? validDates[validDates.length - 1] : getTodayString();
+        const nextDate = addCalendarDays(lastDate, 1);
+
+        const sharedGid = (activeGroup && activeGroup.groupId) || src.groupId || ('grp-' + store.uid('evt'));
+        spaceDrafts.forEach(d => { if (!d.groupId) d.groupId = sharedGid; });
+
+        const newRecord = {
+          id: store.uid('evt'),
+          name: src.name,
+          date: nextDate,
+          status: src.status || 'Advancing',
+          category: src.category || (isScreenSpace(src.space) ? 'Cinema' : 'Live Music'),
+          space: src.space || RMTP.SPACES[0] || '',
+          startTime: src.startTime || '',
+          finishTime: src.finishTime || '',
+          load_in: src.load_in || '',
+          soundcheck: src.soundcheck || '',
+          doors: src.doors || '',
+          off_stage: src.off_stage || '',
+          curfew: src.curfew || '',
+          load_out: src.load_out || '',
+          clientContact: src.clientContact || '',
+          responsible_for_advancing: src.responsibleLead || '',
+          groupId: sharedGid
+        };
+
+        const newDraft = createDraftFromEvent(newRecord);
+        newDraft.isDirty = true;
+        spaceDrafts.push(newDraft);
+        activeSpaceIndex = spaceDrafts.length - 1;
+
+        loadDraftIntoForm(spaceDrafts[activeSpaceIndex]);
+        renderSpaceTabs();
+        ui.toast('Added Day ' + getDraftDayGroups().length + ' (' + formatShortDayDate(nextDate) + ')', 'ok');
+      });
+    }
+
+    // Copy Prev Day button handler (copies timings, schedule & technical setup while keeping per-day crew)
+    const copyPrevDayBtn = m.root.querySelector('#btn-copy-prev-day');
+    if (copyPrevDayBtn) {
+      copyPrevDayBtn.addEventListener('click', () => {
+        scrapeCurrentFormToDraft(activeSpaceIndex);
+        const dayGroups = getDraftDayGroups();
+        const activeDayIdx = dayGroups.findIndex(g => g.entries.some(en => en.idx === activeSpaceIndex));
+        if (activeDayIdx <= 0) {
+          ui.toast('Already on Day 1', 'info');
+          return;
+        }
+
+        const prevGroup = dayGroups[activeDayIdx - 1];
+        const curDraft = spaceDrafts[activeSpaceIndex];
+        const curSpaceNorm = formatSpaceLabel(curDraft.space).toLowerCase();
+        const prevEntry = prevGroup.entries.find(en => formatSpaceLabel(en.draft.space).toLowerCase() === curSpaceNorm) || prevGroup.entries[0];
+        if (!prevEntry) return;
+
+        const prev = prevEntry.draft;
+        curDraft.startTime = prev.startTime;
+        curDraft.finishTime = prev.finishTime;
+        curDraft.load_in = prev.load_in;
+        curDraft.soundcheck = prev.soundcheck;
+        curDraft.doors = prev.doors;
+        curDraft.off_stage = prev.off_stage;
+        curDraft.curfew = prev.curfew;
+        curDraft.load_out = prev.load_out;
+        curDraft.screening_starts = prev.screening_starts;
+        curDraft.film_duration = prev.film_duration;
+        curDraft.media_type = prev.media_type;
+        curDraft.lighting_notes = prev.lighting_notes;
+        curDraft.floor_package = prev.floor_package;
+        curDraft.floor_tags = (prev.floor_tags || []).slice();
+        curDraft.specials = Object.assign({}, prev.specials);
+        curDraft.special_notes = prev.special_notes;
+        curDraft.techInfo = prev.techInfo;
+        curDraft.scheduleItems = JSON.parse(JSON.stringify(prev.scheduleItems || []));
+        curDraft.channelInputs = JSON.parse(JSON.stringify(prev.channelInputs || []));
+        curDraft.channelOutputs = JSON.parse(JSON.stringify(prev.channelOutputs || []));
+        curDraft.isDirty = true;
+
+        loadDraftIntoForm(curDraft);
+        renderSpaceTabs();
+        ui.toast('Copied timings, schedule & tech setup from Day ' + prevGroup.dayNumber + ' (crew kept unchanged)', 'ok');
+      });
+    }
+
+    // Add Space button handler (adds another room to the currently active day)
     const addSpaceBtn = m.root.querySelector('#btn-add-space-to-event');
     if (addSpaceBtn) {
       addSpaceBtn.addEventListener('click', () => {
         scrapeCurrentFormToDraft(activeSpaceIndex);
         syncSharedFieldsAcrossDrafts(spaceDrafts[activeSpaceIndex]);
 
-        const existingSpaces = new Set(spaceDrafts.map(d => d.space));
-        const available = RMTP.SPACES.filter(s => !existingSpaces.has(s));
+        const curDateNorm = normalizeDateStr(spaceDrafts[activeSpaceIndex].date) || '';
+        const existingSpacesOnDay = new Set(
+          spaceDrafts
+            .filter(d => (normalizeDateStr(d.date) || '') === curDateNorm)
+            .map(d => d.space)
+        );
+        const available = RMTP.SPACES.filter(s => !existingSpacesOnDay.has(s));
 
         if (!available.length) {
-          ui.toast('All venue spaces are already included in this event', 'info');
+          ui.toast('All venue spaces are already included on this day', 'info');
           return;
         }
 
+        const dayLabel = curDateNorm ? (' on ' + formatShortDayDate(curDateNorm)) : '';
         const pickerHtml = '<div class="grid gap-3">' +
-          '<p class="text-xs text-muted">Select an additional venue room to advance alongside this event:</p>' +
+          '<p class="text-xs text-muted">Select an additional venue room to advance' + ui.esc(dayLabel) + ':</p>' +
           '<div class="grid grid-cols-2 gap-2 mt-1">' +
             available.map(sp => '<button type="button" data-pick-new-space="' + ui.esc(sp) + '" class="btn btn-ghost text-xs p-3 border border-line bg-panel2/60 hover:bg-panel2 hover:border-accent text-ink font-semibold flex items-center gap-2 rounded-lg cursor-pointer">' +
               ui.icon(isScreenSpace(sp) ? 'film' : 'pin', 'w-3.5 h-3.5 text-accent') + '<span>' + ui.esc(sp) + '</span></button>').join('') +
@@ -9017,7 +10140,7 @@ RMTP.views.advancing = function (el, params, query) {
         '</div>';
 
         const pModal = ui.modal({
-          title: 'Add Room to ' + (spaceDrafts[0].name || 'Event'),
+          title: 'Add Room to ' + (spaceDrafts[0].name || 'Event') + dayLabel,
           size: 'max-w-md',
           body: pickerHtml,
           footer: '<button class="btn btn-ghost" data-close>Cancel</button>'
@@ -9029,6 +10152,9 @@ RMTP.views.advancing = function (el, params, query) {
             pModal.close();
 
             const src = spaceDrafts[activeSpaceIndex];
+            const sharedGid = (activeGroup && activeGroup.groupId) || src.groupId || ('grp-' + store.uid('evt'));
+            spaceDrafts.forEach(d => { if (!d.groupId) d.groupId = sharedGid; });
+
             const newRecord = {
               id: store.uid('evt'),
               name: src.name,
@@ -9040,7 +10166,7 @@ RMTP.views.advancing = function (el, params, query) {
               finishTime: src.finishTime,
               clientContact: src.clientContact,
               responsible_for_advancing: src.responsibleLead,
-              groupId: (activeGroup && activeGroup.groupId) || src.groupId || ('grp-' + store.uid('evt'))
+              groupId: sharedGid
             };
 
             const newDraft = createDraftFromEvent(newRecord);
@@ -9050,19 +10176,24 @@ RMTP.views.advancing = function (el, params, query) {
 
             loadDraftIntoForm(spaceDrafts[activeSpaceIndex]);
             renderSpaceTabs();
-            ui.toast('Added ' + sp + ' to event tabs', 'ok');
+            ui.toast('Added ' + sp + dayLabel, 'ok');
           });
         });
       });
     }
 
-    // Remove Space button handler
+    // Remove Space / Day button handler
     const removeSpaceBtn = m.root.querySelector('#btn-remove-active-space');
     if (removeSpaceBtn) {
       removeSpaceBtn.addEventListener('click', async () => {
         if (spaceDrafts.length <= 1) return;
-        const curSpaceName = spaceDrafts[activeSpaceIndex].space || 'this space';
-        const ok = await ui.confirm('Remove ' + curSpaceName + ' from this multi-room event run?', { title: 'Remove Space', danger: true, confirmLabel: 'Remove' });
+        const curDraft = spaceDrafts[activeSpaceIndex];
+        const dayGroups = getDraftDayGroups();
+        const isMultiDay = dayGroups.length > 1;
+        const curLabel = isMultiDay
+          ? (formatShortDayDate(curDraft.date) + ' \u00b7 ' + (curDraft.space || 'Space'))
+          : (curDraft.space || 'this space');
+        const ok = await ui.confirm('Remove ' + curLabel + ' from this event run?', { title: isMultiDay ? 'Remove Day / Space' : 'Remove Space', danger: true, confirmLabel: 'Remove' });
         if (!ok) return;
 
         const removedDraft = spaceDrafts[activeSpaceIndex];
@@ -9074,7 +10205,7 @@ RMTP.views.advancing = function (el, params, query) {
         activeSpaceIndex = Math.max(0, activeSpaceIndex - 1);
         loadDraftIntoForm(spaceDrafts[activeSpaceIndex]);
         renderSpaceTabs();
-        ui.toast('Removed ' + curSpaceName, 'ok');
+        ui.toast('Removed ' + curLabel, 'ok');
       });
     }
 
@@ -9088,7 +10219,7 @@ RMTP.views.advancing = function (el, params, query) {
     const btnDataSave = m.root.querySelector('[data-save]');
     if (btnDataSave) btnDataSave.addEventListener('click', saveAllSpaces);
 
-    // Initial render of space tabs
+    // Initial render of space/day tabs
     renderSpaceTabs();
   }
 

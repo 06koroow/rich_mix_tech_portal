@@ -17,7 +17,7 @@
 RMTP.auth = (function () {
   const KEY = 'currentUser';
   const SALT = 'rmtp-v1';
-  const POSITIONS = ['Technical Manager', 'Senior Tech', 'Duty Tech', 'Freelancer'];
+  const POSITIONS = ['Technical Manager', 'Senior Tech', 'Duty Tech', 'Freelancer', 'Hires Team'];
 
   // Non-cryptographic digest (djb2). Placeholder only — see header.
   function hashPassword(pw) {
@@ -196,10 +196,281 @@ RMTP.auth = (function () {
     const role = String(user.role || '').trim().toLowerCase();
     return pos === 'freelancer' || pos.includes('freelancer') || role === 'freelancer';
   }
+  function isHiresTeam(u) {
+    const user = u || current();
+    if (!user) return false;
+    const pos = String(user.position || '').trim().toLowerCase();
+    const role = String(user.role || '').trim().toLowerCase();
+    return pos === 'hires team' || pos.includes('hires') || role === 'hires_team' || role === 'hires team';
+  }
+  const ROLE_VIEWS_KEY = 'role_views';
+  const ROLE_VIEWS_RECORD_ID = '__rmtp_role_views__';
+
+  function allNavIds() {
+    return (RMTP.nav || []).map((n) => n.id);
+  }
+
+  function defaultRoleViewsConfig() {
+    const ids = allNavIds();
+    const roles = {};
+    POSITIONS.forEach((pos) => {
+      if (pos === 'Technical Manager' || pos === 'Senior Tech') {
+        roles[pos] = { views: ids.slice(), home: ids.indexOf('dashboard') > -1 ? 'dashboard' : (ids[0] || RMTP.HOME) };
+      } else if (pos === 'Duty Tech') {
+        const views = ids.filter((id) => id !== 'presets' && id !== 'venues');
+        roles[pos] = { views, home: views.indexOf('dashboard') > -1 ? 'dashboard' : (views[0] || RMTP.HOME) };
+      } else if (pos === 'Freelancer') {
+        const views = ids.filter((id) => id !== 'presets' && id !== 'venues' && id !== 'dcp');
+        roles[pos] = { views, home: views.indexOf('dashboard') > -1 ? 'dashboard' : (views[0] || RMTP.HOME) };
+      } else if (pos === 'Hires Team') {
+        const preferred = ['hires', 'advancing', 'guides'];
+        const views = ids.filter((id) => preferred.indexOf(id) > -1);
+        roles[pos] = { views: views.length ? views : ids.slice(0, 1), home: views.indexOf('hires') > -1 ? 'hires' : (views[0] || RMTP.HOME) };
+      } else {
+        roles[pos] = { views: ids.filter((id) => id !== 'presets' && id !== 'venues'), home: RMTP.HOME };
+      }
+    });
+    return { version: 1, updatedAt: 0, updatedBy: '', roles };
+  }
+
+  function isRoleViewLocked(position, viewId) {
+    return position === 'Technical Manager' && viewId === 'users';
+  }
+
+  function normalizeRoleViewsConfig(raw) {
+    const ids = allNavIds();
+    const validSet = new Set(ids);
+    const def = defaultRoleViewsConfig();
+    const out = {
+      version: 1,
+      updatedAt: (raw && typeof raw.updatedAt === 'number' && !isNaN(raw.updatedAt)) ? raw.updatedAt : 0,
+      updatedBy: (raw && typeof raw.updatedBy === 'string') ? raw.updatedBy : '',
+      roles: {},
+    };
+    const rawRoles = (raw && raw.roles && typeof raw.roles === 'object') ? raw.roles : {};
+    POSITIONS.forEach((pos) => {
+      const defRole = def.roles[pos] || { views: ids.slice(), home: RMTP.HOME };
+      const r = rawRoles[pos];
+      let views;
+      if (r && Array.isArray(r.views)) {
+        const seen = new Set(r.views.filter((v) => validSet.has(v)));
+        if (pos === 'Technical Manager' && validSet.has('users')) seen.add('users');
+        views = ids.filter((id) => seen.has(id));
+        if (!views.length) {
+          views = [validSet.has(defRole.home) ? defRole.home : (ids[0] || RMTP.HOME)];
+        }
+      } else {
+        views = defRole.views.slice();
+      }
+      let home = (r && typeof r.home === 'string' && views.indexOf(r.home) > -1)
+        ? r.home
+        : (views.indexOf(defRole.home) > -1 ? defRole.home : views[0]);
+      out.roles[pos] = { views, home };
+    });
+    return out;
+  }
+
+  function getRoleViewsConfig() {
+    const localRaw = RMTP.store.read(ROLE_VIEWS_KEY, null);
+    const presetRec = RMTP.store.find ? RMTP.store.find('patch_presets', ROLE_VIEWS_RECORD_ID) : null;
+    const remoteRaw = (presetRec && presetRec.channels && typeof presetRec.channels === 'object' && !Array.isArray(presetRec.channels))
+      ? Object.assign({}, presetRec.channels, {
+          updatedAt: Math.max(Number(presetRec.channels.updatedAt || 0), Number(presetRec.updatedAt || 0))
+        })
+      : null;
+
+    const localTs = (localRaw && typeof localRaw.updatedAt === 'number') ? localRaw.updatedAt : -1;
+    const remoteTs = (remoteRaw && typeof remoteRaw.updatedAt === 'number') ? remoteRaw.updatedAt : -1;
+
+    let chosen = null;
+    if (remoteRaw && remoteTs > localTs) {
+      chosen = normalizeRoleViewsConfig(remoteRaw);
+      RMTP.store.write(ROLE_VIEWS_KEY, chosen);
+    } else if (localRaw && localRaw.roles) {
+      chosen = normalizeRoleViewsConfig(localRaw);
+    } else if (remoteRaw) {
+      chosen = normalizeRoleViewsConfig(remoteRaw);
+      RMTP.store.write(ROLE_VIEWS_KEY, chosen);
+    } else {
+      chosen = defaultRoleViewsConfig();
+    }
+    return chosen;
+  }
+
+  function saveRoleViewsConfig(nextCfg) {
+    const normalized = normalizeRoleViewsConfig(nextCfg);
+    const ts = Date.now();
+    const actor = realCurrent() || current();
+    normalized.updatedAt = ts;
+    normalized.updatedBy = actor ? displayName(actor) : 'Admin';
+
+    RMTP.store.write(ROLE_VIEWS_KEY, normalized);
+
+    const existingRec = RMTP.store.find ? RMTP.store.find('patch_presets', ROLE_VIEWS_RECORD_ID) : null;
+    RMTP.store.upsert('patch_presets', {
+      id: ROLE_VIEWS_RECORD_ID,
+      name: 'Portal Role Views Configuration',
+      type: 'system_config',
+      channels: normalized,
+      createdAt: (existingRec && existingRec.createdAt) ? existingRec.createdAt : ts,
+      updatedAt: ts,
+    });
+
+    refreshShell();
+    const curView = RMTP._currentView;
+    if (curView && !canAccessView(curView) && RMTP.router && typeof RMTP.router.render === 'function') {
+      RMTP.router.render();
+    }
+    return normalized;
+  }
+
+  function applyRemoteRoleViews(rawCfg, opts) {
+    if (!rawCfg || typeof rawCfg !== 'object' || !rawCfg.roles) return false;
+    const incoming = normalizeRoleViewsConfig(rawCfg);
+    const cur = getRoleViewsConfig();
+    const force = !!(opts && opts.force);
+    const curTs = Number(cur.updatedAt || 0);
+    const incTs = Number(incoming.updatedAt || 0);
+    const rolesChanged = JSON.stringify(cur.roles) !== JSON.stringify(incoming.roles);
+
+    if (!force && incTs <= curTs && !rolesChanged) return false;
+    if (!force && incTs < curTs) return false;
+
+    RMTP.store.write(ROLE_VIEWS_KEY, incoming);
+    refreshShell();
+
+    const curView = RMTP._currentView;
+    if (curView && RMTP.router && typeof RMTP.router.render === 'function') {
+      if (!canAccessView(curView)) {
+        if (RMTP.ui && RMTP.ui.toast) {
+          RMTP.ui.toast('Portal menu access was updated by an admin.', 'info');
+        }
+        RMTP._suppressAccessToast = true;
+        try {
+          RMTP.router.render();
+        } finally {
+          RMTP._suppressAccessToast = false;
+        }
+      } else if (curView === 'dashboard' || (curView === 'users' && RMTP._usersAdminTab === 'views')) {
+        RMTP._isSoftRender = true;
+        try { RMTP.router.render(); } finally { RMTP._isSoftRender = false; }
+      }
+    }
+    return true;
+  }
+
+  function resolveUserRoleKey(u) {
+    const user = u || current();
+    if (!user) return 'Duty Tech';
+    const rawPos = String(user.position || '').trim();
+    const exact = POSITIONS.find((p) => p.toLowerCase() === rawPos.toLowerCase());
+    if (exact) return exact;
+    if (isTechManager(user)) return 'Technical Manager';
+    if (isHiresTeam(user)) return 'Hires Team';
+    if (isFreelancer(user)) return 'Freelancer';
+    if (/senior/i.test(rawPos)) return 'Senior Tech';
+    return 'Duty Tech';
+  }
+
+  function getAllowedViews(u) {
+    const user = u || current();
+    if (!user) return [];
+    const roleKey = resolveUserRoleKey(user);
+    const cfg = getRoleViewsConfig();
+    const roleCfg = (cfg.roles && cfg.roles[roleKey]) || defaultRoleViewsConfig().roles[roleKey];
+    const views = roleCfg && Array.isArray(roleCfg.views) ? roleCfg.views.slice() : allNavIds();
+    if ((roleKey === 'Technical Manager' || (user.admin && !user._devPreview)) && views.indexOf('users') === -1) {
+      views.push('users');
+    }
+    return views;
+  }
+
+  function canAccessView(viewId, u) {
+    if (!viewId) return false;
+    const user = u || current();
+    if (!user) return false;
+    return getAllowedViews(user).indexOf(viewId) > -1;
+  }
+
+  function getDefaultHome(u) {
+    const user = u || current();
+    if (!user) return RMTP.HOME;
+    const allowed = getAllowedViews(user);
+    if (!allowed.length) return RMTP.HOME;
+    const roleKey = resolveUserRoleKey(user);
+    const cfg = getRoleViewsConfig();
+    const configuredHome = cfg.roles && cfg.roles[roleKey] && cfg.roles[roleKey].home;
+    if (configuredHome && allowed.indexOf(configuredHome) > -1) return configuredHome;
+    return allowed[0] || RMTP.HOME;
+  }
+
+  function setRoleViewAccess(position, viewId, enabled) {
+    if (POSITIONS.indexOf(position) === -1) return { ok: false, reason: 'invalid-role' };
+    if (isRoleViewLocked(position, viewId) && !enabled) return { ok: false, reason: 'locked' };
+    const cfg = getRoleViewsConfig();
+    const ids = allNavIds();
+    if (ids.indexOf(viewId) === -1) return { ok: false, reason: 'invalid-view' };
+    const roleCfg = cfg.roles[position] || { views: [], home: RMTP.HOME };
+    const set = new Set(roleCfg.views || []);
+    if (enabled) {
+      set.add(viewId);
+    } else {
+      set.delete(viewId);
+      if (set.size === 0) return { ok: false, reason: 'last-view' };
+    }
+    const nextViews = ids.filter((id) => set.has(id));
+    const nextHome = nextViews.indexOf(roleCfg.home) > -1 ? roleCfg.home : nextViews[0];
+    cfg.roles[position] = { views: nextViews, home: nextHome };
+    return { ok: true, config: saveRoleViewsConfig(cfg) };
+  }
+
+  function setRoleAllViews(position, mode) {
+    if (POSITIONS.indexOf(position) === -1) return { ok: false, reason: 'invalid-role' };
+    const cfg = getRoleViewsConfig();
+    const ids = allNavIds();
+    const def = defaultRoleViewsConfig();
+    if (mode === 'all') {
+      cfg.roles[position] = {
+        views: ids.slice(),
+        home: (cfg.roles[position] && cfg.roles[position].home && ids.indexOf(cfg.roles[position].home) > -1)
+          ? cfg.roles[position].home
+          : def.roles[position].home,
+      };
+    } else if (mode === 'minimal') {
+      const min = position === 'Technical Manager'
+        ? ['dashboard', 'users', 'guides']
+        : position === 'Hires Team'
+          ? ['hires', 'guides']
+          : ['dashboard', 'guides'];
+      const views = ids.filter((id) => min.indexOf(id) > -1);
+      cfg.roles[position] = { views: views.length ? views : [ids[0]], home: views[0] || RMTP.HOME };
+    } else {
+      cfg.roles[position] = {
+        views: def.roles[position].views.slice(),
+        home: def.roles[position].home,
+      };
+    }
+    return { ok: true, config: saveRoleViewsConfig(cfg) };
+  }
+
+  function setRoleDefaultHome(position, viewId) {
+    if (POSITIONS.indexOf(position) === -1) return { ok: false, reason: 'invalid-role' };
+    const cfg = getRoleViewsConfig();
+    const roleCfg = cfg.roles[position];
+    if (!roleCfg || roleCfg.views.indexOf(viewId) === -1) return { ok: false, reason: 'view-disabled' };
+    roleCfg.home = viewId;
+    return { ok: true, config: saveRoleViewsConfig(cfg) };
+  }
+
+  function resetRoleViewsConfig() {
+    const def = defaultRoleViewsConfig();
+    return saveRoleViewsConfig(def);
+  }
+
   function canViewDcp(u) {
     const user = u || current();
     if (!user) return false;
-    return !isFreelancer(user);
+    return canAccessView('dcp', user);
   }
   function rolesForPosition(position, existingTrainer) {
     if (isAutoAdminPosition(position)) return { admin: true, trainer: true };
@@ -245,6 +516,8 @@ RMTP.auth = (function () {
     if (!u) return false;
     if (cap === 'training.signoff') return !!u.trainer;   // ONLY trainers, even admins
     if (isTechManagerOrAdmin(u)) return true;
+    if (cap === 'hires.create' || cap === 'hires.reply') return true;
+    if (isHiresTeam(u)) return false;
     switch (cap) {
       case 'inventory.move':
       case 'report.edit':
@@ -429,7 +702,7 @@ RMTP.auth = (function () {
           // 1. Role Presets
           '<div>' +
             '<label class="block font-semibold text-ink mb-1.5 text-[11px] uppercase tracking-wider text-muted">1. Quick Role Presets</label>' +
-            '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2">' +
+            '<div class="grid grid-cols-2 sm:grid-cols-5 gap-2">' +
               '<button type="button" data-preset="tm" class="p-2.5 rounded-lg border text-left flex flex-col justify-between transition-all ' + (!activeOverride ? 'border-purple-500 bg-purple-500/15 text-ink ring-1 ring-purple-500' : 'border-line hover:border-line2 bg-panel hover:bg-panel2') + '">' +
                 '<span class="font-bold text-xs text-ink flex items-center gap-1">' + RMTP.ui.icon('shield', 'w-3.5 h-3.5 text-purple-400') + 'Tech Manager</span>' +
                 '<span class="text-[10px] text-muted mt-1">Full Admin &middot; Lead</span>' +
@@ -445,6 +718,10 @@ RMTP.auth = (function () {
               '<button type="button" data-preset="freelancer" class="p-2.5 rounded-lg border text-left flex flex-col justify-between transition-all ' + (activeOverride && activeOverride.position === 'Freelancer' ? 'border-purple-500 bg-purple-500/15 text-ink ring-1 ring-purple-500' : 'border-line hover:border-line2 bg-panel hover:bg-panel2') + '">' +
                 '<span class="font-bold text-xs text-ink flex items-center gap-1">' + RMTP.ui.icon('users', 'w-3.5 h-3.5 text-emerald-400') + 'Freelancer</span>' +
                 '<span class="text-[10px] text-muted mt-1">Guest Tech &middot; Restricted</span>' +
+              '</button>' +
+              '<button type="button" data-preset="hires" class="p-2.5 rounded-lg border text-left flex flex-col justify-between transition-all ' + (activeOverride && activeOverride.position === 'Hires Team' ? 'border-purple-500 bg-purple-500/15 text-ink ring-1 ring-purple-500' : 'border-line hover:border-line2 bg-panel hover:bg-panel2') + '">' +
+                '<span class="font-bold text-xs text-ink flex items-center gap-1">' + RMTP.ui.icon('chat', 'w-3.5 h-3.5 text-sky-400') + 'Hires Team</span>' +
+                '<span class="text-[10px] text-muted mt-1">Hires Desk &middot; Focused</span>' +
               '</button>' +
             '</div>' +
           '</div>' +
@@ -521,6 +798,10 @@ RMTP.auth = (function () {
           setDevOverride({ type: 'preset', position: 'Freelancer', admin: false, trainer: false, label: 'Freelancer' });
           m.close();
           RMTP.ui.toast('Switched preview to Freelancer (Restricted Access)', 'ok');
+        } else if (p === 'hires') {
+          setDevOverride({ type: 'preset', position: 'Hires Team', admin: false, trainer: false, label: 'Hires Team' });
+          m.close();
+          RMTP.ui.toast('Switched preview to Hires Team (Focused Portal)', 'ok');
         }
       });
     });
@@ -594,6 +875,10 @@ RMTP.auth = (function () {
     login, signUp, signOut, signInEmail, showLogin, ensureSession,
     pendingUsers, approveUser, rejectUser, refreshShell,
     isTechManager, isAdmin, isTechManagerOrAdmin,
-    isFreelancer, canViewDcp,
+    isFreelancer, isHiresTeam, canViewDcp,
+    ROLE_VIEWS_KEY, ROLE_VIEWS_RECORD_ID,
+    defaultRoleViewsConfig, getRoleViewsConfig, saveRoleViewsConfig, applyRemoteRoleViews,
+    resolveUserRoleKey, getAllowedViews, canAccessView, getDefaultHome,
+    isRoleViewLocked, setRoleViewAccess, setRoleAllViews, setRoleDefaultHome, resetRoleViewsConfig,
   };
 })();

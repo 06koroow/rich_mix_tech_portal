@@ -479,11 +479,17 @@ RMTP.presets = (function () {
   }
 
   /* ---- Database / Storage Access ---- */
+  function isSystemConfigPreset(p) {
+    return !!(p && (p.id === '__rmtp_role_views__' || p.type === 'system_config'));
+  }
+
   function getAllPresets() {
-    let list = store.read('patch_presets', null);
-    if (!Array.isArray(list) || !list.length) {
+    let raw = store.read('patch_presets', null);
+    const systemRows = Array.isArray(raw) ? raw.filter(isSystemConfigPreset) : [];
+    let list = Array.isArray(raw) ? raw.filter((p) => !isSystemConfigPreset(p)) : [];
+    if (!list.length) {
       list = DEFAULT_INPUT_PRESETS.concat(DEFAULT_OUTPUT_PRESETS);
-      store.write('patch_presets', list);
+      store.write('patch_presets', list.concat(systemRows));
     }
     return list.slice();
   }
@@ -512,24 +518,31 @@ RMTP.presets = (function () {
     if (store && store.upsert) {
       store.upsert('patch_presets', updated);
     } else {
+      const raw = store.read('patch_presets', []);
+      const systemRows = Array.isArray(raw) ? raw.filter(isSystemConfigPreset) : [];
       if (idx > -1) { list[idx] = updated; } else { list.push(updated); }
-      store.write('patch_presets', list);
+      store.write('patch_presets', list.concat(systemRows));
     }
     return updated;
   }
 
   function removePreset(id) {
+    if (id === '__rmtp_role_views__') return;
     if (store && store.remove) {
       store.remove('patch_presets', id);
     } else {
+      const raw = store.read('patch_presets', []);
+      const systemRows = Array.isArray(raw) ? raw.filter(isSystemConfigPreset) : [];
       const list = getAllPresets().filter((p) => p.id !== id);
-      store.write('patch_presets', list);
+      store.write('patch_presets', list.concat(systemRows));
     }
   }
 
   function resetPresetDefaults() {
+    const raw = store.read('patch_presets', []);
+    const systemRows = Array.isArray(raw) ? raw.filter(isSystemConfigPreset) : [];
     const defaults = DEFAULT_INPUT_PRESETS.concat(DEFAULT_OUTPUT_PRESETS);
-    store.write('patch_presets', defaults);
+    store.write('patch_presets', defaults.concat(systemRows));
     return defaults;
   }
 

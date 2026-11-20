@@ -710,7 +710,7 @@ window.RMTP = window.RMTP || {};
             '</div>' +
 
             '<div class="flex items-center gap-1 shrink-0" onclick="event.stopPropagation()">' +
-              (!t.assignedTechId && me ? (
+              (!t.assignedTechId && me && !((t.source === 'hires' || t.category === 'Hires') && !isEligibleHiresTech(me)) ? (
                 '<button type="button" data-claim-task="' + t.id + '" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-panel border border-line text-accent hover:border-accent transition" title="Assign this task to yourself">' +
                   'Claim' +
                 '</button>'
@@ -971,6 +971,10 @@ window.RMTP = window.RMTP || {};
           const task = store.find('tasks', tid);
           const me = auth.current();
           if (task && me) {
+            if ((task.source === 'hires' || task.category === 'Hires') && !isEligibleHiresTech(me)) {
+              ui.toast('Hires tasks can only be claimed by Technical Managers, Senior Techs, or Duty Techs.', 'info');
+              return;
+            }
             task.assignedTechId = me.id;
             task.assignedTechName = auth.displayName(me);
             task.updatedAt = Date.now();
@@ -1037,10 +1041,30 @@ window.RMTP = window.RMTP || {};
     }
   };
 
+  function isEligibleHiresTech(u) {
+    if (RMTP.hires && typeof RMTP.hires.isEligibleHiresTech === 'function') {
+      return RMTP.hires.isEligibleHiresTech(u);
+    }
+    if (!u || u.status === 'pending') return false;
+    if (auth.isHiresTeam && auth.isHiresTeam(u)) return false;
+    if (auth.isFreelancer && auth.isFreelancer(u)) return false;
+    const roleKey = (auth.resolveUserRoleKey && auth.resolveUserRoleKey(u)) || '';
+    if (roleKey) {
+      return roleKey === 'Technical Manager' || roleKey === 'Senior Tech' || roleKey === 'Duty Tech';
+    }
+    const pos = String(u.position || u.role || '').trim().toLowerCase();
+    return (
+      pos === 'technical manager' || pos === 'tech manager' ||
+      pos.includes('technical manager') || pos.includes('tech manager') ||
+      pos === 'senior tech' || pos.includes('senior tech') ||
+      pos === 'duty tech' || pos.includes('duty tech')
+    );
+  }
+
   /* ---- Open Task Edit / Creation Modal (Globally Accessible) ---- */
   function openTaskModal(existingTask = null, defaults = null, onSaved = null) {
     const isNew = !existingTask;
-    const allUsers = store.all('users') || [];
+    const allUsers = (store.all('users') || []).filter((u) => u && u.status !== 'pending');
     const allDcps = (RMTP.getUpcomingActiveScreenings ? RMTP.getUpcomingActiveScreenings(existingTask ? existingTask.linkedScreeningId : null) : (store.all('dcps') || []));
     const allAdv = (RMTP.getUpcomingActiveEvents ? RMTP.getUpcomingActiveEvents(existingTask ? existingTask.linkedEventId : null) : (store.all('advancing') || []));
     const allMaint = (store.all('maintenance') || []).filter((m) => m.status !== 'Resolved');
@@ -1072,6 +1096,46 @@ window.RMTP = window.RMTP || {};
     // Ensure tagged arrays exist
     if (!Array.isArray(task.taggedUserIds)) task.taggedUserIds = [];
     if (!Array.isArray(task.taggedUserNames)) task.taggedUserNames = [];
+
+    const isHiresTaskMode = (catVal) => task.source === 'hires' || catVal === 'Hires';
+    const getEligibleUsersForCategory = (catVal) => {
+      if (isHiresTaskMode(catVal)) {
+        return allUsers.filter(isEligibleHiresTech).sort((a, b) => auth.displayName(a).localeCompare(auth.displayName(b)));
+      }
+      return allUsers.slice().sort((a, b) => auth.displayName(a).localeCompare(auth.displayName(b)));
+    };
+    const initialHiresMode = isHiresTaskMode(task.category);
+    if (isNew && initialHiresMode && task.assignedTechId) {
+      const defAssigned = store.find('users', task.assignedTechId);
+      if (defAssigned && !isEligibleHiresTech(defAssigned)) {
+        task.assignedTechId = '';
+        task.assignedTechName = '';
+      }
+    }
+    const initialUsers = getEligibleUsersForCategory(task.category);
+    const renderAssigneeOptions = (usersList, selectedId) => (
+      '<option value="">\u2014 Unassigned (Anyone can claim) \u2014</option>' +
+      usersList.map((u) => (
+        '<option value="' + u.id + '" ' + (selectedId === u.id ? 'selected' : '') + '>' +
+          ui.esc(auth.displayName(u)) + ' (' + ui.esc(u.position || 'Tech') + ')' +
+        '</option>'
+      )).join('')
+    );
+    const renderTaggedCheckboxes = (usersList, selectedIds) => {
+      const selSet = new Set(selectedIds || []);
+      if (!usersList.length) {
+        return '<div class="col-span-full text-[11px] text-muted py-1">No eligible technicians found.</div>';
+      }
+      return usersList.map((u) => {
+        const isTagged = selSet.has(u.id);
+        return (
+          '<label class="flex items-center gap-2 p-1.5 rounded-lg bg-panel border border-line hover:border-accent cursor-pointer transition select-none">' +
+            '<input type="checkbox" name="tk-tag-member" value="' + u.id + '" class="w-3.5 h-3.5 accent-[var(--accent)]" ' + (isTagged ? 'checked' : '') + ' />' +
+            '<span class="truncate text-[11px] font-medium text-ink">' + ui.esc(auth.displayName(u)) + '</span>' +
+          '</label>'
+        );
+      }).join('');
+    };
 
     const m = ui.modal({
       title: isNew ? 'Create New Assignable Job / Task' : 'Edit Job Details · ' + ui.esc(task.title),
@@ -1121,36 +1185,26 @@ window.RMTP = window.RMTP || {};
             '<div class="flex items-center justify-between mb-1">' +
               '<label class="font-semibold text-muted">Primary Assigned Technician</label>' +
               (me ? (
-                '<button type="button" id="tk-assign-me" class="text-accent text-[11px] font-semibold hover:underline">' +
+                '<button type="button" id="tk-assign-me" class="text-accent text-[11px] font-semibold hover:underline ' + (initialHiresMode && !isEligibleHiresTech(me) ? 'hidden' : '') + '">' +
                   'Assign to Me (' + ui.esc(auth.displayName(me)) + ')' +
                 '</button>'
               ) : '') +
             '</div>' +
             '<select id="tk-user" class="field font-medium">' +
-              '<option value="">\u2014 Unassigned (Anyone can claim) \u2014</option>' +
-              allUsers.map((u) => (
-                '<option value="' + u.id + '" ' + (task.assignedTechId === u.id ? 'selected' : '') + '>' +
-                  ui.esc(auth.displayName(u)) + ' (' + ui.esc(u.position || 'Tech') + ')' +
-                '</option>'
-              )).join('') +
+              renderAssigneeOptions(initialUsers, task.assignedTechId) +
             '</select>' +
           '</div>' +
 
           // Tag Additional Team Members (Multi-select pills)
           '<div class="p-3 bg-panel2/50 rounded-xl border border-line">' +
-            '<label class="block font-semibold text-muted mb-1.5">' +
-              'Tag Additional Team Members (They will see this on their Jobs list)' +
-            '</label>' +
+            '<div class="flex items-center justify-between gap-2 flex-wrap mb-1.5">' +
+              '<label class="block font-semibold text-muted">' +
+                'Tag Additional Team Members (They will see this on their Jobs list)' +
+              '</label>' +
+              '<span id="tk-hires-tech-note" class="text-[10.5px] font-medium text-muted ' + (initialHiresMode ? '' : 'hidden') + '">Tech Manager, Senior Tech &amp; Duty Tech only</span>' +
+            '</div>' +
             '<div class="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-36 overflow-y-auto pr-1" id="tk-tag-members-container">' +
-              allUsers.map(u => {
-                const isTagged = task.taggedUserIds.includes(u.id);
-                return (
-                  '<label class="flex items-center gap-2 p-1.5 rounded-lg bg-panel border border-line hover:border-accent cursor-pointer transition select-none">' +
-                    '<input type="checkbox" name="tk-tag-member" value="' + u.id + '" class="w-3.5 h-3.5 accent-[var(--accent)]" ' + (isTagged ? 'checked' : '') + ' />' +
-                    '<span class="truncate text-[11px] font-medium text-ink">' + ui.esc(auth.displayName(u)) + '</span>' +
-                  '</label>'
-                );
-              }).join('') +
+              renderTaggedCheckboxes(initialUsers, task.taggedUserIds) +
             '</div>' +
           '</div>' +
 
@@ -1221,9 +1275,41 @@ window.RMTP = window.RMTP || {};
       ]
     });
 
+    // Refresh eligible assignee & tagged tech options when category toggles Hires
+    const catSelEl = m.root.querySelector('#tk-cat');
+    if (catSelEl) {
+      catSelEl.addEventListener('change', () => {
+        const curCat = catSelEl.value;
+        const hiresRestricted = isHiresTaskMode(curCat);
+        const nextUsers = getEligibleUsersForCategory(curCat);
+        const eligibleIds = new Set(nextUsers.map((u) => u.id));
+        const userSel = m.root.querySelector('#tk-user');
+        if (userSel) {
+          const prevVal = userSel.value;
+          const nextVal = eligibleIds.has(prevVal) ? prevVal : '';
+          userSel.innerHTML = renderAssigneeOptions(nextUsers, nextVal);
+          userSel.value = nextVal;
+        }
+        const tagBox = m.root.querySelector('#tk-tag-members-container');
+        if (tagBox) {
+          const checkedIds = Array.from(m.root.querySelectorAll('input[name="tk-tag-member"]:checked'))
+            .map((cb) => cb.value)
+            .filter((id) => eligibleIds.has(id));
+          tagBox.innerHTML = renderTaggedCheckboxes(nextUsers, checkedIds);
+        }
+        const assignMeBtn = m.root.querySelector('#tk-assign-me');
+        if (assignMeBtn && me) {
+          assignMeBtn.classList.toggle('hidden', hiresRestricted && !isEligibleHiresTech(me));
+        }
+        const hiresNote = m.root.querySelector('#tk-hires-tech-note');
+        if (hiresNote) hiresNote.classList.toggle('hidden', !hiresRestricted);
+      });
+    }
+
     // Quick Assign to Me button
     m.root.querySelector('#tk-assign-me')?.addEventListener('click', () => {
-      if (me) {
+      const curCat = m.root.querySelector('#tk-cat')?.value || task.category;
+      if (me && (!isHiresTaskMode(curCat) || isEligibleHiresTech(me))) {
         const userSel = m.root.querySelector('#tk-user');
         if (userSel) userSel.value = me.id;
       }
@@ -1269,16 +1355,23 @@ window.RMTP = window.RMTP || {};
         return;
       }
 
+      const selectedCat = m.root.querySelector('#tk-cat').value;
+      const enforceHiresTechs = isHiresTaskMode(selectedCat);
       const userSel = m.root.querySelector('#tk-user');
-      const assignedId = userSel.value;
-      const assignedObj = assignedId ? store.find('users', assignedId) : null;
+      let assignedId = userSel.value;
+      let assignedObj = assignedId ? store.find('users', assignedId) : null;
+      if (enforceHiresTechs && assignedObj && !isEligibleHiresTech(assignedObj)) {
+        assignedId = '';
+        assignedObj = null;
+      }
 
       // Tagged users
       const taggedIds = [];
       const taggedNames = [];
       m.root.querySelectorAll('input[name="tk-tag-member"]:checked').forEach(cb => {
-        taggedIds.push(cb.value);
         const u = store.find('users', cb.value);
+        if (enforceHiresTechs && (!u || !isEligibleHiresTech(u))) return;
+        taggedIds.push(cb.value);
         if (u) taggedNames.push(auth.displayName(u));
       });
 

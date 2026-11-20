@@ -3761,7 +3761,8 @@ RMTP.views.presets = function (contentEl) {
 
     const allPresets = presetsApi.getAllPresets();
     const allSheets = presetsApi.getAllPatchSheets();
-    const advanceEvents = (RMTP.getUpcomingActiveEvents ? RMTP.getUpcomingActiveEvents(spec.eventId) : []);
+    const spec = getTechSpec() || { inputs: [], outputs: [], specs: {} };
+    const advanceEvents = (RMTP.getUpcomingActiveEvents ? RMTP.getUpcomingActiveEvents(spec.eventId || null) : []);
     const dmxPatch = getDmxPatch();
     const dmxFixtures = Array.isArray(dmxPatch.fixtures) ? dmxPatch.fixtures : [];
 
@@ -3795,7 +3796,6 @@ RMTP.views.presets = function (contentEl) {
       return inName || inEvent || inSpace || inNotes || inBoxes;
     });
 
-    const spec = getTechSpec();
     const phantomCount = (spec.inputs || []).filter((c) => c.phantom).length;
     const wedgeCount = (spec.outputs || []).filter((o) => o.type === 'Wedge').length;
     const iemCount = (spec.outputs || []).filter((o) => o.type === 'IEM' || o.stereo).length;

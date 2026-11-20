@@ -22,7 +22,9 @@ RMTP.views.rota = (function () {
     const me = auth.current();
     const isAdmin = !!(me && (me.admin || (auth.isAdmin && auth.isAdmin(me))));
     const isTechManager = auth.isTechManager ? auth.isTechManager(me) : isAdmin;
+    const isSeniorTech = !!(me && String(me.position || '').trim().toLowerCase().includes('senior tech'));
     const isTMOrAdmin = (isTechManager || isAdmin);
+    const isManagerOrSenior = !!(isTechManager || isSeniorTech || isAdmin);
     const isFreelance = auth.isFreelancer ? auth.isFreelancer(me) : false;
 
     // View state
@@ -58,6 +60,8 @@ RMTP.views.rota = (function () {
     if (!state.rotaMonth) state.rotaMonth = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
     if (!state.collapsedSpaces) state.collapsedSpaces = new Set();
     if (!state.selectedDay) state.selectedDay = formatDate(new Date());
+    if (!state.dayPlannerAvailFilter) state.dayPlannerAvailFilter = 'all';
+    if (state.dayPlannerTechSearch === undefined) state.dayPlannerTechSearch = '';
     if (state.mobileDayFilter === undefined) state.mobileDayFilter = 'all';
     // Ensure Technical Managers and Admins default to 'all' events (including gaps)
     if (state.eventsFilter === undefined || (isTMOrAdmin && state.eventsFilter !== 'staffed')) {
@@ -1413,7 +1417,7 @@ RMTP.views.rota = (function () {
               ${ui.icon('refresh', 'w-4 h-4')}
               <span>Shift Swaps</span>
             </button>
-            ${(isTechManager || isAdmin) ? `
+            ${isManagerOrSenior ? `
               <button id="btn-add-booking" class="btn btn-ghost text-xs flex-1 sm:flex-initial justify-center">
                 ${ui.icon('plus', 'w-4 h-4')}
                 <span>+ Book Shift</span>
@@ -1440,7 +1444,11 @@ RMTP.views.rota = (function () {
             <span>Shift Swaps</span>
             <span id="rota-swaps-count" class="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30"></span>
           </button>
-          ${(isTechManager || isAdmin) ? `
+          ${isManagerOrSenior ? `
+            <button data-tab="day_planner" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'day_planner' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
+              ${ui.icon('sliders', 'w-3.5 h-3.5')}
+              <span>Day Crew &amp; Shifts</span>
+            </button>
             <button data-tab="team_matrix" class="shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${state.tab === 'team_matrix' ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2'}">
               ${ui.icon('users', 'w-3.5 h-3.5')}
               <span>Team Matrix & Shifts</span>
@@ -1458,12 +1466,27 @@ RMTP.views.rota = (function () {
     // --- TAB RENDERING LOGIC ---
     const tabContainer = el.querySelector('#rota-tab-view');
 
+    function syncTabButtons() {
+      el.querySelectorAll('[data-tab]').forEach((b) => {
+        const isAct = b.getAttribute('data-tab') === state.tab;
+        b.className = 'shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 ' +
+          (isAct ? 'bg-accent text-accent-ink shadow-xs' : 'text-muted hover:text-ink hover:bg-panel2');
+      });
+    }
+
     function renderActiveTab() {
       updateTopMetrics();
       if (state.tab === 'board') renderBoardTab();
       else if (state.tab === 'my_avail') renderMyAvailTab();
       else if (state.tab === 'swaps') renderSwapsTab();
-      else if (state.tab === 'team_matrix') renderTeamMatrixTab();
+      else if (state.tab === 'day_planner') {
+        if (isManagerOrSenior) renderDayPlannerTab();
+        else { state.tab = 'board'; syncTabButtons(); renderBoardTab(); }
+      }
+      else if (state.tab === 'team_matrix') {
+        if (isManagerOrSenior) renderTeamMatrixTab();
+        else { state.tab = 'board'; syncTabButtons(); renderBoardTab(); }
+      }
       else if (state.tab === 'list') renderListTab();
       else renderBoardTab();
     }
@@ -3302,14 +3325,66 @@ RMTP.views.rota = (function () {
         });
       }
 
-      const allUsers = getAllUsers();
+      const matrixUsers = getAllUsers()
+        .filter((u) => u && u.status !== 'pending' && !(auth.isHiresTeam && auth.isHiresTeam(u)))
+        .sort((a, b) => auth.displayName(a).localeCompare(auth.displayName(b)));
+
+      function describeAvailabilityForMatrix(avail) {
+        if (!avail) {
+          return {
+            status: 'none',
+            flagText: 'No data',
+            timeText: '',
+            tooltip: 'No availability logged',
+          };
+        }
+        if (avail.type === 'unavailable') {
+          return {
+            status: 'unavailable',
+            flagText: 'Unavail',
+            timeText: '',
+            tooltip: 'Unavailable' + (avail.notes ? ' — ' + avail.notes : ''),
+          };
+        }
+        let sTime = avail.startTime || '';
+        let fTime = avail.finishTime || '';
+        let partText = '';
+        if (avail.dayPart === 'morning') {
+          sTime = sTime || '08:00';
+          fTime = fTime || '13:00';
+          partText = 'Morning';
+        } else if (avail.dayPart === 'afternoon') {
+          sTime = sTime || '13:00';
+          fTime = fTime || '18:00';
+          partText = 'Afternoon';
+        } else if (avail.dayPart === 'evening') {
+          sTime = sTime || '18:00';
+          fTime = fTime || '23:30';
+          partText = 'Evening';
+        } else if (avail.dayPart === 'custom') {
+          partText = 'Custom';
+        } else {
+          sTime = sTime || '08:00';
+          fTime = fTime || '23:30';
+          partText = 'All Day';
+        }
+        const timeRange = (sTime && fTime)
+          ? (sTime + '\u2013' + fTime)
+          : (sTime || fTime || 'All day');
+        return {
+          status: 'available',
+          flagText: 'Avail',
+          timeText: timeRange,
+          tooltip: 'Available (' + partText + ': ' + timeRange + ')' + (avail.notes ? ' — ' + avail.notes : ''),
+        };
+      }
 
       let out = `
         <div class="space-y-4">
           <div class="flex items-center justify-between pb-2 border-b border-line flex-wrap gap-2">
             <div>
-              <h2 class="text-sm font-bold text-ink">Two-Week Team Availability & Rota Matrix</h2>
-              <p class="text-xs text-muted">Bird's eye view of freelancer and core duty technician availability across Rich Mix</p>
+              <h2 class="text-sm font-bold text-ink">Two-Week Team Availability &amp; Rota Matrix</h2>
+              <p class="text-xs text-muted">Each cell shows booked shifts alongside a live availability flag and listed hours · Click any date header for Day Crew &amp; Shifts</p>
             </div>
             <div class="flex items-center gap-2 flex-wrap">
               <button id="matrix-week-prev" class="btn btn-ghost !p-1.5" title="Previous Week">
@@ -3319,10 +3394,32 @@ RMTP.views.rota = (function () {
               <button id="matrix-week-next" class="btn btn-ghost !p-1.5" title="Next Week">
                 ${ui.icon('chevR', 'w-4 h-4')}
               </button>
-              <span class="text-xs font-mono font-bold text-ink px-1.5 whitespace-nowrap">
+              <span class="text-xs font-mono tabular-nums font-bold text-ink px-1.5 whitespace-nowrap">
                 ${days[0].dayNum} ${days[0].monthName} – ${days[13].dayNum} ${days[13].monthName}
               </span>
             </div>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted px-1">
+            <span class="inline-flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+              <span class="text-emerald-400 font-semibold">Avail</span>
+              <span>+ listed hours</span>
+            </span>
+            <span class="inline-flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+              <span class="text-rose-400 font-semibold">Unavail</span>
+              <span>marked unavailable</span>
+            </span>
+            <span class="inline-flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+              <span class="text-amber-400 font-semibold">Shift</span>
+              <span>booked on venue rota</span>
+            </span>
+            <span class="inline-flex items-center gap-1.5">
+              <span class="text-muted/60 font-mono">—</span>
+              <span>no availability submitted</span>
+            </span>
           </div>
 
           <div class="overflow-x-auto border border-line rounded-xl bg-panel shadow-sm">
@@ -3331,9 +3428,9 @@ RMTP.views.rota = (function () {
                 <tr class="bg-panel2/60 border-b border-line text-[11px] font-semibold text-muted">
                   <th class="p-3 sticky left-0 bg-panel2 z-10 w-48 min-w-[180px]">Technician</th>
                   ${days.map((d) => `
-                    <th class="p-2 text-center min-w-[70px] border-l border-line/50 ${d.isToday ? 'bg-accent/10 text-accent font-bold' : ''}">
+                    <th data-matrix-open-day="${d.date}" title="Open Day Crew &amp; Shifts for ${formatDisplayDate(d.date)}" class="p-2 text-center min-w-[98px] border-l border-line/50 cursor-pointer hover:bg-accent/10 transition ${d.isToday ? 'bg-accent/10 text-accent font-bold' : ''}">
                       <div class="uppercase tracking-wider text-[10px]">${d.dayName}</div>
-                      <div class="font-mono text-ink ${d.isToday ? 'text-accent' : ''}">${d.dayNum} ${d.monthName}</div>
+                      <div class="font-mono tabular-nums text-ink ${d.isToday ? 'text-accent' : ''}">${d.dayNum} ${d.monthName}</div>
                     </th>
                   `).join('')}
                 </tr>
@@ -3341,7 +3438,7 @@ RMTP.views.rota = (function () {
               <tbody class="divide-y divide-line/60">
       `;
 
-      allUsers.forEach((u) => {
+      matrixUsers.forEach((u) => {
         const uName = auth.displayName(u);
         out += `
           <tr class="hover:bg-panel2/30 transition">
@@ -3361,39 +3458,69 @@ RMTP.views.rota = (function () {
         days.forEach((d) => {
           const avail = getUserAvailability(u.id, d.date);
           const bookings = getUserBookingsOnDate(u.id, d.date);
+          const avInfo = describeAvailabilityForMatrix(avail);
 
-          let cellContent = '<span class="text-muted/40 text-[10px]">—</span>';
           let cellCls = '';
-
           if (bookings.length > 0) {
-            const b = bookings[0];
-            cellContent = `
-              <div class="px-1 py-0.5 rounded text-[10px] font-semibold truncate bg-amber-500/15 text-amber-400 border border-amber-500/30" title="Booked: ${ui.esc(b.eventName || b.space)} (${b.status})">
-                ${ui.esc(b.space || 'Shift')}
-              </div>
-            `;
-            cellCls = 'bg-amber-400/5';
-          } else if (avail) {
-            if (avail.type === 'available') {
-              const label = avail.dayPart === 'custom' ? `${avail.startTime || ''}` : (avail.dayPart || 'All');
-              cellContent = `
-                <div class="px-1 py-0.5 rounded text-[10px] font-medium truncate bg-emerald-500/15 text-emerald-400 border border-emerald-500/25" title="Available: ${avail.dayPart} (${avail.notes || ''})">
-                  ${label}
-                </div>
-              `;
-              cellCls = 'bg-emerald-500/5';
-            } else {
-              cellContent = `
-                <div class="px-1 py-0.5 rounded text-[10px] font-medium truncate bg-rose-500/15 text-rose-400 border border-rose-500/25" title="Unavailable: ${avail.notes || ''}">
-                  No
-                </div>
-              `;
-              cellCls = 'bg-rose-500/5';
-            }
+            cellCls = avInfo.status === 'unavailable' ? 'bg-rose-500/[0.07]' : 'bg-amber-400/[0.06]';
+          } else if (avInfo.status === 'available') {
+            cellCls = 'bg-emerald-500/[0.06]';
+          } else if (avInfo.status === 'unavailable') {
+            cellCls = 'bg-rose-500/[0.05]';
           }
 
+          let bookingHtml = '';
+          const tooltipParts = [];
+          if (bookings.length > 0) {
+            const b = bookings[0];
+            const bTimes = [b.startTime, b.finishTime].filter(Boolean).join('\u2013');
+            const extraCount = bookings.length > 1 ? (' +' + (bookings.length - 1)) : '';
+            tooltipParts.push('Booked: ' + (b.eventName || b.space || 'Shift') + (bTimes ? ' (' + bTimes + ')' : '') + ' [' + (b.status || 'pencil') + ']');
+            bookingHtml = `
+              <div class="px-1.5 py-0.5 rounded text-[10px] font-semibold truncate bg-amber-500/15 text-amber-300 border border-amber-500/30 leading-tight">
+                ${ui.esc(b.space || 'Shift')}${extraCount}
+              </div>
+            `;
+          }
+          tooltipParts.push(avInfo.tooltip);
+
+          let availFlagHtml = '';
+          if (avInfo.status === 'available') {
+            availFlagHtml = `
+              <div data-matrix-avail-flag="available" class="flex flex-col items-center gap-0.5 leading-tight">
+                <span class="inline-flex items-center gap-1 text-[9.5px] font-semibold text-emerald-400">
+                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" aria-hidden="true"></span>
+                  <span>Avail</span>
+                </span>
+                <span data-matrix-avail-times class="font-mono tabular-nums text-[9.5px] text-ink/85 whitespace-nowrap">${ui.esc(avInfo.timeText)}</span>
+              </div>
+            `;
+          } else if (avInfo.status === 'unavailable') {
+            availFlagHtml = `
+              <div data-matrix-avail-flag="unavailable" class="inline-flex items-center justify-center gap-1 text-[9.5px] font-semibold text-rose-400 leading-tight">
+                <span class="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" aria-hidden="true"></span>
+                <span>${bookings.length > 0 ? 'Unavail!' : 'Unavail'}</span>
+              </div>
+            `;
+          } else if (bookings.length > 0) {
+            availFlagHtml = `
+              <div data-matrix-avail-flag="none" class="text-[9px] text-muted/70 leading-tight">No avail</div>
+            `;
+          } else {
+            availFlagHtml = `
+              <div data-matrix-avail-flag="none" class="text-muted/40 text-[10px]">—</div>
+            `;
+          }
+
+          const cellContent = `
+            <div class="flex flex-col items-stretch justify-center gap-1 min-h-[34px]">
+              ${bookingHtml}
+              ${availFlagHtml}
+            </div>
+          `;
+
           out += `
-            <td data-matrix-cell data-matrix-user="${ui.esc(u.id)}" data-matrix-date="${d.date}" class="p-1.5 text-center border-l border-line/40 cursor-pointer hover:bg-panel2 ${cellCls}">
+            <td data-matrix-cell data-matrix-user="${ui.esc(u.id)}" data-matrix-date="${d.date}" title="${ui.esc(tooltipParts.join(' · '))}" class="p-1.5 text-center align-middle border-l border-line/40 cursor-pointer hover:bg-panel2 transition ${cellCls}">
               ${cellContent}
             </td>
           `;
@@ -3428,6 +3555,18 @@ RMTP.views.rota = (function () {
         updateTopMetrics();
       });
 
+      tabContainer.querySelectorAll('[data-matrix-open-day]').forEach((th) => {
+        th.addEventListener('click', () => {
+          const dStr = th.getAttribute('data-matrix-open-day');
+          if (!dStr) return;
+          state.selectedDay = dStr;
+          state._hasUserSwitchedTab = true;
+          state.tab = 'day_planner';
+          syncTabButtons();
+          renderActiveTab();
+        });
+      });
+
       tabContainer.querySelectorAll('[data-matrix-cell]').forEach((td) => {
         td.addEventListener('click', () => {
           const userId = td.getAttribute('data-matrix-user');
@@ -3447,6 +3586,523 @@ RMTP.views.rota = (function () {
               finishTime: existingAvail && existingAvail.finishTime ? existingAvail.finishTime : '23:30',
               status: 'pencil',
             });
+          }
+        });
+      });
+    }
+
+    // ------------------------------------------------------------------------
+    // TAB 4: DAY CREW & SHIFTS (COMBINED DAILY PLANNER FOR TM & SENIOR TECHS)
+    // ------------------------------------------------------------------------
+    function getFullDayScheduleSnapshot(dateStr) {
+      const saved = {
+        spaceFilter: state.spaceFilter,
+        roleFilter: state.roleFilter,
+        statusFilter: state.statusFilter,
+        techFilter: state.techFilter,
+        unfilledOnly: state.unfilledOnly,
+        eventsFilter: state.eventsFilter,
+        searchQuery: state.searchQuery,
+      };
+      state.spaceFilter = '';
+      state.roleFilter = '';
+      state.statusFilter = '';
+      state.techFilter = '';
+      state.unfilledOnly = false;
+      state.eventsFilter = 'all';
+      state.searchQuery = '';
+      let list = [];
+      try {
+        list = getDaySchedule(dateStr);
+      } finally {
+        Object.assign(state, saved);
+      }
+      return list;
+    }
+
+    function renderDayPlannerTab() {
+      const targetDate = normalizeDate(state.selectedDay) || formatDate(new Date());
+      state.selectedDay = targetDate;
+      const targetDateObj = parseDate(targetDate);
+      const todayStr = formatDate(new Date());
+
+      // Build Mon-Sun week strip containing targetDate
+      const dow = (targetDateObj.getDay() + 6) % 7;
+      const stripMonday = new Date(targetDateObj);
+      stripMonday.setDate(targetDateObj.getDate() - dow);
+      stripMonday.setHours(0, 0, 0, 0);
+
+      const techUsers = getAllUsers()
+        .filter((u) => u && u.status !== 'pending' && !(auth.isHiresTeam && auth.isHiresTeam(u)))
+        .sort((a, b) => auth.displayName(a).localeCompare(auth.displayName(b)));
+
+      const weekStripDays = [];
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(stripMonday);
+        d.setDate(stripMonday.getDate() + i);
+        const ds = formatDate(d);
+        const dayItems = getFullDayScheduleSnapshot(ds);
+        let availCount = 0;
+        techUsers.forEach((u) => {
+          const live = getTechLiveStatus(u.id, ds);
+          if (live.available === true && !live.booked) availCount++;
+        });
+        const unfilledDayCount = dayItems.filter((it) => it.isUnfilled).length;
+        weekStripDays.push({
+          date: ds,
+          dayShort: d.toLocaleDateString('en-GB', { weekday: 'short' }),
+          dayNum: d.getDate(),
+          monthShort: d.toLocaleDateString('en-GB', { month: 'short' }),
+          isToday: ds === todayStr,
+          isSelected: ds === targetDate,
+          shiftCount: dayItems.length,
+          unfilledCount: unfilledDayCount,
+          availCount: availCount,
+        });
+      }
+
+      // Compute full venue shifts for selected day
+      const dayItems = getFullDayScheduleSnapshot(targetDate);
+      const unfilledShifts = dayItems.filter((it) => it.isUnfilled);
+      const confirmedShifts = dayItems.filter((it) => !it.isUnfilled && !it.isNoTech && it.status === 'confirmed');
+      const pencilShifts = dayItems.filter((it) => !it.isUnfilled && !it.isNoTech && it.status === 'pencil');
+
+      // Compute technician availability for selected day
+      const techEntries = techUsers.map((u) => {
+        const live = getTechLiveStatus(u.id, targetDate);
+        const avail = getUserAvailability(u.id, targetDate);
+        const bookings = getUserBookingsOnDate(u.id, targetDate);
+        let bucket = 'nodata';
+        if (live.booked) bucket = 'booked';
+        else if (live.available === true) bucket = 'available';
+        else if (live.available === false) bucket = 'unavailable';
+        return { user: u, name: auth.displayName(u), live, avail, bookings, bucket };
+      });
+
+      const availCount = techEntries.filter((t) => t.bucket === 'available').length;
+      const bookedCount = techEntries.filter((t) => t.bucket === 'booked').length;
+      const unavailCount = techEntries.filter((t) => t.bucket === 'unavailable').length;
+      const noDataCount = techEntries.filter((t) => t.bucket === 'nodata').length;
+
+      const techSearch = String(state.dayPlannerTechSearch || '').trim().toLowerCase();
+      const availFilter = state.dayPlannerAvailFilter || 'all';
+      const filteredTechs = techEntries.filter((t) => {
+        if (availFilter !== 'all' && t.bucket !== availFilter) return false;
+        if (techSearch) {
+          const hay = [t.name, t.user.position, t.user.discipline, t.live.label, t.avail && t.avail.notes].filter(Boolean).join(' ').toLowerCase();
+          if (!hay.includes(techSearch)) return false;
+        }
+        return true;
+      });
+
+      const groupOrder = [
+        { key: 'available', title: 'Available to Book', tone: 'text-ok', icon: 'check' },
+        { key: 'booked', title: 'Booked on Venue Shifts', tone: 'text-warning', icon: 'calendar' },
+        { key: 'unavailable', title: 'Unavailable', tone: 'text-danger', icon: 'x' },
+        { key: 'nodata', title: 'No Availability Logged', tone: 'text-muted', icon: 'clock' },
+      ];
+
+      const displayHeadingDate = targetDateObj.toLocaleDateString('en-GB', {
+        weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
+      });
+
+      function renderDayShiftRow(item) {
+        const timesStr = (item.startTime || 'TBC') + (item.finishTime ? (' \u2013 ' + item.finishTime) : '');
+        const isTakeover = item.type === 'takeover';
+        const isBooking = item.type === 'booking';
+        const statusMeta = item.isNoTech
+          ? { label: 'No Tech Required', cls: 'text-muted', icon: 'slash' }
+          : (item.isUnfilled
+            ? { label: 'Unfilled Gap', cls: 'text-danger font-semibold', icon: 'alert' }
+            : (item.status === 'confirmed'
+              ? { label: 'Confirmed', cls: 'text-ok font-semibold', icon: 'check' }
+              : { label: 'Pencil', cls: 'text-warning font-semibold', icon: 'clock' }));
+
+        if (isTakeover) {
+          return `
+            <div class="p-3.5 ${item.isUnfilled ? 'bg-danger/[0.03]' : ''} space-y-2.5">
+              <div class="flex items-start justify-between gap-2 flex-wrap">
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2 flex-wrap text-[11px] text-muted mb-0.5">
+                    <span class="font-mono tabular-nums font-semibold text-ink">${ui.esc(timesStr)}</span>
+                    <span aria-hidden="true">\u00b7</span>
+                    <span class="font-semibold text-warning">Multi-Room Takeover</span>
+                    <span aria-hidden="true">\u00b7</span>
+                    <span class="inline-flex items-center gap-1 ${statusMeta.cls}">${ui.icon(statusMeta.icon, 'w-3 h-3')}<span>${ui.esc(statusMeta.label)} (${item.totalCrewAssigned}/${item.totalCrewNeeded} crew)</span></span>
+                  </div>
+                  <div class="font-display text-sm font-semibold text-ink">${ui.esc(item.eventName)}</div>
+                </div>
+                ${item.eventId ? `<a href="#/advancing/${encodeURIComponent(item.eventId)}" class="text-[11px] font-semibold text-accent hover:underline shrink-0">Advancing \u2192</a>` : ''}
+              </div>
+              <div class="divide-y divide-line/50 border-t border-line/60">
+                ${(item.spaceBreakdown || []).map((sb) => `
+                  <div class="py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div class="min-w-0 flex-1">
+                      <div class="flex items-center gap-2 flex-wrap">
+                        <span class="font-semibold text-ink">${ui.esc(sb.space)}</span>
+                        <span class="text-muted text-[11px] font-mono tabular-nums">${sb.assignedCount}/${sb.basicCrew}</span>
+                        ${sb.missingDisciplines && sb.missingDisciplines.length ? `
+                          <span class="text-[11px] font-semibold text-danger">Needs: ${ui.esc(sb.missingDisciplines.join(', '))}</span>
+                        ` : '<span class="text-[11px] text-ok font-medium">Covered</span>'}
+                      </div>
+                      ${sb.assignedTechs && sb.assignedTechs.length ? `
+                        <div class="text-[11px] text-muted mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                          ${sb.assignedTechs.map((t) => (
+                            t.bookingId
+                              ? `<button type="button" data-dp-edit-booking="${ui.esc(t.bookingId)}" class="text-ink hover:text-accent hover:underline cursor-pointer">${ui.esc(t.name)} (${ui.esc(t.role)} · ${ui.esc(t.status)})</button>`
+                              : `<span>${ui.esc(t.name)} (${ui.esc(t.role)})</span>`
+                          )).join('<span aria-hidden="true">\u00b7</span>')}
+                        </div>
+                      ` : ''}
+                    </div>
+                    <button type="button" data-dp-assign-shift data-ev-id="${ui.esc(item.eventId || '')}" data-ev-name="${ui.esc(item.eventName || '')}" data-space="${ui.esc(sb.space)}" data-start="${ui.esc(item.startTime || '17:00')}" data-end="${ui.esc(item.finishTime || '23:30')}" data-role="${ui.esc((sb.missingDisciplines && sb.missingDisciplines[0]) || 'Sound')}" class="btn btn-ghost !py-1 !px-2 text-[11px] font-semibold text-accent border border-accent/30 hover:bg-accent/10 shrink-0">
+                      + Assign
+                    </button>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${item.isUnfilled ? 'bg-danger/[0.03]' : ''}">
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2 flex-wrap text-[11px] text-muted mb-0.5">
+                <span class="font-mono tabular-nums font-semibold text-ink">${ui.esc(timesStr)}</span>
+                <span aria-hidden="true">\u00b7</span>
+                <span class="font-medium text-ink/90">${ui.esc(item.space || 'Venue')}</span>
+                <span aria-hidden="true">\u00b7</span>
+                <span class="inline-flex items-center gap-1 ${statusMeta.cls}">${ui.icon(statusMeta.icon, 'w-3 h-3')}<span>${ui.esc(statusMeta.label)}</span></span>
+              </div>
+              <div class="font-display text-sm font-semibold text-ink truncate">${ui.esc(item.eventName || 'Venue Shift')}</div>
+              <div class="text-xs text-muted mt-0.5 flex items-center gap-2 flex-wrap">
+                ${item.isUnfilled ? `
+                  <span class="text-danger font-medium">Unassigned · Role needed: ${ui.esc(item.role || 'Tech')}</span>
+                ` : (item.isNoTech ? `
+                  <span>Self-service / no technician required</span>
+                ` : `
+                  <span>Crew: <strong class="text-ink font-medium">${ui.esc(item.userName || 'Technician')}</strong></span>
+                  <span aria-hidden="true">\u00b7</span>
+                  <span>${ui.esc(item.role || 'Tech')}</span>
+                `)}
+              </div>
+            </div>
+            <div class="flex items-center gap-1.5 shrink-0 flex-wrap">
+              ${item.isUnfilled ? `
+                <button type="button" data-dp-assign-shift data-ev-id="${ui.esc(item.eventId || '')}" data-ev-name="${ui.esc(item.eventName || '')}" data-space="${ui.esc(item.space || 'The Stage')}" data-start="${ui.esc(item.startTime || '17:00')}" data-end="${ui.esc(item.finishTime || '23:30')}" data-role="${ui.esc(item.role || 'Sound')}" ${isBooking && item.id ? `data-existing-booking-id="${ui.esc(item.id)}"` : ''} class="btn btn-primary !py-1 !px-2.5 text-[11px] font-semibold">
+                  + Assign Tech
+                </button>
+              ` : (isBooking && item.id ? `
+                ${item.status === 'pencil' ? `
+                  <button type="button" data-dp-confirm-booking="${ui.esc(item.id)}" class="btn btn-ghost !py-1 !px-2 text-[11px] font-semibold text-ok border border-ok/30 hover:bg-ok/10">Confirm</button>
+                ` : ''}
+                <button type="button" data-dp-edit-booking="${ui.esc(item.id)}" class="btn btn-ghost !py-1 !px-2 text-[11px] font-medium border border-line">Edit</button>
+              ` : (!item.isNoTech ? `
+                <button type="button" data-dp-assign-shift data-ev-id="${ui.esc(item.eventId || '')}" data-ev-name="${ui.esc(item.eventName || '')}" data-space="${ui.esc(item.space || 'The Stage')}" data-start="${ui.esc(item.startTime || '17:00')}" data-end="${ui.esc(item.finishTime || '23:30')}" data-role="${ui.esc(item.role || 'Sound')}" class="btn btn-ghost !py-1 !px-2 text-[11px] font-medium border border-line">+ Add Crew</button>
+              ` : ''))}
+              ${item.eventId ? `<a href="#/advancing/${encodeURIComponent(item.eventId)}" class="text-[11px] font-medium text-accent hover:underline px-1">Event \u2192</a>` : ''}
+            </div>
+          </div>
+        `;
+      }
+
+      function renderTechAvailRow(entry) {
+        const u = entry.user;
+        const availStart = (entry.avail && entry.avail.startTime) ? entry.avail.startTime
+          : (entry.avail && entry.avail.dayPart === 'morning' ? '08:00'
+            : (entry.avail && entry.avail.dayPart === 'afternoon' ? '13:00'
+              : (entry.avail && entry.avail.dayPart === 'evening' ? '18:00' : '17:00')));
+        const availEnd = (entry.avail && entry.avail.finishTime) ? entry.avail.finishTime
+          : (entry.avail && entry.avail.dayPart === 'morning' ? '13:00'
+            : (entry.avail && entry.avail.dayPart === 'afternoon' ? '18:00' : '23:30'));
+
+        return `
+          <div class="px-3.5 py-2.5 flex items-start justify-between gap-2.5">
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="font-semibold text-xs text-ink">${ui.esc(entry.name)}</span>
+                <span class="text-[11px] text-muted">${ui.esc(u.position || 'Tech')}${u.discipline ? (' · ' + ui.esc(u.discipline)) : ''}</span>
+              </div>
+              ${entry.bucket === 'booked' ? `
+                <div class="mt-1 space-y-1">
+                  ${entry.bookings.map((b) => `
+                    <div class="text-[11px] text-warning flex items-center gap-1.5 flex-wrap">
+                      <span class="font-mono tabular-nums">${ui.esc(b.startTime || 'TBC')}\u2013${ui.esc(b.finishTime || 'TBC')}</span>
+                      <span aria-hidden="true">\u00b7</span>
+                      <span class="font-medium text-ink">${ui.esc(b.space || 'Shift')}</span>
+                      ${b.eventName ? `<span aria-hidden="true">\u00b7</span><span class="text-muted truncate max-w-[180px]">${ui.esc(b.eventName)}</span>` : ''}
+                      <span class="text-[10px] uppercase tracking-wider text-muted">(${ui.esc(b.status || 'pencil')})</span>
+                    </div>
+                  `).join('')}
+                </div>
+              ` : (entry.bucket === 'available' ? `
+                <div class="text-[11px] text-ok mt-0.5 font-medium">
+                  ${ui.esc(entry.live.details || 'All Day')}${entry.avail && entry.avail.notes ? (' · <span class="text-muted font-normal">' + ui.esc(entry.avail.notes) + '</span>') : ''}
+                </div>
+              ` : (entry.bucket === 'unavailable' ? `
+                <div class="text-[11px] text-danger/90 mt-0.5">
+                  Unavailable${entry.avail && entry.avail.notes ? (' · ' + ui.esc(entry.avail.notes)) : ''}
+                </div>
+              ` : `
+                <div class="text-[11px] text-muted mt-0.5">No availability submitted for this date</div>
+              `))}
+            </div>
+            <div class="shrink-0 flex items-center gap-1">
+              ${entry.bucket === 'booked' && entry.bookings[0] ? `
+                <button type="button" data-dp-edit-booking="${ui.esc(entry.bookings[0].id)}" class="btn btn-ghost !py-1 !px-2 text-[11px] border border-line">Edit Shift</button>
+              ` : (entry.bucket !== 'unavailable' ? `
+                <button type="button" data-dp-book-tech="${ui.esc(u.id)}" data-start="${ui.esc(availStart)}" data-end="${ui.esc(availEnd)}" class="btn ${entry.bucket === 'available' ? 'btn-primary' : 'btn-ghost border border-line'} !py-1 !px-2.5 text-[11px] font-semibold">
+                  + Book
+                </button>
+              ` : '')}
+            </div>
+          </div>
+        `;
+      }
+
+      tabContainer.innerHTML = `
+        <div id="rota-day-planner" class="space-y-4">
+          <!-- Top Day Picker & Operational Summary -->
+          <div class="panel p-4 border border-line space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 class="font-display text-base font-semibold text-ink">${ui.esc(displayHeadingDate)}</h2>
+                <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted mt-0.5">
+                  <span class="font-mono tabular-nums font-semibold text-ink">${dayItems.length} venue ${dayItems.length === 1 ? 'shift' : 'shifts'}</span>
+                  ${unfilledShifts.length > 0 ? `
+                    <span aria-hidden="true">\u00b7</span>
+                    <span class="inline-flex items-center gap-1 font-semibold text-danger">${ui.icon('alert', 'w-3.5 h-3.5')}<span class="font-mono tabular-nums">${unfilledShifts.length}</span> unfilled</span>
+                  ` : (dayItems.length > 0 ? `
+                    <span aria-hidden="true">\u00b7</span>
+                    <span class="inline-flex items-center gap-1 font-semibold text-ok">${ui.icon('check', 'w-3.5 h-3.5')}All shifts covered</span>
+                  ` : '')}
+                  <span aria-hidden="true">\u00b7</span>
+                  <span class="text-ok font-semibold font-mono tabular-nums">${availCount} available</span>
+                  <span aria-hidden="true">\u00b7</span>
+                  <span class="text-warning font-medium font-mono tabular-nums">${bookedCount} booked</span>
+                  <span aria-hidden="true">\u00b7</span>
+                  <span class="text-danger/90 font-mono tabular-nums">${unavailCount} unavailable</span>
+                  <span aria-hidden="true">\u00b7</span>
+                  <span class="font-mono tabular-nums">${noDataCount} no data</span>
+                </div>
+              </div>
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <button type="button" id="dp-prev-day" class="btn btn-ghost !p-1.5 border border-line" title="Previous day">${ui.icon('chevL', 'w-4 h-4')}</button>
+                <button type="button" id="dp-today-btn" class="btn btn-ghost !py-1.5 !px-2.5 text-xs border border-line ${targetDate === todayStr ? 'text-accent font-semibold bg-accent/10 border-accent/30' : ''}">Today</button>
+                <input type="date" id="dp-date-picker" class="field !py-1 !px-2 text-xs font-mono tabular-nums !w-auto" value="${ui.esc(targetDate)}" aria-label="Select planning date" />
+                <button type="button" id="dp-next-day" class="btn btn-ghost !p-1.5 border border-line" title="Next day">${ui.icon('chevR', 'w-4 h-4')}</button>
+                <label class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-line text-xs text-muted hover:text-ink cursor-pointer select-none ml-1">
+                  <input type="checkbox" id="dp-noncore-toggle" class="w-3.5 h-3.5 accent-[var(--accent)]" ${state.showNonCoreSpaces ? 'checked' : ''} />
+                  <span>All Spaces</span>
+                </label>
+                <button type="button" id="dp-new-shift-btn" class="btn btn-primary !py-1.5 !px-3 text-xs font-semibold">
+                  ${ui.icon('plus', 'w-3.5 h-3.5')}<span>Book Shift</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 7-Day Quick Switcher Strip -->
+            <div class="grid grid-cols-7 gap-1.5 pt-2.5 border-t border-line/60">
+              ${weekStripDays.map((d) => `
+                <button type="button" data-dp-pick-date="${d.date}" class="px-2 py-1.5 rounded-lg border text-left transition cursor-pointer ${d.isSelected ? 'border-accent bg-accent/10 text-ink' : 'border-line/70 bg-panel2/40 hover:bg-panel2 text-muted hover:text-ink'}">
+                  <div class="flex items-center justify-between gap-1 text-[10px] uppercase tracking-wider">
+                    <span class="${d.isToday ? 'text-accent font-bold' : ''}">${d.dayShort}</span>
+                    <span class="font-mono tabular-nums font-semibold ${d.isSelected ? 'text-accent' : 'text-ink'}">${d.dayNum}</span>
+                  </div>
+                  <div class="mt-1 flex items-center justify-between gap-1 text-[10px] font-mono tabular-nums">
+                    <span class="${d.unfilledCount > 0 ? 'text-danger font-bold' : 'text-muted'}" title="${d.shiftCount} shifts (${d.unfilledCount} unfilled)">${d.shiftCount} sh</span>
+                    <span class="text-ok" title="${d.availCount} technicians available">${d.availCount} av</span>
+                  </div>
+                </button>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- Split View: Venue Shifts (Left) & Technician Availability (Right) -->
+          <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+            <!-- Left Column: Venue Shifts That Day -->
+            <div class="lg:col-span-7 panel border border-line overflow-hidden">
+              <div class="px-4 py-3 border-b border-line bg-panel2/40 flex items-center justify-between gap-2 flex-wrap">
+                <div>
+                  <h3 class="font-display text-sm font-semibold text-ink">Venue Shifts &amp; Events</h3>
+                  <p class="text-[11px] text-muted">
+                    ${confirmedShifts.length} confirmed · ${pencilShifts.length} pencil · ${unfilledShifts.length} unfilled
+                  </p>
+                </div>
+                <span class="text-[11px] font-mono tabular-nums text-muted">${ui.esc(formatDisplayDate(targetDate))}</span>
+              </div>
+              ${dayItems.length ? `
+                <div class="divide-y divide-line/60">
+                  ${dayItems.map(renderDayShiftRow).join('')}
+                </div>
+              ` : `
+                <div class="p-8 text-center text-muted space-y-2">
+                  <div class="text-sm font-semibold text-ink">No venue shifts or events scheduled</div>
+                  <p class="text-xs">There are no active bookings or advancing events in ${state.showNonCoreSpaces ? 'any space' : 'core spaces'} on ${ui.esc(formatDisplayDate(targetDate))}.</p>
+                  <button type="button" id="dp-empty-book-btn" class="btn btn-primary !py-1.5 !px-3 text-xs font-semibold mt-1">+ Book Shift on This Day</button>
+                </div>
+              `}
+            </div>
+
+            <!-- Right Column: Technician Availability That Day -->
+            <div class="lg:col-span-5 panel border border-line overflow-hidden">
+              <div class="px-4 py-3 border-b border-line bg-panel2/40 space-y-2.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h3 class="font-display text-sm font-semibold text-ink">Technician Availability</h3>
+                  <span class="text-[11px] font-mono tabular-nums text-muted">${filteredTechs.length} of ${techEntries.length} crew</span>
+                </div>
+                <div class="flex items-center gap-1 flex-wrap text-[11px]">
+                  ${[
+                    { id: 'all', label: 'All (' + techEntries.length + ')' },
+                    { id: 'available', label: 'Available (' + availCount + ')' },
+                    { id: 'booked', label: 'Booked (' + bookedCount + ')' },
+                    { id: 'unavailable', label: 'Unavailable (' + unavailCount + ')' },
+                    { id: 'nodata', label: 'No Data (' + noDataCount + ')' },
+                  ].map((f) => `
+                    <button type="button" data-dp-avail-filter="${f.id}" class="px-2 py-1 rounded-md border font-medium transition cursor-pointer ${availFilter === f.id ? 'bg-accent text-accent-ink border-accent font-semibold' : 'bg-panel border-line text-muted hover:text-ink'}">
+                      ${f.label}
+                    </button>
+                  `).join('')}
+                </div>
+                <input type="text" id="dp-tech-search" class="field !py-1.5 text-xs w-full" placeholder="Filter techs by name, role, or discipline\u2026" value="${ui.esc(state.dayPlannerTechSearch || '')}" />
+              </div>
+
+              ${filteredTechs.length ? `
+                <div class="divide-y divide-line/60 max-h-[640px] overflow-y-auto">
+                  ${groupOrder.map((grp) => {
+                    const members = filteredTechs.filter((t) => t.bucket === grp.key);
+                    if (!members.length) return '';
+                    return `
+                      <div>
+                        <div class="px-3.5 py-1.5 bg-panel2/60 border-b border-line/50 flex items-center justify-between text-[11px]">
+                          <span class="inline-flex items-center gap-1.5 font-semibold uppercase tracking-wider ${grp.tone}">
+                            ${ui.icon(grp.icon, 'w-3 h-3')}
+                            <span>${grp.title}</span>
+                          </span>
+                          <span class="font-mono tabular-nums text-muted">${members.length}</span>
+                        </div>
+                        <div class="divide-y divide-line/40">
+                          ${members.map(renderTechAvailRow).join('')}
+                        </div>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+              ` : `
+                <div class="p-6 text-center text-xs text-muted">
+                  No technicians match the active availability filter.
+                </div>
+              `}
+            </div>
+          </div>
+        </div>
+      `;
+
+      // Wire Day Planner controls
+      function shiftSelectedDay(deltaDays) {
+        const d = parseDate(state.selectedDay);
+        d.setDate(d.getDate() + deltaDays);
+        state.selectedDay = formatDate(d);
+        renderDayPlannerTab();
+      }
+      tabContainer.querySelector('#dp-prev-day')?.addEventListener('click', () => shiftSelectedDay(-1));
+      tabContainer.querySelector('#dp-next-day')?.addEventListener('click', () => shiftSelectedDay(1));
+      tabContainer.querySelector('#dp-today-btn')?.addEventListener('click', () => {
+        state.selectedDay = formatDate(new Date());
+        renderDayPlannerTab();
+      });
+      tabContainer.querySelector('#dp-date-picker')?.addEventListener('change', (e) => {
+        if (e.target.value) {
+          state.selectedDay = normalizeDate(e.target.value);
+          renderDayPlannerTab();
+        }
+      });
+      tabContainer.querySelectorAll('[data-dp-pick-date]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const d = btn.getAttribute('data-dp-pick-date');
+          if (d) {
+            state.selectedDay = d;
+            renderDayPlannerTab();
+          }
+        });
+      });
+      tabContainer.querySelector('#dp-noncore-toggle')?.addEventListener('change', (e) => {
+        state.showNonCoreSpaces = e.target.checked;
+        renderDayPlannerTab();
+      });
+      tabContainer.querySelector('#dp-new-shift-btn')?.addEventListener('click', () => {
+        openBookingModal({ date: targetDate, status: 'pencil' });
+      });
+      tabContainer.querySelector('#dp-empty-book-btn')?.addEventListener('click', () => {
+        openBookingModal({ date: targetDate, status: 'pencil' });
+      });
+      tabContainer.querySelectorAll('[data-dp-avail-filter]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.dayPlannerAvailFilter = btn.getAttribute('data-dp-avail-filter') || 'all';
+          renderDayPlannerTab();
+        });
+      });
+      const techSearchInp = tabContainer.querySelector('#dp-tech-search');
+      if (techSearchInp) {
+        techSearchInp.addEventListener('input', (e) => {
+          state.dayPlannerTechSearch = e.target.value;
+          const pos = e.target.selectionStart;
+          renderDayPlannerTab();
+          const reInp = tabContainer.querySelector('#dp-tech-search');
+          if (reInp) {
+            reInp.focus();
+            if (typeof pos === 'number') reInp.setSelectionRange(pos, pos);
+          }
+        });
+      }
+      tabContainer.querySelectorAll('[data-dp-book-tech]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          openBookingModal({
+            userId: btn.getAttribute('data-dp-book-tech'),
+            date: targetDate,
+            startTime: btn.getAttribute('data-start') || '17:00',
+            finishTime: btn.getAttribute('data-end') || '23:30',
+            status: 'pencil',
+          });
+        });
+      });
+      tabContainer.querySelectorAll('[data-dp-assign-shift]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const existingId = btn.getAttribute('data-existing-booking-id');
+          if (existingId) {
+            const existingB = store.find('bookings', existingId);
+            if (existingB) { openBookingModal(existingB); return; }
+          }
+          openBookingModal({
+            eventId: btn.getAttribute('data-ev-id') || '',
+            eventName: btn.getAttribute('data-ev-name') || '',
+            space: btn.getAttribute('data-space') || 'The Stage',
+            date: targetDate,
+            startTime: btn.getAttribute('data-start') || '17:00',
+            finishTime: btn.getAttribute('data-end') || '23:30',
+            role: btn.getAttribute('data-role') || 'Sound',
+            status: 'pencil',
+          });
+        });
+      });
+      tabContainer.querySelectorAll('[data-dp-edit-booking]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const id = btn.getAttribute('data-dp-edit-booking');
+          const b = id ? store.find('bookings', id) : null;
+          if (b) openBookingModal(b);
+        });
+      });
+      tabContainer.querySelectorAll('[data-dp-confirm-booking]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const id = btn.getAttribute('data-dp-confirm-booking');
+          const b = id ? store.find('bookings', id) : null;
+          if (b) {
+            b.status = 'confirmed';
+            b.updatedAt = Date.now();
+            store.upsert('bookings', b);
+            ui.toast('Shift confirmed', 'ok');
+            renderActiveTab();
           }
         });
       });
@@ -5661,7 +6317,7 @@ RMTP.views.rota = (function () {
 
       // Save
       m.root.querySelector('#av-save').addEventListener('click', () => {
-        const dStr = m.root.querySelector('#av-date').value;
+        const dStr = normalizeDate(m.root.querySelector('#av-date').value);
         if (!dStr) { ui.toast('Date is required', 'danger'); return; }
 
         let type = 'available';
@@ -5686,8 +6342,15 @@ RMTP.views.rota = (function () {
           finishTime = '';
         }
 
+        // Prevent duplicate records for the same (userId, date)
+        const existingOnDate = getUserAvailability(targetUserId, dStr);
+        let recordId = data.id || (existingOnDate ? existingOnDate.id : store.uid('avail'));
+        if (existingOnDate && data.id && existingOnDate.id !== data.id) {
+          store.remove('availability', existingOnDate.id);
+        }
+
         const record = {
-          id: data.id || store.uid('avail'),
+          id: recordId,
           userId: targetUserId,
           userName: targetName,
           date: dStr,
@@ -5700,10 +6363,7 @@ RMTP.views.rota = (function () {
         };
 
         store.upsert('availability', record);
-        if (RMTP.syncSb && typeof RMTP.syncSb.drain === 'function') {
-          try { RMTP.syncSb.drain(); } catch (e) {}
-        }
-        ui.toast(`Availability updated for ${formatDisplayDate(dStr)}`, 'ok');
+        ui.toast(`Availability saved for ${formatDisplayDate(dStr)}`, 'ok');
         m.close();
         renderActiveTab();
       });
@@ -5920,15 +6580,22 @@ RMTP.views.rota = (function () {
         }
 
         let cur = new Date(sDate);
-        let count = 0;
         const allAvail = getAllAvailability();
+        const existingByDate = new Map();
+        allAvail.forEach((a) => {
+          if (a && a.userId === targetUserId && a.date) {
+            existingByDate.set(normalizeDate(a.date), a);
+          }
+        });
+        const batchRecords = [];
+        const savedAt = new Date().toISOString();
 
         while (cur <= eDate) {
           const dow = cur.getDay(); // 0 = Sun
           if (checkedDows.has(dow)) {
             const dateStr = formatDate(cur);
-            const existing = allAvail.find((a) => a.userId === targetUserId && a.date === dateStr);
-            const rec = {
+            const existing = existingByDate.get(dateStr);
+            batchRecords.push({
               id: existing ? existing.id : store.uid('avail'),
               userId: targetUserId,
               userName: targetName,
@@ -5938,15 +6605,19 @@ RMTP.views.rota = (function () {
               startTime: type === 'available' ? sTime : '',
               finishTime: type === 'available' ? fTime : '',
               notes: notes,
-              updatedAt: new Date().toISOString(),
-            };
-            store.upsert('availability', rec);
-            count++;
+              updatedAt: savedAt,
+            });
           }
           cur.setDate(cur.getDate() + 1);
         }
 
-        ui.toast(`Applied availability to ${count} dates`, 'ok');
+        if (RMTP.syncSb && typeof RMTP.syncSb.upsertAvailabilityBatch === 'function') {
+          RMTP.syncSb.upsertAvailabilityBatch(batchRecords).catch(() => {});
+        } else {
+          batchRecords.forEach((rec) => store.upsert('availability', rec));
+        }
+
+        ui.toast(`Saved availability for ${batchRecords.length} date${batchRecords.length === 1 ? '' : 's'}`, 'ok');
         m.close();
         renderActiveTab();
       });
@@ -6041,25 +6712,58 @@ RMTP.views.rota = (function () {
     });
 
     // Wire Main Navigation Tabs
+    function refreshAvailabilityFromCloud(force) {
+      if (!RMTP.syncSb || typeof RMTP.syncSb.pullCollection !== 'function') return;
+      if (RMTP.supabase && RMTP.supabase.isConfigured && !RMTP.supabase.isConfigured()) return;
+      const now = Date.now();
+      if (!force && RMTP._lastRotaAvailPullAt && (now - RMTP._lastRotaAvailPullAt) < 8000) return;
+      RMTP._lastRotaAvailPullAt = now;
+      RMTP.syncSb.pullCollection('availability').catch(() => {});
+    }
+
     el.querySelectorAll('[data-tab]').forEach((tabBtn) => {
       tabBtn.addEventListener('click', () => {
         state._hasUserSwitchedTab = true;
         state.tab = tabBtn.getAttribute('data-tab');
         el.querySelectorAll('[data-tab]').forEach((b) => {
-          b.className = 'px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 text-muted hover:text-ink hover:bg-panel2';
+          b.className = 'shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 text-muted hover:text-ink hover:bg-panel2';
         });
-        tabBtn.className = 'px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 bg-accent text-accent-ink shadow-xs';
+        tabBtn.className = 'shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 bg-accent text-accent-ink shadow-xs';
         renderActiveTab();
+        if (state.tab === 'my_avail' || state.tab === 'day_planner' || state.tab === 'team_matrix') {
+          refreshAvailabilityFromCloud(false);
+        }
       });
     });
 
-    // Listen for live venue crew specification updates from Venues and spaces
+    // Clean up prior Rota mount listeners before registering new ones
+    if (typeof RMTP._rotaCleanup === 'function') {
+      try { RMTP._rotaCleanup(); } catch (e) {}
+    }
+
+    // Listen for live venue crew specification updates and cloud availability refreshes
+    let isRenderingFromStore = false;
     const onVenuesUpdated = () => {
+      if (!el.isConnected) return;
       renderActiveTab();
     };
     window.addEventListener('rmtp:venues-updated', onVenuesUpdated);
 
-    // Initial render
+    const unsubStore = store.onChange((collName) => {
+      if (collName !== 'availability' && collName !== 'bookings') return;
+      if (!el.isConnected || isRenderingFromStore) return;
+      // Don't blow away an open modal's underlying interaction; safe to re-render tab view
+      isRenderingFromStore = true;
+      try { renderActiveTab(); } finally { isRenderingFromStore = false; }
+    });
+
+    RMTP._rotaCleanup = () => {
+      window.removeEventListener('rmtp:venues-updated', onVenuesUpdated);
+      if (typeof unsubStore === 'function') unsubStore();
+    };
+
+    // Initial render + background cloud availability sync
     renderActiveTab();
+    refreshAvailabilityFromCloud(true);
   };
 })();

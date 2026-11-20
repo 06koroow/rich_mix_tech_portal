@@ -271,9 +271,26 @@ window.RMTP = window.RMTP || {};
     ).trim();
   }
 
+  function isEligibleHiresTech(u) {
+    if (!u || u.status === 'pending') return false;
+    if (auth.isHiresTeam && auth.isHiresTeam(u)) return false;
+    if (auth.isFreelancer && auth.isFreelancer(u)) return false;
+    const roleKey = (auth.resolveUserRoleKey && auth.resolveUserRoleKey(u)) || '';
+    if (roleKey) {
+      return roleKey === 'Technical Manager' || roleKey === 'Senior Tech' || roleKey === 'Duty Tech';
+    }
+    const pos = String(u.position || u.role || '').trim().toLowerCase();
+    return (
+      pos === 'technical manager' || pos === 'tech manager' ||
+      pos.includes('technical manager') || pos.includes('tech manager') ||
+      pos === 'senior tech' || pos.includes('senior tech') ||
+      pos === 'duty tech' || pos.includes('duty tech')
+    );
+  }
+
   function getSuggestedTechForEvent(ev) {
     if (!ev) return null;
-    const users = (store.all('users') || []).filter((u) => u && u.status !== 'pending' && !(auth.isHiresTeam && auth.isHiresTeam(u)));
+    const users = (store.all('users') || []).filter(isEligibleHiresTech);
     const byId = (id) => users.find((u) => u.id === id) || null;
 
     const leadId = RMTP.getAdvancingLeadId ? RMTP.getAdvancingLeadId(ev) : '';
@@ -302,7 +319,7 @@ window.RMTP = window.RMTP || {};
 
   function getTechUsers() {
     return (store.all('users') || [])
-      .filter((u) => u && u.status !== 'pending' && !(auth.isHiresTeam && auth.isHiresTeam(u)))
+      .filter(isEligibleHiresTech)
       .sort((a, b) => auth.displayName(a).localeCompare(auth.displayName(b)));
   }
 
@@ -317,9 +334,10 @@ window.RMTP = window.RMTP || {};
     const space = data.space || evSpace || 'Venue';
     const eventName = linkedEv ? (linkedEv.name || 'Event') : '';
 
-    const assignedUser = data.assignedTechId ? store.find('users', data.assignedTechId) : null;
-    const assignedTechId = assignedUser ? assignedUser.id : (data.assignedTechId || '');
-    const assignedTechName = assignedUser ? auth.displayName(assignedUser) : (data.assignedTechName || '');
+    const rawAssignedUser = data.assignedTechId ? store.find('users', data.assignedTechId) : null;
+    const assignedUser = (rawAssignedUser && isEligibleHiresTech(rawAssignedUser)) ? rawAssignedUser : null;
+    const assignedTechId = assignedUser ? assignedUser.id : '';
+    const assignedTechName = assignedUser ? auth.displayName(assignedUser) : '';
 
     const defaultHiresStatus = isEdit
       ? (data.hiresStatus || existingMeta.hiresStatus || 'Open')
@@ -412,8 +430,8 @@ window.RMTP = window.RMTP || {};
       hiresMeta: nextMeta
     });
 
-    // If a tech replies on an unassigned request, claim it automatically if they are tech staff
-    if (!isHiresUser && me && !updated.assignedTechId) {
+    // If an eligible core tech (TM, Senior Tech, or Duty Tech) replies on an unassigned request, claim it automatically
+    if (!isHiresUser && me && !updated.assignedTechId && isEligibleHiresTech(me)) {
       updated.assignedTechId = me.id;
       updated.assignedTechName = auth.displayName(me);
     }
@@ -471,7 +489,9 @@ window.RMTP = window.RMTP || {};
     if (!taskId) return null;
     const task = store.find('tasks', taskId);
     if (!task) return null;
-    const u = userId ? store.find('users', userId) : null;
+    const rawUser = userId ? store.find('users', userId) : null;
+    if (userId && (!rawUser || !isEligibleHiresTech(rawUser))) return null;
+    const u = rawUser;
     const meta = getMeta(task);
     const nowTs = Date.now();
     const nextHiresStatus = (u && meta.hiresStatus === 'Open') ? 'Awaiting Tech' : meta.hiresStatus;
@@ -2000,6 +2020,8 @@ window.RMTP = window.RMTP || {};
     updateStatus,
     assignTech,
     deleteRequest,
+    isEligibleHiresTech,
+    getTechUsers,
     getSuggestedTechForEvent,
     openRequestModal,
     renderEventHiresPanel,

@@ -217,6 +217,9 @@ RMTP.views.advancing = function (el, params, query) {
   let selectedTechs = RMTP._advTechFilter; // Array of ids/emails, or empty array = all
   let includeUnassigned = (RMTP._advIncludeUnassigned !== undefined ? RMTP._advIncludeUnassigned : true);
   let filterRequiresCrew = (RMTP._advRequiresCrew !== undefined ? RMTP._advRequiresCrew : false);
+  let filterOutstandingHires = (RMTP._advOutstandingHires !== undefined ? RMTP._advOutstandingHires : false);
+  let hiresSectionExpanded = (RMTP._advHiresSectionExpanded !== undefined ? RMTP._advHiresSectionExpanded : true);
+  let hiresSectionOutstandingOnly = (RMTP._advHiresSectionOutstandingOnly !== undefined ? RMTP._advHiresSectionOutstandingOnly : false);
 
   function normalizeDateStr(raw) {
     if (RMTP.normalizeDateStr) return RMTP.normalizeDateStr(raw);
@@ -1038,11 +1041,61 @@ RMTP.views.advancing = function (el, params, query) {
       ? cancelledRuns
       : (currentTab === 'past' ? pastRuns : upcomingRuns));
 
+  const hiresTodayStr = getTodayString();
+  function isHiresTaskOutstanding(h) {
+    if (!h) return false;
+    if (h.status === 'Completed') return false;
+    const meta = (RMTP.hires && RMTP.hires.getMeta) ? RMTP.hires.getMeta(h) : (h.hiresMeta || {});
+    return meta.hiresStatus !== 'Answered';
+  }
+  function isHiresTaskOverdue(h) {
+    if (!isHiresTaskOutstanding(h) || !h.dueDate) return false;
+    const d = normalizeDateStr(h.dueDate);
+    return !!(d && d < hiresTodayStr);
+  }
+  function getEventHiresSummary(eventIds) {
+    const ids = (Array.isArray(eventIds) ? eventIds : [eventIds]).filter(Boolean);
+    const list = (ids.length && RMTP.hires && RMTP.hires.forEvents)
+      ? RMTP.hires.forEvents(ids)
+      : [];
+    const sorted = list.slice().sort((a, b) => {
+      const aOut = isHiresTaskOutstanding(a) ? 0 : 1;
+      const bOut = isHiresTaskOutstanding(b) ? 0 : 1;
+      if (aOut !== bOut) return aOut - bOut;
+      const aOver = isHiresTaskOverdue(a) ? 0 : 1;
+      const bOver = isHiresTaskOverdue(b) ? 0 : 1;
+      if (aOver !== bOver) return aOver - bOver;
+      const aDue = a.dueDate || '9999-99-99';
+      const bDue = b.dueDate || '9999-99-99';
+      if (aDue !== bDue) return aDue.localeCompare(bDue);
+      return Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0);
+    });
+    const outstanding = sorted.filter(isHiresTaskOutstanding);
+    const overdue = outstanding.filter(isHiresTaskOverdue);
+    const answered = sorted.filter((h) => !isHiresTaskOutstanding(h));
+    return { all: sorted, outstanding, overdue, answered };
+  }
+  function getRunEventIds(item) {
+    if (!item) return [];
+    if (!item.isGroup) return [item.id].concat(Array.isArray(item._mergedIds) ? item._mergedIds : []).filter(Boolean);
+    const idSet = new Set();
+    (item.events || []).forEach((ev) => {
+      if (ev && ev.id) idSet.add(ev.id);
+      if (ev && Array.isArray(ev._mergedIds)) ev._mergedIds.forEach((id) => { if (id) idSet.add(id); });
+    });
+    return Array.from(idSet);
+  }
+  const outstandingHiresEventCount = tabPoolRuns.filter((item) => getEventHiresSummary(getRunEventIds(item)).outstanding.length > 0).length;
+
   const eventMatchesFilters = (e) => {
     if (filterRequiresCrew) {
       const evTechs = RMTP.eventTechnicians(e);
       const leadId = RMTP.getAdvancingLeadId(e);
       if (evTechs.length > 0 || leadId) return false;
+    }
+    if (filterOutstandingHires) {
+      const eIds = [e.id].concat(Array.isArray(e._mergedIds) ? e._mergedIds : []);
+      if (getEventHiresSummary(eIds).outstanding.length === 0) return false;
     }
     if (filters.space && !eventMatchesSpace(e, filters.space)) return false;
     if (filters.date && normalizeDateStr(e.date) !== normalizeDateStr(filters.date)) return false;
@@ -1059,6 +1112,7 @@ RMTP.views.advancing = function (el, params, query) {
   const finalShown = tabPoolRuns
     .filter((item) => {
       if (!item.isGroup) return eventMatchesFilters(item);
+      if (filterOutstandingHires && getEventHiresSummary(getRunEventIds(item)).outstanding.length === 0) return false;
       if (quickSearch) {
         const q = quickSearch.toLowerCase();
         const rangeTxt = formatDateRangeLabel(item.startDate, item.endDate).toLowerCase();
@@ -1099,6 +1153,154 @@ RMTP.views.advancing = function (el, params, query) {
   if (selectedTechs && selectedTechs.length > 0) activeFilterCount++;
   if (!includeUnassigned) activeFilterCount++;
   if (filterRequiresCrew) activeFilterCount++;
+  if (filterOutstandingHires) activeFilterCount++;
+
+  function renderHiresTasksOverviewSection() {
+    if (!RMTP.hires || typeof RMTP.hires.forEvents !== 'function') return '';
+    const entries = [];
+    tabPoolRuns.forEach((item) => {
+      const evIds = getRunEventIds(item);
+      const summary = getEventHiresSummary(evIds);
+      if (!summary.all.length) return;
+      const primaryEv = item.isGroup ? (item.events && item.events[0]) : item;
+      const evDate = item.isGroup ? (item.nextActiveDate || item.startDate || item.date) : item.date;
+      const evSpace = item.isGroup
+        ? ((item.distinctSpaces && item.distinctSpaces.length) ? item.distinctSpaces.join(', ') : formatSpaceLabel(primaryEv && primaryEv.space))
+        : formatSpaceLabel(item.space);
+      entries.push({
+        item,
+        primaryEventId: primaryEv ? primaryEv.id : '',
+        name: item.name || (primaryEv && primaryEv.name) || 'Untitled Event',
+        date: evDate || '',
+        dateLabel: item.isGroup && item.isMultiDay ? formatDateRangeLabel(item.startDate, item.endDate) : (evDate ? ui.formatDate(evDate) : 'Date TBC'),
+        space: evSpace || 'Venue',
+        summary
+      });
+    });
+
+    if (!entries.length) return '';
+
+    entries.sort((a, b) => {
+      const aOver = a.summary.overdue.length > 0 ? 0 : 1;
+      const bOver = b.summary.overdue.length > 0 ? 0 : 1;
+      if (aOver !== bOver) return aOver - bOver;
+      const aOut = a.summary.outstanding.length > 0 ? 0 : 1;
+      const bOut = b.summary.outstanding.length > 0 ? 0 : 1;
+      if (aOut !== bOut) return aOut - bOut;
+      return (normalizeDateStr(a.date) || '9999-99-99').localeCompare(normalizeDateStr(b.date) || '9999-99-99');
+    });
+
+    const totalEventsWithHires = entries.length;
+    const totalOutstandingEvents = entries.filter((e) => e.summary.outstanding.length > 0).length;
+    const totalOutstandingTasks = entries.reduce((sum, e) => sum + e.summary.outstanding.length, 0);
+    const totalOverdueTasks = entries.reduce((sum, e) => sum + e.summary.overdue.length, 0);
+    const visibleEntries = hiresSectionOutstandingOnly
+      ? entries.filter((e) => e.summary.outstanding.length > 0)
+      : entries;
+
+    return (
+      '<section id="adv-hires-tasks-section" class="panel border border-line mb-5 overflow-hidden">' +
+        '<div class="px-4 py-3 bg-panel2/40 flex flex-wrap items-center justify-between gap-2.5 ' + (hiresSectionExpanded ? 'border-b border-line' : '') + '">' +
+          '<div class="flex items-center gap-2.5 flex-wrap min-w-0">' +
+            '<button type="button" id="adv-hires-sec-toggle" class="flex items-center gap-2 text-left group cursor-pointer">' +
+              '<span class="text-muted group-hover:text-ink transition-transform ' + (hiresSectionExpanded ? '' : '-rotate-90') + '">' + ui.icon('chevD', 'w-4 h-4') + '</span>' +
+              '<span class="font-display text-sm font-semibold text-ink">Hires Tasks by Event</span>' +
+            '</button>' +
+            '<span class="text-muted text-xs" aria-hidden="true">\u00b7</span>' +
+            '<span class="text-xs font-mono tabular-nums text-muted">' + totalEventsWithHires + ' ' + (totalEventsWithHires === 1 ? 'event' : 'events') + '</span>' +
+            (totalOutstandingTasks > 0 ? (
+              '<span class="text-muted text-xs" aria-hidden="true">\u00b7</span>' +
+              '<span class="inline-flex items-center gap-1 text-xs font-semibold ' + (totalOverdueTasks > 0 ? 'text-danger' : 'text-warning') + '">' +
+                ui.icon('alert', 'w-3.5 h-3.5') +
+                '<span class="font-mono tabular-nums">' + totalOutstandingTasks + '</span>' +
+                '<span>outstanding across ' + totalOutstandingEvents + ' ' + (totalOutstandingEvents === 1 ? 'event' : 'events') + (totalOverdueTasks > 0 ? (' (' + totalOverdueTasks + ' overdue)') : '') + '</span>' +
+              '</span>'
+            ) : (
+              '<span class="text-muted text-xs" aria-hidden="true">\u00b7</span>' +
+              '<span class="inline-flex items-center gap-1 text-xs font-semibold text-ok">' +
+                ui.icon('check', 'w-3.5 h-3.5') +
+                '<span>All event hires tasks answered</span>' +
+              '</span>'
+            )) +
+          '</div>' +
+          '<div class="flex items-center gap-2 flex-wrap">' +
+            '<button type="button" id="adv-hires-sec-only" class="px-2.5 py-1 rounded-md border text-[11px] font-semibold transition cursor-pointer ' + (hiresSectionOutstandingOnly ? 'bg-warning/15 border-warning/40 text-warning' : 'bg-panel border-line text-muted hover:text-ink') + '">' +
+              (hiresSectionOutstandingOnly ? 'Showing Outstanding Only' : 'Outstanding Only') +
+            '</button>' +
+            '<a href="#/hires" class="text-xs font-semibold text-accent hover:underline">Open Hires Desk \u2192</a>' +
+          '</div>' +
+        '</div>' +
+        (hiresSectionExpanded ? (
+          visibleEntries.length ? (
+            '<div class="divide-y divide-line/70">' +
+              visibleEntries.map((entry) => {
+                const s = entry.summary;
+                const hasOutstanding = s.outstanding.length > 0;
+                const hasOverdue = s.overdue.length > 0;
+                const flagHtml = hasOverdue
+                  ? '<span class="inline-flex items-center gap-1 text-[11px] font-semibold text-danger">' + ui.icon('alert', 'w-3.5 h-3.5') + '<span>' + s.outstanding.length + ' Outstanding (' + s.overdue.length + ' Overdue)</span></span>'
+                  : (hasOutstanding
+                    ? '<span class="inline-flex items-center gap-1 text-[11px] font-semibold text-warning">' + ui.icon('alert', 'w-3.5 h-3.5') + '<span>' + s.outstanding.length + ' Outstanding</span></span>'
+                    : '<span class="inline-flex items-center gap-1 text-[11px] font-semibold text-ok">' + ui.icon('check', 'w-3.5 h-3.5') + '<span>All Answered</span></span>');
+                const tasksToList = hiresSectionOutstandingOnly ? s.outstanding : s.all;
+                return (
+                  '<div class="px-4 py-3 ' + (hasOverdue ? 'bg-danger/[0.03]' : (hasOutstanding ? 'bg-warning/[0.025]' : '')) + '">' +
+                    '<div class="flex flex-wrap items-center justify-between gap-2 mb-2">' +
+                      '<div class="flex items-center gap-2 flex-wrap min-w-0">' +
+                        '<button type="button" data-hires-overview-open-ev="' + ui.esc(entry.primaryEventId) + '" class="font-display text-sm font-semibold text-ink hover:text-accent transition-colors text-left cursor-pointer">' +
+                          ui.esc(entry.name) +
+                        '</button>' +
+                        '<span class="text-muted text-xs" aria-hidden="true">\u00b7</span>' +
+                        '<span class="text-xs font-mono tabular-nums text-muted">' + ui.esc(entry.dateLabel) + '</span>' +
+                        '<span class="text-muted text-xs" aria-hidden="true">\u00b7</span>' +
+                        '<span class="text-xs text-muted">' + ui.esc(entry.space) + '</span>' +
+                        '<span class="text-muted text-xs" aria-hidden="true">\u00b7</span>' +
+                        flagHtml +
+                      '</div>' +
+                      '<div class="flex items-center gap-2 shrink-0">' +
+                        '<button type="button" data-hires-overview-add="' + ui.esc(entry.primaryEventId) + '" class="text-[11px] font-semibold text-accent hover:underline cursor-pointer">+ Add Hires Task</button>' +
+                      '</div>' +
+                    '</div>' +
+                    '<div class="divide-y divide-line/50 border-t border-line/50">' +
+                      tasksToList.map((h) => {
+                        const meta = RMTP.hires.getMeta(h);
+                        const outstanding = isHiresTaskOutstanding(h);
+                        const overdue = isHiresTaskOverdue(h);
+                        const statusLabel = overdue
+                          ? 'Overdue \u00b7 ' + (meta.hiresStatus || 'Open')
+                          : (outstanding ? ('Outstanding \u00b7 ' + (meta.hiresStatus || 'Open')) : 'Answered');
+                        const statusCls = overdue ? 'text-danger font-semibold' : (outstanding ? 'text-warning font-semibold' : 'text-ok font-medium');
+                        return (
+                          '<div class="py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs">' +
+                            '<div class="flex items-center gap-2 flex-wrap min-w-0">' +
+                              '<span class="text-[11px] ' + statusCls + ' shrink-0">' + ui.esc(statusLabel) + '</span>' +
+                              '<span class="text-muted" aria-hidden="true">\u00b7</span>' +
+                              '<a href="#/hires?id=' + encodeURIComponent(h.id) + '" class="font-medium text-ink hover:text-accent hover:underline truncate">' + ui.esc(h.title || 'Hires Request') + '</a>' +
+                              '<span class="text-muted" aria-hidden="true">\u00b7</span>' +
+                              '<span class="text-[11px] text-muted">' + ui.esc(meta.requestType || 'Question') + '</span>' +
+                            '</div>' +
+                            '<div class="flex items-center gap-2 text-[11px] text-muted shrink-0">' +
+                              (h.dueDate ? '<span class="font-mono tabular-nums ' + (overdue ? 'text-danger font-semibold' : '') + '">Reply by ' + ui.esc(ui.formatDate(h.dueDate)) + '</span><span aria-hidden="true">\u00b7</span>' : '') +
+                              '<span>' + (h.assignedTechName ? ui.esc(h.assignedTechName) : '<span class="italic">Unassigned</span>') + '</span>' +
+                            '</div>' +
+                          '</div>'
+                        );
+                      }).join('') +
+                    '</div>' +
+                  '</div>'
+                );
+              }).join('') +
+            '</div>'
+          ) : (
+            '<div class="px-4 py-4 text-xs text-muted flex items-center gap-2">' +
+              ui.icon('check', 'w-4 h-4 text-ok') +
+              '<span>No outstanding hires tasks across these events.</span>' +
+            '</div>'
+          )
+        ) : '') +
+      '</section>'
+    );
+  }
 
   el.innerHTML =
     '<div class="' + (RMTP._isSoftRender ? '' : 'view-enter') + '">' +
@@ -1128,6 +1330,7 @@ RMTP.views.advancing = function (el, params, query) {
         '</div>' +
         '<div class="flex items-center justify-between md:justify-start gap-2.5 w-full flex-wrap">' +
           (isAdmin ? '<label class="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-line text-xs font-medium cursor-pointer transition select-none ' + (filterRequiresCrew ? 'bg-danger text-white border-danger shadow-2xs' : 'bg-panel2 hover:bg-panel text-ink') + '"><input type="checkbox" id="adv-req-crew-toggle" class="hidden" ' + (filterRequiresCrew ? 'checked' : '') + '> ' + ui.icon('alert', 'w-3.5 h-3.5') + '<span>Requires Crew</span></label>' : '') +
+          ((outstandingHiresEventCount > 0 || filterOutstandingHires) ? '<label class="flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-medium cursor-pointer transition select-none ' + (filterOutstandingHires ? 'bg-warning text-black border-warning font-semibold shadow-2xs' : 'border-warning/40 bg-warning/10 hover:bg-warning/15 text-warning') + '"><input type="checkbox" id="adv-hires-outstanding-toggle" class="hidden" ' + (filterOutstandingHires ? 'checked' : '') + '> ' + ui.icon('chat', 'w-3.5 h-3.5') + '<span>Outstanding Hires</span><span class="font-mono tabular-nums font-bold">(' + outstandingHiresEventCount + ')</span></label>' : '') +
           '<button id="adv-filter-toggle-btn" class="btn btn-ghost text-xs flex items-center gap-2 border border-line bg-panel2 hover:bg-panel font-medium py-2 px-3 rounded-lg transition shrink-0">' +
             ui.icon('filter', 'w-3.5 h-3.5 text-accent') +
             '<span>Filters & Crew</span>' +
@@ -1151,6 +1354,9 @@ RMTP.views.advancing = function (el, params, query) {
 
       // Unified Collapsible Filter Drawer
       renderUnifiedFilterDrawer() +
+
+      // Hires Tasks by Event Overview Section
+      (advViewMode === 'list' ? renderHiresTasksOverviewSection() : '') +
 
       (advViewMode === 'calendar'
         ? renderCalendarView()
@@ -1662,6 +1868,52 @@ RMTP.views.advancing = function (el, params, query) {
     RMTP._isSoftRender = false;
   });
 
+  // Outstanding Hires Filter Toggle & Hires Tasks Overview Section Wiring
+  const hiresOutToggle = el.querySelector('#adv-hires-outstanding-toggle');
+  if (hiresOutToggle) hiresOutToggle.addEventListener('change', (e) => {
+    RMTP._advOutstandingHires = e.target.checked;
+    RMTP._isSoftRender = true;
+    RMTP.router.render();
+    RMTP._isSoftRender = false;
+  });
+
+  const hiresSecToggle = el.querySelector('#adv-hires-sec-toggle');
+  if (hiresSecToggle) hiresSecToggle.addEventListener('click', () => {
+    RMTP._advHiresSectionExpanded = !hiresSectionExpanded;
+    RMTP._isSoftRender = true;
+    RMTP.router.render();
+    RMTP._isSoftRender = false;
+  });
+
+  const hiresSecOnly = el.querySelector('#adv-hires-sec-only');
+  if (hiresSecOnly) hiresSecOnly.addEventListener('click', () => {
+    RMTP._advHiresSectionOutstandingOnly = !hiresSectionOutstandingOnly;
+    RMTP._isSoftRender = true;
+    RMTP.router.render();
+    RMTP._isSoftRender = false;
+  });
+
+  el.querySelectorAll('[data-hires-overview-open-ev]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const evId = btn.getAttribute('data-hires-overview-open-ev');
+      const ev = evId ? store.find('advancing', evId) : null;
+      if (ev) openEventModal(ev);
+    });
+  });
+
+  el.querySelectorAll('[data-hires-overview-add]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const evId = btn.getAttribute('data-hires-overview-add');
+      if (RMTP.hires && typeof RMTP.hires.openRequestModal === 'function') {
+        RMTP.hires.openRequestModal(null, { linkedEventId: evId }, () => {
+          RMTP._isSoftRender = true;
+          RMTP.router.render();
+          RMTP._isSoftRender = false;
+        });
+      }
+    });
+  });
+
   // Tab bar wiring
   el.querySelectorAll('[data-adv-tab]').forEach((b) => b.addEventListener('click', () => {
     filters.tab = b.getAttribute('data-adv-tab');
@@ -1678,6 +1930,8 @@ RMTP.views.advancing = function (el, params, query) {
   const clearBtn = el.querySelector('#adv-clear'); if (clearBtn) clearBtn.addEventListener('click', () => {
     filters.space = isHires ? 'all' : 'standard';
     filters.date = '';
+    RMTP._advRequiresCrew = false;
+    RMTP._advOutstandingHires = false;
     RMTP._advTechFilter = showAllEventsByDefault ? [] : (currentUserId ? [currentUserId] : []);
     RMTP._advTechFilterManuallySet = false;
     RMTP._advIncludeUnassigned = true;
@@ -2375,7 +2629,7 @@ RMTP.views.advancing = function (el, params, query) {
       const defaultEv = item.events[defaultIdx] || item.events[0];
 
       const openPop = (e) => {
-        if (e.target.closest('button') || e.target.closest('input') || e.target.closest('select')) return;
+        if (e.target.closest('button') || e.target.closest('input') || e.target.closest('select') || e.target.closest('a')) return;
         const dayTrigger = e.target.closest('[data-open-run-ev-idx]');
         if (dayTrigger) {
           const idx = parseInt(dayTrigger.getAttribute('data-open-run-ev-idx'), 10);
@@ -2456,7 +2710,7 @@ RMTP.views.advancing = function (el, params, query) {
       const card = q('[data-event-card="' + ev.id + '"]');
       const openPop = (e) => {
         if (e.target.closest('button') && !e.target.closest('[data-open-modal]')) return;
-        if (e.target.closest('select') || e.target.closest('input') || e.target.closest('label')) return;
+        if (e.target.closest('select') || e.target.closest('input') || e.target.closest('label') || e.target.closest('a')) return;
         openEventModal(ev);
       };
       if (card) card.addEventListener('click', openPop);
@@ -2671,6 +2925,59 @@ RMTP.views.advancing = function (el, params, query) {
     );
   }
 
+  function renderCardHiresTasksBlock(summary) {
+    if (!summary || !summary.all.length) return '';
+    const hasOutstanding = summary.outstanding.length > 0;
+    const hasOverdue = summary.overdue.length > 0;
+    const statusText = hasOverdue
+      ? (summary.outstanding.length + ' Outstanding (' + summary.overdue.length + ' Overdue)')
+      : (hasOutstanding
+        ? (summary.outstanding.length + ' Outstanding')
+        : 'All Answered');
+    const statusCls = hasOverdue ? 'text-danger' : (hasOutstanding ? 'text-warning' : 'text-ok');
+    return (
+      '<div class="mt-2.5 pt-2.5 border-t border-line/60" onclick="event.stopPropagation()">' +
+        '<div class="flex items-center justify-between gap-2 mb-1.5 flex-wrap">' +
+          '<div class="flex items-center gap-2 text-[11px]">' +
+            '<span class="font-semibold uppercase tracking-wider text-muted">Hires Tasks (' + summary.all.length + ')</span>' +
+            '<span class="text-muted" aria-hidden="true">\u00b7</span>' +
+            '<span class="inline-flex items-center gap-1 font-semibold ' + statusCls + '">' +
+              ui.icon(hasOutstanding ? 'alert' : 'check', 'w-3 h-3') +
+              '<span>' + ui.esc(statusText) + '</span>' +
+            '</span>' +
+          '</div>' +
+          '<a href="#/hires" class="text-[11px] font-medium text-accent hover:underline">Hires Desk \u2192</a>' +
+        '</div>' +
+        '<div class="divide-y divide-line/40">' +
+          summary.all.map((h) => {
+            const meta = (RMTP.hires && RMTP.hires.getMeta) ? RMTP.hires.getMeta(h) : (h.hiresMeta || {});
+            const outstanding = isHiresTaskOutstanding(h);
+            const overdue = isHiresTaskOverdue(h);
+            const stLabel = overdue
+              ? 'Overdue'
+              : (outstanding ? ('Outstanding \u00b7 ' + (meta.hiresStatus || 'Open')) : 'Answered');
+            const stCls = overdue ? 'text-danger font-semibold' : (outstanding ? 'text-warning font-semibold' : 'text-ok font-medium');
+            return (
+              '<div class="py-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-xs">' +
+                '<div class="flex items-center gap-1.5 min-w-0 flex-wrap">' +
+                  '<span class="text-[11px] ' + stCls + ' shrink-0">' + ui.esc(stLabel) + '</span>' +
+                  '<span class="text-muted" aria-hidden="true">\u00b7</span>' +
+                  '<a href="#/hires?id=' + encodeURIComponent(h.id) + '" class="font-medium text-ink hover:text-accent hover:underline truncate">' + ui.esc(h.title || 'Hires Task') + '</a>' +
+                  '<span class="text-muted" aria-hidden="true">\u00b7</span>' +
+                  '<span class="text-[11px] text-muted">' + ui.esc(meta.requestType || 'Question') + '</span>' +
+                '</div>' +
+                '<div class="flex items-center gap-1.5 text-[11px] text-muted shrink-0">' +
+                  (h.dueDate ? '<span class="font-mono tabular-nums ' + (overdue ? 'text-danger font-semibold' : '') + '">' + ui.esc(ui.formatDate(h.dueDate)) + '</span><span aria-hidden="true">\u00b7</span>' : '') +
+                  '<span>' + (h.assignedTechName ? ui.esc(h.assignedTechName) : '<span class="italic">Unassigned</span>') + '</span>' +
+                '</div>' +
+              '</div>'
+            );
+          }).join('') +
+        '</div>' +
+      '</div>'
+    );
+  }
+
   /* ---- Compact Event Card in List View ---- */
   function renderEventCard(ev) {
     if (Array.isArray(ev.space) && ev.groupId) { delete ev.groupId; }
@@ -2715,9 +3022,9 @@ RMTP.views.advancing = function (el, params, query) {
     const bkgPill = bkgCount ? ('<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-accent/15 text-accent border border-accent/30" title="' + bkgCount + ' shared equipment item' + (bkgCount === 1 ? '' : 's') + ' booked">' + ui.icon('box', 'w-3 h-3 text-accent') + bkgCount + ' Kit</span>') : '';
     const maintCount = (Array.isArray(ev.linked_maintenance_ids) ? ev.linked_maintenance_ids : (Array.isArray(ev.linkedMaintenanceIds) ? ev.linkedMaintenanceIds : [])).length;
     const maintPill = maintCount ? ('<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-warning/15 text-warning border border-warning/30" title="' + maintCount + ' maintenance tasks linked to this shift">' + ui.icon('tool', 'w-3 h-3 text-warning') + maintCount + ' Task' + (maintCount === 1 ? '' : 's') + '</span>') : '';
-    const openHiresCount = (RMTP.hires && RMTP.hires.forEvent)
-      ? RMTP.hires.forEvent(ev.id).filter((h) => RMTP.hires.getMeta(h).hiresStatus !== 'Answered').length
-      : 0;
+    const hiresSummary = getEventHiresSummary([ev.id].concat(Array.isArray(ev._mergedIds) ? ev._mergedIds : []));
+    const openHiresCount = hiresSummary.outstanding.length;
+    const overdueHiresCount = hiresSummary.overdue.length;
 
     return (
       '<div data-event-card="' + ev.id + '" class="panel w-full p-4 sm:p-5 transition-all hover:border-accent hover:shadow-lg cursor-pointer group select-none relative flex flex-col justify-between gap-3 ' + (bulkDeleteMode && selectedForBulkDelete.has(ev.id) ? 'border-danger bg-danger/5' : '') + '">' +
@@ -2785,12 +3092,18 @@ RMTP.views.advancing = function (el, params, query) {
 
               (openHiresCount ? 
                 '<div class="flex items-center gap-1.5">' + 
-                  ui.icon('chat', 'w-3.5 h-3.5 text-info') + 
-                  '<span class="text-info font-semibold">' + openHiresCount + ' Hires ' + (openHiresCount === 1 ? 'query' : 'queries') + '</span>' + 
+                  ui.icon('alert', 'w-3.5 h-3.5 ' + (overdueHiresCount ? 'text-danger' : 'text-warning')) + 
+                  '<span class="' + (overdueHiresCount ? 'text-danger' : 'text-warning') + ' font-semibold">' + openHiresCount + ' Outstanding Hires ' + (openHiresCount === 1 ? 'task' : 'tasks') + (overdueHiresCount ? ' (' + overdueHiresCount + ' overdue)' : '') + '</span>' + 
                 '</div>' 
-              : '') +
+              : (hiresSummary.all.length ?
+                '<div class="flex items-center gap-1.5">' +
+                  ui.icon('check', 'w-3.5 h-3.5 text-ok') +
+                  '<span class="text-ok font-medium">' + hiresSummary.all.length + ' Hires ' + (hiresSummary.all.length === 1 ? 'task' : 'tasks') + ' answered</span>' +
+                '</div>'
+              : '')) +
             '</div>' +
             (prodBadges ? '<div class="flex items-center gap-1.5 flex-wrap mt-2.5 pt-2 border-t border-line/50">' + prodBadges + '</div>' : '') +
+            renderCardHiresTasksBlock(hiresSummary) +
           '</div>' +
 
           '<div class="flex items-center gap-1.5 shrink-0 self-end sm:self-start w-full sm:w-auto justify-end flex-wrap pt-2 sm:pt-0 border-t sm:border-t-0 border-line/40">' +
@@ -2839,9 +3152,9 @@ RMTP.views.advancing = function (el, params, query) {
 
     let reportsCount = 0;
     displayEvents.forEach(e => { reportsCount += reportsFor(e.id).length; });
-    const groupHiresOpen = (RMTP.hires && RMTP.hires.forEvents)
-      ? RMTP.hires.forEvents(allRunEvents.map(e => e.id)).filter((h) => RMTP.hires.getMeta(h).hiresStatus !== 'Answered').length
-      : 0;
+    const groupHiresSummary = getEventHiresSummary(getRunEventIds(group));
+    const groupHiresOpen = groupHiresSummary.outstanding.length;
+    const groupHiresOverdue = groupHiresSummary.overdue.length;
 
     // Primary lead & status across the run
     let leadName = '';
@@ -3019,9 +3332,10 @@ RMTP.views.advancing = function (el, params, query) {
               '<span class="font-medium text-ink/90">' + ui.esc(distinctSpaces.join(', ') || (uniqueSpaceCount + ' Spaces')) + '</span>' +
               (leadName ? '<span aria-hidden="true">\u00b7</span><span>Lead: <strong class="text-ink font-medium">' + ui.esc(leadName) + '</strong></span>' : '') +
               (reportsCount && !isHires ? '<span aria-hidden="true">\u00b7</span><span class="text-ok font-semibold">' + reportsCount + ' report' + (reportsCount > 1 ? 's' : '') + '</span>' : '') +
-              (groupHiresOpen ? '<span aria-hidden="true">\u00b7</span><span class="text-info font-semibold">' + groupHiresOpen + ' Hires ' + (groupHiresOpen === 1 ? 'query' : 'queries') + '</span>' : '') +
+              (groupHiresOpen ? '<span aria-hidden="true">\u00b7</span><span class="inline-flex items-center gap-1 ' + (groupHiresOverdue ? 'text-danger' : 'text-warning') + ' font-semibold">' + ui.icon('alert', 'w-3.5 h-3.5') + '<span>' + groupHiresOpen + ' Outstanding Hires ' + (groupHiresOpen === 1 ? 'task' : 'tasks') + (groupHiresOverdue ? ' (' + groupHiresOverdue + ' overdue)' : '') + '</span></span>' : (groupHiresSummary.all.length ? '<span aria-hidden="true">\u00b7</span><span class="inline-flex items-center gap-1 text-ok font-medium">' + ui.icon('check', 'w-3.5 h-3.5') + '<span>' + groupHiresSummary.all.length + ' Hires answered</span></span>' : '')) +
             '</div>' +
             breakdownHtml +
+            renderCardHiresTasksBlock(groupHiresSummary) +
           '</div>' +
         '</div>' +
       '</div>'

@@ -119,8 +119,478 @@ RMTP.syncSb = (function () {
     return false;
   }
 
+  /* ---- Resilient Availability Persistence (Dual-Backend + Pending Queue) ----
+     Primary backend: `public.availability` table.
+     Automatic fallback: if `public.availability` has not yet been created in Supabase
+     (PGRST205 / 42P01), seamlessly persists one row per record in `public.app_settings`
+     under key `availability:<id>`, and auto-migrates back into `public.availability`
+     the moment that table exists — zero data loss and immediate DB persistence. */
+  const AVAIL_QUEUE_KEY = 'rmtp_pending_availability';
+  const AVAIL_MIGRATED_KEY = 'rmtp_avail_cloud_migrated';
+  const AVAIL_SETTINGS_PREFIX = 'availability:';
+  let availBackend = 'unknown'; // 'unknown' | 'table' | 'app_settings'
+  let availLegacyChecked = false;
+  let availDrainInFlight = null;
+
+  function normalizeAvailRecord(rec) {
+    if (!rec || !rec.id) return null;
+    const rawDate = String(rec.date || '').trim();
+    const dateStr = rawDate.length >= 10 ? rawDate.slice(0, 10) : rawDate;
+    return {
+      id: String(rec.id),
+      userId: String(rec.userId || ''),
+      userName: String(rec.userName || ''),
+      date: dateStr,
+      type: rec.type === 'unavailable' ? 'unavailable' : 'available',
+      dayPart: String(rec.dayPart || 'all_day'),
+      startTime: String(rec.startTime || ''),
+      finishTime: String(rec.finishTime || ''),
+      notes: String(rec.notes || ''),
+      updatedAt: rec.updatedAt ? String(rec.updatedAt) : new Date().toISOString(),
+    };
+  }
+
+  function parseTimestampMs(val) {
+    if (!val) return 0;
+    if (typeof val === 'number') return isFinite(val) ? val : 0;
+    const n = Number(val);
+    if (isFinite(n) && n > 0) return n;
+    const parsed = Date.parse(String(val));
+    return isNaN(parsed) ? 0 : parsed;
+  }
+
+  function readAvailQueue() {
+    try {
+      const raw = localStorage.getItem(AVAIL_QUEUE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function writeAvailQueue(q) {
+    try {
+      if (!q || !Object.keys(q).length) {
+        localStorage.removeItem(AVAIL_QUEUE_KEY);
+      } else {
+        localStorage.setItem(AVAIL_QUEUE_KEY, JSON.stringify(q));
+      }
+    } catch (e) {
+      console.warn('[syncSb] Failed to persist availability queue', e);
+    }
+  }
+
+  function enqueueAvailOp(op, id, record) {
+    if (!id) return 0;
+    const q = readAvailQueue();
+    const prev = q[id];
+    const ts = Math.max(Date.now(), prev && prev.ts ? prev.ts + 1 : 0);
+    q[id] = op === 'delete'
+      ? { op: 'delete', id: String(id), ts }
+      : { op: 'upsert', id: String(id), record: normalizeAvailRecord(record), ts };
+    writeAvailQueue(q);
+    return ts;
+  }
+
+  function dequeueAvailOps(entries) {
+    if (!entries || !entries.length) return;
+    const q = readAvailQueue();
+    let changed = false;
+    entries.forEach(({ id, ts }) => {
+      if (q[id] && q[id].ts === ts) {
+        delete q[id];
+        changed = true;
+      }
+    });
+    if (changed) writeAvailQueue(q);
+  }
+
+  function stripUnsupportedAvailCols(row) {
+    const table = tables().availability || 'availability';
+    const out = { ...row };
+    if (unsupportedCols[table]) {
+      Object.keys(unsupportedCols[table]).forEach((col) => {
+        if (unsupportedCols[table][col]) delete out[col];
+      });
+    }
+    return out;
+  }
+
+  async function upsertAvailToTable(rows, attempt) {
+    const table = tables().availability || 'availability';
+    const client = sb.getClient && sb.getClient();
+    if (!client) return { ok: false, message: 'Supabase client unavailable' };
+    const cleanRows = rows.map(stripUnsupportedAvailCols);
+    const exec = async () => {
+      const { error } = await client.from(table).upsert(cleanRows, { onConflict: 'id' });
+      if (error) {
+        if (sb.isClockSkewError && sb.isClockSkewError(error)) throw error;
+        return { ok: false, error, message: error.message };
+      }
+      return { ok: true };
+    };
+    const res = sb.withRetry ? await sb.withRetry(exec) : await exec();
+    if (res && res.ok) {
+      availBackend = 'table';
+      clearTableUnsupported(table);
+      return res;
+    }
+    if (res && res.error && (res.error.code === 'PGRST204' || res.error.code === '42703')) {
+      const missingCol = extractMissingColumn(res.error);
+      if (missingCol && (attempt || 0) < 12) {
+        markColumnUnsupported(table, missingCol);
+        return upsertAvailToTable(rows, (attempt || 0) + 1);
+      }
+    }
+    return res || { ok: false, message: 'Unknown upsert error' };
+  }
+
+  async function upsertAvailToAppSettings(rows) {
+    const client = sb.getClient && sb.getClient();
+    if (!client) return { ok: false, message: 'Supabase client unavailable' };
+    const nowIso = new Date().toISOString();
+    const settingsRows = rows.map((r) => ({
+      key: AVAIL_SETTINGS_PREFIX + r.id,
+      value: r,
+      updatedAt: r.updatedAt || nowIso,
+    }));
+    const exec = async () => {
+      const { error } = await client.from('app_settings').upsert(settingsRows, { onConflict: 'key' });
+      if (error) {
+        if (sb.isClockSkewError && sb.isClockSkewError(error)) throw error;
+        return { ok: false, error, message: error.message };
+      }
+      return { ok: true };
+    };
+    const res = sb.withRetry ? await sb.withRetry(exec) : await exec();
+    if (res && res.ok) availBackend = 'app_settings';
+    return res || { ok: false, message: 'Failed writing availability to app_settings' };
+  }
+
+  async function pushAvailRowsRemote(rows) {
+    if (!rows || !rows.length) return { ok: true };
+    const normalized = rows.map(normalizeAvailRecord).filter(Boolean);
+    if (!normalized.length) return { ok: true };
+
+    // Chunk large bulk writes into groups of 50 rows for reliability
+    const CHUNK = 50;
+    for (let i = 0; i < normalized.length; i += CHUNK) {
+      const slice = normalized.slice(i, i + CHUNK);
+      if (availBackend !== 'app_settings') {
+        const res = await upsertAvailToTable(slice, 0);
+        if (res && res.ok) continue;
+        if (res && res.error && isTableMissingError(res.error)) {
+          availBackend = 'app_settings';
+        } else {
+          return res;
+        }
+      }
+      const fbRes = await upsertAvailToAppSettings(slice);
+      if (!fbRes || !fbRes.ok) return fbRes;
+    }
+    return { ok: true };
+  }
+
+  async function deleteAvailIdsRemote(ids) {
+    if (!ids || !ids.length) return { ok: true };
+    const client = sb.getClient && sb.getClient();
+    if (!client) return { ok: false, message: 'Supabase client unavailable' };
+    const table = tables().availability || 'availability';
+
+    if (availBackend !== 'app_settings') {
+      const execTable = async () => {
+        const { error } = await client.from(table).delete().in('id', ids);
+        if (error) {
+          if (sb.isClockSkewError && sb.isClockSkewError(error)) throw error;
+          return { ok: false, error, message: error.message };
+        }
+        return { ok: true };
+      };
+      const res = sb.withRetry ? await sb.withRetry(execTable) : await execTable();
+      if (res && res.ok) {
+        availBackend = 'table';
+        // Also remove any stale app_settings copy silently so it never resurrects
+        client.from('app_settings').delete().in('key', ids.map((id) => AVAIL_SETTINGS_PREFIX + id)).then(() => {}, () => {});
+        return { ok: true };
+      }
+      if (res && res.error && isTableMissingError(res.error)) {
+        availBackend = 'app_settings';
+      } else {
+        return res;
+      }
+    }
+
+    const keys = ids.map((id) => AVAIL_SETTINGS_PREFIX + id);
+    const execFallback = async () => {
+      const { error } = await client.from('app_settings').delete().in('key', keys);
+      if (error) {
+        if (sb.isClockSkewError && sb.isClockSkewError(error)) throw error;
+        return { ok: false, error, message: error.message };
+      }
+      return { ok: true };
+    };
+    const fbRes = sb.withRetry ? await sb.withRetry(execFallback) : await execFallback();
+    if (fbRes && fbRes.ok) availBackend = 'app_settings';
+    return fbRes || { ok: false, message: 'Failed deleting availability from app_settings' };
+  }
+
+  async function fetchAvailFromAppSettings() {
+    const client = sb.getClient && sb.getClient();
+    if (!client) return [];
+    const exec = async () => {
+      const { data, error } = await client
+        .from('app_settings')
+        .select('key, value, updatedAt')
+        .like('key', AVAIL_SETTINGS_PREFIX + '%');
+      if (error) {
+        if (sb.isClockSkewError && sb.isClockSkewError(error)) throw error;
+        throw error;
+      }
+      return data || [];
+    };
+    const raw = sb.withRetry ? await sb.withRetry(exec) : await exec();
+    return raw.map((row) => {
+      const val = (row && row.value && typeof row.value === 'object') ? row.value : {};
+      const id = val.id || String(row.key || '').slice(AVAIL_SETTINGS_PREFIX.length);
+      return normalizeAvailRecord(Object.assign({}, val, {
+        id,
+        updatedAt: val.updatedAt || row.updatedAt || '',
+      }));
+    }).filter(Boolean);
+  }
+
+  async function fetchRemoteAvailability() {
+    const table = tables().availability || 'availability';
+    if (availBackend !== 'app_settings') {
+      try {
+        const tableRows = (await sb.selectAll(table)).map(normalizeAvailRecord).filter(Boolean);
+        availBackend = 'table';
+        clearTableUnsupported(table);
+
+        // One-time lossless migration: if records were previously saved into app_settings
+        // before public.availability existed, promote them into public.availability now.
+        if (!availLegacyChecked) {
+          availLegacyChecked = true;
+          try {
+            const legacyRows = await fetchAvailFromAppSettings();
+            if (legacyRows.length) {
+              const byId = new Map(tableRows.map((r) => [r.id, r]));
+              const toPromote = [];
+              legacyRows.forEach((lr) => {
+                const existing = byId.get(lr.id);
+                if (!existing || parseTimestampMs(lr.updatedAt) > parseTimestampMs(existing.updatedAt)) {
+                  byId.set(lr.id, lr);
+                  toPromote.push(lr);
+                }
+              });
+              if (toPromote.length) {
+                const migRes = await upsertAvailToTable(toPromote, 0);
+                if (migRes && migRes.ok) {
+                  const client = sb.getClient && sb.getClient();
+                  if (client) {
+                    const keys = legacyRows.map((lr) => AVAIL_SETTINGS_PREFIX + lr.id);
+                    client.from('app_settings').delete().in('key', keys).then(() => {}, () => {});
+                  }
+                }
+              }
+              return { ok: true, backend: 'table', rows: Array.from(byId.values()) };
+            }
+          } catch (migErr) {
+            console.warn('[syncSb] Legacy availability migration check skipped:', migErr && migErr.message);
+          }
+        }
+        return { ok: true, backend: 'table', rows: tableRows };
+      } catch (err) {
+        if (isTableMissingError(err)) {
+          availBackend = 'app_settings';
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    const fallbackRows = await fetchAvailFromAppSettings();
+    availBackend = 'app_settings';
+    return { ok: true, backend: 'app_settings', rows: fallbackRows };
+  }
+
+  async function drainAvailabilityQueue() {
+    if (!sb || !sb.isConfigured()) return { ok: true, flushed: 0, remaining: 0, backend: 'local' };
+    if (availDrainInFlight) return availDrainInFlight;
+
+    availDrainInFlight = (async () => {
+      const q = readAvailQueue();
+      const entries = Object.values(q);
+      if (!entries.length) {
+        return { ok: true, flushed: 0, remaining: 0, backend: availBackend };
+      }
+
+      const upserts = entries.filter((e) => e && e.op === 'upsert' && e.record);
+      const deletes = entries.filter((e) => e && e.op === 'delete' && e.id);
+      let flushed = 0;
+
+      try {
+        if (upserts.length) {
+          const res = await pushAvailRowsRemote(upserts.map((u) => u.record));
+          if (res && res.ok) {
+            dequeueAvailOps(upserts.map((u) => ({ id: u.id, ts: u.ts })));
+            flushed += upserts.length;
+          } else {
+            console.warn('[syncSb] Availability batch upsert deferred (will retry):', res && (res.message || res.error));
+          }
+        }
+        if (deletes.length) {
+          const res = await deleteAvailIdsRemote(deletes.map((d) => d.id));
+          if (res && res.ok) {
+            dequeueAvailOps(deletes.map((d) => ({ id: d.id, ts: d.ts })));
+            flushed += deletes.length;
+          } else {
+            console.warn('[syncSb] Availability batch delete deferred (will retry):', res && (res.message || res.error));
+          }
+        }
+      } catch (err) {
+        console.warn('[syncSb] Availability queue drain error (will retry):', err && err.message);
+      }
+
+      const remaining = Object.keys(readAvailQueue()).length;
+      return { ok: remaining === 0, flushed, remaining, backend: availBackend };
+    })();
+
+    try {
+      return await availDrainInFlight;
+    } finally {
+      availDrainInFlight = null;
+    }
+  }
+
+  function dedupeAvailabilityByUserDate(list) {
+    const bySlot = new Map();
+    const out = [];
+    list.forEach((rec) => {
+      if (!rec || !rec.id) return;
+      if (!rec.userId || !rec.date) {
+        out.push(rec);
+        return;
+      }
+      const slot = rec.userId + '::' + rec.date;
+      const prev = bySlot.get(slot);
+      if (!prev || parseTimestampMs(rec.updatedAt) >= parseTimestampMs(prev.updatedAt)) {
+        bySlot.set(slot, rec);
+      }
+    });
+    bySlot.forEach((v) => out.push(v));
+    return out;
+  }
+
+  async function pullAvailabilityCollection() {
+    // 1. Flush any locally queued availability changes first so remote reflects latest local writes
+    await drainAvailabilityQueue();
+
+    let fetched;
+    try {
+      fetched = await fetchRemoteAvailability();
+    } catch (err) {
+      if (sb.isClockSkewError && sb.isClockSkewError(err)) {
+        console.warn('[syncSb] Clock skew on availability, retaining local data until next sync.');
+        return;
+      }
+      console.error('[syncSb] pull failed for availability', err);
+      return;
+    }
+
+    const remoteRows = (fetched && Array.isArray(fetched.rows)) ? fetched.rows : [];
+    const localList = (store.all('availability') || []).map(normalizeAvailRecord).filter(Boolean);
+    const pending = readAvailQueue();
+    const migratedBefore = (() => {
+      try { return localStorage.getItem(AVAIL_MIGRATED_KEY) === '1'; } catch (e) { return false; }
+    })();
+
+    const mergedById = new Map();
+    const localById = new Map(localList.map((r) => [r.id, r]));
+    const staleRemoteDeletes = [];
+
+    remoteRows.forEach((r) => {
+      const pend = pending[r.id];
+      if (pend && pend.op === 'delete') {
+        staleRemoteDeletes.push(r.id);
+        return;
+      }
+      if (store.isDeleted && store.isDeleted('availability', r.id)) {
+        staleRemoteDeletes.push(r.id);
+        return;
+      }
+      if (pend && pend.op === 'upsert' && pend.record) {
+        if (parseTimestampMs(pend.record.updatedAt) >= parseTimestampMs(r.updatedAt)) {
+          mergedById.set(r.id, pend.record);
+          return;
+        }
+      }
+      const loc = localById.get(r.id);
+      if (loc && parseTimestampMs(loc.updatedAt) > parseTimestampMs(r.updatedAt) && pend && pend.op === 'upsert') {
+        mergedById.set(r.id, loc);
+        return;
+      }
+      mergedById.set(r.id, r);
+    });
+
+    // Preserve any still-pending local upserts (e.g., created while offline)
+    Object.values(pending).forEach((entry) => {
+      if (entry && entry.op === 'upsert' && entry.record && !mergedById.has(entry.id)) {
+        mergedById.set(entry.id, entry.record);
+      }
+    });
+
+    // One-time safe migration: push any pre-existing local-only availability rows
+    // that were saved in localStorage before availability DB persistence was active.
+    const toMigrateUp = [];
+    if (!migratedBefore) {
+      localList.forEach((loc) => {
+        if (!loc || !loc.id) return;
+        if (store.isDeleted && store.isDeleted('availability', loc.id)) return;
+        if (pending[loc.id] && pending[loc.id].op === 'delete') return;
+        const remoteMatch = mergedById.get(loc.id);
+        if (!remoteMatch || parseTimestampMs(loc.updatedAt) > parseTimestampMs(remoteMatch.updatedAt)) {
+          mergedById.set(loc.id, loc);
+          toMigrateUp.push(loc);
+        }
+      });
+    }
+
+    const finalRows = dedupeAvailabilityByUserDate(Array.from(mergedById.values()));
+
+    // Only emit store.write if the collection actually changed
+    const prevJson = JSON.stringify(localList);
+    const nextJson = JSON.stringify(finalRows);
+    if (prevJson !== nextJson) {
+      store.write('availability', finalRows);
+    }
+
+    if (staleRemoteDeletes.length) {
+      deleteAvailIdsRemote(staleRemoteDeletes).catch(() => {});
+    }
+
+    if (!migratedBefore) {
+      if (toMigrateUp.length) {
+        const res = await pushAvailRowsRemote(toMigrateUp);
+        if (res && res.ok) {
+          try { localStorage.setItem(AVAIL_MIGRATED_KEY, '1'); } catch (e) {}
+        } else {
+          // Queue them so they persist as soon as connectivity/auth is ready
+          toMigrateUp.forEach((rec) => enqueueAvailOp('upsert', rec.id, rec));
+        }
+      } else {
+        try { localStorage.setItem(AVAIL_MIGRATED_KEY, '1'); } catch (e) {}
+      }
+    }
+  }
+
   async function pullCollection(coll) {
     const table = tables()[coll]; if (!table) return;
+    if (coll === 'availability') {
+      return pullAvailabilityCollection();
+    }
     if (isTableUnsupported(table)) return;
     let rows = [];
     try {
@@ -294,9 +764,33 @@ RMTP.syncSb = (function () {
     return pullInFlight;
   }
 
+  let wired = false;
   function wire() {
+    if (wired) return;
+    wired = true;
     const origUpsert = store.upsert, origRemove = store.remove;
     store.upsert = function (name, record) {
+      if (name === 'availability') {
+        const norm = normalizeAvailRecord(record) || record;
+        if (norm && norm.id && store.unmarkDeleted) {
+          store.unmarkDeleted('availability', norm.id);
+        }
+        const res = origUpsert(name, norm);
+        if (sb && sb.isConfigured() && norm && norm.id) {
+          const ts = enqueueAvailOp('upsert', norm.id, norm);
+          pushAvailRowsRemote([norm]).then((result) => {
+            if (result && result.ok) {
+              dequeueAvailOps([{ id: norm.id, ts }]);
+            } else {
+              console.warn('[syncSb] Availability upsert queued for retry:', result && (result.message || result.error));
+            }
+          }).catch((e) => {
+            console.warn('[syncSb] Availability upsert queued for retry:', e && e.message);
+          });
+        }
+        return res;
+      }
+
       const res = origUpsert(name, record);
       
       if (sb && sb.isConfigured() && COLLS.includes(name)) {
@@ -362,6 +856,22 @@ RMTP.syncSb = (function () {
     
     store.remove = function (name, id) {
       const res = origRemove(name, id);
+      if (name === 'availability') {
+        if (sb && sb.isConfigured() && id) {
+          const ts = enqueueAvailOp('delete', id, null);
+          deleteAvailIdsRemote([String(id)]).then((result) => {
+            if (result && result.ok) {
+              dequeueAvailOps([{ id: String(id), ts }]);
+            } else {
+              console.warn('[syncSb] Availability delete queued for retry:', result && (result.message || result.error));
+            }
+          }).catch((e) => {
+            console.warn('[syncSb] Availability delete queued for retry:', e && e.message);
+          });
+        }
+        return res;
+      }
+
       if (sb && sb.isConfigured() && COLLS.includes(name)) {
         const table = tables()[name];
         if (!isTableUnsupported(table)) {
@@ -379,6 +889,53 @@ RMTP.syncSb = (function () {
       }
       return res;
     };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => {
+        drainAvailabilityQueue().catch(() => {});
+      });
+      window.addEventListener('focus', () => {
+        if (Object.keys(readAvailQueue()).length) {
+          drainAvailabilityQueue().catch(() => {});
+        }
+      });
+    }
+  }
+
+  // Batch save for bulk availability updates (1 localStorage write + 1 chunked DB upsert)
+  async function upsertAvailabilityBatch(records) {
+    const normalized = (Array.isArray(records) ? records : []).map(normalizeAvailRecord).filter(Boolean);
+    if (!normalized.length) return { ok: true, count: 0 };
+
+    const existing = store.all('availability') || [];
+    const byId = new Map(existing.filter((r) => r && r.id).map((r) => [r.id, r]));
+    const queuedEntries = [];
+
+    normalized.forEach((rec) => {
+      if (store.unmarkDeleted) store.unmarkDeleted('availability', rec.id);
+      byId.set(rec.id, rec);
+      if (sb && sb.isConfigured()) {
+        const ts = enqueueAvailOp('upsert', rec.id, rec);
+        queuedEntries.push({ id: rec.id, ts });
+      }
+    });
+
+    store.write('availability', dedupeAvailabilityByUserDate(Array.from(byId.values())));
+
+    if (!sb || !sb.isConfigured()) {
+      return { ok: true, count: normalized.length, backend: 'local' };
+    }
+
+    try {
+      const res = await pushAvailRowsRemote(normalized);
+      if (res && res.ok) {
+        dequeueAvailOps(queuedEntries);
+        return { ok: true, count: normalized.length, backend: availBackend };
+      }
+      return { ok: false, count: normalized.length, queued: true, message: res && res.message };
+    } catch (e) {
+      return { ok: false, count: normalized.length, queued: true, message: e && e.message };
+    }
   }
 
   async function verifySync() {
@@ -386,16 +943,32 @@ RMTP.syncSb = (function () {
     
     const result = { status: 'checking', tables: {}, queueLength: 0, message: '' };
     try {
+      await drainAvailabilityQueue();
       const advTable = tables().advancing || 'advancing';
       const repTable = tables().reports || 'reports';
-      const [advRows, repRows] = await Promise.all([
+      const bookTable = tables().bookings || 'bookings';
+      const [advRows, repRows, bookRows, availRes] = await Promise.all([
         isTableUnsupported(advTable) ? Promise.resolve([]) : sb.selectAll(advTable).catch(()=>[]),
-        isTableUnsupported(repTable) ? Promise.resolve([]) : sb.selectAll(repTable).catch(()=>[])
+        isTableUnsupported(repTable) ? Promise.resolve([]) : sb.selectAll(repTable).catch(()=>[]),
+        isTableUnsupported(bookTable) ? Promise.resolve([]) : sb.selectAll(bookTable).catch(()=>[]),
+        fetchRemoteAvailability().catch((e) => ({ ok: false, backend: availBackend, rows: [], error: e && e.message }))
       ]);
+      const pendingAvail = Object.keys(readAvailQueue()).length;
+      result.queueLength = pendingAvail;
       result.tables.advancing = { count: advRows.length, ok: !isTableUnsupported(advTable) };
       result.tables.reports = { count: repRows.length, ok: !isTableUnsupported(repTable) };
-      result.status = 'synced';
-      result.message = 'Supabase live & synced. Events in DB: ' + advRows.length + ', Shift reports in DB: ' + repRows.length;
+      result.tables.bookings = { count: bookRows.length, ok: !isTableUnsupported(bookTable) };
+      result.tables.availability = {
+        count: (availRes && availRes.rows) ? availRes.rows.length : 0,
+        ok: !!(availRes && availRes.ok),
+        backend: (availRes && availRes.backend) || availBackend,
+        pending: pendingAvail
+      };
+      result.status = (availRes && availRes.ok && pendingAvail === 0) ? 'synced' : 'degraded';
+      const availNote = (availRes && availRes.ok)
+        ? ('Availability in DB: ' + result.tables.availability.count + (result.tables.availability.backend === 'app_settings' ? ' (via app_settings)' : ''))
+        : 'Availability sync pending';
+      result.message = 'Supabase live & synced. Events in DB: ' + advRows.length + ', Shift reports: ' + repRows.length + ', ' + availNote + (pendingAvail ? (' (' + pendingAvail + ' queued)') : '');
     } catch (e) {
       result.status = 'error';
       result.message = 'Sync verification error: ' + (e.message || String(e));
@@ -500,7 +1073,10 @@ RMTP.syncSb = (function () {
   return {
     pull, pullAll: pull, pullCollection, wire, verifySync,
     pullRoleViews, startRoleViewsLiveSync,
-    drain: async () => {},
+    upsertAvailabilityBatch,
+    getAvailabilityBackend: () => availBackend,
+    getPendingAvailabilityCount: () => Object.keys(readAvailQueue()).length,
+    drain: drainAvailabilityQueue,
     deleteProcedureRow: (id) => RMTP.supabase.deleteRow("procedures", id)
   };
 })();

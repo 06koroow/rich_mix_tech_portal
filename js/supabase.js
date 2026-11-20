@@ -19,14 +19,69 @@ RMTP.supabase = (function () {
     return !!cfg().url && !!cfg().anonKey && typeof window.supabase !== 'undefined' && !!window.supabase.createClient;
   }
 
+  // Quota-resilient storage adapter for Supabase Auth JWTs.
+  // If browser localStorage is full (5MB quota), automatically evict large
+  // re-fetchable portal caches, retry localStorage, and fall back cleanly to
+  // sessionStorage / memory so sign-in can NEVER fail with QuotaExceededError.
+  const memAuthStore = Object.create(null);
+  const safeAuthStorage = {
+    getItem(key) {
+      try {
+        const v = window.localStorage.getItem(key);
+        if (v != null) return v;
+      } catch (e) {}
+      try {
+        const sv = window.sessionStorage.getItem(key);
+        if (sv != null) return sv;
+      } catch (e) {}
+      return Object.prototype.hasOwnProperty.call(memAuthStore, key) ? memAuthStore[key] : null;
+    },
+    setItem(key, value) {
+      const str = String(value);
+      memAuthStore[key] = str;
+      try {
+        window.localStorage.setItem(key, str);
+        return;
+      } catch (e) {
+        // Free space by evicting large cloud-backed caches from localStorage, then retry
+        try {
+          if (RMTP.store && typeof RMTP.store.freeCacheSpace === 'function') {
+            RMTP.store.freeCacheSpace();
+          } else {
+            const prefix = (RMTP.meta && RMTP.meta.storageKey ? RMTP.meta.storageKey : 'rmtp') + ':';
+            Object.keys(window.localStorage).forEach((k) => {
+              if (k.indexOf(prefix) === 0 && k !== prefix + 'currentUser' && k !== prefix + 'role_views') {
+                window.localStorage.removeItem(k);
+              }
+            });
+          }
+          window.localStorage.setItem(key, str);
+          return;
+        } catch (e2) {
+          // Final fallback: sessionStorage (still survives refreshes in this tab) + memory
+          try { window.sessionStorage.setItem(key, str); } catch (e3) {}
+        }
+      }
+    },
+    removeItem(key) {
+      delete memAuthStore[key];
+      try { window.localStorage.removeItem(key); } catch (e) {}
+      try { window.sessionStorage.removeItem(key); } catch (e) {}
+    },
+  };
+
   function init() {
     if (client) return client;
+    if (RMTP.store && typeof RMTP.store.pruneLocalStorageForCloud === 'function') {
+      RMTP.store.pruneLocalStorageForCloud();
+    }
     client = window.supabase.createClient(cfg().url, cfg().anonKey, {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: false,
         storageKey: 'rmtp-sb-auth',
+        storage: safeAuthStorage,
         // Avoid browser navigator.locks deadlocks inside embedded previews / multi-tab refreshes
         lock: async (_name, _acquireTimeout, fn) => await fn(),
       },

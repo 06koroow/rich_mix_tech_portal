@@ -40,6 +40,70 @@ RMTP.store = (function () {
   function setAdapter(a) { adapter = a; cache = Object.create(null); }
   function clearCache() { cache = Object.create(null); }
 
+  function isQuotaError(e) {
+    if (!e) return false;
+    return e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+      e.code === 22 || e.code === 1014 || /quota/i.test(String(e.message || ''));
+  }
+
+  function estimateStorageBytes() {
+    try {
+      let total = 0;
+      const ks = adapter.keys();
+      for (let i = 0; i < ks.length; i++) {
+        const k = ks[i];
+        const v = adapter.get(k);
+        total += (k ? k.length : 0) + (v ? v.length : 0);
+      }
+      return total * 2; // UTF-16 bytes
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  // Collections that are safely persisted in Supabase and can be evicted from
+  // localStorage (while staying in RAM `cache`) whenever browser quota gets tight.
+  const EVICTABLE_COLLS = [
+    'advancing', 'dcps', 'bookings', 'reports', 'inventory',
+    'maintenance', 'procedures', 'patch_sheets', 'dmx_patches',
+    'dmx_personalities', 'tasks', 'venues', 'signoffs', 'patch_presets'
+  ];
+  const CRITICAL_KEYS = new Set(['currentUser', 'role_views', 'prefs', 'users', 'hires_meta_cache']);
+
+  function freeCacheSpace(opts) {
+    const exclude = (opts && opts.exclude) ? new Set(opts.exclude) : new Set();
+    let freed = 0;
+    try {
+      // 1. Remove base64 file blobs first (biggest space hogs — up to 3MB each)
+      const ks = adapter.keys();
+      ks.forEach((k) => {
+        if (k.indexOf(PREFIX + 'file:') === 0 && !exclude.has(k.slice(PREFIX.length))) {
+          const prev = adapter.get(k);
+          freed += (prev ? prev.length * 2 : 0);
+          adapter.remove(k);
+        }
+      });
+      // 2. Evict large cloud-backed collection caches from localStorage (RAM cache stays intact)
+      EVICTABLE_COLLS.forEach((coll) => {
+        if (exclude.has(coll)) return;
+        const fullKey = key(coll);
+        const prev = adapter.get(fullKey);
+        if (prev != null) {
+          freed += prev.length * 2;
+          adapter.remove(fullKey);
+        }
+      });
+    } catch (e) { /* ignore */ }
+    return freed;
+  }
+
+  function pruneLocalStorageForCloud() {
+    // Always keep generous headroom (< 2.5MB used) so Supabase Auth session writes never hit 5MB quota
+    if (estimateStorageBytes() > 2.5 * 1024 * 1024) {
+      freeCacheSpace();
+    }
+  }
+
   /* ---- JSON collections (arrays / objects) ---- */
   function read(name, fallback) {
     if (name in cache) return cache[name];
@@ -55,8 +119,35 @@ RMTP.store = (function () {
   }
   function write(name, value) {
     cache[name] = value;
-    try { adapter.set(key(name), JSON.stringify(value)); }
-    catch (e) { console.warn('[store] write failed for', name, e); }
+    const isCloud = !!(window.RMTP && RMTP.supabase && RMTP.supabase.isConfigured && RMTP.supabase.isConfigured());
+    try {
+      const serialized = JSON.stringify(value);
+      // In cloud mode, skip writing individual oversized collection caches (> 1MB) to localStorage
+      // so they stay fast in memory without exhausting the 5MB browser quota needed by auth.
+      if (isCloud && !CRITICAL_KEYS.has(name) && serialized.length * 2 > 1024 * 1024) {
+        try { adapter.remove(key(name)); } catch (e2) {}
+      } else {
+        adapter.set(key(name), serialized);
+      }
+    } catch (e) {
+      if (isQuotaError(e)) {
+        if (isCloud || CRITICAL_KEYS.has(name)) {
+          freeCacheSpace({ exclude: [name] });
+          try {
+            const serialized = JSON.stringify(value);
+            if (!isCloud || CRITICAL_KEYS.has(name) || serialized.length * 2 <= 1024 * 1024) {
+              adapter.set(key(name), serialized);
+            }
+          } catch (e2) {
+            console.warn('[store] write kept in memory after quota eviction for', name);
+          }
+        } else {
+          console.warn('[store] write failed for', name, e);
+        }
+      } else {
+        console.warn('[store] write failed for', name, e);
+      }
+    }
     emit(name);
     return value;
   }
@@ -201,5 +292,6 @@ RMTP.store = (function () {
     read, write, readRaw, writeRaw, removeRaw, rawKeys,
     all, find, get, upsert, remove, uid,
     getDeleted, markDeleted, unmarkDeleted, isDeleted,
+    freeCacheSpace, pruneLocalStorageForCloud, estimateStorageBytes,
   };
 })();

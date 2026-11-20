@@ -92,6 +92,7 @@ RMTP.files = (function () {
       const path = (meta.id || RMTP.store.uid('file')) + '-' + safe;
       const url = await RMTP.supabase.uploadFile(path, dataUrlToBlob(raw), meta.type);
       if (url) {
+        try { RMTP.store.removeRaw(fileKey(meta.id)); } catch (e) {}
         return { url: url, name: meta.name, type: meta.type, size: meta.size, id: meta.id };
       }
     } catch (err) {

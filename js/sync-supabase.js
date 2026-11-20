@@ -164,7 +164,19 @@ RMTP.syncSb = (function () {
       return; 
     }
     
-    rows.forEach(r => {
+    const currentList = store.all(coll) || [];
+    const byId = new Map();
+    const order = [];
+    currentList.forEach((curr) => {
+      if (curr && curr.id != null) {
+        byId.set(curr.id, curr);
+        order.push(curr.id);
+      }
+    });
+
+    let mutated = false;
+    rows.forEach((r) => {
+      if (!r || r.id == null) return;
       // 1. If this record was explicitly deleted by the user, DO NOT restore it on refresh!
       if (store.isDeleted && store.isDeleted(coll, r.id)) {
         if (sb && sb.deleteRow) {
@@ -182,7 +194,7 @@ RMTP.syncSb = (function () {
         return;
       }
 
-      const existing = store.find ? store.find(coll, r.id) : (store.get ? store.get(coll, r.id) : null);
+      const existing = byId.get(r.id) || null;
 
       if (coll === 'advancing' && existing) {
         // Field-level merge protection: safeguard technician-enriched data from being wiped by Artifax sync
@@ -243,8 +255,14 @@ RMTP.syncSb = (function () {
         }
       }
 
-      store.write(coll, store.all(coll).filter(curr => curr.id !== r.id).concat(r));
+      if (!byId.has(r.id)) order.push(r.id);
+      byId.set(r.id, r);
+      mutated = true;
     });
+
+    if (mutated) {
+      store.write(coll, order.map((id) => byId.get(id)));
+    }
     if ((coll === 'tasks' || coll === 'advancing') && RMTP.hires && typeof RMTP.hires.hydrateAll === 'function') {
       RMTP.hires.hydrateAll();
     }
@@ -260,15 +278,20 @@ RMTP.syncSb = (function () {
     }
   }
 
+  let pullInFlight = null;
   async function pull() {
     if (!sb || !sb.isConfigured()) return;
-    try {
-      for (const c of COLLS) {
-        await pullCollection(c);
+    if (pullInFlight) return pullInFlight;
+    pullInFlight = (async () => {
+      try {
+        await Promise.allSettled(COLLS.map((c) => pullCollection(c)));
+      } catch (err) {
+        console.error('[syncSb] pull error', err);
+      } finally {
+        pullInFlight = null;
       }
-    } catch (err) {
-      console.error('[syncSb] pull error', err);
-    }
+    })();
+    return pullInFlight;
   }
 
   function wire() {

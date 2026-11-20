@@ -22,7 +22,14 @@ RMTP.supabase = (function () {
   function init() {
     if (client) return client;
     client = window.supabase.createClient(cfg().url, cfg().anonKey, {
-      auth: { persistSession: true, autoRefreshToken: true, storageKey: 'rmtp-sb-auth' },
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: false,
+        storageKey: 'rmtp-sb-auth',
+        // Avoid browser navigator.locks deadlocks inside embedded previews / multi-tab refreshes
+        lock: async (_name, _acquireTimeout, fn) => await fn(),
+      },
     });
     return client;
   }
@@ -30,14 +37,23 @@ RMTP.supabase = (function () {
 
   /* ---- Auth ---- */
   async function restoreSession() {
-    const { data } = await db().auth.getSession();
-    const email = data && data.session && data.session.user && data.session.user.email;
-    return email || null;
+    try {
+      const { data } = await db().auth.getSession();
+      const email = data && data.session && data.session.user && data.session.user.email;
+      return email || null;
+    } catch (e) {
+      console.warn('[supabase] restoreSession failed:', e);
+      return null;
+    }
   }
   async function signIn(email, password) {
-    const { data, error } = await db().auth.signInWithPassword({ email: email, password: password });
-    if (error) return { ok: false, message: error.message, error: error };
-    return { ok: true, email: data.user && data.user.email };
+    try {
+      const { data, error } = await db().auth.signInWithPassword({ email: email, password: password });
+      if (error) return { ok: false, message: error.message, error: error };
+      return { ok: true, email: data && data.user && data.user.email };
+    } catch (e) {
+      return { ok: false, message: (e && e.message) || 'Network error while signing in', error: e };
+    }
   }
   async function signUp(email, password) {
     const { data, error } = await db().auth.signUp({ email: email, password: password });

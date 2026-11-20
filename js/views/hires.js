@@ -132,6 +132,7 @@ window.RMTP = window.RMTP || {};
           }))
       : [];
 
+    const fallbackTs = (task && (Number(task.updatedAt) || (task.createdAt ? new Date(task.createdAt).getTime() : 0))) || 0;
     return {
       requestType: requestType,
       hiresStatus: hiresStatus,
@@ -139,7 +140,7 @@ window.RMTP = window.RMTP || {};
       clientNotes: String(m.clientNotes || '').trim(),
       reportedById: m.reportedById || '',
       replies: replies,
-      updatedAt: m.updatedAt || (task && task.updatedAt) || Date.now()
+      updatedAt: Number(m.updatedAt) || fallbackTs
     };
   }
 

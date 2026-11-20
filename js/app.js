@@ -332,7 +332,67 @@
     }
     renderNavigation();
   }
-  RMTP.shell = { refreshIdentity, renderNavigation };
+  function syncSpaces() {
+    const defaultSpaces = RMTP.DEFAULT_SPACES || ['The Stage', 'The Studio', 'The Mix', 'Screen One', 'Screen Two', 'Screen Three', 'Streetside', 'Cinema Bar', 'The Lab'];
+    const deletedSpaces = new Set(RMTP.store.read('deleted_spaces', []) || []);
+    const dbVenues = RMTP.store.all('venues') || [];
+
+    const existingVenuesMap = new Map(dbVenues.map(v => [(v.name || v.id || '').trim(), v]));
+    defaultSpaces.forEach(name => {
+      if (!deletedSpaces.has(name) && !existingVenuesMap.has(name)) {
+        const seedTpl = (RMTP.seed?.venues || []).find(sv => sv.name === name || sv.id === name);
+        const venueRecord = seedTpl ? JSON.parse(JSON.stringify(seedTpl)) : {
+          id: name,
+          name: name,
+          capacity: '',
+          stageDimensions: '',
+          inventory: '',
+          audio: {
+            inputChannels: 32,
+            localInputChannels: 8,
+            outputChannels: 16,
+            localOutputChannels: 8,
+            prefix: name.slice(0, 2).toUpperCase(),
+            mixingDeskProtocol: 'Dante',
+            mixingDeskInvId: '',
+            stageboxes: []
+          },
+          dmx: []
+        };
+        RMTP.store.upsert('venues', venueRecord);
+        existingVenuesMap.set(name, venueRecord);
+      }
+    });
+
+    const allVenues = RMTP.store.all('venues') || [];
+    allVenues.forEach(v => {
+      if (!v.crewDisciplines || !Array.isArray(v.crewDisciplines) || v.crewDisciplines.length === 0) {
+        const specs = RMTP.getSpaceCrewSpecs(v.name || v.id);
+        v.crewDisciplines = specs.disciplines.map(d => ({ ...d }));
+        v.basicCrew = specs.total;
+        RMTP.store.upsert('venues', v);
+      }
+    });
+    const spaceNamesSet = new Set();
+    defaultSpaces.filter(s => !deletedSpaces.has(s)).forEach(s => spaceNamesSet.add(s));
+    allVenues.forEach(v => {
+      const n = (v.name || v.id || '').trim();
+      if (n && !deletedSpaces.has(n)) spaceNamesSet.add(n);
+    });
+
+    const spaceOrder = {
+      'The Stage': 1, 'The Studio': 2, 'The Mix': 3,
+      'Screen One': 4, 'Screen Two': 5, 'Screen Three': 6,
+      'Streetside': 7, 'Cinema Bar': 8, 'The Lab': 9
+    };
+    RMTP.SPACES = Array.from(spaceNamesSet).sort((a, b) => {
+      const wa = spaceOrder[a] || 99;
+      const wb = spaceOrder[b] || 99;
+      return wa !== wb ? wa - wb : a.localeCompare(b);
+    });
+    RMTP.LOCATIONS = RMTP.SPACES.concat(RMTP.STORES || []);
+  }
+  RMTP.shell = { refreshIdentity, renderNavigation, syncSpaces };
 
   // Propagate role-view changes immediately across open browser tabs on the same device
   window.addEventListener('storage', (e) => {
@@ -365,13 +425,19 @@
       try {
         RMTP.supabase.init();
         const email = await RMTP.supabase.restoreSession();   // existing session?
-        await RMTP.syncSb.pullAll();                          // hydrate cache from Supabase
         RMTP.syncSb.wire();                                   // push local changes back
-        if (RMTP.syncSb.startRoleViewsLiveSync) {
-          RMTP.syncSb.startRoleViewsLiveSync();               // realtime + fallback sync for user views
-        }
-        if (!(email && RMTP.auth.signInEmail(email))) {
-          RMTP.auth.showLogin();                              // locked login (Supabase Auth)
+        if (email) {
+          await RMTP.syncSb.pullAll();                        // hydrate cache from Supabase in parallel
+          if (RMTP.syncSb.startRoleViewsLiveSync) {
+            RMTP.syncSb.startRoleViewsLiveSync();             // realtime + fallback sync for user views
+          }
+          if (!RMTP.auth.signInEmail(email)) {
+            RMTP.auth.showLogin();                            // locked login (Supabase Auth)
+          }
+        } else {
+          // Not signed in yet: show login immediately without blocking on unauthenticated pulls
+          RMTP.auth.setCurrent(null);
+          RMTP.auth.showLogin();
         }
       } catch (e) {
         // Fail loud: the app is configured for Supabase but couldn't reach it.
@@ -381,101 +447,19 @@
         showBackendError(e && e.message);
         return;
       }
-    /*
-    } else if (spOn) {
-      try {
-        await RMTP.graph.init();
-        await RMTP.graph.ensureSignedIn();      // Entra SSO
-        await RMTP.sync.pullAll();              // hydrate the cache from SharePoint
-        RMTP.sync.wire();                       // push local changes back
-        if (!RMTP.auth.signInGraphAccount(RMTP.graph.currentAccount())) {
-          RMTP.ui.toast('No Tech Portal account for your sign-in — ask an admin to add you', 'danger');
-          RMTP.auth.ensureSession();
-        }
-      } catch (e) {
-        console.error('[boot] SharePoint unreachable', e);
-        showBackendError(e && e.message);
-        return;
-      }
-    */
     } else {
       RMTP.store.init();
       RMTP.auth.ensureSession();                // locked login if nobody is signed in
     }
-    // Sync RMTP.SPACES with database venues, ensuring default spaces are never lost
-    const defaultSpaces = RMTP.DEFAULT_SPACES || ['The Stage', 'The Studio', 'The Mix', 'Screen One', 'Screen Two', 'Screen Three', 'Streetside', 'Cinema Bar', 'The Lab'];
-    const deletedSpaces = new Set(RMTP.store.read('deleted_spaces', []) || []);
-    const dbVenues = RMTP.store.all('venues') || [];
 
-    // Ensure default spaces have entries in the venues store
-    const existingVenuesMap = new Map(dbVenues.map(v => [(v.name || v.id || '').trim(), v]));
-    defaultSpaces.forEach(name => {
-      if (!deletedSpaces.has(name) && !existingVenuesMap.has(name)) {
-        const seedTpl = (RMTP.seed?.venues || []).find(sv => sv.name === name || sv.id === name);
-        const venueRecord = seedTpl ? JSON.parse(JSON.stringify(seedTpl)) : {
-          id: name,
-          name: name,
-          capacity: '',
-          stageDimensions: '',
-          inventory: '',
-          audio: {
-            inputChannels: 32,
-            localInputChannels: 8,
-            outputChannels: 16,
-            localOutputChannels: 8,
-            prefix: name.slice(0, 2).toUpperCase(),
-            mixingDeskProtocol: 'Dante',
-            mixingDeskInvId: '',
-            stageboxes: []
-          },
-          dmx: []
-        };
-        RMTP.store.upsert('venues', venueRecord);
-        existingVenuesMap.set(name, venueRecord);
-      }
-    });
-
-    // Re-read venues after seeding
-    const allVenues = RMTP.store.all('venues') || [];
-    allVenues.forEach(v => {
-      if (!v.crewDisciplines || !Array.isArray(v.crewDisciplines) || v.crewDisciplines.length === 0) {
-        const specs = RMTP.getSpaceCrewSpecs(v.name || v.id);
-        v.crewDisciplines = specs.disciplines.map(d => ({ ...d }));
-        v.basicCrew = specs.total;
-        RMTP.store.upsert('venues', v);
-      }
-    });
-    const spaceNamesSet = new Set();
-    
-    // Always include non-deleted default spaces
-    defaultSpaces.filter(s => !deletedSpaces.has(s)).forEach(s => spaceNamesSet.add(s));
-    
-    // Add all database spaces that aren't deleted
-    allVenues.forEach(v => {
-      const n = (v.name || v.id || '').trim();
-      if (n && !deletedSpaces.has(n)) {
-        spaceNamesSet.add(n);
-      }
-    });
-
-    const spaceOrder = {
-      'The Stage': 1, 'The Studio': 2, 'The Mix': 3, 
-      'Screen One': 4, 'Screen Two': 5, 'Screen Three': 6,
-      'Streetside': 7, 'Cinema Bar': 8, 'The Lab': 9
-    };
-    RMTP.SPACES = Array.from(spaceNamesSet).sort((a, b) => {
-      const wa = spaceOrder[a] || 99;
-      const wb = spaceOrder[b] || 99;
-      return wa !== wb ? wa - wb : a.localeCompare(b);
-    });
-    RMTP.LOCATIONS = RMTP.SPACES.concat(RMTP.STORES || []);
+    syncSpaces();
     if (auth.getRoleViewsConfig) auth.getRoleViewsConfig();
     refreshIdentity();
     RMTP.router.start();
-    
-    // Auto-sync Artifax on boot if configured and function is available
+
+    // Auto-sync Artifax on boot if configured and user is signed in
     setTimeout(() => {
-      if (typeof RMTP.syncArtifax === 'function') {
+      if (auth.current() && typeof RMTP.syncArtifax === 'function') {
         RMTP.syncArtifax(true); // pass silent flag if supported
       }
     }, 2000);

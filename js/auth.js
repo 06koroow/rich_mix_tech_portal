@@ -133,7 +133,8 @@ RMTP.auth = (function () {
   }
 
   function setCurrent(id) {
-    clearDevOverride();
+    devOverride = null;
+    try { sessionStorage.removeItem(DEV_OVERRIDE_KEY); } catch (e) {}
     RMTP.store.write(KEY, id);
   }
 
@@ -538,10 +539,18 @@ RMTP.auth = (function () {
   }
 
   /* ---- Sign in / request access (locked, mandatory) ---- */
+  let activeLoginModal = null;
   function showLogin() {
+    if (activeLoginModal) return;
     const ui = RMTP.ui;
     let mode = 'signin';
+    let signingIn = false;
     const m = ui.modal({ title: RMTP.meta.name + ' \u00b7 ' + RMTP.meta.product, size: 'md:max-w-md', locked: true, body: '<div id="auth-body"></div>' });
+    activeLoginModal = m;
+    const closeLogin = () => {
+      activeLoginModal = null;
+      m.close();
+    };
 
     function fieldRow(label, control) { return '<div><label class="block text-sm font-medium mb-2">' + ui.esc(label) + '</label>' + control + '</div>'; }
     function draw() {
@@ -552,33 +561,80 @@ RMTP.auth = (function () {
           '<div class="grid gap-4">' +
             fieldRow('Email', '<input id="a-email" type="email" class="field" autocomplete="username" placeholder="you@richmix.local" />') +
             fieldRow('Password', '<input id="a-pass" type="password" class="field" autocomplete="current-password" placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" />') +
-            '<button id="a-signin" class="btn btn-primary w-full justify-center" data-primary>Sign in</button>' +
+            '<button id="a-signin" type="button" class="btn btn-primary w-full justify-center" data-primary>Sign in</button>' +
           '</div>' +
           '<p class="text-sm text-muted mt-4 text-center">No account? ' +
-            '<button id="a-to-signup" class="text-accent hover:underline">Request access</button></p>';
+            '<button id="a-to-signup" type="button" class="text-accent hover:underline">Request access</button></p>';
+        const signInBtn = body.querySelector('#a-signin');
+        const setBusy = (isBusy) => {
+          signingIn = isBusy;
+          if (signInBtn) {
+            signInBtn.disabled = isBusy;
+            signInBtn.textContent = isBusy ? 'Signing in\u2026' : 'Sign in';
+          }
+        };
         const go = async () => {
+          if (signingIn) return;
           const email = body.querySelector('#a-email').value.trim();
           const pass = body.querySelector('#a-pass').value;
+          if (!email || !pass) {
+            ui.toast('Enter your email and password', 'info');
+            return;
+          }
           if (sbActive()) {
-            const res = await RMTP.supabase.signIn(email, pass);
-            if (!res.ok) {
-              const msg = res.message || '';
-              if (/confirm/i.test(msg)) ui.toast('That email hasn\u2019t been confirmed yet \u2014 confirm it in Supabase (or turn off email confirmation) and try again', 'danger');
-              else if (/invalid login/i.test(msg)) ui.toast('Email or password not recognised. If you were added by an admin, use \u201cRequest access\u201d to set your own password.', 'danger');
-              else ui.toast(msg || 'Could not sign in', 'danger');
-              return;
+            setBusy(true);
+            try {
+              const res = await RMTP.supabase.signIn(email, pass);
+              if (!res.ok) {
+                const msg = res.message || '';
+                if (/confirm/i.test(msg)) ui.toast('That email hasn\u2019t been confirmed yet \u2014 confirm it in Supabase (or turn off email confirmation) and try again', 'danger');
+                else if (/invalid login/i.test(msg)) ui.toast('Email or password not recognised. If you were added by an admin, use \u201cRequest access\u201d to set your own password.', 'danger');
+                else ui.toast(msg || 'Could not sign in', 'danger');
+                return;
+              }
+              try {
+                await Promise.allSettled([
+                  RMTP.syncSb.pullCollection('users'),
+                  RMTP.syncSb.pullCollection('patch_presets'),
+                ]);
+              } catch (e) { /* use cached */ }
+              if (signInEmail(email)) {
+                closeLogin();
+                if (RMTP.syncSb && RMTP.syncSb.startRoleViewsLiveSync) {
+                  RMTP.syncSb.startRoleViewsLiveSync();
+                }
+                refreshShell();
+                RMTP.router.render();
+                ui.toast('Signed in', 'ok');
+                // Hydrate all authenticated collections in parallel now that RLS session is active
+                if (RMTP.syncSb && typeof RMTP.syncSb.pullAll === 'function') {
+                  RMTP.syncSb.pullAll().then(() => {
+                    if (RMTP.shell && typeof RMTP.shell.syncSpaces === 'function') RMTP.shell.syncSpaces();
+                    refreshShell();
+                    if (RMTP.router && typeof RMTP.router.render === 'function') {
+                      RMTP._isSoftRender = true;
+                      try { RMTP.router.render(); } finally { RMTP._isSoftRender = false; }
+                    }
+                  }).catch(() => {});
+                }
+              } else {
+                ui.toast('Signed in, but there\u2019s no active Tech Portal account for this email yet \u2014 an admin needs to approve you', 'info');
+              }
+            } catch (err) {
+              console.error('[auth] sign in error', err);
+              ui.toast((err && err.message) || 'Could not sign in — please try again', 'danger');
+            } finally {
+              setBusy(false);
             }
-            try { await RMTP.syncSb.pullCollection('users'); } catch (e) { /* use cached */ }
-            if (signInEmail(email)) { m.close(); refreshShell(); RMTP.router.render(); ui.toast('Signed in', 'ok'); }
-            else ui.toast('Signed in, but there\u2019s no active Tech Portal account for this email yet \u2014 an admin needs to approve you', 'info');
             return;
           }
           const res = login(email, pass);
-          if (res.ok) { m.close(); refreshShell(); RMTP.router.render(); ui.toast('Signed in as ' + displayName(res.user), 'ok'); }
+          if (res.ok) { closeLogin(); refreshShell(); RMTP.router.render(); ui.toast('Signed in as ' + displayName(res.user), 'ok'); }
           else if (res.reason === 'pending') ui.toast('Your access request is awaiting approval', 'info');
           else ui.toast('Email or password not recognised', 'danger');
         };
-        body.querySelector('#a-signin').addEventListener('click', go);
+        signInBtn.addEventListener('click', go);
+        body.querySelector('#a-email').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
         body.querySelector('#a-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
         body.querySelector('#a-to-signup').addEventListener('click', () => { mode = 'signup'; draw(); });
       } else {
@@ -595,10 +651,10 @@ RMTP.auth = (function () {
             '<div class="grid grid-cols-2 gap-4">' +
               fieldRow('Position', '<select id="s-position" class="field">' + opt(POSITIONS) + '</select>') +
             '</div>' +
-            '<button id="s-submit" class="btn btn-primary w-full justify-center" data-primary>Request access</button>' +
+            '<button id="s-submit" type="button" class="btn btn-primary w-full justify-center" data-primary>Request access</button>' +
           '</div>' +
           '<p class="text-sm text-muted mt-4 text-center">Have an account? ' +
-            '<button id="s-to-signin" class="text-accent hover:underline">Sign in</button></p>';
+            '<button id="s-to-signin" type="button" class="text-accent hover:underline">Sign in</button></p>';
         body.querySelector('#s-submit').addEventListener('click', async () => {
           const data = {
             firstName: body.querySelector('#s-first').value.trim(), lastName: body.querySelector('#s-last').value.trim(),

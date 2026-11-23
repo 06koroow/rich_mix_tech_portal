@@ -957,6 +957,20 @@ RMTP.syncSb = (function () {
         }
       }
 
+      // 0b. If this is a Pre-Screening record dismissed from the tracker, never allow it back in
+      if (coll === 'dcps' && RMTP.dcpEngine && typeof RMTP.dcpEngine.isDcpRowDismissed === 'function') {
+        if (RMTP.dcpEngine.isDcpRowDismissed(r)) {
+          if (byId.has(r.id)) {
+            byId.delete(r.id);
+            mutated = true;
+          }
+          if (sb && sb.deleteRow) {
+            sb.deleteRow(table, r.id).catch(() => {});
+          }
+          return;
+        }
+      }
+
       // 1. If this record was explicitly deleted by the user, DO NOT restore it on refresh!
       if (store.isDeleted && store.isDeleted(coll, r.id)) {
         if (byId.has(r.id)) {
@@ -1026,16 +1040,32 @@ RMTP.syncSb = (function () {
           r.hiresMeta = existing.hiresMeta;
         }
       } else if (coll === 'dcps' && existing) {
-        // If local pre-screening check has testing completed, retain local outcomes
-        if (existing.tested && !r.tested) {
-          r.tested = existing.tested;
-          r.outcome = existing.outcome || r.outcome;
-          r.kdmCplReceived = existing.kdmCplReceived !== undefined ? existing.kdmCplReceived : r.kdmCplReceived;
-          r.playlistMade = existing.playlistMade !== undefined ? existing.playlistMade : r.playlistMade;
-          r.subsAudioSync = existing.subsAudioSync !== undefined ? existing.subsAudioSync : r.subsAudioSync;
-          r.holdingSlidesReady = existing.holdingSlidesReady !== undefined ? existing.holdingSlidesReady : r.holdingSlidesReady;
-          r.issuesNoted = existing.issuesNoted || r.issuesNoted;
-          r.furtherAction = existing.furtherAction || r.furtherAction;
+        // Timestamp-aware QC merge: never wipe fresher local QC progress or criteria on pull
+        const localUpdated = Date.parse(existing.updatedAt || '') || 0;
+        const remoteUpdated = Date.parse(r.updatedAt || '') || 0;
+        const localWins = (localUpdated > remoteUpdated) || (existing.tested && !r.tested && !remoteUpdated);
+        if (localWins) {
+          const qcKeys = [
+            'qc_criteria', 'tested', 'outcome',
+            'mediaReceived', 'kdmCplReceived', 'playlistMade', 'subsAudioSync', 'holdingSlidesReady',
+            'issuesNoted', 'furtherAction', 'hasFurtherAction',
+            'testedByUserId', 'testedByUserName', 'testDateTime',
+            'linkedTaskId', 'lastReportId', 'reportGeneratedAt',
+            'mediaType', 'duration', 'notes', 'updatedAt'
+          ];
+          qcKeys.forEach((k) => {
+            if (existing[k] !== undefined) r[k] = existing[k];
+          });
+        } else {
+          if (!r.qc_criteria && existing.qc_criteria) r.qc_criteria = existing.qc_criteria;
+          if (!r.linkedTaskId && existing.linkedTaskId) r.linkedTaskId = existing.linkedTaskId;
+        }
+        // Preserve runtime consolidation metadata derived from Advancing
+        if (Array.isArray(existing.linkedEventIds) && existing.linkedEventIds.length && !Array.isArray(r.linkedEventIds)) {
+          r.linkedEventIds = existing.linkedEventIds;
+        }
+        if (existing.slotKey && !r.slotKey) {
+          r.slotKey = existing.slotKey;
         }
       }
 
@@ -1081,10 +1111,13 @@ RMTP.syncSb = (function () {
     if (pullInFlight) return pullInFlight;
     pullInFlight = (async () => {
       try {
-        // Hydrate DB-persisted Artifax suppression list BEFORE pulling advancing
-        // so suppressed events are filtered immediately on first load.
+        // Hydrate DB-persisted Artifax suppression list & DCP tracker dismissals BEFORE pulling
+        // so suppressed/dismissed rows are filtered immediately on first load.
         if (RMTP.artifax && typeof RMTP.artifax.hydrateFromDb === 'function') {
           await RMTP.artifax.hydrateFromDb().catch(() => {});
+        }
+        if (RMTP.dcpEngine && typeof RMTP.dcpEngine.hydrateDismissalsFromDb === 'function') {
+          await RMTP.dcpEngine.hydrateDismissalsFromDb().catch(() => {});
         }
         await Promise.allSettled([
           ...COLLS.map((c) => pullCollection(c)),
@@ -1092,6 +1125,9 @@ RMTP.syncSb = (function () {
             ? RMTP.auth.pullTechTags().catch(() => {})
             : Promise.resolve(),
         ]);
+        if (RMTP.syncAdvancingToDcps && typeof RMTP.syncAdvancingToDcps === 'function') {
+          try { RMTP.syncAdvancingToDcps(); } catch (e) {}
+        }
       } catch (err) {
         console.error('[syncSb] pull error', err);
       } finally {
@@ -1158,6 +1194,9 @@ RMTP.syncSb = (function () {
         return res;
       }
 
+      if (name === 'dcps' && record && record.id && store.unmarkDeleted) {
+        store.unmarkDeleted('dcps', record.id);
+      }
       const res = origUpsert(name, record);
       if (record && record.id) noteLocalUpsert(name, record.id);
       
@@ -1165,6 +1204,13 @@ RMTP.syncSb = (function () {
         const table = tables()[name];
         if (!isTableUnsupported(table)) {
            const payload = { ...record };
+
+           // Strip runtime-only DCP consolidation metadata from Supabase wire payload
+           // (kept on local record and deterministically recomputed from Advancing)
+           if (name === 'dcps') {
+             delete payload.linkedEventIds;
+             delete payload.slotKey;
+           }
 
            // For advancing, safely mirror artifaxHistory inside production_package JSONB
            // so that history is persisted to PostgreSQL even if the column is absent from schema

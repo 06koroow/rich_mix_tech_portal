@@ -615,10 +615,30 @@ RMTP.artifax = (function () {
 
   function cancelLinkedDcpsForEvent(eventId) {
     if (!eventId || !RMTP.store) return 0;
-    const dcps = (RMTP.store.all('dcps') || []).filter((d) => d && d.eventId === eventId);
+    const allAdvancing = RMTP.store.all('advancing') || [];
+    const dcps = (RMTP.store.all('dcps') || []).filter((d) => {
+      if (!d) return false;
+      if (d.eventId === eventId) return true;
+      return Array.isArray(d.linkedEventIds) && d.linkedEventIds.includes(eventId);
+    });
     const nowIso = new Date().toISOString();
     let count = 0;
     dcps.forEach((d) => {
+      // If this consolidated screening still has another active linked Advancing event, do not cancel it
+      const linkedIds = Array.isArray(d.linkedEventIds) ? d.linkedEventIds : (d.eventId ? [d.eventId] : []);
+      const otherActive = linkedIds.some((lid) => {
+        if (!lid || lid === eventId) return false;
+        const ev = allAdvancing.find((e) => e && e.id === lid);
+        if (!ev) return false;
+        const st = String(ev.status || '').toLowerCase();
+        return !ev.deleted && st !== 'cancelled' && st !== 'canceled' && st !== 'rejected' && st !== 'declined';
+      });
+      if (otherActive) {
+        if (RMTP.syncAdvancingToDcps) {
+          try { RMTP.syncAdvancingToDcps(); } catch (e) {}
+        }
+        return;
+      }
       if (d.isCancelled === true && d.outcome === 'Cancelled') return;
       RMTP.store.upsert('dcps', Object.assign({}, d, {
         isCancelled: true,

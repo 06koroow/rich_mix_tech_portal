@@ -3314,7 +3314,9 @@ RMTP.views.advancing = function (el, params, query) {
     ) : '';
 
     // Cinema Checklist & DCP testing
-    const linkedDcp = isCinema ? (store.all('dcps').find(d => d.eventId === ev.id || d.id === 'dcp-' + ev.id)) : null;
+    const linkedDcp = isCinema
+      ? (RMTP.findDcpForEvent ? RMTP.findDcpForEvent(ev.id) : store.all('dcps').find(d => d.eventId === ev.id || d.id === 'dcp-' + ev.id))
+      : null;
     const cinemaDetailsHtml = isCinema ? (
       '<div class="grid gap-3">' +
         '<div class="p-3.5 rounded-xl bg-panel2/40 border border-line">' +
@@ -9908,7 +9910,9 @@ RMTP.views.advancing = function (el, params, query) {
 
       const linkedBookings = (store.all('bookings') || []).filter(b => b.eventId === draft.id && b.status !== 'cancelled');
       const linkedTasks = (store.all('tasks') || []).filter(t => t.linkedEventId === draft.id && t.status !== 'Completed');
-      const linkedDcp = (store.all('dcps') || []).find(d => d.eventId === draft.id);
+      const linkedDcp = RMTP.findDcpForEvent
+        ? RMTP.findDcpForEvent(draft.id)
+        : (store.all('dcps') || []).find(d => d.eventId === draft.id);
 
       const affectedItems = [];
       linkedBookings.forEach(b => {

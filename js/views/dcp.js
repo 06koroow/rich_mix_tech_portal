@@ -1,48 +1,21 @@
 /* ============================================================
    views/dcp.js — Pre-Screening Tracker & Cinema QC Console
    ------------------------------------------------------------
-   Simplified, booth-friendly pre-screening tracker capturing:
-   1. What media type is the screening?
-   2. Has the Media been received?
-   3. Have any required KDM's or CPL's been received?
-   4. Has a playlist been made?
-   5. Has it been tested?
-   6. Are there holding slides?
-   7. Do the subtitles and audio sync?
-   8. Any issues noted?
-   9. Outcome of testing (Passed, Passed with Caveats, Failed, Pending)
-   10. Any further action? (Creates a task with a follow-up action)
+   Canonical slot-level cinema QC engine + booth UI:
+   - Auto-consolidates overlapping / duplicate Advancing bookings
+     for the same (date, screen) into 1 canonical screening slot
+     (distinct non-overlapping showtimes remain separate rows).
+   - Persists tracker-only deletions via Supabase app_settings
+     (`dcp_dismissed_screenings`) + localStorage cache so deleted
+     screenings never resurrect on refresh or Artifax sync while
+     leaving Event Advances untouched.
+   - Two-way sync fans out updates to all linkedEventIds.
    ============================================================ */
 
-RMTP.views.dcp = function (el, params, query) {
-  const ui = RMTP.ui, store = RMTP.store, auth = RMTP.auth;
-
-  const curUser = auth.current();
-  const isFreelancer = auth.isFreelancer ? auth.isFreelancer(curUser) : (curUser && curUser.position === 'Freelancer');
-  if (isFreelancer) {
-    el.innerHTML =
-      '<div class="p-8 sm:p-12 max-w-lg mx-auto text-center animate-fadeIn">' +
-        '<div class="w-16 h-16 rounded-2xl bg-danger/10 border border-danger/20 text-danger flex items-center justify-center mx-auto mb-4 shadow-sm">' +
-          ui.icon('lock', 'w-8 h-8') +
-        '</div>' +
-        '<h1 class="font-display font-bold text-xl text-ink">Access Restricted</h1>' +
-        '<p class="text-sm text-muted mt-2 leading-relaxed">' +
-          'The Pre-Screening Tracker is restricted to Rich Mix staff technicians and managers. Freelancers do not have access to cinema server logs, KDM certificates, or technical QC sign-offs.' +
-        '</p>' +
-        '<div class="mt-6 flex justify-center gap-3">' +
-          '<a href="#/' + RMTP.HOME + '" class="btn btn-primary px-4 py-2 text-sm flex items-center gap-2">' +
-            ui.icon('calendar', 'w-4 h-4') + '<span>Return to Event Advancing</span>' +
-          '</a>' +
-        '</div>' +
-      '</div>';
-    return;
-  }
-
-  // Media options matching Event Advancing
+(function initDcpEngine() {
   const MEDIA_TYPES = RMTP.MEDIA_TYPES || ['DCP', 'Laptop via HDMI', 'Blu-Ray', 'HDMI (Other)'];
   RMTP.MEDIA_TYPES = MEDIA_TYPES;
 
-  // Screen Hardware Serial Reference
   const HARDWARE_MEDIA_BLOCKS = {
     'Screen One': 'Screen One — Barco DP2K-10S / Dolby IMS3000 (#IMS-884920)',
     'Screen Two': 'Screen Two — Christie CP2210 / Doremi DCP-2000 (#DOR-491208)',
@@ -50,7 +23,7 @@ RMTP.views.dcp = function (el, params, query) {
   };
   RMTP.HARDWARE_MEDIA_BLOCKS = HARDWARE_MEDIA_BLOCKS;
 
-  // Rich Mix Standardized 7-Parameter QC Test Criteria (from Cinema QC Pass/Fail Criteria Specification)
+  // Rich Mix Standardized 7-Parameter QC Test Criteria
   const QC_CRITERIA_DEFINITIONS = [
     {
       id: 'ingestion',
@@ -118,6 +91,12 @@ RMTP.views.dcp = function (el, params, query) {
   ];
   RMTP.QC_CRITERIA_DEFINITIONS = QC_CRITERIA_DEFINITIONS;
 
+  const DISMISSED_STORAGE_KEY = 'rmtp_dcp_dismissed_screenings';
+  const DISMISSED_APP_SETTING_KEY = 'dcp_dismissed_screenings';
+
+  function getStore() { return RMTP.store; }
+  function getAuth() { return RMTP.auth; }
+
   function ensureQcCriteria(dcp) {
     if (!dcp) return {};
     if (!dcp.qc_criteria || typeof dcp.qc_criteria !== 'object') {
@@ -149,18 +128,18 @@ RMTP.views.dcp = function (el, params, query) {
 
   function calculateOverallQcOutcome(criteriaMap) {
     if (!criteriaMap) return 'Pending';
-    const entries = Object.values(criteriaMap);
+    const entries = QC_CRITERIA_DEFINITIONS.map(def => criteriaMap[def.id]).filter(Boolean);
     if (!entries.length) return 'Pending';
 
     const anyFail = entries.some(e => e && e.status === 'Fail');
     if (anyFail) return 'Failed';
 
     const anyCaveat = entries.some(e => e && e.status === 'Caveats');
-    const allPass = entries.length >= 7 && entries.every(e => e && e.status === 'Pass');
+    const allPass = entries.length >= QC_CRITERIA_DEFINITIONS.length && entries.every(e => e && e.status === 'Pass');
     if (allPass) return 'Passed';
     if (anyCaveat && !anyFail) return 'Passed with Caveats';
 
-    const allChecked = entries.length >= 7 && entries.every(e => e && (e.status === 'Pass' || e.status === 'Caveats'));
+    const allChecked = entries.length >= QC_CRITERIA_DEFINITIONS.length && entries.every(e => e && (e.status === 'Pass' || e.status === 'Caveats'));
     if (allChecked) return anyCaveat ? 'Passed with Caveats' : 'Passed';
 
     return 'Pending';
@@ -183,6 +162,23 @@ RMTP.views.dcp = function (el, params, query) {
     const s = String(raw).trim();
     if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
     return s;
+  }
+
+  function parseTimeToMins(t) {
+    if (t == null) return null;
+    const s = String(t).trim();
+    const m = s.match(/^(\d{1,2}):(\d{2})/);
+    if (!m) return null;
+    const hh = parseInt(m[1], 10);
+    const mm = parseInt(m[2], 10);
+    if (isNaN(hh) || isNaN(mm) || hh < 0 || hh > 29 || mm < 0 || mm > 59) return null;
+    return hh * 60 + mm;
+  }
+
+  function formatMinsToHHMM(mins) {
+    if (mins == null || isNaN(mins)) return '';
+    const norm = ((mins % 1440) + 1440) % 1440;
+    return String(Math.floor(norm / 60)).padStart(2, '0') + ':' + String(norm % 60).padStart(2, '0');
   }
 
   function parseUniqueSpaces(spaceVal) {
@@ -258,7 +254,6 @@ RMTP.views.dcp = function (el, params, query) {
     if (!screens.length && ev.room) addFrom(ev.room);
     if (screens.length) return screens;
 
-    // Only pull a non-screen event if cinema media/DCP was explicitly flagged on Advancing
     const media = String(ev.media_type || ev.mediaType || '').trim().toUpperCase();
     if (media === 'DCP' || ev.dcp_received === true || ev.dcpReceived === true) {
       return ['Screen One'];
@@ -279,8 +274,9 @@ RMTP.views.dcp = function (el, params, query) {
 
   function userName(id) {
     if (!id) return '';
-    const u = store.find('users', id);
-    return u ? auth.displayName(u) : id;
+    const store = getStore(), auth = getAuth();
+    const u = store && store.find ? store.find('users', id) : null;
+    return u ? (auth && auth.displayName ? auth.displayName(u) : (u.name || id)) : id;
   }
 
   function resolveNormalizedScreen(sp, rm) {
@@ -290,6 +286,1173 @@ RMTP.views.dcp = function (el, params, query) {
     if (fromRm) return fromRm;
     return 'Screen One';
   }
+
+  function normalizeFilmTitle(title) {
+    if (!title) return '';
+    return String(title)
+      .toLowerCase()
+      .replace(/\b(screening|film|preview|dcp test|q&a|premiere|relaxed screening)\b/gi, '')
+      .replace(/\([0-9]{1,2}[a-z]?\)/gi, '')
+      .replace(/[^a-z0-9]/g, '')
+      .trim();
+  }
+  RMTP.normalizeFilmTitle = normalizeFilmTitle;
+
+  function getDcpDedupKey(d) {
+    if (!d) return '';
+    const normTitle = normalizeFilmTitle(d.filmTitle || d.eventName || d.name || d.title);
+    const normDate = normalizeEventDate(d.eventDate || d.date);
+    const normScreen = resolveNormalizedScreen(d.screen || d.space, d.room);
+    if (!normTitle) return '';
+    return `${normTitle}|${normDate}|${normScreen}`;
+  }
+  RMTP.getDcpDedupKey = getDcpDedupKey;
+
+  function computeSlotKey(title, date, screen, startTime) {
+    const normDate = normalizeEventDate(date) || 'nodate';
+    const normScreen = (normalizeCinemaScreen(screen) || resolveNormalizedScreen(screen)).toLowerCase().replace(/\s+/g, '');
+    const startMins = parseTimeToMins(startTime);
+    const timePart = startMins != null ? formatMinsToHHMM(startMins) : 'notime';
+    const normTitle = normalizeFilmTitle(title) || 'untitled';
+    return `${normDate}|${normScreen}|${timePart}|${normTitle}`;
+  }
+
+  function isManualScreeningRecord(d) {
+    if (!d) return false;
+    if (d.isManual === true) return true;
+    if (!d.eventId && String(d.id || '').startsWith('dcp-manual-')) return true;
+    return false;
+  }
+
+  function isDcpSignedOff(dcp) {
+    if (!dcp) return false;
+    const outcome = dcp.outcome || 'Pending';
+    if (outcome === 'Pending') {
+      return !!(dcp.tested && (dcp.reportGeneratedAt || dcp.lastReportId));
+    }
+    return (outcome === 'Passed' || outcome === 'Passed with Caveats' || outcome === 'Failed' || !!dcp.reportGeneratedAt || !!dcp.lastReportId);
+  }
+  RMTP.isDcpSignedOff = isDcpSignedOff;
+
+  function getAllEventIdsForDcp(dcp) {
+    const ids = [];
+    const push = (id) => {
+      const s = String(id || '').trim();
+      if (s && !ids.includes(s)) ids.push(s);
+    };
+    if (!dcp) return ids;
+    push(dcp.eventId);
+    if (Array.isArray(dcp.linkedEventIds)) {
+      dcp.linkedEventIds.forEach(push);
+    }
+    return ids;
+  }
+
+  /* ---- Persistent Tracker-Only Dismissal Registry (localStorage + Supabase app_settings) ---- */
+  function normalizeDismissalState(raw) {
+    if (!raw || typeof raw !== 'object') {
+      return { updatedAt: 0, items: [] };
+    }
+    const items = Array.isArray(raw.items) ? raw.items.filter(Boolean).map((it) => ({
+      key: String(it.key || it.slotKey || it.dcpId || ''),
+      slotKey: String(it.slotKey || ''),
+      eventIds: Array.isArray(it.eventIds) ? Array.from(new Set(it.eventIds.map(String).filter(Boolean))) : [],
+      dcpId: String(it.dcpId || ''),
+      title: String(it.title || 'Screening'),
+      date: normalizeEventDate(it.date || ''),
+      screen: String(it.screen || ''),
+      startTime: String(it.startTime || ''),
+      dismissedAt: String(it.dismissedAt || ''),
+      dismissedBy: String(it.dismissedBy || '')
+    })).filter((it) => it.key || it.slotKey || it.dcpId || it.eventIds.length > 0) : [];
+    return {
+      updatedAt: Number(raw.updatedAt || 0) || 0,
+      items
+    };
+  }
+
+  function readLocalDismissals() {
+    try {
+      const raw = localStorage.getItem(DISMISSED_STORAGE_KEY);
+      if (!raw) return { updatedAt: 0, items: [] };
+      return normalizeDismissalState(JSON.parse(raw));
+    } catch (e) {
+      return { updatedAt: 0, items: [] };
+    }
+  }
+
+  let _dismissalCache = null;
+
+  function getDismissalState() {
+    if (!_dismissalCache) _dismissalCache = readLocalDismissals();
+    return _dismissalCache;
+  }
+
+  function persistDismissalState(nextState, pushRemote) {
+    const clean = normalizeDismissalState(nextState);
+    _dismissalCache = clean;
+    try {
+      localStorage.setItem(DISMISSED_STORAGE_KEY, JSON.stringify(clean));
+    } catch (e) { /* ignore quota errors */ }
+    if (pushRemote !== false && RMTP.syncSb && typeof RMTP.syncSb.setAppSetting === 'function') {
+      RMTP.syncSb.setAppSetting(DISMISSED_APP_SETTING_KEY, clean).catch((err) => {
+        console.warn('[Pre-Screening] Failed to sync dismissed screenings to app_settings:', err);
+      });
+    }
+    return clean;
+  }
+
+  async function hydrateDismissalsFromDb() {
+    const local = readLocalDismissals();
+    _dismissalCache = local;
+    if (!RMTP.syncSb || typeof RMTP.syncSb.getAppSetting !== 'function') {
+      return local;
+    }
+    try {
+      const remoteRaw = await RMTP.syncSb.getAppSetting(DISMISSED_APP_SETTING_KEY);
+      if (remoteRaw && typeof remoteRaw === 'object') {
+        const remote = normalizeDismissalState(remoteRaw);
+        if (remote.updatedAt >= local.updatedAt) {
+          persistDismissalState(remote, false);
+          return remote;
+        } else if (local.updatedAt > remote.updatedAt) {
+          // Local has a newer dismissal/restore that hasn't finished reaching cloud yet
+          persistDismissalState(local, true);
+          return local;
+        }
+      } else if (local.items.length > 0 && local.updatedAt > 0) {
+        persistDismissalState(local, true);
+      }
+    } catch (e) {
+      console.warn('[Pre-Screening] hydrateDismissalsFromDb failed:', e && e.message);
+    }
+    return getDismissalState();
+  }
+
+  function buildDismissalSets() {
+    const st = getDismissalState();
+    const slotKeys = new Set();
+    const eventIds = new Set();
+    const dcpIds = new Set();
+    st.items.forEach((it) => {
+      if (it.slotKey) slotKeys.add(it.slotKey);
+      if (it.dcpId) dcpIds.add(it.dcpId);
+      if (Array.isArray(it.eventIds)) {
+        it.eventIds.forEach((eid) => {
+          if (eid) eventIds.add(String(eid));
+        });
+      }
+    });
+    return { slotKeys, eventIds, dcpIds };
+  }
+
+  function isSlotDismissed(slot) {
+    if (!slot) return false;
+    const { slotKeys, eventIds, dcpIds } = buildDismissalSets();
+    if (!slotKeys.size && !eventIds.size && !dcpIds.size) return false;
+    if (slot.slotKey && slotKeys.has(slot.slotKey)) return true;
+    if (slot.canonicalId && dcpIds.has(slot.canonicalId)) return true;
+    if (slot.linkedEventIds && slot.linkedEventIds.length > 0) {
+      if (slot.linkedEventIds.every((eid) => eventIds.has(String(eid)))) return true;
+    }
+    return false;
+  }
+
+  function isDcpRowDismissed(row) {
+    if (!row || isManualScreeningRecord(row)) return false;
+    const { slotKeys, eventIds, dcpIds } = buildDismissalSets();
+    if (!slotKeys.size && !eventIds.size && !dcpIds.size) return false;
+    if (row.id && dcpIds.has(String(row.id))) return true;
+    const rowSlotKey = row.slotKey || computeSlotKey(row.filmTitle || row.eventName, row.eventDate, row.screen, row.eventStartTime);
+    if (rowSlotKey && slotKeys.has(rowSlotKey)) return true;
+    const rowEvIds = getAllEventIdsForDcp(row);
+    if (rowEvIds.length > 0 && rowEvIds.every((eid) => eventIds.has(String(eid)))) return true;
+    return false;
+  }
+
+  function getDismissedScreenings() {
+    return getDismissalState().items.slice().sort((a, b) => (b.dismissedAt || '').localeCompare(a.dismissedAt || ''));
+  }
+
+  /* ---- Overlap & Slot Consolidation Engine ---- */
+  function getBaseArtifaxId(ev) {
+    if (!ev) return '';
+    const raw = String(ev.artifaxId || (String(ev.id || '').startsWith('evt-afx-') ? String(ev.id).slice(8) : '')).trim();
+    if (!raw) return '';
+    return raw.includes('__') ? raw.split('__')[0] : raw;
+  }
+
+  function getTimeBoundsForCinemaEntry(entry, sameTitle) {
+    const startMins = parseTimeToMins(entry.startTime);
+    let endMins = parseTimeToMins(entry.finishTime);
+    if (startMins == null && endMins == null) return null;
+    const s = startMins != null ? startMins : endMins;
+    let e = endMins != null ? endMins : (s + (sameTitle ? 120 : 1));
+    if (e <= s) e += 1440;
+    return { s, e };
+  }
+
+  function cinemaEntriesOverlap(a, b) {
+    if (!a || !b) return false;
+    if (a.ev.id && b.ev.id && a.ev.id === b.ev.id) return true;
+
+    const sameTitle = !!(a.normTitle && b.normTitle && a.normTitle === b.normTitle);
+    const baseA = getBaseArtifaxId(a.ev);
+    const baseB = getBaseArtifaxId(b.ev);
+    const sameArtifaxBase = !!(baseA && baseB && baseA === baseB);
+
+    const boundsA = getTimeBoundsForCinemaEntry(a, sameTitle);
+    const boundsB = getTimeBoundsForCinemaEntry(b, sameTitle);
+
+    // If either has no time bounds at all, only merge when titles or Artifax base ID match
+    if (!boundsA || !boundsB) {
+      return sameTitle || sameArtifaxBase;
+    }
+
+    // Identical start time in the same screen on the same day => always same screening slot
+    if (boundsA.s === boundsB.s) return true;
+
+    // Overlapping time ranges in the same cinema screen => physically same screening slot
+    if (boundsA.s < boundsB.e && boundsB.s < boundsA.e) return true;
+
+    return false;
+  }
+
+  function scoreAdvanceEventForSlot(ev) {
+    let s = 0;
+    if (!isAdvancingEventCancelled(ev)) s += 1000;
+    if (ev.checks_completed || ev.checksCompleted) s += 80;
+    if (ev.qc_status === 'Passed' || ev.dcp_qc_status === 'Passed') s += 60;
+    if (ev.dcp_received || ev.dcpReceived) s += 40;
+    if (ev.media_type || ev.mediaType) s += 30;
+    if (ev.dcp_notes && String(ev.dcp_notes).trim()) s += 20;
+    if (ev.screening_starts || ev.screening_starts_time || ev.screeningStartsTime) s += 15;
+    if (ev.finishTime) s += 10;
+    if (ev.startTime) s += 5;
+    if (String(ev.id || '').startsWith('evt-afx-')) s += 8;
+    else if (String(ev.id || '').startsWith('evt-')) s += 4;
+    return s;
+  }
+
+  function buildSlotFromCluster(clusterEntries, absorbedCancelledIds) {
+    const sorted = clusterEntries.slice().sort((a, b) => {
+      const diff = scoreAdvanceEventForSlot(b.ev) - scoreAdvanceEventForSlot(a.ev);
+      if (diff !== 0) return diff;
+      return String(a.ev.id || '').localeCompare(String(b.ev.id || ''));
+    });
+
+    const primaryEntry = sorted[0];
+    const primaryEv = primaryEntry.ev;
+    const screen = primaryEntry.screen;
+    const eventDate = primaryEntry.eventDate;
+
+    const linkedEventIds = [];
+    const allEventIds = [];
+    const pushLinked = (id) => {
+      const s = String(id || '').trim();
+      if (!s) return;
+      if (!linkedEventIds.includes(s)) linkedEventIds.push(s);
+      if (!allEventIds.includes(s)) allEventIds.push(s);
+    };
+
+    clusterEntries.forEach((entry) => {
+      pushLinked(entry.ev.id);
+      if (Array.isArray(entry.ev._mergedIds)) {
+        entry.ev._mergedIds.forEach(pushLinked);
+      }
+    });
+    (absorbedCancelledIds || []).forEach((cid) => {
+      const s = String(cid || '').trim();
+      if (s && !allEventIds.includes(s)) allEventIds.push(s);
+    });
+
+    // Aggregate time span: earliest start, latest finish
+    let minStart = null;
+    let maxEnd = null;
+    let bestStart = primaryEntry.startTime || '';
+    let bestFinish = primaryEntry.finishTime || '';
+    clusterEntries.forEach((entry) => {
+      const s = parseTimeToMins(entry.startTime);
+      const f = parseTimeToMins(entry.finishTime);
+      if (s != null) {
+        if (minStart == null || s < minStart) {
+          minStart = s;
+          bestStart = entry.startTime;
+        }
+        if (f != null) {
+          const adjF = f <= s ? f + 1440 : f;
+          if (maxEnd == null || adjF > maxEnd) {
+            maxEnd = adjF;
+            bestFinish = entry.finishTime;
+          }
+        }
+      } else if (f != null && maxEnd == null) {
+        maxEnd = f;
+        bestFinish = entry.finishTime;
+      }
+    });
+
+    // Aggregate Advancing cinema QC flags across all merged rows
+    const evs = sorted.map((e) => e.ev);
+    const evName = (primaryEv.name || primaryEv.title || 'Screening').trim();
+    const mType = evs.map((e) => (e.media_type !== undefined ? e.media_type : (e.mediaType || ''))).find((v) => v && String(v).trim()) || '';
+    const hasRecFlag = evs.some((e) => e.dcp_received !== undefined || e.dcpReceived !== undefined);
+    const isRecFlag = evs.some((e) => !!(e.dcp_received !== undefined ? e.dcp_received : e.dcpReceived));
+    const hasChecksFlag = evs.some((e) => e.checks_completed !== undefined || e.checksCompleted !== undefined);
+    const isChecksFlag = evs.some((e) => !!(e.checks_completed !== undefined ? e.checks_completed : e.checksCompleted));
+
+    const outcomeRank = { 'Passed': 4, 'Passed with Caveats': 3, 'Failed': 2, 'Pending': 1 };
+    let advQcStatus = '';
+    evs.forEach((e) => {
+      const st = e.qc_status || e.dcp_qc_status || '';
+      if (st && st !== 'Cancelled' && (outcomeRank[st] || 0) > (outcomeRank[advQcStatus] || 0)) {
+        advQcStatus = st;
+      }
+    });
+
+    let hasDcpNotesField = false;
+    let cleanAdvNote = '';
+    let artifaxDesc = '';
+    evs.forEach((e) => {
+      const desc = (e.techInfo || e.notes || e.artifaxNotes || '').trim();
+      if (desc && !artifaxDesc) artifaxDesc = desc;
+      if (e.dcp_notes !== undefined) {
+        hasDcpNotesField = true;
+        const candidate = (desc && String(e.dcp_notes).trim() === desc) ? '' : String(e.dcp_notes || '').trim();
+        if (candidate && !cleanAdvNote) cleanAdvNote = candidate;
+      }
+    });
+
+    const advClient = evs.map((e) => (e.clientContact || e.clientName || e.client || '').trim()).find(Boolean) || '';
+    const advTesterId = evs.map((e) => e.dcp_tester_user_id || e.dcpTesterUserId || '').find(Boolean) || '';
+    const advTestDt = evs.map((e) => e.dcp_test_datetime || e.dcpTestDatetime || '').find(Boolean) || '';
+    const advFurtherAction = evs.map((e) => (e.further_action !== undefined ? e.further_action : (e.furtherAction || ''))).find((v) => v && String(v).trim()) || '';
+    const advLinkedTask = evs.map((e) => e.linked_task_id || e.linkedTaskId || '').find(Boolean) || '';
+
+    const primaryScreens = getCinemaScreensForEvent(primaryEv);
+    const screenSlug = RMTP.slug ? RMTP.slug(screen) : screen.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const canonicalId = primaryScreens.length <= 1
+      ? ('dcp-' + primaryEv.id)
+      : ('dcp-' + primaryEv.id + '-' + screenSlug);
+
+    const slotKey = computeSlotKey(evName, eventDate, screen, bestStart);
+    const isCancelled = evs.every((e) => isAdvancingEventCancelled(e));
+
+    return {
+      canonicalId,
+      slotKey,
+      primaryEventId: primaryEv.id,
+      primaryEv,
+      linkedEventIds,
+      allEventIds,
+      screen,
+      eventDate,
+      evName,
+      normTitle: normalizeFilmTitle(evName),
+      evStart: bestStart,
+      evFinish: bestFinish,
+      mType,
+      hasRecFlag,
+      isRecFlag,
+      hasChecksFlag,
+      isChecksFlag,
+      advQcStatus,
+      hasDcpNotesField,
+      cleanAdvNote,
+      artifaxDesc,
+      advClient,
+      advTesterId,
+      advTestDt,
+      advFurtherAction,
+      advLinkedTask,
+      isCancelled
+    };
+  }
+
+  function clusterCinemaEntriesByOverlap(entries) {
+    if (!entries || entries.length <= 1) return entries ? entries.map((e) => [e]) : [];
+    const n = entries.length;
+    const parent = Array.from({ length: n }, (_, i) => i);
+    function find(i) {
+      while (parent[i] !== i) {
+        parent[i] = parent[parent[i]];
+        i = parent[i];
+      }
+      return i;
+    }
+    function union(a, b) {
+      const ra = find(a), rb = find(b);
+      if (ra !== rb) parent[ra] = rb;
+    }
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        if (cinemaEntriesOverlap(entries[i], entries[j])) {
+          union(i, j);
+        }
+      }
+    }
+    const groups = new Map();
+    for (let i = 0; i < n; i++) {
+      const r = find(i);
+      if (!groups.has(r)) groups.set(r, []);
+      groups.get(r).push(entries[i]);
+    }
+    return Array.from(groups.values());
+  }
+
+  function buildConsolidatedCinemaSlots(allAdv) {
+    const byDateScreen = new Map();
+
+    (allAdv || []).forEach((ev) => {
+      if (!ev || ev.deleted || isDcpTestChildShift(ev)) return;
+      const screens = getCinemaScreensForEvent(ev);
+      if (!screens.length) return;
+      const eventDate = normalizeEventDate(ev.date);
+      const startTime = getAdvScreeningStartTime(ev);
+      const finishTime = ev.finishTime || '';
+      const evName = (ev.name || ev.title || 'Screening').trim();
+      const normTitle = normalizeFilmTitle(evName);
+
+      screens.forEach((screen) => {
+        const key = `${eventDate || 'nodate'}|${screen}`;
+        if (!byDateScreen.has(key)) byDateScreen.set(key, []);
+        byDateScreen.get(key).push({
+          ev,
+          screen,
+          eventDate,
+          startTime,
+          finishTime,
+          evName,
+          normTitle,
+          isCancelled: isAdvancingEventCancelled(ev)
+        });
+      });
+    });
+
+    const slots = [];
+    byDateScreen.forEach((entries) => {
+      const activeEntries = entries.filter((e) => !e.isCancelled);
+      const cancelledEntries = entries.filter((e) => e.isCancelled);
+
+      const activeClusters = clusterCinemaEntriesByOverlap(activeEntries);
+      const absorbedPerCluster = activeClusters.map(() => []);
+      const unabsorbedCancelled = [];
+
+      cancelledEntries.forEach((ce) => {
+        // If a cancelled booking physically overlaps an active booking in the same screen on the same day,
+        // absorb its event ID so any legacy DCP row for the superseded booking gets cleanly merged/deleted
+        // instead of showing a ghost cancelled row beside the active replacement.
+        let matchedIdx = -1;
+        for (let i = 0; i < activeClusters.length; i++) {
+          if (activeClusters[i].some((ae) => cinemaEntriesOverlap(ae, ce))) {
+            matchedIdx = i;
+            break;
+          }
+        }
+        if (matchedIdx > -1) {
+          absorbedPerCluster[matchedIdx].push(ce.ev.id);
+        } else {
+          unabsorbedCancelled.push(ce);
+        }
+      });
+
+      activeClusters.forEach((cl, idx) => {
+        slots.push(buildSlotFromCluster(cl, absorbedPerCluster[idx]));
+      });
+
+      const cancelledClusters = clusterCinemaEntriesByOverlap(unabsorbedCancelled);
+      cancelledClusters.forEach((cl) => {
+        slots.push(buildSlotFromCluster(cl, []));
+      });
+    });
+
+    return slots;
+  }
+
+  /* ---- Consolidate Multiple Existing DCP Rows Into One Winner ---- */
+  function scoreDcpRecord(item, preferredId) {
+    let s = 0;
+    if (preferredId && item.id === preferredId) s += 20;
+    if (item.outcome === 'Passed') s += 40;
+    else if (item.outcome === 'Passed with Caveats') s += 30;
+    else if (item.outcome === 'Failed') s += 20;
+    if (item.tested) s += 25;
+    if (item.lastReportId || item.reportGeneratedAt) s += 18;
+    if (item.qc_criteria && typeof item.qc_criteria === 'object') {
+      QC_CRITERIA_DEFINITIONS.forEach((def) => {
+        const st = item.qc_criteria[def.id] && item.qc_criteria[def.id].status;
+        if (st && st !== 'Pending') s += 4;
+        if (item.qc_criteria[def.id] && item.qc_criteria[def.id].notes && item.qc_criteria[def.id].notes.trim()) s += 3;
+      });
+    }
+    if (item.mediaReceived) s += 6;
+    if (item.kdmCplReceived) s += 6;
+    if (item.playlistMade) s += 6;
+    if (item.subsAudioSync) s += 4;
+    if (item.issuesNoted && item.issuesNoted.trim()) s += 8;
+    if (item.furtherAction && item.furtherAction.trim()) s += 8;
+    if (item.linkedTaskId) s += 10;
+    if (item.eventId && String(item.eventId).startsWith('evt-')) s += 5;
+    return s;
+  }
+
+  function mergeMultipleDcpRowsInMemory(rows, preferredId) {
+    if (!rows || !rows.length) return { winner: null, losers: [] };
+    if (rows.length === 1) return { winner: JSON.parse(JSON.stringify(rows[0])), losers: [] };
+
+    const sorted = rows.slice().sort((a, b) => scoreDcpRecord(b, preferredId) - scoreDcpRecord(a, preferredId));
+    const primary = JSON.parse(JSON.stringify(sorted[0]));
+    const losers = sorted.slice(1);
+    const critRank = { 'Fail': 4, 'Caveats': 3, 'Pass': 2, 'Pending': 1 };
+    const outcomeRank = { 'Passed': 4, 'Passed with Caveats': 3, 'Failed': 2, 'Pending': 1 };
+
+    ensureQcCriteria(primary);
+
+    losers.forEach((other) => {
+      if (!primary.eventId && other.eventId) primary.eventId = other.eventId;
+      if (!primary.mediaType && other.mediaType) primary.mediaType = other.mediaType;
+      if (!primary.clientName && other.clientName) primary.clientName = other.clientName;
+      if (!primary.pictureFormat && other.pictureFormat) primary.pictureFormat = other.pictureFormat;
+      if (!primary.audioFormat && other.audioFormat) primary.audioFormat = other.audioFormat;
+      if (!primary.deadlineDate && other.deadlineDate) primary.deadlineDate = other.deadlineDate;
+      if (!primary.eventStartTime && other.eventStartTime) primary.eventStartTime = other.eventStartTime;
+      if (!primary.eventFinishTime && other.eventFinishTime) primary.eventFinishTime = other.eventFinishTime;
+
+      if (other.mediaReceived) primary.mediaReceived = true;
+      if (other.kdmCplReceived) primary.kdmCplReceived = true;
+      if (other.playlistMade) primary.playlistMade = true;
+      if (other.tested) primary.tested = true;
+      if (other.holdingSlidesReady) primary.holdingSlidesReady = true;
+      if (other.subsAudioSync) primary.subsAudioSync = true;
+
+      if ((outcomeRank[other.outcome] || 0) > (outcomeRank[primary.outcome] || 0)) {
+        primary.outcome = other.outcome;
+      }
+
+      if (other.qc_criteria && typeof other.qc_criteria === 'object') {
+        QC_CRITERIA_DEFINITIONS.forEach((def) => {
+          const oc = other.qc_criteria[def.id];
+          const pc = primary.qc_criteria[def.id] || { status: 'Pending', notes: '' };
+          if (oc && typeof oc === 'object') {
+            if ((critRank[oc.status] || 0) > (critRank[pc.status] || 0)) {
+              pc.status = oc.status;
+            }
+            if (oc.notes && oc.notes.trim()) {
+              const note = oc.notes.trim();
+              if (!pc.notes) pc.notes = note;
+              else if (!pc.notes.includes(note)) pc.notes = pc.notes.trim() + '; ' + note;
+            }
+          }
+          primary.qc_criteria[def.id] = pc;
+        });
+      }
+
+      if (!primary.testedByUserId && other.testedByUserId) {
+        primary.testedByUserId = other.testedByUserId;
+        primary.testedByUserName = other.testedByUserName;
+      }
+      if (!primary.testDateTime && other.testDateTime) {
+        primary.testDateTime = other.testDateTime;
+      }
+      if (!primary.lastReportId && other.lastReportId) {
+        primary.lastReportId = other.lastReportId;
+        primary.reportGeneratedAt = other.reportGeneratedAt || primary.reportGeneratedAt;
+      }
+
+      if (other.issuesNoted && other.issuesNoted.trim()) {
+        const note = other.issuesNoted.trim();
+        if (!primary.issuesNoted) primary.issuesNoted = note;
+        else if (!primary.issuesNoted.includes(note)) primary.issuesNoted = primary.issuesNoted.trim() + '; ' + note;
+      }
+      if (other.furtherAction && other.furtherAction.trim()) {
+        const act = other.furtherAction.trim();
+        if (!primary.furtherAction) {
+          primary.furtherAction = act;
+          primary.hasFurtherAction = true;
+        } else if (!primary.furtherAction.includes(act)) {
+          primary.furtherAction = primary.furtherAction.trim() + '; ' + act;
+          primary.hasFurtherAction = true;
+        }
+      }
+      if (!primary.linkedTaskId && other.linkedTaskId) {
+        primary.linkedTaskId = other.linkedTaskId;
+      }
+    });
+
+    return { winner: primary, losers };
+  }
+
+  /* ---- Bi-directional Bridge: Pre-Screening Tracker -> Event Advancing (All Linked Events) ---- */
+  function syncDcpToAdvance(dcp) {
+    const store = getStore();
+    if (!store || !dcp) return;
+    const eventIds = getAllEventIdsForDcp(dcp);
+    if (!eventIds.length) return;
+
+    let anyChanged = false;
+    eventIds.forEach((eid) => {
+      const ev = store.find('advancing', eid);
+      if (!ev || ev.deleted) return;
+      let changed = false;
+
+      const mt = dcp.mediaType !== undefined ? dcp.mediaType : '';
+      if (ev.media_type !== mt || ev.mediaType !== mt) {
+        ev.media_type = mt;
+        ev.mediaType = mt;
+        changed = true;
+      }
+
+      const isRec = !!dcp.mediaReceived;
+      if (ev.dcp_received !== isRec || ev.dcpReceived !== isRec) {
+        ev.dcp_received = isRec;
+        ev.dcpReceived = isRec;
+        changed = true;
+      }
+
+      const effectiveOutcome = dcp.outcome || 'Pending';
+      const isPassed = effectiveOutcome === 'Passed';
+      if (ev.checks_completed !== isPassed || ev.checksCompleted !== isPassed) {
+        ev.checks_completed = isPassed;
+        ev.checksCompleted = isPassed;
+        changed = true;
+      }
+
+      if (ev.qc_status !== effectiveOutcome || ev.dcp_qc_status !== effectiveOutcome) {
+        ev.qc_status = effectiveOutcome;
+        ev.dcp_qc_status = effectiveOutcome;
+        changed = true;
+      }
+
+      if (dcp.issuesNoted !== undefined && (ev.dcp_notes || '') !== (dcp.issuesNoted || '')) {
+        ev.dcp_notes = dcp.issuesNoted || '';
+        changed = true;
+      }
+
+      const testerId = dcp.testedByUserId || '';
+      if ((ev.dcp_tester_user_id || '') !== testerId) {
+        ev.dcp_tester_user_id = testerId;
+        ev.dcpTesterUserId = testerId;
+        changed = true;
+      }
+
+      const testDt = dcp.testDateTime || '';
+      if ((ev.dcp_test_datetime || '') !== testDt) {
+        ev.dcp_test_datetime = testDt;
+        ev.dcpTestDatetime = testDt;
+        changed = true;
+      }
+
+      const furtherAct = dcp.furtherAction || '';
+      if ((ev.further_action || '') !== furtherAct) {
+        ev.further_action = furtherAct;
+        ev.furtherAction = furtherAct;
+        changed = true;
+      }
+
+      const linkedTask = dcp.linkedTaskId || '';
+      if ((ev.linked_task_id || '') !== linkedTask) {
+        ev.linked_task_id = linkedTask;
+        ev.linkedTaskId = linkedTask;
+        changed = true;
+      }
+
+      if (changed) {
+        store.upsert('advancing', ev);
+        anyChanged = true;
+      }
+    });
+
+    if (anyChanged && RMTP.syncSb && RMTP.syncSb.drain) {
+      RMTP.syncSb.drain();
+    }
+  }
+  RMTP.syncDcpToAdvance = syncDcpToAdvance;
+
+  /* ---- Canonical Auto-Sync & Deduplication Engine ---- */
+  let _syncingDcps = false;
+
+  function dcpMatchesSlot(d, slot) {
+    if (!d || isManualScreeningRecord(d)) return false;
+    if (d.id === slot.canonicalId) return true;
+    if (d.slotKey && d.slotKey === slot.slotKey) return true;
+
+    const slotIdSet = new Set(slot.allEventIds);
+    const dScreen = normalizeCinemaScreen(d.screen);
+    const screenCompatible = !dScreen || dScreen === slot.screen;
+
+    if (d.eventId && slotIdSet.has(String(d.eventId)) && screenCompatible) return true;
+    if (Array.isArray(d.linkedEventIds) && d.linkedEventIds.some((eid) => slotIdSet.has(String(eid))) && screenCompatible) {
+      return true;
+    }
+    for (let i = 0; i < slot.allEventIds.length; i++) {
+      const eid = slot.allEventIds[i];
+      if (d.id === 'dcp-' + eid || String(d.id || '').startsWith('dcp-' + eid + '-')) {
+        if (screenCompatible) return true;
+      }
+    }
+
+    // Legacy duplicate matching: same (normTitle, eventDate, screen) with overlapping or missing time
+    const dDate = normalizeEventDate(d.eventDate);
+    if (dDate && slot.eventDate && dDate === slot.eventDate && dScreen === slot.screen) {
+      const dTitle = normalizeFilmTitle(d.filmTitle || d.eventName);
+      if (dTitle && slot.normTitle && dTitle === slot.normTitle) {
+        const dStart = parseTimeToMins(d.eventStartTime);
+        const sStart = parseTimeToMins(slot.evStart);
+        if (dStart == null || sStart == null || dStart === sStart) return true;
+        const dEnd = parseTimeToMins(d.eventFinishTime) || (dStart + 120);
+        const sEnd = parseTimeToMins(slot.evFinish) || (sStart + 120);
+        const adjDEnd = dEnd <= dStart ? dEnd + 1440 : dEnd;
+        const adjSEnd = sEnd <= sStart ? sEnd + 1440 : sEnd;
+        if (dStart < adjSEnd && sStart < adjDEnd) return true;
+      }
+    }
+
+    return false;
+  }
+
+  function arraysEqual(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+
+  function syncAdvancingToDcps() {
+    const store = getStore();
+    if (!store) return [];
+    if (_syncingDcps) return store.all('dcps') || [];
+    _syncingDcps = true;
+
+    try {
+      const allAdv = (store.all('advancing') || []).filter((x) => x && !x.deleted);
+      let dcps = (store.all('dcps') || []).slice();
+      let modified = false;
+
+      // 1. Purge legacy fake seed screenings
+      dcps.forEach((d) => {
+        if (d && String(d.id || '').startsWith('dcp-seed-')) {
+          store.remove('dcps', d.id);
+          modified = true;
+        }
+      });
+      if (modified) dcps = (store.all('dcps') || []).slice();
+
+      // 2. Build consolidated 1-row-per-screening-slot list from Advancing
+      const slots = buildConsolidatedCinemaSlots(allAdv);
+      const usedDcpIds = new Set();
+      const validKeptIds = new Set();
+
+      slots.forEach((slot) => {
+        const matchingRows = dcps.filter((d) => d && !usedDcpIds.has(d.id) && dcpMatchesSlot(d, slot));
+
+        // If user dismissed this screening slot from the tracker, purge any stray rows and skip
+        if (isSlotDismissed(slot)) {
+          matchingRows.forEach((row) => {
+            usedDcpIds.add(row.id);
+            store.remove('dcps', row.id);
+            modified = true;
+          });
+          return;
+        }
+
+        let existing = null;
+        if (matchingRows.length > 1) {
+          const merged = mergeMultipleDcpRowsInMemory(matchingRows, slot.canonicalId);
+          existing = merged.winner;
+          merged.losers.forEach((loser) => {
+            usedDcpIds.add(loser.id);
+            store.remove('dcps', loser.id);
+          });
+          modified = true;
+        } else if (matchingRows.length === 1) {
+          existing = JSON.parse(JSON.stringify(matchingRows[0]));
+        }
+
+        if (existing) {
+          usedDcpIds.add(existing.id);
+          validKeptIds.add(existing.id);
+          let changed = matchingRows.length > 1;
+
+          if (existing.eventId !== slot.primaryEventId) { existing.eventId = slot.primaryEventId; changed = true; }
+          if (!arraysEqual(existing.linkedEventIds, slot.linkedEventIds)) {
+            existing.linkedEventIds = slot.linkedEventIds.slice();
+            changed = true;
+          }
+          if (existing.slotKey !== slot.slotKey) { existing.slotKey = slot.slotKey; changed = true; }
+          if (existing.isManual) { existing.isManual = false; changed = true; }
+          if (existing._manualScreen) { existing._manualScreen = false; changed = true; }
+
+          const prevEventName = existing.eventName || '';
+          if (existing.eventName !== slot.evName) {
+            existing.eventName = slot.evName;
+            if (!existing.filmTitle || existing.filmTitle === prevEventName) {
+              existing.filmTitle = slot.evName;
+            }
+            changed = true;
+          }
+          if (!existing.filmTitle) { existing.filmTitle = slot.evName; changed = true; }
+          if (slot.advClient && !existing.clientName) { existing.clientName = slot.advClient; changed = true; }
+          if (slot.mType && existing.mediaType !== slot.mType) { existing.mediaType = slot.mType; changed = true; }
+          if (slot.eventDate && existing.eventDate !== slot.eventDate) { existing.eventDate = slot.eventDate; changed = true; }
+          if ((existing.eventStartTime || '') !== slot.evStart) { existing.eventStartTime = slot.evStart; changed = true; }
+          if ((existing.eventFinishTime || '') !== slot.evFinish) { existing.eventFinishTime = slot.evFinish; changed = true; }
+
+          if (existing.screen !== slot.screen) {
+            existing.screen = slot.screen;
+            existing.targetHardware = HARDWARE_MEDIA_BLOCKS[slot.screen] || (slot.screen + ' Media Block');
+            changed = true;
+          } else if (!existing.targetHardware) {
+            existing.targetHardware = HARDWARE_MEDIA_BLOCKS[slot.screen] || (slot.screen + ' Media Block');
+            changed = true;
+          }
+
+          if (slot.isCancelled) {
+            if (!existing.isCancelled || existing.outcome !== 'Cancelled') {
+              existing.isCancelled = true;
+              existing.outcome = 'Cancelled';
+              changed = true;
+            }
+          } else {
+            if (existing.isCancelled || existing.outcome === 'Cancelled') {
+              existing.isCancelled = false;
+              existing.outcome = slot.isChecksFlag ? 'Passed' : (slot.advQcStatus && slot.advQcStatus !== 'Cancelled' ? slot.advQcStatus : 'Pending');
+              changed = true;
+            }
+
+            if (slot.hasRecFlag && existing.mediaReceived !== slot.isRecFlag) {
+              existing.mediaReceived = slot.isRecFlag;
+              if (existing.qc_criteria && existing.qc_criteria.ingestion) {
+                if (slot.isRecFlag && existing.qc_criteria.ingestion.status === 'Pending') {
+                  existing.qc_criteria.ingestion.status = 'Pass';
+                } else if (!slot.isRecFlag && !existing.tested && existing.qc_criteria.ingestion.status === 'Pass') {
+                  existing.qc_criteria.ingestion.status = 'Pending';
+                }
+              }
+              changed = true;
+            }
+
+            if (slot.isChecksFlag) {
+              if (existing.outcome !== 'Passed') { existing.outcome = 'Passed'; changed = true; }
+              if (!existing.tested) { existing.tested = true; changed = true; }
+            } else if (slot.advQcStatus && slot.advQcStatus !== 'Cancelled' && existing.outcome !== slot.advQcStatus) {
+              existing.outcome = slot.advQcStatus;
+              if (slot.advQcStatus === 'Pending') existing.tested = false;
+              changed = true;
+            } else if (slot.hasChecksFlag && !slot.isChecksFlag && existing.outcome === 'Passed' && slot.advQcStatus !== 'Passed') {
+              existing.outcome = 'Pending';
+              existing.tested = false;
+              changed = true;
+            }
+          }
+
+          // Decouple Technician Issues & Notes from Artifax Event Description
+          if (slot.artifaxDesc && existing.issuesNoted && existing.issuesNoted.trim() === slot.artifaxDesc && !slot.cleanAdvNote) {
+            existing.issuesNoted = '';
+            changed = true;
+          }
+          if (slot.hasDcpNotesField && slot.cleanAdvNote && (existing.issuesNoted || '') !== slot.cleanAdvNote) {
+            existing.issuesNoted = slot.cleanAdvNote;
+            changed = true;
+          }
+
+          if (slot.advTesterId && existing.testedByUserId !== slot.advTesterId) {
+            existing.testedByUserId = slot.advTesterId;
+            existing.testedByUserName = userName(slot.advTesterId);
+            changed = true;
+          }
+          if (slot.advTestDt && existing.testDateTime !== slot.advTestDt) {
+            existing.testDateTime = slot.advTestDt;
+            changed = true;
+          }
+          if (slot.advFurtherAction && existing.furtherAction !== slot.advFurtherAction) {
+            existing.furtherAction = slot.advFurtherAction;
+            existing.hasFurtherAction = true;
+            changed = true;
+          }
+          if (slot.advLinkedTask && existing.linkedTaskId !== slot.advLinkedTask) {
+            existing.linkedTaskId = slot.advLinkedTask;
+            changed = true;
+          }
+
+          if (changed) {
+            if (store.unmarkDeleted) store.unmarkDeleted('dcps', existing.id);
+            existing.updatedAt = new Date().toISOString();
+            store.upsert('dcps', existing);
+            modified = true;
+          }
+        } else if (!slot.isCancelled) {
+          const outcomeVal = slot.isChecksFlag ? 'Passed' : (slot.advQcStatus && slot.advQcStatus !== 'Cancelled' ? slot.advQcStatus : 'Pending');
+          const newRec = {
+            id: slot.canonicalId,
+            eventId: slot.primaryEventId,
+            linkedEventIds: slot.linkedEventIds.slice(),
+            slotKey: slot.slotKey,
+            isManual: false,
+            eventName: slot.evName,
+            filmTitle: slot.evName,
+            clientName: slot.advClient,
+            mediaType: slot.mType,
+            eventDate: slot.eventDate,
+            eventStartTime: slot.evStart,
+            eventFinishTime: slot.evFinish,
+            screen: slot.screen,
+            targetHardware: HARDWARE_MEDIA_BLOCKS[slot.screen] || (slot.screen + ' Media Block'),
+            mediaReceived: slot.isRecFlag,
+            kdmCplReceived: (slot.mType === 'DCP' ? slot.isRecFlag : true),
+            playlistMade: slot.isChecksFlag,
+            tested: slot.isChecksFlag,
+            holdingSlidesReady: false,
+            subsAudioSync: slot.isChecksFlag,
+            issuesNoted: slot.cleanAdvNote,
+            outcome: outcomeVal,
+            isCancelled: false,
+            hasFurtherAction: !!slot.advFurtherAction,
+            furtherAction: slot.advFurtherAction || '',
+            linkedTaskId: slot.advLinkedTask || '',
+            testedByUserId: slot.advTesterId,
+            testedByUserName: userName(slot.advTesterId),
+            testDateTime: slot.advTestDt,
+            createdAt: slot.primaryEv.createdAt || new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+          if (store.unmarkDeleted) store.unmarkDeleted('dcps', newRec.id);
+          store.upsert('dcps', newRec);
+          usedDcpIds.add(newRec.id);
+          validKeptIds.add(newRec.id);
+          modified = true;
+        }
+      });
+
+      // 3. Prune orphaned / stale non-manual Advancing-linked rows (deleted events, moved out of screens, DCP Test child rows, dismissed slots)
+      const currentDcps = (store.all('dcps') || []).slice();
+      currentDcps.forEach((d) => {
+        if (!d) return;
+        if (isManualScreeningRecord(d)) return;
+        if (!validKeptIds.has(d.id)) {
+          store.remove('dcps', d.id);
+          modified = true;
+        }
+      });
+
+      return store.all('dcps') || [];
+    } finally {
+      _syncingDcps = false;
+    }
+  }
+  RMTP.syncAdvancingToDcps = syncAdvancingToDcps;
+
+  function syncAdvanceToDcp(ev) {
+    if (!ev) return;
+    // Always run the full deterministic slot reconciler so overlaps and dismissals stay 100% consistent
+    syncAdvancingToDcps();
+  }
+  RMTP.syncAdvanceToDcp = syncAdvanceToDcp;
+
+  function findDcpForEvent(eventId) {
+    const store = getStore();
+    if (!store || !eventId) return null;
+    const eid = String(eventId);
+    const list = store.all('dcps') || [];
+    return list.find((d) =>
+      d && (
+        d.eventId === eid ||
+        d.id === 'dcp-' + eid ||
+        (Array.isArray(d.linkedEventIds) && d.linkedEventIds.includes(eid))
+      )
+    ) || null;
+  }
+  RMTP.findDcpForEvent = findDcpForEvent;
+
+  /* ---- Watertight Tracker-Only Delete & Restore ---- */
+  function dismissAndRemoveScreening(dcp) {
+    const store = getStore(), auth = getAuth();
+    if (!store || !dcp) return false;
+    const wasSyncing = _syncingDcps;
+    _syncingDcps = true;
+    try {
+      const isManual = isManualScreeningRecord(dcp);
+      const dcpEventIds = getAllEventIdsForDcp(dcp);
+      const slotKey = dcp.slotKey || computeSlotKey(dcp.filmTitle || dcp.eventName, dcp.eventDate, dcp.screen, dcp.eventStartTime);
+
+      // Gather any extra overlapping Advancing event IDs for this exact slot so none of them can resurrect it
+      const allIds = dcpEventIds.slice();
+      if (!isManual) {
+        const allAdv = (store.all('advancing') || []).filter((x) => x && !x.deleted);
+        const slots = buildConsolidatedCinemaSlots(allAdv);
+        slots.forEach((slot) => {
+          if (slot.slotKey === slotKey || slot.canonicalId === dcp.id || slot.allEventIds.some((eid) => allIds.includes(eid))) {
+            slot.allEventIds.forEach((eid) => {
+              if (!allIds.includes(eid)) allIds.push(eid);
+            });
+          }
+        });
+
+        // Persist tracker-only dismissal (Event Advance stays completely untouched!)
+        const curState = getDismissalState();
+        const actor = auth && auth.current && auth.current() ? (auth.displayName ? auth.displayName(auth.current()) : (auth.current().name || 'Staff')) : 'Staff';
+        const entryKey = slotKey || dcp.id;
+        const filteredItems = curState.items.filter((it) => it.key !== entryKey && it.dcpId !== dcp.id);
+        filteredItems.push({
+          key: entryKey,
+          slotKey: slotKey,
+          eventIds: allIds,
+          dcpId: dcp.id,
+          title: dcp.filmTitle || dcp.eventName || 'Screening',
+          date: normalizeEventDate(dcp.eventDate || ''),
+          screen: dcp.screen || '',
+          startTime: dcp.eventStartTime || '',
+          dismissedAt: new Date().toISOString(),
+          dismissedBy: actor
+        });
+        persistDismissalState({ updatedAt: Date.now(), items: filteredItems }, true);
+      }
+
+      // Delete the canonical DCP record AND any legacy duplicate siblings in the same slot
+      const idsToDelete = new Set([dcp.id]);
+      if (!isManual) {
+        (store.all('dcps') || []).forEach((other) => {
+          if (!other || other.id === dcp.id || isManualScreeningRecord(other)) return;
+          const otherSlotKey = other.slotKey || computeSlotKey(other.filmTitle || other.eventName, other.eventDate, other.screen, other.eventStartTime);
+          const otherEvIds = getAllEventIdsForDcp(other);
+          if (otherSlotKey === slotKey || otherEvIds.some((eid) => allIds.includes(eid))) {
+            idsToDelete.add(other.id);
+          }
+        });
+      }
+
+      idsToDelete.forEach((delId) => {
+        store.remove('dcps', delId);
+      });
+
+      if (RMTP.syncSb && RMTP.syncSb.drain) {
+        RMTP.syncSb.drain();
+      }
+      return true;
+    } finally {
+      _syncingDcps = wasSyncing;
+    }
+  }
+
+  function restoreDismissedScreening(entryKey) {
+    const store = getStore();
+    const curState = getDismissalState();
+    const target = curState.items.find((it) => it.key === entryKey || it.slotKey === entryKey || it.dcpId === entryKey);
+    if (!target) return false;
+
+    const nextItems = curState.items.filter((it) => it !== target);
+    persistDismissalState({ updatedAt: Date.now(), items: nextItems }, true);
+
+    if (store && store.unmarkDeleted) {
+      if (target.dcpId) store.unmarkDeleted('dcps', target.dcpId);
+      (target.eventIds || []).forEach((eid) => {
+        store.unmarkDeleted('dcps', 'dcp-' + eid);
+      });
+    }
+
+    syncAdvancingToDcps();
+    if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
+    return true;
+  }
+
+  function restoreAllDismissedScreenings() {
+    const store = getStore();
+    const curState = getDismissalState();
+    if (!curState.items.length) return 0;
+    const count = curState.items.length;
+
+    if (store && store.unmarkDeleted) {
+      curState.items.forEach((it) => {
+        if (it.dcpId) store.unmarkDeleted('dcps', it.dcpId);
+        (it.eventIds || []).forEach((eid) => store.unmarkDeleted('dcps', 'dcp-' + eid));
+      });
+    }
+
+    persistDismissalState({ updatedAt: Date.now(), items: [] }, true);
+    syncAdvancingToDcps();
+    if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
+    return count;
+  }
+
+  // Keep backwards-compatible stub so any external check sees zero duplicates after canonical reconciliation
+  RMTP.findDuplicateClusters = function () {
+    return { groups: [], duplicateIds: new Set(), dupGroupMap: new Map(), duplicateCount: 0 };
+  };
+
+  RMTP.dcpEngine = {
+    MEDIA_TYPES,
+    HARDWARE_MEDIA_BLOCKS,
+    QC_CRITERIA_DEFINITIONS,
+    ensureQcCriteria,
+    calculateOverallQcOutcome,
+    getTodayIso,
+    getNowLocalDateTime,
+    normalizeEventDate,
+    normalizeCinemaScreen,
+    resolveNormalizedScreen,
+    isDcpTestChildShift,
+    isAdvancingEventCancelled,
+    isManualScreeningRecord,
+    isDcpSignedOff,
+    getAllEventIdsForDcp,
+    userName,
+    computeSlotKey,
+    buildConsolidatedCinemaSlots,
+    syncAdvancingToDcps,
+    syncAdvanceToDcp,
+    syncDcpToAdvance,
+    findDcpForEvent,
+    hydrateDismissalsFromDb,
+    getDismissedScreenings,
+    isSlotDismissed,
+    isDcpRowDismissed,
+    dismissAndRemoveScreening,
+    restoreDismissedScreening,
+    restoreAllDismissedScreenings,
+    isSyncing: () => _syncingDcps
+  };
+})();
+
+RMTP.views.dcp = function (el, params, query) {
+  const ui = RMTP.ui, store = RMTP.store, auth = RMTP.auth;
+  const eng = RMTP.dcpEngine;
+
+  const curUser = auth.current();
+  const isFreelancer = auth.isFreelancer ? auth.isFreelancer(curUser) : (curUser && curUser.position === 'Freelancer');
+  if (isFreelancer) {
+    el.innerHTML =
+      '<div class="p-8 sm:p-12 max-w-lg mx-auto text-center animate-fadeIn">' +
+        '<div class="w-16 h-16 rounded-2xl bg-danger/10 border border-danger/20 text-danger flex items-center justify-center mx-auto mb-4 shadow-sm">' +
+          ui.icon('lock', 'w-8 h-8') +
+        '</div>' +
+        '<h1 class="font-display font-bold text-xl text-ink">Access Restricted</h1>' +
+        '<p class="text-sm text-muted mt-2 leading-relaxed">' +
+          'The Pre-Screening Tracker is restricted to Rich Mix staff technicians and managers. Freelancers do not have access to cinema server logs, KDM certificates, or technical QC sign-offs.' +
+        '</p>' +
+        '<div class="mt-6 flex justify-center gap-3">' +
+          '<a href="#/' + RMTP.HOME + '" class="btn btn-primary px-4 py-2 text-sm flex items-center gap-2">' +
+            ui.icon('calendar', 'w-4 h-4') + '<span>Return to Event Advancing</span>' +
+          '</a>' +
+        '</div>' +
+      '</div>';
+    return;
+  }
+
+  const MEDIA_TYPES = eng.MEDIA_TYPES;
+  const HARDWARE_MEDIA_BLOCKS = eng.HARDWARE_MEDIA_BLOCKS;
+  const QC_CRITERIA_DEFINITIONS = eng.QC_CRITERIA_DEFINITIONS;
+  const ensureQcCriteria = eng.ensureQcCriteria;
+  const calculateOverallQcOutcome = eng.calculateOverallQcOutcome;
+  const getTodayIso = eng.getTodayIso;
+  const getNowLocalDateTime = eng.getNowLocalDateTime;
+  const normalizeCinemaScreen = eng.normalizeCinemaScreen;
+  const isAdvancingEventCancelled = eng.isAdvancingEventCancelled;
+  const isManualScreeningRecord = eng.isManualScreeningRecord;
+  const isDcpSignedOff = eng.isDcpSignedOff;
+  const getAllEventIdsForDcp = eng.getAllEventIdsForDcp;
+  const syncDcpToAdvance = eng.syncDcpToAdvance;
+  const syncAdvancingToDcps = eng.syncAdvancingToDcps;
 
   function getAssignedCrewSummary(dcp, advEv) {
     const names = [];
@@ -304,10 +1467,12 @@ RMTP.views.dcp = function (el, params, query) {
       }
     };
     const allUsers = store.all('users') || [];
-    if (dcp && dcp.eventId) {
+    const evIds = getAllEventIdsForDcp(dcp);
+    if (evIds.length) {
+      const evIdSet = new Set(evIds);
       const targetScreen = normalizeCinemaScreen(dcp.screen);
       const bookings = (store.all('bookings') || []).filter((b) => {
-        if (!b || b.deleted || b.eventId !== dcp.eventId) return false;
+        if (!b || b.deleted || !evIdSet.has(String(b.eventId || ''))) return false;
         const st = String(b.status || '').toLowerCase();
         if (st === 'cancelled' || st === 'declined') return false;
         if (b.isNoTech || b.role === 'None') return false;
@@ -320,13 +1485,23 @@ RMTP.views.dcp = function (el, params, query) {
         addName(u ? auth.displayName(u) : b.userName);
       });
     }
-    if (!names.length && advEv && RMTP.eventTechnicians) {
-      RMTP.eventTechnicians(advEv).forEach((t) => {
-        if (!t || t.isNoTech || t.role === 'None') return;
-        const st = String(t.bookingStatus || '').toLowerCase();
-        if (st === 'cancelled' || st === 'declined') return;
-        const u = t.userId ? allUsers.find((x) => x.id === t.userId) : null;
-        addName(u ? auth.displayName(u) : t.freelancerName);
+    if (!names.length && RMTP.eventTechnicians) {
+      const evObjs = [];
+      if (advEv) evObjs.push(advEv);
+      evIds.forEach((eid) => {
+        if (!advEv || advEv.id !== eid) {
+          const otherEv = store.find('advancing', eid);
+          if (otherEv) evObjs.push(otherEv);
+        }
+      });
+      evObjs.forEach((evObj) => {
+        RMTP.eventTechnicians(evObj).forEach((t) => {
+          if (!t || t.isNoTech || t.role === 'None') return;
+          const st = String(t.bookingStatus || '').toLowerCase();
+          if (st === 'cancelled' || st === 'declined') return;
+          const u = t.userId ? allUsers.find((x) => x.id === t.userId) : null;
+          addName(u ? auth.displayName(u) : t.freelancerName);
+        });
       });
     }
     return names;
@@ -340,7 +1515,6 @@ RMTP.views.dcp = function (el, params, query) {
 
     if (screening.linkedTaskId) {
       task = store.find('tasks', screening.linkedTaskId);
-      // Fallback migration if previous record was in maintenance
       if (!task) {
         const legacyMaint = store.find('maintenance', screening.linkedTaskId);
         if (legacyMaint) {
@@ -424,592 +1598,6 @@ RMTP.views.dcp = function (el, params, query) {
     }
     return task;
   }
-
-  /* ---- Bi-directional Bridge: Pre-Screening Tracker <-> Event Advancing ---- */
-  function syncDcpToAdvance(dcp) {
-    if (!dcp || !dcp.eventId) return;
-    const ev = store.find('advancing', dcp.eventId);
-    if (!ev) return;
-    let changed = false;
-
-    const mt = dcp.mediaType !== undefined ? dcp.mediaType : '';
-    if (ev.media_type !== mt || ev.mediaType !== mt) {
-      ev.media_type = mt;
-      ev.mediaType = mt;
-      changed = true;
-    }
-
-    const isRec = !!dcp.mediaReceived;
-    if (ev.dcp_received !== isRec || ev.dcpReceived !== isRec) {
-      ev.dcp_received = isRec;
-      ev.dcpReceived = isRec;
-      changed = true;
-    }
-
-    const effectiveOutcome = dcp.outcome || 'Pending';
-    const isPassed = effectiveOutcome === 'Passed';
-    if (ev.checks_completed !== isPassed || ev.checksCompleted !== isPassed) {
-      ev.checks_completed = isPassed;
-      ev.checksCompleted = isPassed;
-      changed = true;
-    }
-
-    if (ev.qc_status !== effectiveOutcome || ev.dcp_qc_status !== effectiveOutcome) {
-      ev.qc_status = effectiveOutcome;
-      ev.dcp_qc_status = effectiveOutcome;
-      changed = true;
-    }
-
-    if (dcp.issuesNoted !== undefined && (ev.dcp_notes || '') !== (dcp.issuesNoted || '')) {
-      ev.dcp_notes = dcp.issuesNoted || '';
-      changed = true;
-    }
-
-    const testerId = dcp.testedByUserId || '';
-    if ((ev.dcp_tester_user_id || '') !== testerId) {
-      ev.dcp_tester_user_id = testerId;
-      ev.dcpTesterUserId = testerId;
-      changed = true;
-    }
-
-    const testDt = dcp.testDateTime || '';
-    if ((ev.dcp_test_datetime || '') !== testDt) {
-      ev.dcp_test_datetime = testDt;
-      ev.dcpTestDatetime = testDt;
-      changed = true;
-    }
-
-    const furtherAct = dcp.furtherAction || '';
-    if ((ev.further_action || '') !== furtherAct) {
-      ev.further_action = furtherAct;
-      ev.furtherAction = furtherAct;
-      changed = true;
-    }
-
-    const linkedTask = dcp.linkedTaskId || '';
-    if ((ev.linked_task_id || '') !== linkedTask) {
-      ev.linked_task_id = linkedTask;
-      ev.linkedTaskId = linkedTask;
-      changed = true;
-    }
-
-    if (changed) {
-      store.upsert('advancing', ev);
-      if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
-    }
-  }
-  RMTP.syncDcpToAdvance = syncDcpToAdvance;
-
-  /* ---- Duplicate Detection & Merging Engine ---- */
-  function normalizeFilmTitle(title) {
-    if (!title) return '';
-    return String(title)
-      .toLowerCase()
-      .replace(/\b(screening|film|preview|dcp test|q&a|premiere|relaxed screening)\b/gi, '')
-      .replace(/\([0-9]{1,2}[a-z]?\)/gi, '') // e.g. (15), (PG), (12A), (U), (18)
-      .replace(/[^a-z0-9]/g, '')
-      .trim();
-  }
-  RMTP.normalizeFilmTitle = normalizeFilmTitle;
-
-  function getDcpDedupKey(d) {
-    if (!d) return '';
-    const normTitle = normalizeFilmTitle(d.filmTitle || d.eventName);
-    const normDate = (d.eventDate || '').trim();
-    const normScreen = resolveNormalizedScreen(d.screen);
-    if (!normTitle) return '';
-    return `${normTitle}|${normDate}|${normScreen}`;
-  }
-  RMTP.getDcpDedupKey = getDcpDedupKey;
-
-  function findDuplicateClusters(dcpsList) {
-    const clusterMap = new Map();
-
-    dcpsList.forEach(d => {
-      // 1. Group by eventId + screen if present (multi-screen events legitimately have 1 row per screen)
-      if (d.eventId && String(d.eventId).trim()) {
-        const evScreen = normalizeCinemaScreen(d.screen) || resolveNormalizedScreen(d.screen);
-        const evKey = 'event:' + String(d.eventId).trim() + '|' + evScreen;
-        if (!clusterMap.has(evKey)) clusterMap.set(evKey, []);
-        clusterMap.get(evKey).push(d);
-      }
-      // 2. Group by normalized title + date + screen
-      const dedupKey = getDcpDedupKey(d);
-      if (dedupKey) {
-        const k = 'title:' + dedupKey;
-        if (!clusterMap.has(k)) clusterMap.set(k, []);
-        clusterMap.get(k).push(d);
-      }
-    });
-
-    // Assemble connected components using union-find
-    const parent = new Map();
-    function find(id) {
-      if (!parent.has(id)) parent.set(id, id);
-      if (parent.get(id) !== id) {
-        parent.set(id, find(parent.get(id)));
-      }
-      return parent.get(id);
-    }
-    function union(idA, idB) {
-      const rootA = find(idA);
-      const rootB = find(idB);
-      if (rootA !== rootB) {
-        parent.set(rootA, rootB);
-      }
-    }
-
-    clusterMap.forEach(items => {
-      if (items.length > 1) {
-        for (let i = 1; i < items.length; i++) {
-          union(items[0].id, items[i].id);
-        }
-      }
-    });
-
-    const rootGroups = new Map();
-    const duplicateIds = new Set();
-    const dupGroupMap = new Map();
-
-    dcpsList.forEach(d => {
-      if (parent.has(d.id)) {
-        const root = find(d.id);
-        if (!rootGroups.has(root)) rootGroups.set(root, []);
-        rootGroups.get(root).push(d);
-      }
-    });
-
-    const duplicateGroups = [];
-    rootGroups.forEach((items, root) => {
-      if (items.length > 1) {
-        const grp = {
-          id: root,
-          title: items[0].filmTitle || items[0].eventName || 'Screening',
-          date: items[0].eventDate || '',
-          screen: items[0].screen || '',
-          items
-        };
-        duplicateGroups.push(grp);
-        items.forEach(it => {
-          duplicateIds.add(it.id);
-          dupGroupMap.set(it.id, grp);
-        });
-      }
-    });
-
-    return {
-      groups: duplicateGroups,
-      duplicateIds,
-      dupGroupMap,
-      duplicateCount: duplicateIds.size
-    };
-  }
-  RMTP.findDuplicateClusters = findDuplicateClusters;
-
-  function mergeDuplicateGroup(items) {
-    if (!items || items.length < 2) return null;
-
-    function score(item) {
-      let s = 0;
-      if (item.eventId) {
-        s += 5;
-        if (String(item.eventId).startsWith('evt-')) s += 5;
-      }
-      if (item.tested) s += 6;
-      if (item.outcome === 'Passed') s += 6;
-      else if (item.outcome === 'Passed with Caveats') s += 4;
-      else if (item.outcome === 'Failed') s += 2;
-      if (item.mediaReceived) s += 3;
-      if (item.kdmCplReceived) s += 3;
-      if (item.playlistMade) s += 3;
-      if (item.holdingSlidesReady) s += 2;
-      if (item.subsAudioSync) s += 2;
-      if (item.issuesNoted && item.issuesNoted.trim()) s += 3;
-      if (item.linkedTaskId || item.furtherAction) s += 3;
-      return s;
-    }
-
-    const sorted = items.slice().sort((a, b) => score(b) - score(a));
-    const primary = JSON.parse(JSON.stringify(sorted[0]));
-    const toDelete = sorted.slice(1);
-
-    toDelete.forEach(other => {
-      if (!primary.eventId && other.eventId) primary.eventId = other.eventId;
-      if (!primary.mediaType && other.mediaType) primary.mediaType = other.mediaType;
-      if (!primary.eventStartTime && other.eventStartTime) primary.eventStartTime = other.eventStartTime;
-      if (!primary.eventFinishTime && other.eventFinishTime) primary.eventFinishTime = other.eventFinishTime;
-
-      if (other.mediaReceived) primary.mediaReceived = true;
-      if (other.kdmCplReceived) primary.kdmCplReceived = true;
-      if (other.playlistMade) primary.playlistMade = true;
-      if (other.tested) primary.tested = true;
-      if (other.holdingSlidesReady) primary.holdingSlidesReady = true;
-      if (other.subsAudioSync) primary.subsAudioSync = true;
-
-      const rank = { 'Passed': 4, 'Passed with Caveats': 3, 'Failed': 2, 'Pending': 1 };
-      if ((rank[other.outcome] || 0) > (rank[primary.outcome] || 0)) {
-        primary.outcome = other.outcome;
-      }
-
-      if (!primary.testedByUserId && other.testedByUserId) {
-        primary.testedByUserId = other.testedByUserId;
-        primary.testedByUserName = other.testedByUserName;
-      }
-      if (!primary.testDateTime && other.testDateTime) {
-        primary.testDateTime = other.testDateTime;
-      }
-
-      if (other.issuesNoted && other.issuesNoted.trim()) {
-        const note = other.issuesNoted.trim();
-        if (!primary.issuesNoted) {
-          primary.issuesNoted = note;
-        } else if (!primary.issuesNoted.includes(note)) {
-          primary.issuesNoted = primary.issuesNoted.trim() + '; ' + note;
-        }
-      }
-
-      if (other.furtherAction && other.furtherAction.trim()) {
-        const act = other.furtherAction.trim();
-        if (!primary.furtherAction) {
-          primary.furtherAction = act;
-          primary.hasFurtherAction = true;
-        } else if (!primary.furtherAction.includes(act)) {
-          primary.furtherAction = primary.furtherAction.trim() + '; ' + act;
-          primary.hasFurtherAction = true;
-        }
-      }
-
-      if (!primary.linkedTaskId && other.linkedTaskId) {
-        primary.linkedTaskId = other.linkedTaskId;
-      }
-    });
-
-    primary.updatedAt = new Date().toISOString();
-    store.upsert('dcps', primary);
-
-    toDelete.forEach(other => {
-      store.remove('dcps', other.id);
-    });
-
-    syncDcpToAdvance(primary);
-
-    if (RMTP.syncSb && RMTP.syncSb.drain) {
-      RMTP.syncSb.drain();
-    }
-
-    return primary;
-  }
-  RMTP.mergeDuplicateGroup = mergeDuplicateGroup;
-
-  function isManualScreeningRecord(d) {
-    if (!d) return false;
-    if (d.isManual === true) return true;
-    if (!d.eventId && String(d.id || '').startsWith('dcp-manual-')) return true;
-    return false;
-  }
-
-  function reconcileSingleAdvanceEvent(ev, allDcpsRef) {
-    if (!ev) return { keptIds: [], modified: false };
-    let modified = false;
-    const keptIds = [];
-    const screens = getCinemaScreensForEvent(ev);
-    const linkedRows = allDcpsRef.filter((d) =>
-      !isManualScreeningRecord(d) && (
-        d.eventId === ev.id ||
-        d.id === 'dcp-' + ev.id ||
-        String(d.id || '').startsWith('dcp-' + ev.id + '-')
-      )
-    );
-
-    // If event was deleted, moved out of Screen 1/2/3, or is a DCP Test child shift -> remove stale rows
-    if (!screens.length) {
-      linkedRows.forEach((row) => {
-        store.remove('dcps', row.id);
-        modified = true;
-      });
-      return { keptIds, modified };
-    }
-
-    const isEvCancelled = isAdvancingEventCancelled(ev);
-    const evName = (ev.name || ev.title || 'Screening').trim();
-    const evDate = normalizeEventDate(ev.date);
-    const evStart = getAdvScreeningStartTime(ev);
-    const evFinish = ev.finishTime || '';
-    const mType = ev.media_type !== undefined ? ev.media_type : (ev.mediaType || '');
-    const hasRecFlag = ev.dcp_received !== undefined || ev.dcpReceived !== undefined;
-    const isRecFlag = !!(ev.dcp_received !== undefined ? ev.dcp_received : ev.dcpReceived);
-    const hasChecksFlag = ev.checks_completed !== undefined || ev.checksCompleted !== undefined;
-    const isChecksFlag = !!(ev.checks_completed !== undefined ? ev.checks_completed : ev.checksCompleted);
-    const advQcStatus = ev.qc_status || ev.dcp_qc_status || '';
-    const artifaxDesc = (ev.techInfo || ev.notes || ev.artifaxNotes || '').trim();
-    const advClient = (ev.clientContact || ev.clientName || ev.client || '').trim();
-    const advTesterId = ev.dcp_tester_user_id || ev.dcpTesterUserId || '';
-    const advTestDt = ev.dcp_test_datetime || ev.dcpTestDatetime || '';
-    const advFurtherAction = ev.further_action !== undefined ? ev.further_action : (ev.furtherAction || '');
-    const advLinkedTask = ev.linked_task_id || ev.linkedTaskId || '';
-
-    const usedIds = new Set();
-
-    screens.forEach((screen) => {
-      const canonicalId = screens.length === 1
-        ? ('dcp-' + ev.id)
-        : ('dcp-' + ev.id + '-' + (RMTP.slug ? RMTP.slug(screen) : screen.toLowerCase().replace(/[^a-z0-9]+/g, '-')));
-
-      // Match existing rows for this (ev.id, screen)
-      let matches = linkedRows.filter((d) =>
-        !usedIds.has(d.id) && (
-          d.id === canonicalId ||
-          normalizeCinemaScreen(d.screen) === screen ||
-          (screens.length === 1 && (d.eventId === ev.id || d.id === 'dcp-' + ev.id))
-        )
-      );
-
-      if (!matches.length) {
-        const evDedupKey = getDcpDedupKey({
-          filmTitle: evName,
-          eventName: evName,
-          eventDate: evDate,
-          screen: screen
-        });
-        if (evDedupKey) {
-          const orphanMatch = allDcpsRef.find((d) =>
-            !usedIds.has(d.id) &&
-            !isManualScreeningRecord(d) &&
-            !d.eventId &&
-            getDcpDedupKey(d) === evDedupKey
-          );
-          if (orphanMatch) matches = [orphanMatch];
-        }
-      }
-
-      // If multiple duplicate rows exist for the same (ev.id, screen), consolidate into the best one
-      let existing = null;
-      if (matches.length > 1) {
-        existing = mergeDuplicateGroup(matches);
-        modified = true;
-      } else if (matches.length === 1) {
-        existing = matches[0];
-      }
-
-      if (existing) {
-        usedIds.add(existing.id);
-        keptIds.push(existing.id);
-        let changed = false;
-
-        if (existing.eventId !== ev.id) { existing.eventId = ev.id; changed = true; }
-        if (existing.isManual) { existing.isManual = false; changed = true; }
-        if (existing._manualScreen) { existing._manualScreen = false; changed = true; }
-
-        const prevEventName = existing.eventName || '';
-        if (existing.eventName !== evName) {
-          existing.eventName = evName;
-          if (!existing.filmTitle || existing.filmTitle === prevEventName) {
-            existing.filmTitle = evName;
-          }
-          changed = true;
-        }
-        if (!existing.filmTitle) { existing.filmTitle = evName; changed = true; }
-        if (advClient && !existing.clientName) { existing.clientName = advClient; changed = true; }
-        if (existing.mediaType !== mType) { existing.mediaType = mType; changed = true; }
-        if (evDate && existing.eventDate !== evDate) { existing.eventDate = evDate; changed = true; }
-        if ((existing.eventStartTime || '') !== evStart) { existing.eventStartTime = evStart; changed = true; }
-        if ((existing.eventFinishTime || '') !== evFinish) { existing.eventFinishTime = evFinish; changed = true; }
-
-        // Screen is always authoritative from Event Advancing
-        if (existing.screen !== screen) {
-          existing.screen = screen;
-          existing.targetHardware = HARDWARE_MEDIA_BLOCKS[screen] || (screen + ' Media Block');
-          changed = true;
-        } else if (!existing.targetHardware) {
-          existing.targetHardware = HARDWARE_MEDIA_BLOCKS[screen] || (screen + ' Media Block');
-          changed = true;
-        }
-
-        // Cancelled state (handles both 'cancelled' and 'canceled', and restores if un-cancelled)
-        if (isEvCancelled) {
-          if (!existing.isCancelled || existing.outcome !== 'Cancelled') {
-            existing.isCancelled = true;
-            existing.outcome = 'Cancelled';
-            changed = true;
-          }
-        } else {
-          if (existing.isCancelled || existing.outcome === 'Cancelled') {
-            existing.isCancelled = false;
-            existing.outcome = isChecksFlag ? 'Passed' : (advQcStatus && advQcStatus !== 'Cancelled' ? advQcStatus : 'Pending');
-            changed = true;
-          }
-
-          if (hasRecFlag && existing.mediaReceived !== isRecFlag) {
-            existing.mediaReceived = isRecFlag;
-            if (existing.qc_criteria && existing.qc_criteria.ingestion) {
-              if (isRecFlag && existing.qc_criteria.ingestion.status === 'Pending') {
-                existing.qc_criteria.ingestion.status = 'Pass';
-              } else if (!isRecFlag && !existing.tested && existing.qc_criteria.ingestion.status === 'Pass') {
-                existing.qc_criteria.ingestion.status = 'Pending';
-              }
-            }
-            changed = true;
-          }
-
-          if (isChecksFlag) {
-            if (existing.outcome !== 'Passed') { existing.outcome = 'Passed'; changed = true; }
-            if (!existing.tested) { existing.tested = true; changed = true; }
-          } else if (advQcStatus && advQcStatus !== 'Cancelled' && existing.outcome !== advQcStatus) {
-            existing.outcome = advQcStatus;
-            if (advQcStatus === 'Pending') existing.tested = false;
-            changed = true;
-          } else if (hasChecksFlag && !isChecksFlag && existing.outcome === 'Passed' && advQcStatus !== 'Passed') {
-            // Unchecking "Checks Completed" on Advancing clears Passed state back to Pending
-            existing.outcome = 'Pending';
-            existing.tested = false;
-            changed = true;
-          }
-        }
-
-        // Decouple from Artifax Event Description
-        if (artifaxDesc && existing.issuesNoted && existing.issuesNoted.trim() === artifaxDesc && !ev.dcp_notes) {
-          existing.issuesNoted = '';
-          changed = true;
-        }
-        if (ev.dcp_notes !== undefined) {
-          const cleanAdvNote = (artifaxDesc && String(ev.dcp_notes).trim() === artifaxDesc) ? '' : String(ev.dcp_notes || '');
-          if ((existing.issuesNoted || '') !== cleanAdvNote) {
-            existing.issuesNoted = cleanAdvNote;
-            changed = true;
-          }
-        }
-
-        if (advTesterId && existing.testedByUserId !== advTesterId) {
-          existing.testedByUserId = advTesterId;
-          existing.testedByUserName = userName(advTesterId);
-          changed = true;
-        }
-        if (advTestDt && existing.testDateTime !== advTestDt) {
-          existing.testDateTime = advTestDt;
-          changed = true;
-        }
-        if (advFurtherAction && existing.furtherAction !== advFurtherAction) {
-          existing.furtherAction = advFurtherAction;
-          existing.hasFurtherAction = true;
-          changed = true;
-        }
-        if (advLinkedTask && existing.linkedTaskId !== advLinkedTask) {
-          existing.linkedTaskId = advLinkedTask;
-          changed = true;
-        }
-
-        if (changed) {
-          existing.updatedAt = new Date().toISOString();
-          store.upsert('dcps', existing);
-          modified = true;
-        }
-      } else if (!isEvCancelled) {
-        const outcomeVal = isChecksFlag ? 'Passed' : (advQcStatus && advQcStatus !== 'Cancelled' ? advQcStatus : 'Pending');
-        const cleanAdvNote = (artifaxDesc && String(ev.dcp_notes || '').trim() === artifaxDesc) ? '' : String(ev.dcp_notes || '').trim();
-        const newRec = {
-          id: canonicalId,
-          eventId: ev.id,
-          isManual: false,
-          eventName: evName,
-          filmTitle: evName,
-          clientName: advClient,
-          mediaType: mType,
-          eventDate: evDate,
-          eventStartTime: evStart,
-          eventFinishTime: evFinish,
-          screen: screen,
-          targetHardware: HARDWARE_MEDIA_BLOCKS[screen] || (screen + ' Media Block'),
-          mediaReceived: isRecFlag,
-          kdmCplReceived: (mType === 'DCP' ? isRecFlag : true),
-          playlistMade: isChecksFlag,
-          tested: isChecksFlag,
-          holdingSlidesReady: false,
-          subsAudioSync: isChecksFlag,
-          issuesNoted: cleanAdvNote,
-          outcome: outcomeVal,
-          isCancelled: false,
-          hasFurtherAction: !!advFurtherAction,
-          furtherAction: advFurtherAction || '',
-          linkedTaskId: advLinkedTask || '',
-          testedByUserId: advTesterId,
-          testedByUserName: userName(advTesterId),
-          testDateTime: advTestDt,
-          createdAt: ev.createdAt || new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        };
-        store.upsert('dcps', newRec);
-        usedIds.add(newRec.id);
-        keptIds.push(newRec.id);
-        modified = true;
-      }
-    });
-
-    // Remove any leftover linked rows for screens that were removed from this event
-    linkedRows.forEach((row) => {
-      if (!usedIds.has(row.id)) {
-        store.remove('dcps', row.id);
-        modified = true;
-      }
-    });
-
-    return { keptIds, modified };
-  }
-
-  function syncAdvanceToDcp(ev) {
-    if (!ev) return;
-    const allDcps = store.all('dcps') || [];
-    reconcileSingleAdvanceEvent(ev, allDcps);
-  }
-  RMTP.syncAdvanceToDcp = syncAdvanceToDcp;
-
-  /* ---- Auto-Sync Engine: Mirror Event Advancing Screen 1/2/3 Events 1-to-1 ---- */
-  let _syncingDcps = false;
-  function syncAdvancingToDcps() {
-    if (_syncingDcps) return store.all('dcps') || [];
-    _syncingDcps = true;
-    try {
-      const allAdv = (store.all('advancing') || []).filter((x) => x && !x.deleted);
-      let dcps = (store.all('dcps') || []).slice();
-      let modified = false;
-
-      // 1. Purge legacy fake seed screenings (Past Lives / Anatomy of a Fall / East End Shorts)
-      dcps.forEach((d) => {
-        if (d && String(d.id || '').startsWith('dcp-seed-')) {
-          store.remove('dcps', d.id);
-          modified = true;
-        }
-      });
-      if (modified) dcps = (store.all('dcps') || []).slice();
-
-      // 2. Reconcile every active Advancing event (Screen One, Screen Two, Screen Three)
-      const validKeptIds = new Set();
-      allAdv.forEach((ev) => {
-        const res = reconcileSingleAdvanceEvent(ev, dcps);
-        res.keptIds.forEach((id) => validKeptIds.add(id));
-        if (res.modified) {
-          modified = true;
-          dcps = (store.all('dcps') || []).slice();
-        }
-      });
-
-      // 3. Prune orphaned Advancing-linked rows (deleted events, non-screen events, DCP Test child shifts)
-      const currentDcps = (store.all('dcps') || []).slice();
-      currentDcps.forEach((d) => {
-        if (!d) return;
-        if (isManualScreeningRecord(d)) return;
-        const isAdvLinked = !!(d.eventId || String(d.id || '').startsWith('dcp-'));
-        if (isAdvLinked && !validKeptIds.has(d.id)) {
-          store.remove('dcps', d.id);
-          modified = true;
-        }
-      });
-
-      return store.all('dcps') || [];
-    } finally {
-      _syncingDcps = false;
-    }
-  }
-  RMTP.syncAdvancingToDcps = syncAdvancingToDcps;
   /* ---- QC Report & Client Email Generator Engine ---- */
   function generateQcEmail(dcp) {
     const crit = ensureQcCriteria(dcp);
@@ -1549,18 +2137,118 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
   /* ---- Filter State ---- */
   let activeScreenTab = 'all'; // 'all', 'Screen One', 'Screen Two', 'Screen Three'
   let activeOutcomeFilter = 'all'; // 'all', 'Passed', 'Pending', 'Caveats', 'Failed'
-  let activeDateFilter = 'upcoming'; // 'upcoming' (default), 'all', 'past', 'duplicates'
+  let activeDateFilter = 'upcoming'; // 'upcoming' (default), 'all', 'past', 'cancelled'
   let excludePast = true;
   let searchTerm = '';
-  let currentDuplicatesInfo = { groups: [], duplicateIds: new Set(), dupGroupMap: new Map(), duplicateCount: 0 };
+
+  /* ---- Shared Watertight Delete Handler (Tracker-Only Dismissal for Synced Events) ---- */
+  async function handleDeleteScreening(dcp, onAfterDelete) {
+    if (!dcp) return;
+    const isManual = isManualScreeningRecord(dcp);
+    const title = dcp.filmTitle || dcp.eventName || 'Screening';
+    const message = isManual
+      ? ('Permanently delete manual screening \u201c' + title + '\u201d from the Pre-Screening Tracker?')
+      : ('Remove \u201c' + title + '\u201d from the Pre-Screening Tracker? The underlying Event Advance will be kept untouched, and you can restore it anytime from Hidden Screenings.');
+    const ok = await ui.confirm(message, {
+      title: isManual ? 'Delete Manual Screening' : 'Remove from Pre-Screening Tracker',
+      danger: true,
+      confirmLabel: isManual ? 'Delete' : 'Remove from Tracker'
+    });
+    if (!ok) return;
+    eng.dismissAndRemoveScreening(dcp);
+    ui.toast(
+      isManual
+        ? ('Deleted manual screening \u201c' + title + '\u201d')
+        : ('Removed \u201c' + title + '\u201d from tracker (Event Advance kept)'),
+      'ok'
+    );
+    if (typeof onAfterDelete === 'function') {
+      onAfterDelete();
+    } else {
+      renderView();
+    }
+  }
+
+  /* ---- Restore Hidden Screenings Modal ---- */
+  function openRestoreHiddenModal() {
+    const items = eng.getDismissedScreenings();
+    const bodyHtml = items.length === 0
+      ? '<div class="p-6 text-center text-xs text-muted">No screenings are currently hidden from the tracker.</div>'
+      : (
+        '<div class="space-y-3 max-h-[65vh] overflow-y-auto pr-1">' +
+          '<p class="text-xs text-muted leading-relaxed">' +
+            'These screenings were removed from the Pre-Screening Tracker while keeping their Event Advance intact. Restore any screening below to bring it back into the tracker.' +
+          '</p>' +
+          '<div class="divide-y divide-line rounded-xl border border-line bg-panel overflow-hidden">' +
+            items.map((it) => {
+              const dateStr = it.date ? (ui.formatDate ? ui.formatDate(it.date) : it.date) : 'Date TBC';
+              return (
+                '<div class="p-3 flex items-center justify-between gap-3 hover:bg-panel2/40 transition-colors">' +
+                  '<div class="min-w-0">' +
+                    '<div class="font-semibold text-xs text-ink truncate">' + ui.esc(it.title || 'Screening') + '</div>' +
+                    '<div class="text-[11px] font-mono text-muted mt-0.5 flex items-center gap-2 flex-wrap">' +
+                      '<span>' + ui.esc(dateStr) + (it.startTime ? ' \u00b7 ' + ui.esc(it.startTime) : '') + '</span>' +
+                      (it.screen ? '<span class="px-1.5 py-0.2 rounded bg-panel2 border border-line">' + ui.esc(it.screen) + '</span>' : '') +
+                      (it.dismissedBy ? '<span>Hidden by ' + ui.esc(it.dismissedBy) + '</span>' : '') +
+                    '</div>' +
+                  '</div>' +
+                  '<button type="button" data-restore-hidden="' + ui.esc(it.key) + '" class="btn btn-ghost !py-1 !px-2.5 text-xs text-accent border border-accent/30 hover:bg-accent/10 shrink-0 font-semibold">' +
+                    'Restore' +
+                  '</button>' +
+                '</div>'
+              );
+            }).join('') +
+          '</div>' +
+        '</div>'
+      );
+
+    const footerHtml =
+      '<div class="flex items-center justify-between gap-2 w-full">' +
+        '<div>' +
+          (items.length > 1 ? (
+            '<button type="button" id="btn-restore-all-hidden" class="btn btn-ghost text-xs text-accent border border-accent/30 hover:bg-accent/10 font-semibold">' +
+              'Restore All (' + items.length + ')' +
+            '</button>'
+          ) : '') +
+        '</div>' +
+        '<button type="button" data-close-hidden class="btn btn-primary text-xs font-semibold">Done</button>' +
+      '</div>';
+
+    const m = ui.modal({
+      title: 'Hidden Screenings (' + items.length + ')',
+      body: bodyHtml,
+      footer: footerHtml,
+      maxWidth: 'max-w-xl'
+    });
+
+    m.root.querySelectorAll('[data-restore-hidden]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-restore-hidden');
+        if (eng.restoreDismissedScreening(key)) {
+          ui.toast('Screening restored to Pre-Screening Tracker', 'ok');
+          m.close();
+          renderView();
+          if (eng.getDismissedScreenings().length > 0) {
+            openRestoreHiddenModal();
+          }
+        }
+      });
+    });
+
+    m.root.querySelector('#btn-restore-all-hidden')?.addEventListener('click', () => {
+      const restoredCount = eng.restoreAllDismissedScreenings();
+      m.close();
+      ui.toast('Restored ' + restoredCount + ' hidden screening' + (restoredCount === 1 ? '' : 's'), 'ok');
+      renderView();
+    });
+
+    m.root.querySelector('[data-close-hidden]')?.addEventListener('click', m.close);
+  }
 
   function renderView() {
     const dcps = syncAdvancingToDcps();
     const todayIso = getTodayIso();
-
-    // Calculate duplicate clusters across full ingested dcps
-    const duplicatesInfo = findDuplicateClusters(dcps);
-    currentDuplicatesInfo = duplicatesInfo;
+    const dismissedList = eng.getDismissedScreenings();
 
     // Build lookup map of active Advancing events for live status/crew display
     const advById = new Map();
@@ -1570,11 +2258,14 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       advById.set(e.id, e);
       if (isAdvancingEventCancelled(e)) cancelledEventIds.add(e.id);
     });
-    const isDcpCancelled = (d) => !!(
-      d.isCancelled ||
-      d.outcome === 'Cancelled' ||
-      (d.eventId && (cancelledEventIds.has(d.eventId) || cancelledEventIds.has(String(d.eventId).replace(/^evt-afx-/, ''))))
-    );
+    const isDcpCancelled = (d) => {
+      if (d.isCancelled || d.outcome === 'Cancelled') return true;
+      const evIds = getAllEventIdsForDcp(d);
+      if (!evIds.length) return false;
+      const activeFound = evIds.some((eid) => advById.has(eid) && !cancelledEventIds.has(eid));
+      if (activeFound) return false;
+      return evIds.every((eid) => cancelledEventIds.has(eid));
+    };
 
     const activeDcps = dcps.filter(d => !isDcpCancelled(d));
     const cancelledCount = dcps.filter(d => isDcpCancelled(d)).length;
@@ -1595,10 +2286,8 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       filtered = filtered.filter(d => d.screen === activeScreenTab);
     }
 
-    // Date filtering, past screening exclusion, and duplicates filter
-    if (activeDateFilter === 'duplicates') {
-      filtered = filtered.filter(d => !isDcpCancelled(d) && duplicatesInfo.duplicateIds.has(d.id));
-    } else if (activeDateFilter === 'cancelled') {
+    // Date filtering & past screening exclusion
+    if (activeDateFilter === 'cancelled') {
       filtered = filtered.filter(d => isDcpCancelled(d));
     } else if (activeDateFilter === 'all') {
       filtered = filtered.filter(d => !isDcpCancelled(d));
@@ -1628,31 +2317,18 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       );
     }
 
-    // Sort order
-    if (activeDateFilter === 'duplicates') {
-      // Group matched duplicates next to each other
-      filtered.sort((a, b) => {
-        const grpA = duplicatesInfo.dupGroupMap.get(a.id);
-        const grpB = duplicatesInfo.dupGroupMap.get(b.id);
-        const idA = grpA ? grpA.id : (a.filmTitle || a.id);
-        const idB = grpB ? grpB.id : (b.filmTitle || b.id);
-        if (idA !== idB) return idA.localeCompare(idB);
-        return (a.id || '').localeCompare(b.id || '');
-      });
-    } else {
-      // Chronological sort: for upcoming, soonest first; for past archive, most recent past first
-      filtered.sort((a, b) => {
-        const da = (a.eventDate || '') + ' ' + (a.eventStartTime || '00:00');
-        const db = (b.eventDate || '') + ' ' + (b.eventStartTime || '00:00');
-        if (activeDateFilter === 'past') {
-          return db.localeCompare(da);
-        }
-        if (da && db && da.trim() !== '00:00' && db.trim() !== '00:00') {
-          return da.localeCompare(db);
-        }
-        return (b.updatedAt || '').localeCompare(a.updatedAt || '');
-      });
-    }
+    // Chronological sort: for upcoming, soonest first; for past archive, most recent past first
+    filtered.sort((a, b) => {
+      const da = (a.eventDate || '') + ' ' + (a.eventStartTime || '00:00');
+      const db = (b.eventDate || '') + ' ' + (b.eventStartTime || '00:00');
+      if (activeDateFilter === 'past') {
+        return db.localeCompare(da);
+      }
+      if (da && db && da.trim() !== '00:00' && db.trim() !== '00:00') {
+        return da.localeCompare(db);
+      }
+      return (b.updatedAt || '').localeCompare(a.updatedAt || '');
+    });
 
     el.innerHTML =
       '<div class="space-y-6 w-full max-w-full pb-16">' +
@@ -1671,7 +2347,12 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
             '</p>' +
           '</div>' +
           '<div class="flex items-center gap-2.5 shrink-0 flex-wrap">' +
-            '<button id="btn-sync-dcps" class="btn btn-ghost text-xs flex items-center gap-1.5" title="Re-sync latest screenings from Artifax">' +
+            (dismissedList.length > 0 ? (
+              '<button id="btn-open-hidden-dcps" class="btn btn-ghost text-xs flex items-center gap-1.5 text-muted hover:text-ink" title="View or restore screenings removed from this tracker">' +
+                ui.icon('refresh', 'w-3.5 h-3.5') + '<span>Hidden (' + dismissedList.length + ')</span>' +
+              '</button>'
+            ) : '') +
+            '<button id="btn-sync-dcps" class="btn btn-ghost text-xs flex items-center gap-1.5" title="Re-sync latest screenings from Event Advancing &amp; Artifax">' +
               ui.icon('refresh', 'w-4 h-4') + '<span>Sync Cinema Advances</span>' +
             '</button>' +
             '<button id="btn-add-dcp" class="btn btn-primary text-xs flex items-center gap-1.5 font-semibold shadow-2xs">' +
@@ -1748,14 +2429,6 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
                 (activeDateFilter === 'past' ? 'bg-accent/15 text-accent border border-accent/30 font-bold' : 'text-muted hover:text-ink hover:bg-panel/40') + '">' +
                 ui.icon('clock', 'w-3.5 h-3.5') + '<span>Past Archive (' + pastCount + ')</span>' +
               '</button>' +
-              '<button type="button" data-date-tab="duplicates" class="px-2.5 py-1 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ' +
-                (activeDateFilter === 'duplicates'
-                  ? 'bg-amber-500/25 text-amber-300 border border-amber-500/50 font-bold shadow-2xs'
-                  : (duplicatesInfo.duplicateCount > 0
-                      ? 'bg-amber-500/10 text-amber-400 hover:text-amber-300 hover:bg-amber-500/20 border border-amber-500/30'
-                      : 'text-muted hover:text-ink hover:bg-panel/40')) + '">' +
-                ui.icon('copy', 'w-3.5 h-3.5') + '<span>Duplicates (' + duplicatesInfo.duplicateCount + ')</span>' +
-              '</button>' +
               '<button type="button" data-date-tab="cancelled" class="px-2.5 py-1 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ' +
                 (activeDateFilter === 'cancelled'
                   ? 'bg-danger/25 text-danger border border-danger/50 font-bold shadow-2xs'
@@ -1784,37 +2457,8 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
             '</div>' +
           '</div>' +
 
-          // Duplicates banner or past screening informational banner
-          (activeDateFilter === 'duplicates' ? (
-            '<div class="p-3.5 sm:p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">' +
-              '<div class="flex items-start sm:items-center gap-2.5">' +
-                '<span class="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">' +
-                  ui.icon('copy', 'w-4 h-4') +
-                '</span>' +
-                '<div>' +
-                  '<div class="font-bold text-ink text-sm">Filtered for Duplicates (' + duplicatesInfo.duplicateCount + ' records across ' + duplicatesInfo.groups.length + ' group' + (duplicatesInfo.groups.length === 1 ? '' : 's') + ')</div>' +
-                  '<div class="text-muted text-[11px] mt-0.5">Showing screenings that share the same film title, screening date, and screen. Click \u201cMerge\u201d on any record or merge all at once to consolidate tests and eliminate redundant rows.</div>' +
-                '</div>' +
-              '</div>' +
-              (duplicatesInfo.duplicateCount > 0 ? (
-                '<div class="flex items-center gap-2 shrink-0">' +
-                  '<button type="button" id="btn-merge-all-duplicates" class="btn btn-warning !py-1.5 !px-3 text-xs font-bold flex items-center gap-1.5 shadow-sm">' +
-                    ui.icon('check', 'w-3.5 h-3.5') + '<span>Merge All Duplicates</span>' +
-                  '</button>' +
-                '</div>'
-              ) : '') +
-            '</div>'
-          ) : (duplicatesInfo.duplicateCount > 0 ? (
-            '<div class="flex items-center justify-between text-xs px-3.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300">' +
-              '<div class="flex items-center gap-1.5">' +
-                ui.icon('copy', 'w-3.5 h-3.5 text-amber-400 shrink-0') +
-                '<span>Detected <strong>' + duplicatesInfo.duplicateCount + '</strong> duplicate screening record' + (duplicatesInfo.duplicateCount === 1 ? '' : 's') + ' across ' + duplicatesInfo.groups.length + ' group' + (duplicatesInfo.groups.length === 1 ? '' : 's') + '.</span>' +
-              '</div>' +
-              '<button type="button" data-date-tab="duplicates" class="text-amber-300 hover:text-white underline font-semibold text-[11px] flex items-center gap-1">' +
-                '<span>Filter for Duplicates</span> \u2192' +
-              '</button>' +
-            '</div>'
-          ) : (activeDateFilter === 'upcoming' && pastCount > 0 ? (
+          // Past screening informational banner
+          (activeDateFilter === 'upcoming' && pastCount > 0 ? (
             '<div class="flex items-center justify-between text-xs px-3.5 py-1.5 rounded-lg bg-panel border border-line text-muted">' +
               '<div class="flex items-center gap-1.5">' +
                 ui.icon('clock', 'w-3.5 h-3.5 text-accent') +
@@ -1824,7 +2468,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
                 '<span>View Past Archive</span> \u2192' +
               '</button>' +
             '</div>'
-          ) : ''))) +
+          ) : '') +
         '</div>' +
 
         // ---- Main Screenings Pre-Testing Checklist Table (Desktop & Tablet) ----
@@ -1833,14 +2477,13 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
             '<div class="w-12 h-12 rounded-xl bg-panel2 flex items-center justify-center mx-auto mb-3 text-muted">' +
               ui.icon('film', 'w-6 h-6') +
             '</div>' +
-            '<h3 class="font-display font-semibold text-ink text-base">' + (activeDateFilter === 'duplicates' ? 'No Duplicates Found' : 'No Screenings in Selected View') + '</h3>' +
+            '<h3 class="font-display font-semibold text-ink text-base">No Screenings in Selected View</h3>' +
             '<p class="text-xs text-muted max-w-sm mx-auto mt-1">' +
               (searchTerm ? 'No screenings match your search term \u201c' + ui.esc(searchTerm) + '\u201d.' :
-               (activeDateFilter === 'duplicates' ? 'No duplicate screening records detected in the tracker. All screening entries are unique.' :
-               (activeDateFilter === 'upcoming' ? 'No upcoming screenings found. Past screenings may be filtered out.' : 'No screenings in this screen tab.'))) +
+               (activeDateFilter === 'upcoming' ? 'No upcoming screenings found. Past screenings may be filtered out.' : 'No screenings in this screen tab.')) +
             '</p>' +
             '<div class="mt-4 flex justify-center gap-2">' +
-              '<button id="btn-reset-filters" class="btn btn-ghost text-xs">' + (activeDateFilter === 'duplicates' ? 'Return to Upcoming Queue' : 'Reset Filters') + '</button>' +
+              '<button id="btn-reset-filters" class="btn btn-ghost text-xs">Reset Filters</button>' +
               '<button id="btn-empty-add-dcp" class="btn btn-primary text-xs">Add Manual Screening</button>' +
             '</div>' +
           '</div>'
@@ -1858,11 +2501,11 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
                       '<th class="py-2.5 px-3 min-w-[200px]">Technician Issues &amp; Notes</th>' +
                       '<th class="py-2.5 px-3 min-w-[140px]">Outcome</th>' +
                       '<th class="py-2.5 px-3 min-w-[170px]">Further Action / Task</th>' +
-                      '<th class="py-2.5 px-3 text-right sticky right-0 bg-panel2/90 z-20 w-[180px] min-w-[180px] shadow-[-8px_0_10px_-4px_rgba(0,0,0,0.3)]">Actions</th>' +
+                      '<th class="py-2.5 px-3 text-right sticky right-0 bg-panel2/90 z-20 w-[200px] min-w-[200px] shadow-[-8px_0_10px_-4px_rgba(0,0,0,0.3)]">Actions</th>' +
                     '</tr>' +
                   '</thead>' +
                   '<tbody class="divide-y divide-line/60 font-sans">' +
-                    filtered.map(d => renderScreeningRow(d, duplicatesInfo)).join('') +
+                    filtered.map(d => renderScreeningRow(d)).join('') +
                   '</tbody>' +
                 '</table>' +
               '</div>' +
@@ -1870,7 +2513,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
 
             // Mobile Card View (< md)
             '<div class="grid grid-cols-1 gap-3.5 md:hidden">' +
-              filtered.map(d => renderScreeningMobileCard(d, duplicatesInfo)).join('') +
+              filtered.map(d => renderScreeningMobileCard(d)).join('') +
             '</div>' +
           '</div>'
         )) +
@@ -1878,18 +2521,6 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
 
     attachViewListeners();
   }
-
-  /* ---- Check if a screening has been signed off ---- */
-  function isDcpSignedOff(dcp) {
-    if (!dcp) return false;
-    const outcome = dcp.outcome || 'Pending';
-    if (outcome === 'Pending') {
-      // If outcome is still Pending, check if explicitly marked tested or if a formal report was already generated
-      return !!(dcp.tested && (dcp.reportGeneratedAt || dcp.lastReportId));
-    }
-    return (outcome === 'Passed' || outcome === 'Passed with Caveats' || outcome === 'Failed' || !!dcp.reportGeneratedAt || !!dcp.lastReportId);
-  }
-  RMTP.isDcpSignedOff = isDcpSignedOff;
 
   /* ---- Obvious Link Component to Cinema QC Report (Replaces old 6-checkbox checklist) ---- */
   function renderQcReportLinkBlock(dcp) {
@@ -1973,7 +2604,8 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
 
   /* ---- Render Advancing Status + Crew Context Helper ---- */
   function renderAdvancingContextHtml(dcp) {
-    const advEv = dcp.eventId ? store.find('advancing', dcp.eventId) : null;
+    const evIds = getAllEventIdsForDcp(dcp);
+    const advEv = evIds.map((eid) => store.find('advancing', eid)).find((e) => e && !e.deleted) || null;
     const parts = [];
     if (advEv && advEv.status) {
       const stLower = String(advEv.status).trim().toLowerCase();
@@ -1994,8 +2626,8 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       parts.push('<span class="text-[10px] text-ink/90 font-medium truncate max-w-[160px]" title="Assigned Crew: ' + ui.esc(crewNames.join(', ')) + '">' + ui.icon('users', 'w-3 h-3 inline mr-0.5 text-muted') + ui.esc(crewNames.join(', ')) + '</span>');
     }
 
-    if (dcp.eventId && advEv) {
-      parts.push('<a href="#/advancing/' + encodeURIComponent(dcp.eventId) + '" class="inline-flex items-center gap-0.5 text-[10px] font-semibold text-accent hover:underline" onclick="event.stopPropagation()" title="Open full Event Advance sheet">Advance &rarr;</a>');
+    if (advEv) {
+      parts.push('<a href="#/advancing/' + encodeURIComponent(advEv.id) + '" class="inline-flex items-center gap-0.5 text-[10px] font-semibold text-accent hover:underline" onclick="event.stopPropagation()" title="Open full Event Advance sheet">Advance &rarr;</a>');
     }
 
     return parts.length
@@ -2004,11 +2636,9 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
   }
 
   /* ---- Render Desktop Row ---- */
-  function renderScreeningRow(dcp, dupInfo) {
+  function renderScreeningRow(dcp) {
     const todayIso = getTodayIso();
     const isPast = dcp.eventDate && dcp.eventDate < todayIso;
-    const isDup = dupInfo && dupInfo.dupGroupMap && dupInfo.dupGroupMap.has(dcp.id);
-    const dupGroup = isDup ? dupInfo.dupGroupMap.get(dcp.id) : null;
     const isSigned = isDcpSignedOff(dcp);
     const formattedDate = dcp.eventDate ? (ui.formatDate ? ui.formatDate(dcp.eventDate) : dcp.eventDate) : 'Date TBC';
     const timeLabel = dcp.eventStartTime
@@ -2058,8 +2688,8 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     }
 
     return (
-      '<tr class="hover:bg-panel2/30 transition-colors group ' + (isDup ? 'bg-amber-500/[0.03]' : '') + ' ' + (isPast ? 'opacity-85' : '') + '">' +
-        // 1. Media Type & Advance Dropdown (first column as requested)
+      '<tr class="hover:bg-panel2/30 transition-colors group ' + (isPast ? 'opacity-85' : '') + '">' +
+        // 1. Media Type & Advance Dropdown
         '<td class="py-3 px-3 align-top min-w-[175px] border-b border-line/60">' +
           '<div class="mb-1.5">' +
             '<select data-screening-media="' + dcp.id + '" class="field !py-1 !px-2 !text-xs font-semibold bg-panel border-line text-ink w-full shadow-2xs" title="Screening Media Type (Bidirectional with Event Advance)">' +
@@ -2087,20 +2717,13 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
             ui.esc(dcp.filmTitle || dcp.eventName || 'Screening') +
           '</div>' +
           renderAdvancingContextHtml(dcp) +
-          (isDup && dupGroup ? (
-            '<div class="mt-1">' +
-              '<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono bg-amber-500/15 text-amber-400 border border-amber-500/30" title="This screening has ' + dupGroup.items.length + ' matching records in the tracker">' +
-                ui.icon('copy', 'w-3 h-3 text-amber-400') + '<span>Duplicate (' + dupGroup.items.length + ' records)</span>' +
-              '</span>' +
-            '</div>'
-          ) : '') +
           '<div class="text-[11px] text-muted mt-1">' +
             (dcp.testedByUserName ? 'Tested by <span class="text-ink font-medium">' + ui.esc(dcp.testedByUserName) + '</span>' : '<span class="text-muted/80">Untested</span>') +
             (dcp.testDateTime ? ' \u00b7 ' + (/^\d{4}-\d{2}-\d{2}$/.test(String(dcp.testDateTime).trim()) ? ui.formatDate(dcp.testDateTime) : new Date(dcp.testDateTime).toLocaleDateString('en-GB', { month: 'short', day: 'numeric', timeZone: 'Europe/London' })) : '') +
           '</div>' +
         '</td>' +
 
-        // 3. Obvious Link to Cinema QC Report (replaces old 6-checkbox checklist)
+        // 3. Cinema QC Report & 7-Point Checklist Link
         '<td class="py-3 px-3 align-top min-w-[320px] border-b border-line/60">' +
           renderQcReportLinkBlock(dcp) +
         '</td>' +
@@ -2126,20 +2749,15 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
         '</td>' +
 
         // 7. Actions (Sticky column on right edge so buttons are never cut off)
-        '<td class="py-3 px-3 align-middle text-right whitespace-nowrap min-w-[220px] w-[220px] sticky right-0 bg-panel group-hover:bg-[#1a202a] transition-colors z-10 shadow-[-10px_0_12px_-4px_rgba(0,0,0,0.45)] border-b border-l border-line/60">' +
+        '<td class="py-3 px-3 align-middle text-right whitespace-nowrap min-w-[210px] w-[210px] sticky right-0 bg-panel group-hover:bg-[#1a202a] transition-colors z-10 shadow-[-10px_0_12px_-4px_rgba(0,0,0,0.45)] border-b border-l border-line/60">' +
           '<div class="flex items-center justify-end gap-1.5 shrink-0">' +
-            (isDup ? (
-              '<button type="button" data-merge-dcp="' + dcp.id + '" class="btn btn-warning !py-1 !px-2 text-xs font-semibold flex items-center gap-1 shrink-0 shadow-2xs" title="Merge this duplicate group into one consolidated record">' +
-                ui.icon('copy', 'w-3.5 h-3.5') + '<span>Merge</span>' +
-              '</button>'
-            ) : '') +
             '<button type="button" data-open-report="' + dcp.id + '" class="btn btn-ghost !py-1 !px-2 text-xs font-semibold flex items-center gap-1 text-accent hover:bg-accent/10 border border-accent/30 shadow-2xs whitespace-nowrap" title="' + (isSigned ? 'View Finalized PDF QC Report & Client Email' : 'Screening not signed off \u2014 Open Edit Screen') + '">' +
               ui.icon(isSigned ? 'file-text' : 'edit-3', 'w-3.5 h-3.5') + '<span>' + (isSigned ? 'QC Report' : 'Edit QC') + '</span>' +
             '</button>' +
             '<button type="button" data-open-signoff="' + dcp.id + '" class="btn btn-primary !py-1 !px-2 text-xs font-semibold flex items-center gap-1 shadow-2xs whitespace-nowrap" title="Open Full Pre-Screening Sign-off Sheet">' +
               ui.icon('check', 'w-3.5 h-3.5') + '<span>' + (isSigned ? 'Edit' : 'Sign-off') + '</span>' +
             '</button>' +
-            '<button type="button" data-delete-dcp="' + dcp.id + '" class="btn btn-danger !p-1.5 !h-7 !w-7 min-h-0 shrink-0 inline-flex items-center justify-center rounded-lg" title="Delete Screening Record">' +
+            '<button type="button" data-delete-dcp="' + dcp.id + '" class="btn btn-danger !p-1.5 !h-7 !w-7 min-h-0 shrink-0 inline-flex items-center justify-center rounded-lg" title="Remove Screening from Tracker">' +
               ui.icon('trash', 'w-3.5 h-3.5') +
             '</button>' +
           '</div>' +
@@ -2149,11 +2767,9 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
   }
 
   /* ---- Render Mobile Card (< md) ---- */
-  function renderScreeningMobileCard(dcp, dupInfo) {
+  function renderScreeningMobileCard(dcp) {
     const todayIso = getTodayIso();
     const isPast = dcp.eventDate && dcp.eventDate < todayIso;
-    const isDup = dupInfo && dupInfo.dupGroupMap && dupInfo.dupGroupMap.has(dcp.id);
-    const dupGroup = isDup ? dupInfo.dupGroupMap.get(dcp.id) : null;
     const isSigned = isDcpSignedOff(dcp);
     const formattedDate = dcp.eventDate ? (ui.formatDate ? ui.formatDate(dcp.eventDate) : dcp.eventDate) : 'Date TBC';
     const timeLabel = dcp.eventStartTime
@@ -2164,7 +2780,6 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     if (dcp.outcome === 'Passed') outcomeClass = 'border-ok/40 bg-ok/5';
     else if (dcp.outcome === 'Passed with Caveats') outcomeClass = 'border-warning/40 bg-warning/5';
     else if (dcp.outcome === 'Failed') outcomeClass = 'border-danger/40 bg-danger/5';
-    if (isDup) outcomeClass = 'border-amber-500/40 bg-amber-500/5';
 
     return (
       '<div class="p-4 rounded-xl bg-panel border ' + outcomeClass + ' shadow-2xs space-y-3.5 ' + (isPast ? 'opacity-85' : '') + '">' +
@@ -2193,11 +2808,6 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
             '<div class="font-display font-bold text-ink text-base cursor-pointer hover:text-accent" data-open-signoff="' + dcp.id + '">' +
               ui.esc(dcp.filmTitle || dcp.eventName || 'Screening') +
             '</div>' +
-            (isDup && dupGroup ? (
-              '<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono bg-amber-500/15 text-amber-400 border border-amber-500/30">' +
-                ui.icon('copy', 'w-3 h-3 text-amber-400') + '<span>Duplicate (' + dupGroup.items.length + ')</span>' +
-              '</span>'
-            ) : '') +
           '</div>' +
           renderAdvancingContextHtml(dcp) +
           '<div class="text-xs text-muted mt-1">' +
@@ -2205,7 +2815,6 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
           '</div>' +
         '</div>' +
 
-        // Where checklist was: Obvious link to the QC report
         renderQcReportLinkBlock(dcp) +
 
         // Technician Issues & Notes input
@@ -2225,18 +2834,13 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
             '</select>' +
           '</div>' +
           '<div class="flex items-center gap-2 flex-wrap">' +
-            (isDup ? (
-              '<button type="button" data-merge-dcp="' + dcp.id + '" class="btn btn-warning !py-1 !px-2 text-xs font-semibold flex items-center gap-1">' +
-                ui.icon('copy', 'w-3.5 h-3.5') + '<span>Merge</span>' +
-              '</button>'
-            ) : '') +
             '<button type="button" data-open-report="' + dcp.id + '" class="btn btn-ghost !py-1 !px-2 text-xs font-semibold flex items-center gap-1 text-accent border border-accent/30" title="' + (isSigned ? 'View QC Report & Email' : 'Screening not signed off \u2014 Open Edit Screen') + '">' +
               ui.icon(isSigned ? 'file-text' : 'edit-3', 'w-3.5 h-3.5') + '<span>' + (isSigned ? 'QC Report' : 'Edit QC') + '</span>' +
             '</button>' +
             '<button type="button" data-open-signoff="' + dcp.id + '" class="btn btn-primary !py-1 !px-2.5 text-xs font-semibold flex items-center gap-1">' +
               ui.icon('check', 'w-3.5 h-3.5') + '<span>' + (isSigned ? 'Edit' : 'Sign-off Sheet') + '</span>' +
             '</button>' +
-            '<button type="button" data-delete-dcp="' + dcp.id + '" class="btn btn-danger !p-1.5 !h-7 !w-7 inline-flex items-center justify-center rounded-lg">' +
+            '<button type="button" data-delete-dcp="' + dcp.id + '" class="btn btn-danger !p-1.5 !h-7 !w-7 inline-flex items-center justify-center rounded-lg" title="Remove Screening from Tracker">' +
               ui.icon('trash', 'w-3.5 h-3.5') +
             '</button>' +
           '</div>' +
@@ -2285,13 +2889,12 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     // Ensure 7 QC criteria initialized
     ensureQcCriteria(item);
 
-    const linkedAdv = item.eventId ? store.find('advancing', item.eventId) : null;
+    const linkedEvIds = getAllEventIdsForDcp(item);
+    const linkedAdv = linkedEvIds.map((eid) => store.find('advancing', eid)).find((e) => e && !e.deleted) || null;
     const users = store.all('users');
     const userOptions = users.map(u =>
       '<option value="' + u.id + '"' + (item.testedByUserId === u.id ? ' selected' : '') + '>' + ui.esc(auth.displayName(u)) + ' (' + ui.esc(u.position || u.role) + ')</option>'
     ).join('');
-
-    const dupGroup = currentDuplicatesInfo && currentDuplicatesInfo.dupGroupMap && currentDuplicatesInfo.dupGroupMap.get(item.id);
 
     const modalBody =
       '<div class="space-y-6 text-xs max-h-[75vh] overflow-y-auto pr-1">' +
@@ -2304,21 +2907,6 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
               (linkedAdv.status ? ' <span class="font-mono text-muted">(' + ui.esc(linkedAdv.status) + ')</span>' : '') +
             '</div>' +
             '<a href="#/advancing/' + encodeURIComponent(linkedAdv.id) + '" class="text-[11px] font-bold text-accent hover:underline" data-close-before-nav>Open Event Advance &rarr;</a>' +
-          '</div>'
-        ) : '') +
-        // Duplicate warning banner if screening has duplicates
-        (dupGroup ? (
-          '<div class="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">' +
-            '<div class="flex items-center gap-2">' +
-              ui.icon('copy', 'w-4 h-4 text-amber-400 shrink-0') +
-              '<div>' +
-                '<div class="font-bold text-amber-300">Duplicate Screening Detected (' + dupGroup.items.length + ' records)</div>' +
-                '<div class="text-[11px] text-muted">This title exists ' + dupGroup.items.length + ' times on ' + ui.esc(item.eventDate || 'this date') + ' in ' + ui.esc(item.screen || 'cinema') + '.</div>' +
-              '</div>' +
-            '</div>' +
-            '<button type="button" id="btn-modal-merge-dup" class="btn btn-warning !py-1 !px-2.5 text-xs font-bold flex items-center gap-1 shrink-0">' +
-              ui.icon('copy', 'w-3.5 h-3.5') + '<span>Merge Duplicates</span>' +
-            '</button>' +
           '</div>'
         ) : '') +
 
@@ -2402,9 +2990,12 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
             '<div class="eyebrow text-accent flex items-center gap-1.5">' +
               ui.icon('check', 'w-3.5 h-3.5') + '<span>Rich Mix 7-Parameter QC Verification Criteria</span>' +
             '</div>' +
-            '<div class="flex items-center gap-2">' +
-              '<button type="button" id="btn-quick-pass-all" class="btn btn-ghost !py-1 !px-2.5 text-xs text-ok hover:bg-ok/10 border border-ok/30 flex items-center gap-1 font-semibold">' +
-                ui.icon('check', 'w-3 h-3') + '<span>Mark All 7 Passed</span>' +
+            '<div class="flex items-center gap-2 flex-wrap">' +
+              '<button type="button" id="btn-quick-pass-all" class="btn btn-ghost !py-1 !px-2.5 text-xs text-ok hover:bg-ok/10 border border-ok/30 flex items-center gap-1 font-semibold" title="Mark all 7 criteria as Passed without closing so you can add notes">' +
+                ui.icon('check', 'w-3 h-3') + '<span>Mark All 7</span>' +
+              '</button>' +
+              '<button type="button" data-signoff-all-dcp class="px-3 py-1 rounded-lg text-xs font-bold bg-ok hover:bg-ok/90 text-white shadow-2xs flex items-center gap-1.5 transition-colors" title="Pass all 7 QC checks, stamp technician &amp; time, save, and sync to Event Advancing">' +
+                ui.icon('check', 'w-3.5 h-3.5') + '<span>Sign Off All (Pass &amp; Save)</span>' +
               '</button>' +
             '</div>' +
           '</div>' +
@@ -2522,7 +3113,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
           '</div>' +
         '</div>' +
 
-        // Panel 4: Technician Issues & Notes (Questionnaire Text Input Field)
+        // Panel 4: Technician Issues & Notes
         '<div class="p-4 rounded-xl bg-panel2/40 border border-line space-y-3.5">' +
           '<div class="eyebrow text-accent flex items-center justify-between">' +
             '<span class="flex items-center gap-1.5">' + ui.icon('tool', 'w-3.5 h-3.5') + '<span>Technician Issues &amp; Notes</span></span>' +
@@ -2569,17 +3160,20 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
         '<div>' +
           (existing ? (
             '<button type="button" id="btn-del-modal-dcp" class="btn btn-danger text-xs flex items-center gap-1.5">' +
-              ui.icon('trash', 'w-4 h-4') + '<span>Delete</span>' +
+              ui.icon('trash', 'w-4 h-4') + '<span>Remove</span>' +
             '</button>'
           ) : '') +
         '</div>' +
         '<div class="flex items-center gap-2 flex-wrap justify-end">' +
           '<button type="button" id="btn-modal-open-report" class="btn btn-ghost text-xs text-accent hover:bg-accent/10 border border-accent/40 font-bold flex items-center gap-1.5 shadow-2xs" title="Generate QC Report & Client Email">' +
-            ui.icon('file-text', 'w-4 h-4') + '<span>Generate QC Report &amp; Email</span>' +
+            ui.icon('file-text', 'w-4 h-4') + '<span>QC Report &amp; Email</span>' +
           '</button>' +
           '<button type="button" data-cancel class="btn btn-ghost text-xs">Cancel</button>' +
+          '<button type="button" id="btn-signoff-all-dcp" data-signoff-all-dcp class="px-3.5 py-2 rounded-lg text-xs font-bold bg-ok hover:bg-ok/90 text-white flex items-center gap-1.5 shadow-2xs transition-colors" title="Pass all 7 QC checks, stamp technician &amp; time, save, and sync to Event Advancing">' +
+            ui.icon('check', 'w-4 h-4') + '<span>Sign Off All</span>' +
+          '</button>' +
           '<button type="button" id="btn-save-dcp" class="btn btn-primary text-xs font-semibold flex items-center gap-1.5 shadow-2xs">' +
-            ui.icon('check', 'w-4 h-4') + '<span>' + (isNew ? 'Create Screening' : 'Save Pre-Screening Sign-off') + '</span>' +
+            ui.icon('check', 'w-4 h-4') + '<span>' + (isNew ? 'Create Screening' : 'Save Sign-off') + '</span>' +
           '</button>' +
         '</div>' +
       '</div>';
@@ -2596,7 +3190,6 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       const banner = m.root.querySelector('#modal-outcome-banner');
       const title = m.root.querySelector('#modal-outcome-title');
       const badge = m.root.querySelector('#modal-outcome-badge');
-      const icon = m.root.querySelector('#modal-outcome-icon');
       if (!banner || !title || !badge) return;
 
       m.root.querySelector('#m-outcome-val').value = outcomeVal;
@@ -2619,7 +3212,6 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
         badge.innerHTML = '<span class="px-2.5 py-1 rounded text-xs font-mono font-bold bg-panel2 text-muted border border-line">PENDING</span>';
       }
 
-      // Update button styling
       m.root.querySelectorAll('[data-outcome-btn]').forEach(btn => {
         const out = btn.getAttribute('data-outcome-btn');
         const isSel = (out === outcomeVal);
@@ -2649,6 +3241,9 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       const autoOutcome = calculateOverallQcOutcome(criteriaState);
       refreshOutcomeBanner(autoOutcome);
     }
+
+    // Initialize live outcome banner styling on open
+    refreshOutcomeBanner(item.outcome || 'Pending');
 
     // Criteria buttons click handlers
     m.root.querySelectorAll('[data-crit-btn]').forEach(b => {
@@ -2688,7 +3283,6 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     m.root.querySelectorAll('[data-outcome-btn]').forEach(b => {
       b.addEventListener('click', () => {
         const out = b.getAttribute('data-outcome-btn');
-        // If override not checked, automatically check it so user intent is honored
         if (chkOverride && !chkOverride.checked) {
           chkOverride.checked = true;
           overrideHint.textContent = 'Manual override is ACTIVE: Outcome is locked to your selection.';
@@ -2697,25 +3291,37 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       });
     });
 
-    // Quick Pass All 7
+    function markAllSevenPassedInForm() {
+      QC_CRITERIA_DEFINITIONS.forEach(def => {
+        const group = m.root.querySelector('[data-crit-btn-group="' + def.id + '"]');
+        if (group) {
+          group.querySelectorAll('[data-crit-btn]').forEach(btn => {
+            btn.className = 'px-2.5 py-1 rounded text-xs font-bold transition-all text-muted hover:text-ink hover:bg-panel/60';
+          });
+          const passBtn = group.querySelector('[data-crit-btn="Pass"]');
+          if (passBtn) passBtn.className = 'px-2.5 py-1 rounded text-xs font-bold transition-all bg-ok text-white shadow-2xs';
+        }
+      });
+      if (chkOverride) {
+        chkOverride.checked = false;
+        if (overrideHint) overrideHint.textContent = 'Auto-calculate is ACTIVE: Failing any criteria marks overall Failed; Caveats marks Passed with Caveats.';
+      }
+      refreshOutcomeBanner('Passed');
+      const testerSel = m.root.querySelector('#m-tester');
+      if (testerSel && !testerSel.value && auth.current()) {
+        testerSel.value = auth.current().id;
+      }
+      const dateInput = m.root.querySelector('#m-test-date');
+      if (dateInput && !dateInput.value) {
+        dateInput.value = getNowLocalDateTime();
+      }
+    }
+
+    // Quick Mark All 7 (without closing, in case tech wants to add notes first)
     const btnQuickPass = m.root.querySelector('#btn-quick-pass-all');
     if (btnQuickPass) {
       btnQuickPass.addEventListener('click', () => {
-        QC_CRITERIA_DEFINITIONS.forEach(def => {
-          const group = m.root.querySelector('[data-crit-btn-group="' + def.id + '"]');
-          if (group) {
-            const passBtn = group.querySelector('[data-crit-btn="Pass"]');
-            if (passBtn) passBtn.click();
-          }
-        });
-        if (chkOverride) chkOverride.checked = false;
-        refreshOutcomeBanner('Passed');
-        if (!m.root.querySelector('#m-tester').value && auth.current()) {
-          m.root.querySelector('#m-tester').value = auth.current().id;
-        }
-        if (!m.root.querySelector('#m-test-date').value) {
-          m.root.querySelector('#m-test-date').value = getNowLocalDateTime();
-        }
+        markAllSevenPassedInForm();
         ui.toast('Marked all 7 QC criteria as PASSED', 'ok');
       });
     }
@@ -2770,7 +3376,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       item.eventFinishTime = m.root.querySelector('#m-finish-time')?.value || '';
 
       // Collect 7 criteria statuses and notes
-      item.qc_criteria = item.qc_criteria || {};
+      item.qc_criteria = {};
       QC_CRITERIA_DEFINITIONS.forEach(def => {
         const group = m.root.querySelector('[data-crit-btn-group="' + def.id + '"]');
         const activeBtn = group ? group.querySelector('.bg-ok, .bg-warning, .bg-danger') : null;
@@ -2779,7 +3385,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
         item.qc_criteria[def.id] = { status: st, notes: notes };
       });
 
-      // Synchronize backward-compatible 6 booleans
+      // Synchronize backward-compatible booleans
       item.mediaReceived = (item.qc_criteria.ingestion?.status === 'Pass');
       item.kdmCplReceived = (item.qc_criteria.kdm?.status === 'Pass' && item.qc_criteria.cpl?.status === 'Pass');
       item.playlistMade = (item.qc_criteria.cpl?.status === 'Pass');
@@ -2789,6 +3395,9 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       item.issuesNoted = m.root.querySelector('#m-issues')?.value.trim() || '';
       item.outcomeManualOverride = !!m.root.querySelector('#chk-outcome-override')?.checked;
       item.outcome = m.root.querySelector('#m-outcome-val')?.value || 'Pending';
+      if (item.outcome === 'Passed') {
+        item.tested = true;
+      }
 
       item.testedByUserId = testerId;
       item.testedByUserName = testerUser ? auth.displayName(testerUser) : '';
@@ -2806,25 +3415,47 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       return item;
     }
 
+    function persistAndCloseModal(data, customToast) {
+      if (data.hasFurtherAction && data.furtherAction) {
+        createOrUpdateFollowUpTask(data, data.furtherAction);
+        ui.toast(customToast || 'Screening saved and Follow-up Task created in Jobs List!', 'ok');
+      } else {
+        store.upsert('dcps', data);
+        syncDcpToAdvance(data);
+        if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
+        ui.toast(customToast || 'Pre-screening QC sign-off saved', 'ok');
+      }
+      m.close();
+      renderView();
+    }
+
+    // One-Click "Sign Off All" (Pass all 7 checks, stamp tester + local time, save, sync & close)
+    function performSignOffAll() {
+      markAllSevenPassedInForm();
+      const data = gatherModalData();
+      if (!data) return;
+      data.outcome = 'Passed';
+      data.outcomeManualOverride = false;
+      data.isCancelled = false;
+      data.mediaReceived = true;
+      data.kdmCplReceived = true;
+      data.playlistMade = true;
+      data.tested = true;
+      data.subsAudioSync = true;
+      persistAndCloseModal(data, 'All 7 QC checks signed off as PASSED and synced');
+    }
+
+    m.root.querySelectorAll('[data-signoff-all-dcp]').forEach((btn) => {
+      btn.addEventListener('click', performSignOffAll);
+    });
+
     // Save button
     const btnSave = m.root.querySelector('#btn-save-dcp');
     if (btnSave) {
       btnSave.addEventListener('click', () => {
         const data = gatherModalData();
         if (!data) return;
-
-        if (data.hasFurtherAction && data.furtherAction) {
-          createOrUpdateFollowUpTask(data, data.furtherAction);
-          ui.toast('Screening saved and Follow-up Task created in Jobs List!', 'ok');
-        } else {
-          store.upsert('dcps', data);
-          syncDcpToAdvance(data);
-          if (RMTP.syncSb && RMTP.syncSb.drain) RMTP.syncSb.drain();
-          ui.toast('Pre-screening QC sign-off saved', 'ok');
-        }
-
-        m.close();
-        renderView();
+        persistAndCloseModal(data);
       });
     }
 
@@ -2841,41 +3472,22 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
 
         m.close();
         renderView();
-        // Open QC Report Modal
         setTimeout(() => openQcReportModal(data), 150);
       });
     }
 
-    // Delete button inside modal
+    // Delete / Remove button inside modal (watertight tracker-only dismissal)
     const btnDel = m.root.querySelector('#btn-del-modal-dcp');
     if (btnDel) {
-      btnDel.addEventListener('click', async () => {
-        const ok = await ui.confirm('Remove screening record \u201c' + (item.filmTitle || 'Screening') + '\u201d?', {
-          title: 'Delete Screening',
-          danger: true,
-          confirmLabel: 'Remove'
-        });
-        if (ok) {
-          store.remove('dcps', item.id);
+      btnDel.addEventListener('click', () => {
+        handleDeleteScreening(item, () => {
           m.close();
-          ui.toast('Removed screening record', 'ok');
           renderView();
-        }
+        });
       });
     }
 
     m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
-
-    // Modal quick-merge duplicate button
-    const btnModalMerge = m.root.querySelector('#btn-modal-merge-dup');
-    if (btnModalMerge && dupGroup) {
-      btnModalMerge.addEventListener('click', () => {
-        mergeDuplicateGroup(dupGroup.items);
-        ui.toast('Merged duplicate records for \u201c' + (dupGroup.title || 'Screening') + '\u201d', 'ok');
-        m.close();
-        renderView();
-      });
-    }
   }
 
   /* ---- Attach Event Listeners to View ---- */
@@ -2892,7 +3504,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     el.querySelectorAll('[data-date-tab]').forEach(btn => {
       btn.addEventListener('click', () => {
         activeDateFilter = btn.getAttribute('data-date-tab');
-        if (activeDateFilter === 'all' || activeDateFilter === 'past' || activeDateFilter === 'duplicates' || activeDateFilter === 'cancelled') {
+        if (activeDateFilter === 'all' || activeDateFilter === 'past' || activeDateFilter === 'cancelled') {
           excludePast = false;
         } else {
           excludePast = true;
@@ -2901,46 +3513,9 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       });
     });
 
-    // Batch merge all duplicates button
-    const btnMergeAll = el.querySelector('#btn-merge-all-duplicates');
-    if (btnMergeAll) {
-      btnMergeAll.addEventListener('click', async () => {
-        if (!currentDuplicatesInfo || currentDuplicatesInfo.duplicateCount === 0) return;
-        const ok = await ui.confirm(
-          'Automatically merge all ' + currentDuplicatesInfo.duplicateCount + ' duplicate records across ' + currentDuplicatesInfo.groups.length + ' screening groups? Best testing sign-offs, notes, and media checklists will be preserved.',
-          {
-            title: 'Merge All Duplicates',
-            confirmLabel: 'Merge All (' + currentDuplicatesInfo.duplicateCount + ' records)'
-          }
-        );
-        if (ok) {
-          currentDuplicatesInfo.groups.forEach(grp => mergeDuplicateGroup(grp.items));
-          ui.toast('Successfully merged all duplicate screenings!', 'ok');
-          renderView();
-        }
-      });
-    }
-
-    // Individual duplicate merge button (per-row or per-card)
-    el.querySelectorAll('[data-merge-dcp]').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const id = btn.getAttribute('data-merge-dcp');
-        const grp = currentDuplicatesInfo && currentDuplicatesInfo.dupGroupMap && currentDuplicatesInfo.dupGroupMap.get(id);
-        if (!grp) return;
-        const ok = await ui.confirm(
-          'Merge ' + grp.items.length + ' duplicate records for \u201c' + (grp.title || 'Screening') + '\u201d into a single consolidated record? Testing sign-offs and notes will be preserved.',
-          {
-            title: 'Merge Duplicate Screenings',
-            confirmLabel: 'Merge Duplicates'
-          }
-        );
-        if (ok) {
-          mergeDuplicateGroup(grp.items);
-          ui.toast('Merged duplicate records for \u201c' + (grp.title || 'Screening') + '\u201d', 'ok');
-          renderView();
-        }
-      });
+    // Open Hidden / Restore modal
+    el.querySelector('#btn-open-hidden-dcps')?.addEventListener('click', () => {
+      openRestoreHiddenModal();
     });
 
     // Exclude past checkbox
@@ -2969,7 +3544,6 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     if (searchInput) {
       searchInput.addEventListener('input', (e) => {
         searchTerm = e.target.value;
-        // Debounce render slightly
         clearTimeout(RMTP._dcpSearchTimeout);
         RMTP._dcpSearchTimeout = setTimeout(() => renderView(), 200);
       });
@@ -2995,7 +3569,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       });
     }
 
-    // Sync button (Pull latest Supabase advancing/dcps + Artifax edge function + reconcile)
+    // Sync button (Hydrate dismissals -> Pull latest Supabase advancing/dcps/bookings -> Artifax -> reconcile)
     const btnSync = el.querySelector('#btn-sync-dcps');
     if (btnSync) {
       btnSync.addEventListener('click', async () => {
@@ -3003,6 +3577,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
         const originalContent = btnSync.innerHTML;
         btnSync.innerHTML = ui.icon('refresh', 'w-4 h-4 animate-spin') + '<span>Syncing Advances...</span>';
         try {
+          await eng.hydrateDismissalsFromDb();
           if (RMTP.syncSb && RMTP.syncSb.pullCollection) {
             await Promise.all([
               RMTP.syncSb.pullCollection('advancing'),
@@ -3033,7 +3608,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
 
     // Inline Media Type Selector change
     el.querySelectorAll('[data-screening-media]').forEach(sel => {
-      sel.addEventListener('change', (e) => {
+      sel.addEventListener('change', () => {
         const id = sel.getAttribute('data-screening-media');
         const dcp = store.find('dcps', id);
         if (!dcp) return;
@@ -3068,12 +3643,21 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
         dcp.outcome = sel.value;
         if (sel.value === 'Passed') {
           dcp.tested = true;
+          dcp.mediaReceived = true;
+          dcp.kdmCplReceived = true;
+          dcp.playlistMade = true;
+          dcp.subsAudioSync = true;
           const crit = ensureQcCriteria(dcp);
           QC_CRITERIA_DEFINITIONS.forEach((def) => {
-            if (!crit[def.id] || crit[def.id].status === 'Pending') {
-              crit[def.id] = { status: 'Pass', notes: (crit[def.id] && crit[def.id].notes) || '' };
-            }
+            crit[def.id] = { status: 'Pass', notes: (crit[def.id] && crit[def.id].notes) || '' };
           });
+          if (!dcp.testedByUserId && auth.current()) {
+            dcp.testedByUserId = auth.current().id;
+            dcp.testedByUserName = auth.displayName(auth.current()) || '';
+          }
+          if (!dcp.testDateTime) {
+            dcp.testDateTime = getNowLocalDateTime();
+          }
         } else if (sel.value === 'Pending') {
           dcp.tested = false;
         }
@@ -3103,7 +3687,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
 
     // Add Follow-up Action prompt button
     el.querySelectorAll('[data-add-action]').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
+      btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const id = btn.getAttribute('data-add-action');
         const dcp = store.find('dcps', id);
@@ -3137,29 +3721,25 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       });
     });
 
-    // Delete Screening
+    // Delete / Remove Screening (watertight tracker-only dismissal)
     el.querySelectorAll('[data-delete-dcp]').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
+      btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const id = btn.getAttribute('data-delete-dcp');
         const dcp = store.find('dcps', id);
         if (!dcp) return;
-        const ok = await ui.confirm('Remove screening record \u201c' + (dcp.filmTitle || 'Screening') + '\u201d?', {
-          title: 'Delete Screening Record',
-          danger: true,
-          confirmLabel: 'Remove'
-        });
-        if (ok) {
-          store.remove('dcps', id);
-          ui.toast('Screening record removed', 'ok');
-          renderView();
-        }
+        handleDeleteScreening(dcp, () => renderView());
       });
     });
   }
 
-  // Initial render
+  // Initial render + hydrate shared cloud dismissals in background
   renderView();
+  eng.hydrateDismissalsFromDb().then(() => {
+    if (document.body.contains(el) && !eng.isSyncing()) {
+      renderView();
+    }
+  }).catch(() => {});
 
   // Keep Pre-Screening Tracker live-synced when Advancing/DCPs/Bookings update in background
   if (RMTP._dcpUnsubscribe) {
@@ -3169,7 +3749,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
   if (store.onChange) {
     let _refreshTimer = null;
     RMTP._dcpUnsubscribe = store.onChange((col) => {
-      if (_syncingDcps) return;
+      if (eng.isSyncing()) return;
       if (col && col !== 'advancing' && col !== 'dcps' && col !== 'bookings') return;
       if (!document.body.contains(el)) {
         if (RMTP._dcpUnsubscribe) RMTP._dcpUnsubscribe();
@@ -3183,7 +3763,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       }
       clearTimeout(_refreshTimer);
       _refreshTimer = setTimeout(() => {
-        if (document.body.contains(el) && !_syncingDcps) renderView();
+        if (document.body.contains(el) && !eng.isSyncing()) renderView();
       }, 180);
     });
   }
@@ -3191,7 +3771,12 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
   // If a specific screening ID was passed in query e.g. #/dcp?id=dcp-123, open its modal automatically
   if (query && query.id) {
     const allDcps = store.all('dcps') || [];
-    const target = allDcps.find(d => d.id === query.id || d.eventId === query.id || ('dcp-' + d.eventId) === query.id);
+    const target = allDcps.find(d =>
+      d.id === query.id ||
+      d.eventId === query.id ||
+      ('dcp-' + d.eventId) === query.id ||
+      (Array.isArray(d.linkedEventIds) && d.linkedEventIds.includes(query.id))
+    );
     if (target) {
       setTimeout(() => openSignoffModal(target), 100);
     }

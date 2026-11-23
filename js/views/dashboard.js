@@ -18,7 +18,14 @@ RMTP.views.dashboard = function (el) {
     { id: 'maintenance', desc: 'Log faults and track repairs across the venue.',
       stat: () => store.all('maintenance').filter((r) => r.status === 'Open').length, unit: 'open' },
     { id: 'procedures',  desc: 'Operating procedures & SOPs for the building.',
-      stat: () => store.all('procedures').reduce((n, c) => n + (c.items ? c.items.length : 0), 0), unit: 'documents' },
+      stat: () => {
+        const raw = store.all('procedures') || [];
+        const norm = (typeof RMTP.normalizeProcedures === 'function') ? RMTP.normalizeProcedures(raw) : raw;
+        const count = norm.reduce((n, c) => n + (Array.isArray(c && c.items) ? c.items.length : (c && c.title ? 1 : 0)), 0);
+        if (count > 0) return count;
+        const seed = (RMTP.seed && Array.isArray(RMTP.seed.procedures)) ? RMTP.seed.procedures : [];
+        return seed.reduce((n, c) => n + (c && Array.isArray(c.items) ? c.items.length : 0), 0);
+      }, unit: 'documents' },
     { id: 'users',       desc: 'Manage the team, roles and training sign-off.',
       stat: () => store.all('users').length, unit: 'users' },
   ].filter((c) => !auth.canAccessView || auth.canAccessView(c.id)).sort((a, b) => {

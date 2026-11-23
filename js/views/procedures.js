@@ -10,12 +10,73 @@
    ============================================================ */
 RMTP.views.procedures = function (el, params) {
   const ui = RMTP.ui, store = RMTP.store;
-  const cats = store.all('procedures');
+  const safeParams = Array.isArray(params) ? params : [];
+
+  // Normalize procedures (handles flat Supabase rows, grouped categories, or legacy corrupted stubs)
+  function loadNormalizedCats() {
+    const raw = store.all('procedures') || [];
+    let normalized = (typeof RMTP.normalizeProcedures === 'function')
+      ? RMTP.normalizeProcedures(raw)
+      : raw.filter((c) => c && (c.name || c.category || Array.isArray(c.items))).map((c) => ({
+          id: c.id || (RMTP.slug ? RMTP.slug(c.name || c.category || 'general') : 'general'),
+          name: c.name || c.category || 'General',
+          icon: c.icon || 'book',
+          items: Array.isArray(c.items) ? c.items : (c.title ? [{ id: c.id, title: c.title, body: c.body || '', updated: c.updated || '' }] : []),
+        }));
+
+    // If raw store had ungrouped flat rows or corrupted stubs, heal the local cache immediately
+    const needsHeal = raw.length > 0 && raw.some((r) => !r || !Array.isArray(r.items) || !r.name);
+    if (needsHeal && normalized.length > 0) {
+      store.write('procedures', normalized);
+    }
+
+    // If still empty (e.g., fresh browser before Supabase pull finishes, or empty DB table),
+    // hydrate from built-in seed SOPs so permitted users never see a blank page.
+    const totalItems = normalized.reduce((n, c) => n + (c.items ? c.items.length : 0), 0);
+    if ((!normalized.length || totalItems === 0) && RMTP.seed && Array.isArray(RMTP.seed.procedures) && RMTP.seed.procedures.length) {
+      normalized = RMTP.seed.procedures.map((c) => ({
+        id: c.id,
+        name: c.name,
+        icon: c.icon || 'book',
+        items: (c.items || []).map((it) => Object.assign({}, it)),
+      }));
+    }
+    return normalized;
+  }
+
+  const cats = loadNormalizedCats();
+
+  // Trigger a throttled background pull from Supabase and live-refresh this view when data arrives
+  if (typeof RMTP._proceduresCleanup === 'function') {
+    try { RMTP._proceduresCleanup(); } catch (e) {}
+  }
+  let isSelfRendering = false;
+  const unsubProcs = store.onChange((collName) => {
+    if (collName !== 'procedures' || !el.isConnected || isSelfRendering) return;
+    isSelfRendering = true;
+    try {
+      RMTP.views.procedures(el, safeParams);
+    } finally {
+      isSelfRendering = false;
+    }
+  });
+  RMTP._proceduresCleanup = () => {
+    if (typeof unsubProcs === 'function') unsubProcs();
+  };
+
+  if (RMTP.syncSb && typeof RMTP.syncSb.pullCollection === 'function' && (!RMTP.supabase || !RMTP.supabase.isConfigured || RMTP.supabase.isConfigured())) {
+    const now = Date.now();
+    if (!RMTP._lastProcsPullAt || (now - RMTP._lastProcsPullAt) > 10000) {
+      RMTP._lastProcsPullAt = now;
+      RMTP.syncSb.pullCollection('procedures').catch(() => {});
+    }
+  }
+
   if (!cats.length) { el.innerHTML = ui.empty('book', 'No procedure areas yet'); return; }
 
-  const activeCatId = params[0] || cats[0].id;
+  const activeCatId = safeParams[0] || cats[0].id;
   const cat = cats.find((c) => c.id === activeCatId) || cats[0];
-  const itemId = params[1];
+  const itemId = safeParams[1];
   const item = itemId && cat.items ? cat.items.find((i) => i.id === itemId) : null;
 
   const me = RMTP.auth.current();
@@ -372,12 +433,14 @@ RMTP.views.procedures = function (el, params) {
   }
   // Find a category by name (case-insensitive), or create + persist a new one.
   function resolveCategory(name) {
-    const found = store.all('procedures').find((c) => c.name.trim().toLowerCase() === name.trim().toLowerCase());
+    const clean = String(name || 'General').trim() || 'General';
+    const currentCats = loadNormalizedCats();
+    const found = currentCats.find((c) => String(c.name || '').trim().toLowerCase() === clean.toLowerCase());
     if (found) return found;
-    let base = RMTP.slug(name) || 'cat', id = base, n = 2;
-    const ids = store.all('procedures').map((c) => c.id);
+    let base = RMTP.slug(clean) || 'cat', id = base, n = 2;
+    const ids = currentCats.map((c) => c.id);
     while (ids.indexOf(id) > -1) { id = base + '-' + n; n += 1; }
-    const cat = { id: id, name: name, icon: iconFor(name), items: [] };
+    const cat = { id: id, name: clean, icon: iconFor(clean), items: [] };
     store.upsert('procedures', cat);
     return cat;
   }
@@ -387,7 +450,7 @@ RMTP.views.procedures = function (el, params) {
       ui.toast('Only Admins can edit procedures.', 'danger');
       return;
     }
-    const catNames = store.all('procedures').map((c) => c.name);
+    const catNames = loadNormalizedCats().map((c) => c.name);
     const m = ui.modal({
       title: 'Edit \u2014 ' + item.title,
       size: 'md:max-w-2xl',

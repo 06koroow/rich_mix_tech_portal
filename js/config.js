@@ -285,6 +285,36 @@ RMTP.getUpcomingActiveScreenings = function (includeScreeningId = null) {
   });
 };
 
+/* Cancel all linked unworked Rota shifts for an event (upcoming or pencil shifts),
+   while preserving historical past worked (confirmed) shifts for payroll/audit records. */
+RMTP.cancelUnworkedShiftsForEvent = function (eventId, reason) {
+  if (!eventId || !RMTP.store) return 0;
+  const store = RMTP.store;
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const nowIso = new Date().toISOString();
+  const existingBookings = (store.all('bookings') || []).filter((b) => b && b.eventId === eventId);
+  let cancelledCount = 0;
+
+  existingBookings.forEach((b) => {
+    const st = String(b.status || '').trim().toLowerCase();
+    if (st === 'cancelled' || st === 'canceled') return;
+    const shiftDate = RMTP.normalizeDateStr ? RMTP.normalizeDateStr(b.date) : String(b.date || '').slice(0, 10);
+    const isPastWorked = !!shiftDate && shiftDate < todayIso && st === 'confirmed';
+    if (isPastWorked) return;
+
+    const updated = Object.assign({}, b, {
+      status: 'cancelled',
+      cancellationReason: reason || 'Event cancelled or removed in Artifax',
+      cancelledAt: nowIso,
+      updatedAt: nowIso,
+    });
+    store.upsert('bookings', updated);
+    cancelledCount++;
+  });
+
+  return cancelledCount;
+};
+
 /* Auto-generate or sync draft rota shifts directly from event technical specs.
    Carries through venue minimum crew disciplines and supports 'No Tech Needed'. */
 RMTP.syncAdvancingToRota = function (ev) {
@@ -294,16 +324,10 @@ RMTP.syncAdvancingToRota = function (ev) {
   const spaces = Array.isArray(ev.space) ? ev.space : [ev.space || 'The Stage'];
   const createdShifts = [];
 
-  const isEvCancelled = String(ev.status || '').trim().toLowerCase() === 'cancelled';
+  const stLower = String(ev.status || '').trim().toLowerCase();
+  const isEvCancelled = ev.deleted === true || stLower === 'cancelled' || stLower === 'canceled';
   if (isEvCancelled) {
-    existingBookings.forEach((b) => {
-      if (b.status !== 'cancelled') {
-        b.status = 'cancelled';
-        b.cancellationReason = 'Event cancelled in Artifax';
-        b.cancelledAt = new Date().toISOString();
-        store.upsert('bookings', b);
-      }
-    });
+    RMTP.cancelUnworkedShiftsForEvent(ev.id, ev.deleted ? 'Event deleted in portal' : 'Event cancelled in Artifax');
     return [];
   }
 

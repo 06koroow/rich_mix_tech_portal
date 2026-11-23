@@ -13,6 +13,71 @@ RMTP.syncSb = (function () {
   if (unsupportedCols.advancing.artifaxHistory === undefined) {
     unsupportedCols.advancing.artifaxHistory = true;
   }
+  if (unsupportedCols.procedures) {
+    delete unsupportedCols.procedures;
+    try { localStorage.setItem('rmtp_unsupported_cols', JSON.stringify(unsupportedCols)); } catch (e) {}
+  }
+
+  // Track recent local upserts (per collection+id) for 15s so an overlapping pull
+  // never prematurely prunes a brand-new optimistic local record before its write completes.
+  const recentLocalUpserts = Object.create(null);
+  function noteLocalUpsert(coll, id) {
+    if (!coll || !id) return;
+    recentLocalUpserts[coll + ':' + id] = Date.now();
+  }
+  function isRecentLocalUpsert(coll, id) {
+    const ts = recentLocalUpserts[coll + ':' + id];
+    if (!ts) return false;
+    if (Date.now() - ts > 15000) {
+      delete recentLocalUpserts[coll + ':' + id];
+      return false;
+    }
+    return true;
+  }
+
+  async function getAppSetting(key) {
+    if (!sb || !sb.isConfigured() || !key) return null;
+    try {
+      const client = sb.getClient && sb.getClient();
+      if (!client) return null;
+      const res = await (sb.withRetry ? sb.withRetry(async () => {
+        const { data, error } = await client.from('app_settings').select('value, updatedAt').eq('key', String(key)).maybeSingle();
+        if (error) {
+          if (sb.isClockSkewError && sb.isClockSkewError(error)) throw error;
+          return { data: null, error };
+        }
+        return { data, error: null };
+      }) : client.from('app_settings').select('value, updatedAt').eq('key', String(key)).maybeSingle());
+      if (res && res.data && res.data.value !== undefined) return res.data.value;
+      return null;
+    } catch (e) {
+      console.warn('[syncSb] getAppSetting failed for', key, e && e.message);
+      return null;
+    }
+  }
+
+  async function setAppSetting(key, value) {
+    if (!sb || !sb.isConfigured() || !key) return { ok: false, message: 'Supabase not configured' };
+    try {
+      const client = sb.getClient && sb.getClient();
+      if (!client) return { ok: false, message: 'No Supabase client' };
+      const nowIso = new Date().toISOString();
+      const exec = async () => {
+        const { error } = await client
+          .from('app_settings')
+          .upsert({ key: String(key), value: value, updatedAt: nowIso }, { onConflict: 'key' });
+        if (error) {
+          if (sb.isClockSkewError && sb.isClockSkewError(error)) throw error;
+          return { ok: false, error, message: error.message };
+        }
+        return { ok: true };
+      };
+      return await (sb.withRetry ? sb.withRetry(exec) : exec());
+    } catch (e) {
+      console.warn('[syncSb] setAppSetting failed for', key, e && e.message);
+      return { ok: false, error: e, message: (e && e.message) || 'Failed to save setting' };
+    }
+  }
 
   let unsupportedTables = {};
   try {
@@ -20,7 +85,7 @@ RMTP.syncSb = (function () {
     if (savedT) unsupportedTables = JSON.parse(savedT);
     // Heal previously poisoned core tables that were falsely marked missing due to PGRST204 column cache errors
     let healed = false;
-    ['bookings', 'availability', 'advancing', 'tasks', 'dcps'].forEach((t) => {
+    ['bookings', 'availability', 'advancing', 'tasks', 'dcps', 'procedures'].forEach((t) => {
       if (unsupportedTables[t]) {
         delete unsupportedTables[t];
         healed = true;
@@ -586,10 +651,232 @@ RMTP.syncSb = (function () {
     }
   }
 
+  /* ---- Procedures Grouping & Sync (Flat DB rows <-> Grouped UI categories) ----
+     Supabase `public.procedures` stores one flat row per SOP:
+       { id, category, title, body, icon }
+     while the app UI renders grouped categories:
+       { id, name, icon, items: [{ id, title, body, updated }] }. */
+  function procSlug(str) {
+    if (RMTP.slug) return RMTP.slug(str);
+    return String(str || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'general';
+  }
+
+  function cloneSeedProcedures() {
+    const seed = (RMTP.seed && Array.isArray(RMTP.seed.procedures)) ? RMTP.seed.procedures : [];
+    return seed.map((c) => ({
+      id: c.id || procSlug(c.name),
+      name: c.name || 'General',
+      icon: c.icon || 'book',
+      items: Array.isArray(c.items) ? c.items.map((it) => ({
+        id: it.id,
+        title: it.title || 'Untitled procedure',
+        body: it.body || '',
+        updated: it.updated || '',
+      })) : [],
+    }));
+  }
+
+  function normalizeProcedureGroups(rawList) {
+    const list = Array.isArray(rawList) ? rawList : [];
+    const seedCats = (RMTP.seed && Array.isArray(RMTP.seed.procedures)) ? RMTP.seed.procedures : [];
+    const seedCatByName = new Map();
+    const seedOrder = new Map();
+    seedCats.forEach((sc, idx) => {
+      const nm = String(sc.name || '').trim().toLowerCase();
+      if (nm) {
+        seedCatByName.set(nm, { id: sc.id, name: sc.name, icon: sc.icon || 'book' });
+        seedOrder.set(sc.id, idx);
+      }
+    });
+
+    const groupsById = new Map();
+    const groupOrder = [];
+
+    function ensureGroup(name, preferredId, icon) {
+      const cleanName = String(name || '').trim();
+      if (!cleanName) return null;
+      const seedMatch = seedCatByName.get(cleanName.toLowerCase());
+      const catId = (seedMatch && seedMatch.id) || preferredId || procSlug(cleanName);
+      let g = groupsById.get(catId);
+      if (!g) {
+        // Also match by case-insensitive name to prevent duplicates
+        for (const existing of groupsById.values()) {
+          if (existing.name.toLowerCase() === cleanName.toLowerCase()) {
+            g = existing;
+            break;
+          }
+        }
+      }
+      if (!g) {
+        g = {
+          id: catId,
+          name: (seedMatch && seedMatch.name) || cleanName,
+          icon: icon || (seedMatch && seedMatch.icon) || 'book',
+          items: [],
+          _itemMap: new Map(),
+        };
+        groupsById.set(g.id, g);
+        groupOrder.push(g.id);
+      } else if (!g.icon && icon) {
+        g.icon = icon;
+      }
+      return g;
+    }
+
+    function addItemToGroup(g, item) {
+      if (!g || !item || !item.id) return;
+      const title = String(item.title || '').trim();
+      if (!title) return;
+      const normItem = {
+        id: String(item.id),
+        title,
+        body: item.body != null ? String(item.body) : '',
+        updated: item.updated ? String(item.updated) : '',
+      };
+      const prev = g._itemMap.get(normItem.id);
+      if (!prev) {
+        g._itemMap.set(normItem.id, normItem);
+        g.items.push(normItem);
+      } else {
+        // Prefer richer body or newer updated timestamp
+        const prevBody = (prev.body || '').trim();
+        const nextBody = (normItem.body || '').trim();
+        if (nextBody && (!prevBody || parseTimestampMs(normItem.updated) >= parseTimestampMs(prev.updated))) {
+          prev.title = normItem.title;
+          prev.body = normItem.body;
+          if (normItem.updated) prev.updated = normItem.updated;
+        }
+      }
+    }
+
+    list.forEach((entry) => {
+      if (!entry || typeof entry !== 'object') return;
+      // Case 1: Already a grouped category { id, name, icon, items: [...] }
+      if (Array.isArray(entry.items)) {
+        const catName = String(entry.name || entry.category || '').trim();
+        if (!catName) return;
+        const g = ensureGroup(catName, entry.id, entry.icon);
+        entry.items.forEach((it) => addItemToGroup(g, it));
+        return;
+      }
+      // Case 2: Flat Supabase SOP row { id, category, title, body, icon }
+      const title = String(entry.title || '').trim();
+      const catName = String(entry.category || entry.name || '').trim();
+      if (!title) {
+        // Skip corrupted/stub category rows written by legacy sync (no title and no items)
+        return;
+      }
+      const g = ensureGroup(catName || 'General', null, entry.icon);
+      addItemToGroup(g, {
+        id: entry.id,
+        title,
+        body: entry.body || '',
+        updated: entry.updated || entry.updatedAt || '',
+      });
+    });
+
+    const out = groupOrder.map((id) => {
+      const g = groupsById.get(id);
+      return { id: g.id, name: g.name, icon: g.icon || 'book', items: g.items };
+    });
+
+    // Keep familiar canonical ordering for known seed categories while preserving custom ones after
+    out.sort((a, b) => {
+      const oa = seedOrder.has(a.id) ? seedOrder.get(a.id) : 999;
+      const ob = seedOrder.has(b.id) ? seedOrder.get(b.id) : 999;
+      if (oa !== ob) return oa - ob;
+      return 0;
+    });
+
+    return out;
+  }
+
+  RMTP.normalizeProcedures = normalizeProcedureGroups;
+
+  function flattenProcedureCategory(cat) {
+    if (!cat || !Array.isArray(cat.items)) return [];
+    const catName = String(cat.name || 'General').trim() || 'General';
+    const icon = String(cat.icon || 'book');
+    return cat.items
+      .filter((it) => it && it.id && String(it.title || '').trim())
+      .map((it) => ({
+        id: String(it.id),
+        category: catName,
+        title: String(it.title || '').trim(),
+        body: it.body != null ? String(it.body) : '',
+        icon,
+      }));
+  }
+
+  async function pullProceduresCollection() {
+    const table = tables().procedures || 'procedures';
+    let rows = [];
+    try {
+      rows = await sb.selectAll(table);
+      clearTableUnsupported(table);
+    } catch (err) {
+      if (sb.isClockSkewError && sb.isClockSkewError(err)) {
+        console.warn('[syncSb] Clock skew on procedures, retaining local data until next sync.');
+        return;
+      }
+      if (isTableMissingError(err)) {
+        console.warn('[syncSb] Procedures table missing in Supabase; falling back to built-in procedures.');
+        const current = normalizeProcedureGroups(store.all('procedures'));
+        if (!current.length) store.write('procedures', cloneSeedProcedures());
+        return;
+      }
+      console.error('[syncSb] pull failed for procedures', err);
+      const current = normalizeProcedureGroups(store.all('procedures'));
+      if (!current.length) store.write('procedures', cloneSeedProcedures());
+      return;
+    }
+
+    const filteredRemote = (Array.isArray(rows) ? rows : []).filter((r) => {
+      if (!r || !r.id) return false;
+      if (store.isDeleted && store.isDeleted('procedures', r.id)) {
+        if (sb && sb.deleteRow) sb.deleteRow(table, r.id).catch(() => {});
+        return false;
+      }
+      return true;
+    });
+
+    let grouped = normalizeProcedureGroups(filteredRemote);
+    const totalItems = grouped.reduce((n, g) => n + (g.items ? g.items.length : 0), 0);
+
+    // If Supabase `procedures` table is empty (not yet populated), fall back to built-in seed SOPs
+    // so every permitted user group (including Freelancers) sees procedures instead of a blank page.
+    if (!grouped.length || totalItems === 0) {
+      const localNorm = normalizeProcedureGroups(store.all('procedures'));
+      const localItems = localNorm.reduce((n, g) => n + (g.items ? g.items.length : 0), 0);
+      grouped = localItems > 0 ? localNorm : cloneSeedProcedures();
+    } else {
+      // Preserve any locally created empty category tabs that aren't deleted
+      const localNorm = normalizeProcedureGroups(store.all('procedures'));
+      const existingIds = new Set(grouped.map((g) => g.id));
+      localNorm.forEach((lg) => {
+        if (lg && lg.id && lg.name && !existingIds.has(lg.id) && !(store.isDeleted && store.isDeleted('procedures', lg.id))) {
+          if (!lg.items || lg.items.length === 0) {
+            grouped.push(lg);
+            existingIds.add(lg.id);
+          }
+        }
+      });
+    }
+
+    const prevJson = JSON.stringify(store.all('procedures') || []);
+    const nextJson = JSON.stringify(grouped);
+    if (prevJson !== nextJson) {
+      store.write('procedures', grouped);
+    }
+  }
+
   async function pullCollection(coll) {
     const table = tables()[coll]; if (!table) return;
     if (coll === 'availability') {
       return pullAvailabilityCollection();
+    }
+    if (coll === 'procedures') {
+      return pullProceduresCollection();
     }
     if (isTableUnsupported(table)) return;
     let rows = [];
@@ -644,11 +931,38 @@ RMTP.syncSb = (function () {
       }
     });
 
+    const remoteIds = new Set();
+    const suppressedSet = (coll === 'advancing' && RMTP.artifax && typeof RMTP.artifax.getSuppressedIdSet === 'function')
+      ? RMTP.artifax.getSuppressedIdSet()
+      : null;
+
     let mutated = false;
     rows.forEach((r) => {
       if (!r || r.id == null) return;
+      remoteIds.add(r.id);
+
+      // 0. If this is an Artifax event suppressed in the database, never allow it back into active advancing
+      if (coll === 'advancing' && suppressedSet && suppressedSet.size > 0) {
+        const aid = String(r.artifaxId || (String(r.id).startsWith('evt-afx-') ? String(r.id).slice(8) : '')).trim();
+        const baseAid = aid.includes('__') ? aid.split('__')[0] : aid;
+        if (suppressedSet.has(r.id) || (aid && suppressedSet.has(aid)) || (baseAid && suppressedSet.has(baseAid))) {
+          if (byId.has(r.id)) {
+            byId.delete(r.id);
+            mutated = true;
+          }
+          if (sb && sb.deleteRow) {
+            sb.deleteRow(table, r.id).catch(() => {});
+          }
+          return;
+        }
+      }
+
       // 1. If this record was explicitly deleted by the user, DO NOT restore it on refresh!
       if (store.isDeleted && store.isDeleted(coll, r.id)) {
+        if (byId.has(r.id)) {
+          byId.delete(r.id);
+          mutated = true;
+        }
         if (sb && sb.deleteRow) {
           sb.deleteRow(table, r.id).catch(() => {});
         }
@@ -730,8 +1044,21 @@ RMTP.syncSb = (function () {
       mutated = true;
     });
 
+    // Authoritative remote-deletion pruning for synced operational tables:
+    // If a row was deleted from Supabase (e.g., Artifax reconciliation or portal delete on another device),
+    // prune it from the local cache so stale/cancelled events never linger in localStorage!
+    if (coll === 'advancing' || coll === 'bookings' || coll === 'dcps') {
+      for (const localId of Array.from(byId.keys())) {
+        if (!remoteIds.has(localId) && !isRecentLocalUpsert(coll, localId)) {
+          byId.delete(localId);
+          mutated = true;
+        }
+      }
+    }
+
     if (mutated) {
-      store.write(coll, order.map((id) => byId.get(id)));
+      const nextList = order.filter((id) => byId.has(id)).map((id) => byId.get(id));
+      store.write(coll, nextList);
     }
     if ((coll === 'tasks' || coll === 'advancing') && RMTP.hires && typeof RMTP.hires.hydrateAll === 'function') {
       RMTP.hires.hydrateAll();
@@ -754,6 +1081,11 @@ RMTP.syncSb = (function () {
     if (pullInFlight) return pullInFlight;
     pullInFlight = (async () => {
       try {
+        // Hydrate DB-persisted Artifax suppression list BEFORE pulling advancing
+        // so suppressed events are filtered immediately on first load.
+        if (RMTP.artifax && typeof RMTP.artifax.hydrateFromDb === 'function') {
+          await RMTP.artifax.hydrateFromDb().catch(() => {});
+        }
         await Promise.allSettled(COLLS.map((c) => pullCollection(c)));
       } catch (err) {
         console.error('[syncSb] pull error', err);
@@ -791,7 +1123,38 @@ RMTP.syncSb = (function () {
         return res;
       }
 
+      if (name === 'procedures') {
+        const res = origUpsert(name, record);
+        if (sb && sb.isConfigured() && record) {
+          const table = tables().procedures || 'procedures';
+          const flatRows = Array.isArray(record.items)
+            ? flattenProcedureCategory(record)
+            : (record.id && record.title ? [{
+                id: String(record.id),
+                category: String(record.category || record.name || 'General'),
+                title: String(record.title),
+                body: record.body != null ? String(record.body) : '',
+                icon: String(record.icon || 'book'),
+              }] : []);
+          if (flatRows.length) {
+            const client = sb.getClient && sb.getClient();
+            if (client) {
+              const exec = async () => {
+                const { error } = await client.from(table).upsert(flatRows, { onConflict: 'id' });
+                if (error) {
+                  if (sb.isClockSkewError && sb.isClockSkewError(error)) throw error;
+                  console.warn('[syncSb] Procedures upsert skipped:', error.message);
+                }
+              };
+              (sb.withRetry ? sb.withRetry(exec) : exec()).catch((e) => console.warn('[syncSb] Procedures upsert error:', e));
+            }
+          }
+        }
+        return res;
+      }
+
       const res = origUpsert(name, record);
+      if (record && record.id) noteLocalUpsert(name, record.id);
       
       if (sb && sb.isConfigured() && COLLS.includes(name)) {
         const table = tables()[name];
@@ -855,6 +1218,7 @@ RMTP.syncSb = (function () {
     };
     
     store.remove = function (name, id) {
+      const existingBeforeRemove = (name === 'procedures' && id) ? store.find('procedures', id) : null;
       const res = origRemove(name, id);
       if (name === 'availability') {
         if (sb && sb.isConfigured() && id) {
@@ -868,6 +1232,26 @@ RMTP.syncSb = (function () {
           }).catch((e) => {
             console.warn('[syncSb] Availability delete queued for retry:', e && e.message);
           });
+        }
+        return res;
+      }
+
+      if (name === 'procedures') {
+        if (sb && sb.isConfigured() && id) {
+          const table = tables().procedures || 'procedures';
+          const idsToDelete = [String(id)];
+          if (existingBeforeRemove && Array.isArray(existingBeforeRemove.items)) {
+            existingBeforeRemove.items.forEach((it) => {
+              if (it && it.id) {
+                idsToDelete.push(String(it.id));
+                if (store.markDeleted) store.markDeleted('procedures', it.id);
+              }
+            });
+          }
+          const client = sb.getClient && sb.getClient();
+          if (client) {
+            client.from(table).delete().in('id', idsToDelete).then(() => {}, () => {});
+          }
         }
         return res;
       }
@@ -1074,6 +1458,7 @@ RMTP.syncSb = (function () {
     pull, pullAll: pull, pullCollection, wire, verifySync,
     pullRoleViews, startRoleViewsLiveSync,
     upsertAvailabilityBatch,
+    getAppSetting, setAppSetting,
     getAvailabilityBackend: () => availBackend,
     getPendingAvailabilityCount: () => Object.keys(readAvailQueue()).length,
     drain: drainAvailabilityQueue,

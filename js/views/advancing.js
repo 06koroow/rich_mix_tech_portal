@@ -849,12 +849,25 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   function getRunIdentityKey(ev) {
+    const spKey = (formatSpaceLabel(ev.space) || '').trim().toLowerCase();
+    const isArtifax = !!(ev.artifaxId || (ev.id && String(ev.id).startsWith('evt-afx-')));
+    // Artifax bookings strictly follow 1 row per booked venue space — NEVER merge different rooms
+    // from the same arrangement or matching title into a multi-space card.
+    if (isArtifax) {
+      const arrId = (ev.production_package && ev.production_package.artifaxArrangementId)
+        ? String(ev.production_package.artifaxArrangementId).trim()
+        : '';
+      const normName = (ev.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      if (arrId) return 'afx:' + spKey + '|arr:' + arrId;
+      if (normName && normName !== 'untitled') return 'afx:' + spKey + '|name:' + normName;
+      return 'solo:' + ev.id;
+    }
     if (ev.groupId && !String(ev.groupId).startsWith('implicit-')) {
       return 'gid:' + String(ev.groupId).trim();
     }
     const normName = (ev.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
     if (normName && normName !== 'untitled') {
-      return 'name:' + normName;
+      return 'name:' + spKey + '|' + normName;
     }
     return 'solo:' + ev.id;
   }
@@ -1009,9 +1022,12 @@ RMTP.views.advancing = function (el, params, query) {
 
   // Build runs per status pool BEFORE tab split so active multi-day runs (where startDate < today <= endDate)
   // stay intact in Upcoming until their final day passes.
-  const activePool = allEvents.filter((e) => e.deleted !== true && !isEvCancelled(e));
-  const cancelledPool = allEvents.filter((e) => e.deleted !== true && isEvCancelled(e));
-  const deletedPool = allEvents.filter((e) => e.deleted === true);
+  const isEventSuppressed = (e) => !!(RMTP.artifax && typeof RMTP.artifax.isSuppressed === 'function' && RMTP.artifax.isSuppressed(e));
+  const activePool = allEvents.filter((e) => e.deleted !== true && !isEvCancelled(e) && !isEventSuppressed(e));
+  const cancelledPool = allEvents.filter((e) => e.deleted !== true && isEvCancelled(e) && !isEventSuppressed(e));
+  const deletedPool = (RMTP.artifax && typeof RMTP.artifax.getAllDeletedEvents === 'function')
+    ? RMTP.artifax.getAllDeletedEvents()
+    : allEvents.filter((e) => e.deleted === true);
 
   const runMatchesTech = (item) => {
     if (!item.isGroup) return matchesTechFilter(item);
@@ -1020,7 +1036,8 @@ RMTP.views.advancing = function (el, params, query) {
 
   const activeRuns = buildConsecutiveDayRuns(activePool).filter(runMatchesTech);
   const cancelledRuns = buildConsecutiveDayRuns(cancelledPool).filter(runMatchesTech);
-  const deletedRuns = buildConsecutiveDayRuns(deletedPool).filter(runMatchesTech);
+  // Keep every deleted/suppressed event individually visible in the Deleted / Unhide tab
+  const deletedRuns = deletedPool.slice();
 
   const isRunPast = (item) => {
     const finalDate = item.isGroup ? item.endDate : item.date;
@@ -1088,6 +1105,17 @@ RMTP.views.advancing = function (el, params, query) {
   const outstandingHiresEventCount = tabPoolRuns.filter((item) => getEventHiresSummary(getRunEventIds(item)).outstanding.length > 0).length;
 
   const eventMatchesFilters = (e) => {
+    if (currentTab === 'deleted') {
+      if (filters.date && normalizeDateStr(e.date) !== normalizeDateStr(filters.date)) return false;
+      if (quickSearch) {
+        const q = quickSearch.toLowerCase();
+        const evName = (e.name || '').toLowerCase();
+        const evSpace = formatSpaceLabel(e.space).toLowerCase();
+        const evDate = (e.date ? ui.formatDate(e.date).toLowerCase() : '');
+        if (!evName.includes(q) && !evSpace.includes(q) && !evDate.includes(q)) return false;
+      }
+      return true;
+    }
     if (filterRequiresCrew) {
       const evTechs = RMTP.eventTechnicians(e);
       const leadId = RMTP.getAdvancingLeadId(e);
@@ -1318,7 +1346,8 @@ RMTP.views.advancing = function (el, params, query) {
           '<span class="ml-1 px-1.5 py-0.5 rounded text-[11px] bg-panel border border-line font-mono text-accent font-semibold">' + getReportRecipients().length + '</span>' +
         '</button>' +
         (isAdmin && canManageEvents && RMTP.supabase && RMTP.supabase.isConfigured()
-          ? '<button id="artifax-sync" class="btn btn-ghost text-xs" title="Pull events from Artifax">' + ui.icon('reset', 'w-3.5 h-3.5') + '<span class="hidden sm:inline">Sync Artifax</span></button>' 
+          ? '<button id="artifax-sync" class="btn btn-ghost text-xs" title="Sync Contracted &amp; Contract Sent events from Artifax">' + ui.icon('reset', 'w-3.5 h-3.5') + '<span class="hidden sm:inline">Sync Artifax</span></button>' +
+            '<button id="artifax-diagnostics" class="btn btn-ghost text-xs" title="Artifax Sync Diagnostics &amp; Dry-Run Preview">' + ui.icon('sliders', 'w-3.5 h-3.5') + '<span class="hidden lg:inline">Sync Log</span></button>'
           : '')
       ) +
 
@@ -1430,11 +1459,12 @@ RMTP.views.advancing = function (el, params, query) {
       crewPillText = selectedTechs.length + ' crew selected';
     }
 
-    const tabPool = base.filter((e) => {
-      if (currentTab === 'deleted') return e.deleted === true;
-      if (currentTab === 'past') return e.deleted !== true && isPastEvent(e.date);
-      return e.deleted !== true && !isPastEvent(e.date);
-    });
+    const tabPool = currentTab === 'deleted'
+      ? deletedPool
+      : base.filter((e) => {
+          if (currentTab === 'past') return e.deleted !== true && isPastEvent(e.date);
+          return e.deleted !== true && !isPastEvent(e.date);
+        });
     // 1. Collect all known venue spaces (Rich Mix defaults + RMTP.SPACES + store venues + actual event spaces)
     const knownBaseSpaces = [
       'The Stage', 'The Studio', 'The Mix',
@@ -2016,476 +2046,54 @@ RMTP.views.advancing = function (el, params, query) {
     if (cancelBtn) cancelBtn.addEventListener('click', m.close);
   }
 
+  // Delegate Artifax sync to the unified RMTP.artifax v2 engine
   RMTP.syncArtifax = async (silent = false) => {
-    const afx = el.querySelector('#artifax-sync');
-    if (afx) afx.disabled = true; 
-    if (!silent) ui.toast('Syncing from Artifax...', 'info');
-    try {
-      // Use Supabase Edge Function to bypass the need for a Node server on static hosts
-      if (!RMTP.supabase || !RMTP.supabase.isConfigured()) {
-         throw new Error("Supabase is not configured. Cannot call Edge Function.");
-      }
-      
-      const res = await RMTP.supabase.invokeFunction('artifax-sync');
-      
-      if (!res.ok) {
-        if (res.message && (res.message.includes('artifaxHistory') || res.message.includes('column of \'advancing\' in the schema cache'))) {
-          showArtifaxSchemaFixModal(res.message);
-        } else {
-          ui.toast('Edge Function Error: ' + res.message, 'danger'); 
-        }
-        if (afx) afx.disabled = false;
-        return;
-      }
-      
-      const data = res.data;
-      if (data && data.error) {
-        ui.toast('Artifax API Error: ' + data.error, 'danger');
-        if (afx) afx.disabled = false;
-        return;
-      }
-      
-      const list = Array.isArray(data) ? data : (data.instances ?? data.results ?? data.events ?? []);
-      
-      const ROOM_TO_SPACE = {
-        "The Stage (MS)": "The Stage",
-        "The Stage": "The Stage",
-        "Stage": "The Stage",
-        "Main Stage": "The Stage",
-        "MS": "The Stage",
-        "The Studio (V1)": "The Studio",
-        "The Studio": "The Studio",
-        "Studio": "The Studio",
-        "Studio 1": "The Studio",
-        "Studio 2": "The Studio",
-        "V1": "The Studio",
-        "The Mix & Bar (V2)": "The Mix",
-        "The Mix": "The Mix",
-        "Mix": "The Mix",
-        "Mix Bar": "The Mix",
-        "The Mix Bar": "The Mix",
-        "Bar": "The Mix",
-        "V2": "The Mix",
-        "Screen 1": "Screen One",
-        "Screen One": "Screen One",
-        "Cinema 1": "Screen One",
-        "Cinema One": "Screen One",
-        "Cinema Bar / Gallery": "Cinema Bar",
-        "Cinema Bar": "Cinema Bar",
-        "The Lab": "The Lab",
-        "Lab": "The Lab",
-        "Screen 2": "Screen Two",
-        "Screen Two": "Screen Two",
-        "Cinema 2": "Screen Two",
-        "Cinema Two": "Screen Two",
-        "Screen 3": "Screen Three",
-        "Screen Three": "Screen Three",
-        "Cinema 3": "Screen Three",
-        "Cinema Three": "Screen Three",
-        "Streetside": "Streetside",
-        "Street Side": "Streetside",
-        "Streetside Bar": "Streetside",
-        "Streetside Cafe": "Streetside",
-        "Streetside Foyer": "Streetside",
-        "Foyer": "Streetside",
-        "Cafe": "Streetside",
-      };
-
-      const resolveSpace = (roomName) => {
-        const r = (roomName || "").trim();
-        if (!r) return "The Stage";
-        if (ROOM_TO_SPACE[r]) return ROOM_TO_SPACE[r];
-        
-        const lower = r.toLowerCase();
-        if (lower.includes("cinema bar") || lower.includes("cinema gallery")) return "Cinema Bar";
-        if (lower.includes("lab")) return "The Lab";
-        if (lower.includes("screen 1") || lower.includes("cinema 1") || lower.includes("screen one") || lower.includes("cinema one")) return "Screen One";
-        if (lower.includes("screen 2") || lower.includes("cinema 2") || lower.includes("screen two") || lower.includes("cinema two")) return "Screen Two";
-        if (lower.includes("screen 3") || lower.includes("cinema 3") || lower.includes("screen three") || lower.includes("cinema three")) return "Screen Three";
-        if (lower.includes("stage")) return "The Stage";
-        if (lower.includes("studio")) return "The Studio";
-        if (lower.includes("mix") || lower.includes("bar")) return "The Mix";
-        if (lower.includes("street") || lower.includes("cafe") || lower.includes("foyer")) return "Streetside";
-        
-        const raw = lower.replace(/[^a-z0-9]/g, '');
-        const found = RMTP.SPACES.find(s => s.toLowerCase().replace(/[^a-z0-9]/g, '') === raw);
-        if (found) return found;
-
-        // Return original room name rather than dropping the event!
-        return r;
-      };
-
-      // Extract all technical, layout, and event notes from Artifax response without overly strict filtering
-      const extractArtifaxNotes = (r) => {
-        const parts = [];
-        const seenNotes = new Set();
-
-        const addNote = (label, text) => {
-          if (text === null || text === undefined) return;
-          const str = String(text).trim();
-          if (!str || seenNotes.has(str)) return;
-          seenNotes.add(str);
-          if (label) {
-            parts.push(`[${label}]: ${str}`);
-          } else {
-            parts.push(str);
-          }
-        };
-
-        // 1. Check all standard and custom note fields (including PascalCase)
-        const candidateFields = [
-          { key: 'notes', label: '' },
-          { key: 'description', label: 'Description' },
-          { key: 'event_notes', label: 'Event Notes' },
-          { key: 'arrangement_notes', label: 'Arrangement Notes' },
-          { key: 'internal_notes', label: 'Internal Notes' },
-          { key: 'public_description', label: 'Public Description' },
-          { key: 'event_description', label: 'Event Description' },
-          { key: 'arrangement_description', label: 'Arrangement Description' },
-          { key: 'comments', label: 'Comments' },
-          { key: 'event_comments', label: 'Event Comments' },
-          { key: 'arrangement_comments', label: 'Arrangement Comments' },
-          { key: 'technical_requirements', label: 'Technical Requirements' },
-          { key: 'tech_requirements', label: 'Tech Requirements' },
-          { key: 'technical_notes', label: 'Technical Notes' },
-          { key: 'tech_notes', label: 'Tech Notes' },
-          { key: 'requirements', label: 'Requirements' },
-          { key: 'setup_notes', label: 'Setup Notes' },
-          { key: 'set_up_notes', label: 'Setup Notes' },
-          { key: 'staging_notes', label: 'Staging Notes' },
-          { key: 'av_notes', label: 'AV Notes' },
-          { key: 'sound_notes', label: 'Sound Notes' },
-          { key: 'lighting_notes', label: 'Lighting Notes' },
-          { key: 'catering_notes', label: 'Catering Notes' },
-          { key: 'special_instructions', label: 'Special Instructions' },
-          { key: 'memo', label: 'Memo' },
-          { key: 'memos', label: 'Memos' },
-          { key: 'summary', label: 'Summary' },
-          { key: 'details', label: 'Details' },
-          { key: 'task_notes', label: 'Tasks' },
-          { key: 'roster_notes', label: 'Roster Notes' },
-          { key: 'Notes', label: '' },
-          { key: 'Description', label: 'Description' },
-          { key: 'EventNotes', label: 'Event Notes' },
-          { key: 'ArrangementNotes', label: 'Arrangement Notes' },
-          { key: 'InternalNotes', label: 'Internal Notes' },
-          { key: 'TechnicalNotes', label: 'Technical Notes' },
-          { key: 'Comments', label: 'Comments' },
-        ];
-
-        for (const { key, label } of candidateFields) {
-          if (r[key] !== undefined && r[key] !== null) {
-            if (typeof r[key] === 'string' || typeof r[key] === 'number') {
-              addNote(label, r[key]);
-            } else if (Array.isArray(r[key])) {
-              for (const item of r[key]) {
-                if (typeof item === 'string') addNote(label, item);
-                else if (item && typeof item === 'object') {
-                  const itemText = item.text || item.note || item.content || item.description || item.value || '';
-                  if (itemText) addNote(item.title || item.label || label, itemText);
-                }
-              }
-            }
-          }
-        }
-
-        // 2. Custom forms: loosen the filter completely so no real user event data is discarded
-        const forms = Array.isArray(r.custom_forms) ? r.custom_forms : (Array.isArray(r.forms) ? r.forms : []);
-        for (const form of forms) {
-          if (!form || typeof form !== 'object') continue;
-          const formTitle = String(form.custom_form_name || form.form_name || form.name || form.title || form.label || '').trim();
-          const lowerForm = formTitle.toLowerCase();
-          
-          // Only exclude strictly sensitive payment credentials
-          if (/credit\s*card|bank\s*account|stripe\s*token/i.test(lowerForm)) {
-            continue;
-          }
-
-          const formElements = [];
-          
-          // Collect from sections if present
-          const sections = Array.isArray(form.custom_form_sections) ? form.custom_form_sections : (Array.isArray(form.sections) ? form.sections : []);
-          for (const sec of sections) {
-            if (!sec) continue;
-            const elements = Array.isArray(sec.custom_form_elements) ? sec.custom_form_elements : (Array.isArray(sec.elements) ? sec.elements : (Array.isArray(sec.fields) ? sec.fields : []));
-            formElements.push(...elements);
-          }
-          
-          // Also collect direct elements on form
-          const directElements = Array.isArray(form.custom_form_elements) ? form.custom_form_elements : (Array.isArray(form.elements) ? form.elements : (Array.isArray(form.fields) ? form.fields : []));
-          formElements.push(...directElements);
-
-          for (const el of formElements) {
-            if (!el || typeof el !== 'object') continue;
-            const elName = String(el.custom_form_element_name || el.element_name || el.name || el.label || el.title || el.prompt || el.field_name || '').trim();
-            if (!elName) continue;
-
-            let val = el.custom_form_data_text !== undefined && el.custom_form_data_text !== null && el.custom_form_data_text !== ''
-              ? el.custom_form_data_text
-              : (el.custom_form_data_value !== undefined && el.custom_form_data_value !== null ? el.custom_form_data_value : (el.value ?? el.data_value ?? el.text_value ?? el.display_value ?? el.selected_option_label ?? ''));
-
-            if (val === true) val = 'Yes';
-            if (val === false) val = 'No';
-            if (Array.isArray(val)) val = val.join(', ');
-            
-            const valStr = String(val ?? '').trim();
-            // Keep informative values like 'No', '0', 'None', 'n/a' so requirements aren't left blank
-            if (valStr.length === 0) continue;
-
-            const prefix = formTitle ? `[${formTitle}] ${elName}` : elName;
-            addNote(prefix, valStr);
-          }
-        }
-
-        // 3. Direct custom fields array
-        const customFields = Array.isArray(r.custom_fields) ? r.custom_fields : (Array.isArray(r.custom_form_elements) ? r.custom_form_elements : []);
-        for (const cf of customFields) {
-          if (!cf || typeof cf !== 'object') continue;
-          const name = String(cf.name || cf.label || cf.title || cf.field_name || cf.custom_form_element_name || '').trim();
-          let val = cf.value ?? cf.custom_form_data_text ?? cf.custom_form_data_value ?? cf.text ?? '';
-          if (val === true) val = 'Yes';
-          if (val === false) val = 'No';
-          if (Array.isArray(val)) val = val.join(', ');
-          const valStr = String(val ?? '').trim();
-          if (name && valStr.length > 0) {
-            addNote(name, valStr);
-          }
-        }
-
-        // 4. Custom form data key-value dictionary
-        if (r.custom_form_data && typeof r.custom_form_data === 'object' && !Array.isArray(r.custom_form_data)) {
-          for (const [k, v] of Object.entries(r.custom_form_data)) {
-            if (v !== null && v !== undefined) {
-              const vStr = String(v).trim();
-              if (vStr) addNote(k, vStr);
-            }
-          }
-        }
-
-        return parts.join('\n').trim();
-      };
-
-      const toCategory = (type, title = '', room = '') => {
-        const combined = ((type || '') + ' ' + (title || '') + ' ' + (room || '')).toLowerCase();
-        if (/cinema|film|screening|dcp|premiere|q&a|preview|docu|movie/.test(combined) || /screen (one|two|three|1|2|3)|cinema (1|2|3|one|two|three)/.test(combined)) {
-          return "Cinema";
-        }
-        if (/hire|private|wedding|corporate|conference|launch/.test(combined)) return "Private Hires";
-        return "Programme";
-      };
-
-      let created = 0, updated = 0, skipped = 0;
-      store.remove('advancing', 'evt-afx-undefined');
-      const existingEvents = store.all('advancing');
-
-      if (data && data.created !== undefined && list.length === 0) {
-        created = data.created || 0;
-        updated = data.updated || 0;
-        skipped = data.skipped || 0;
-        
-        // The Edge Function synced directly to Supabase.
-        // We must pull the updated collection back down to the local cache.
-        if (RMTP.syncSb && typeof RMTP.syncSb.pullCollection === 'function') {
-           await RMTP.syncSb.pullCollection('advancing');
-        }
-      }
-
-      for (const r of list) {
-        const id = String(r.artifaxId ?? r.id ?? r.instanceId ?? r.InstanceId ?? r.event_id ?? '').trim();
-        if (!id || id === 'undefined' || id === 'null') continue;
-
-        const groupId = String(r.groupId ?? r.arrangement_id ?? r.arrangementId ?? r.ArrangementId ?? r.GroupId ?? '');
-        const title = r.name ?? r.title ?? r.EventName ?? r.arrangement_description ?? r.arrangement_name ?? 'Untitled';
-        const room = r.room ?? r.roomName ?? r.RoomName ?? r.room_name ?? r.space ?? '';
-        const space = resolveSpace(r.space || room);
-        const type = r.category ?? r.type ?? r.arrangementType ?? r.ArrangementType ?? r.arrangement_type_name ?? '';
-        const category = toCategory(type, title, space);
-        
-        // Safe date and time parsers for UK (DD/MM/YYYY) and ISO formats
-        const parseSafeDate = (raw) => {
-          if (!raw) return "";
-          const s = String(raw).trim();
-          if (!s) return "";
-          const dmyMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-          if (dmyMatch) return `${dmyMatch[3]}-${dmyMatch[2].padStart(2, '0')}-${dmyMatch[1].padStart(2, '0')}`;
-          const ymdMatch = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
-          if (ymdMatch) return `${ymdMatch[1]}-${ymdMatch[2].padStart(2, '0')}-${ymdMatch[3].padStart(2, '0')}`;
-          const d = new Date(s);
-          return isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
-        };
-
-        const parseSafeTime = (raw) => {
-          if (!raw) return "";
-          const s = String(raw).trim();
-          if (!s) return "";
-          const m = s.match(/(\d{1,2}):(\d{2})/);
-          if (m) return `${m[1].padStart(2, '0')}:${m[2]}`;
-          const d = new Date(s);
-          return isNaN(d.getTime()) ? "" : d.toISOString().slice(11, 16);
-        };
-
-        // Parse date and time directly if available (or fallback to datetime)
-        const rawDate = r.date ?? r.event_date ?? r.start_date ?? r.StartDate ?? r.Date ?? r.start ?? r.startDateTime ?? r.StartDateTime ?? r.start_date_time;
-        const rawStart = r.startTime ?? r.start_time ?? r.start_time_text ?? r.time_start ?? r.StartTime ?? r.start ?? r.startDateTime ?? r.StartDateTime ?? r.start_date_time;
-        const rawEnd = r.finishTime ?? r.end_time ?? r.end_time_text ?? r.time_end ?? r.EndTime ?? r.end ?? r.endDateTime ?? r.EndDateTime ?? r.end_date_time;
-        
-        const contact = r.clientContact ?? r.contact ?? r.contactName ?? r.CustomerName ?? r.client_name ?? r.arrangement_contact_entity_full_name ?? "";
-        
-        // Status can be in multiple places depending on the API output
-        const eventStatus = (r.status ?? r.Status ?? r.event_status_name ?? "").toLowerCase();
-        const salesStatus = (r.sales_process_stage_name ?? "").toLowerCase();
-        const combinedStatus = eventStatus + " " + salesStatus;
-        
-        const isCancelled = combinedStatus.includes("cancel");
-        const isTentative = combinedStatus.includes("tentative") || 
-                            combinedStatus.includes("provisional") || 
-                            combinedStatus.includes("pencil") ||
-                            combinedStatus.includes("enquiry") ||
-                            combinedStatus.includes("inquiry") ||
-                            combinedStatus.includes("hold");
-
-        // Do NOT drop tentative/enquiry events! Map their status cleanly so nothing is silently lost.
-        const resolvedStatus = isCancelled ? "Cancelled" : (isTentative ? "Tentative" : "Confirmed");
-
-        const existing = existingEvents.find(e => e.artifaxId === id || e.id === 'evt-afx-' + id);
-
-        const dateIso = parseSafeDate(rawDate) || r.date || "";
-        const startTimeStr = parseSafeTime(rawStart) || r.startTime || "";
-        const finishTimeStr = parseSafeTime(rawEnd) || r.finishTime || "";
-        
-        // Comprehensive extraction of Artifax notes & forms
-        const techInfoNotes = extractArtifaxNotes(r) || String(r.notes || r.description || '').trim();
-
-        const booking = {
-          artifaxId: id,
-          groupId: groupId || null,
-          name: title,
-          category: category,
-          space: space,
-          date: dateIso || "",
-          startTime: startTimeStr,
-          finishTime: finishTimeStr,
-          clientContact: contact,
-          status: resolvedStatus,
-          notes: techInfoNotes || "",
-          artifaxNotes: techInfoNotes || "",
-          techInfo: techInfoNotes || ""
-        };
-
-        let row = null;
-        
-        if (existing) {
-          row = { ...existing, ...booking, id: existing.id };
-          
-          // Smart update for tech notes so we don't wipe out user notes, but append new Artifax data
-          let newNotes = [];
-          if (existing.date !== booking.date && booking.date) newNotes.push(`[Date Change]: Date moved to ${booking.date}`);
-          if (existing.startTime !== booking.startTime && booking.startTime) newNotes.push(`[Time Change]: Start time updated to ${booking.startTime}`);
-          if (existing.finishTime !== booking.finishTime && booking.finishTime) newNotes.push(`[Time Change]: Finish time updated to ${booking.finishTime}`);
-          if (existing.space !== booking.space && booking.space) newNotes.push(`[Space Change]: Moved to ${booking.space}`);
-          if (existing.name !== booking.name && booking.name) newNotes.push(`[Title Change]: Renamed to ${booking.name}`);
-          if (existing.status !== booking.status && booking.status) newNotes.push(`[Status Change]: Status updated to ${booking.status}`);
-          if (existing.clientContact !== booking.clientContact && booking.clientContact) newNotes.push(`[Contact Change]: Contact updated to ${booking.clientContact}`);
-          
-          row.artifaxHistory = Array.isArray(existing.artifaxHistory) ? existing.artifaxHistory.slice() : [];
-          const lastArtifaxNotes = row.artifaxHistory.length > 0 ? (row.artifaxHistory[row.artifaxHistory.length - 1].notes || "") : "";
-          
-          if (techInfoNotes && techInfoNotes !== lastArtifaxNotes) {
-             newNotes.push(`[Artifax Notes Updated]`);
-          }
-          
-          if (newNotes.length > 0) {
-             row.artifaxHistory.push({
-                 date: new Date().toISOString(),
-                 notes: techInfoNotes || lastArtifaxNotes || '',
-                 changes: newNotes
-             });
-          } else if (row.artifaxHistory.length === 0 && (techInfoNotes || lastArtifaxNotes)) {
-             row.artifaxHistory.push({
-                 date: new Date().toISOString(),
-                 notes: techInfoNotes || lastArtifaxNotes || '',
-                 changes: ["Initial sync from Artifax"]
-             });
-          }
-          
-          // Preserve manual reversals or tech decisions made by TM or ST
-          const isAux = RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(booking.space);
-          if (existing.techRequiredManual === true) {
-            row.noTechNeeded = false;
-            row.techRequiredManual = true;
-          } else if (existing.noTechNeeded !== undefined) {
-            row.noTechNeeded = existing.noTechNeeded;
-          } else if (isAux) {
-            row.noTechNeeded = true;
-          }
-
-          // Always ensure notes and artifaxNotes are populated
-          row.notes = techInfoNotes || existing.notes || '';
-          row.artifaxNotes = techInfoNotes || existing.artifaxNotes || '';
-
-          // Preserve user-edited techInfo if not blank, otherwise populate from Artifax notes so it doesn't show blank
-          const existingTech = (existing.techInfo || '').trim();
-          row.techInfo = existingTech ? existingTech : (techInfoNotes || '');
-          updated++;
-        } else {
-          row = { id: 'evt-afx-' + id, ...booking };
-          const isAux = RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(booking.space);
-          if (isAux) {
-            row.noTechNeeded = true;
-            row.technicians = [{ userId: '', role: 'None', isNoTech: true, isFreelancer: false, freelancerName: '', startTime: '', finishTime: '', bookingStatus: 'confirmed' }];
-          }
-          row.artifaxHistory = [];
-          if (techInfoNotes) {
-              row.artifaxHistory.push({
-                  date: new Date().toISOString(),
-                  notes: techInfoNotes,
-                  changes: ["Initial sync from Artifax"]
-              });
-          }
-          row.notes = techInfoNotes || '';
-          row.artifaxNotes = techInfoNotes || '';
-          row.techInfo = techInfoNotes || '';
-          created++;
-        }
-        
-        store.upsert('advancing', row);
-        if (RMTP.syncAdvancingToRota) {
-          try { RMTP.syncAdvancingToRota(row); } catch (err) { /* ignore */ }
-        }
-        if (RMTP.syncAdvanceToDcp) {
-          try { RMTP.syncAdvanceToDcp(row); } catch (err) { /* ignore */ }
-        }
-      }
-
-      if (RMTP.syncAdvancingToDcps) {
-        try { RMTP.syncAdvancingToDcps(); } catch (err) { /* ignore */ }
-      }
-
-      if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
-      
-      const skippedMsg = skipped > 0 ? `, ${skipped} skipped` : '';
-      if (!silent || created > 0 || updated > 0) {
-         ui.toast('Artifax: ' + created + ' added, ' + updated + ' updated' + skippedMsg, 'ok');
-      }
-      if (afx) afx.disabled = false;
-      RMTP.router.render();
-    } catch (e) {
-      if (!silent) ui.toast('Artifax sync failed: ' + e.message, 'danger'); 
-      if (afx) afx.disabled = false;
+    if (RMTP.artifax && typeof RMTP.artifax.sync === 'function') {
+      return RMTP.artifax.sync({ silent: !!silent, dryRun: false });
     }
   };
 
   const afx = el.querySelector('#artifax-sync');
   if (afx) afx.addEventListener('click', () => RMTP.syncArtifax(false));
 
-  // Bulk Delete Function
+  const afxDiag = el.querySelector('#artifax-diagnostics');
+  if (afxDiag) afxDiag.addEventListener('click', () => {
+    if (RMTP.artifax && typeof RMTP.artifax.openDiagnosticsModal === 'function') {
+      RMTP.artifax.openDiagnosticsModal();
+    }
+  });
+
+  // Bulk Delete Function (DB-persisted suppression + unworked Rota shift cancellation)
   const handleBulkDelete = async (e) => {
     if (e) { e.preventDefault(); e.stopPropagation(); }
     if (selectedForBulkDelete.size === 0) return;
-    if (!confirm(`Are you sure you want to delete ${selectedForBulkDelete.size} event(s)?`)) return;
-    for (let id of selectedForBulkDelete) {
+    const count = selectedForBulkDelete.size;
+    const ok = await ui.confirm(
+      `Delete ${count} selected event${count === 1 ? '' : 's'}? Artifax events will be permanently suppressed in the database so future syncs won't restore them (you can unhide them anytime from the Deleted tab), and any linked unworked Rota shifts will be cancelled.`,
+      { title: 'Delete Selected Events', confirmLabel: 'Delete ' + count + ' Event' + (count === 1 ? '' : 's'), danger: true }
+    );
+    if (!ok) return;
+
+    const eventsToDelete = [];
+    for (const id of selectedForBulkDelete) {
       const ev = store.find('advancing', id);
-      if (ev) store.upsert('advancing', Object.assign({}, ev, { deleted: true }));
+      if (ev) eventsToDelete.push(ev);
+    }
+
+    if (RMTP.artifax && typeof RMTP.artifax.suppressEventsBulk === 'function') {
+      const res = await RMTP.artifax.suppressEventsBulk(eventsToDelete, 'Deleted in portal (bulk)');
+      selectedForBulkDelete.clear();
+      bulkDeleteMode = RMTP._advBulkDeleteMode = false;
+      const currentScroll = window.scrollY || document.documentElement.scrollTop;
+      const shiftNote = res && res.cancelledShifts > 0 ? ` (${res.cancelledShifts} unworked shift${res.cancelledShifts === 1 ? '' : 's'} cancelled)` : '';
+      ui.toast(`Deleted ${eventsToDelete.length} event${eventsToDelete.length === 1 ? '' : 's'}${shiftNote}`, 'ok');
+      RMTP.router.render();
+      window.scrollTo(0, currentScroll);
+      return;
+    }
+
+    for (const ev of eventsToDelete) {
+      store.upsert('advancing', Object.assign({}, ev, { deleted: true }));
     }
     selectedForBulkDelete.clear();
     bulkDeleteMode = RMTP._advBulkDeleteMode = false;
@@ -3108,7 +2716,12 @@ RMTP.views.advancing = function (el, params, query) {
 
           '<div class="flex items-center gap-1.5 shrink-0 self-end sm:self-start w-full sm:w-auto justify-end flex-wrap pt-2 sm:pt-0 border-t sm:border-t-0 border-line/40">' +
             (ev.deleted ? 
-              '<button data-reinstate="' + ev.id + '" class="btn btn-ok !py-1.5 !px-3 text-xs font-semibold flex items-center gap-1.5 rounded-lg flex-1 sm:flex-initial justify-center">' + ui.icon('refresh', 'w-4 h-4') + '<span>Reinstate Event</span></button>' 
+              (ev._deletedSource === 'artifax'
+                ? '<span class="px-2 py-1 rounded text-[11px] font-medium bg-panel2 border border-line text-muted" title="Suppressed in database — future Artifax syncs will skip this event">Suppressed from Artifax</span>'
+                : '') +
+              (canManageEvents
+                ? '<button data-reinstate="' + ev.id + '" class="btn btn-ok !py-1.5 !px-3 text-xs font-semibold flex items-center gap-1.5 rounded-lg flex-1 sm:flex-initial justify-center">' + ui.icon('refresh', 'w-4 h-4') + '<span>' + (ev._deletedSource === 'artifax' ? 'Unhide &amp; Restore' : 'Reinstate Event') + '</span></button>'
+                : '')
             :
               (!isHires && (ev.category === 'Maintenance Shift' || ev.category === 'Maintenance') ?
                 '<button type="button" data-add-maint-tickets="' + ev.id + '" class="btn btn-secondary !py-1.5 !px-3 text-xs font-semibold text-warning flex items-center gap-1.5 hover:bg-warning/10 rounded-lg flex-1 sm:flex-initial justify-center" title="Add maintenance tickets or consumable orders to this shift">' +
@@ -10522,7 +10135,11 @@ RMTP.views.advancing = function (el, params, query) {
 
         const removedDraft = spaceDrafts[activeSpaceIndex];
         if (removedDraft.rawEvent && removedDraft.rawEvent.id) {
-          store.upsert('advancing', Object.assign({}, removedDraft.rawEvent, { deleted: true }));
+          if (RMTP.artifax && typeof RMTP.artifax.suppressEvent === 'function') {
+            await RMTP.artifax.suppressEvent(removedDraft.rawEvent, 'Removed from event run');
+          } else {
+            store.upsert('advancing', Object.assign({}, removedDraft.rawEvent, { deleted: true }));
+          }
         }
 
         spaceDrafts.splice(activeSpaceIndex, 1);
@@ -10552,13 +10169,23 @@ RMTP.views.advancing = function (el, params, query) {
       ui.toast('Deleting events is restricted to Technical Managers and Admins.', 'danger');
       return;
     }
-    const ok = await ui.confirm('Move \u201c' + ev.name + '\u201d to Deleted Events?',
-      { title: 'Delete event', confirmLabel: 'Delete', danger: true });
+    const isAfx = !!(RMTP.artifax && RMTP.artifax.isArtifaxEvent && RMTP.artifax.isArtifaxEvent(ev));
+    const msg = isAfx
+      ? 'Delete \u201c' + ev.name + '\u201d? It will be permanently suppressed in the database so future Artifax syncs will not restore it (you can unhide it anytime in the Deleted tab), and any linked unworked Rota shifts will be cancelled.'
+      : 'Move \u201c' + ev.name + '\u201d to Deleted Events and cancel any linked unworked Rota shifts?';
+    const ok = await ui.confirm(msg, { title: 'Delete event', confirmLabel: 'Delete', danger: true });
     if (ok) {
-      store.upsert('advancing', Object.assign({}, ev, { deleted: true }));
-      
       const currentScroll = window.scrollY || document.documentElement.scrollTop;
-      ui.toast('Event moved to Deleted Events', 'ok'); 
+      if (RMTP.artifax && typeof RMTP.artifax.suppressEvent === 'function') {
+        const res = await RMTP.artifax.suppressEvent(ev, 'Deleted in portal');
+        const shiftNote = res && res.cancelledShifts > 0
+          ? ' (' + res.cancelledShifts + ' unworked shift' + (res.cancelledShifts === 1 ? '' : 's') + ' cancelled)'
+          : '';
+        ui.toast((isAfx ? 'Event suppressed from Artifax sync' : 'Event moved to Deleted Events') + shiftNote, 'ok');
+      } else {
+        store.upsert('advancing', Object.assign({}, ev, { deleted: true }));
+        ui.toast('Event moved to Deleted Events', 'ok');
+      }
       RMTP.router.render();
       window.scrollTo(0, currentScroll);
     }
@@ -10569,9 +10196,14 @@ RMTP.views.advancing = function (el, params, query) {
       ui.toast('Reinstating events is restricted to Technical Managers and Admins.', 'danger');
       return;
     }
-    store.upsert('advancing', Object.assign({}, ev, { deleted: false }));
     const currentScroll = window.scrollY || document.documentElement.scrollTop;
-    ui.toast('Event reinstated', 'ok'); 
+    if (RMTP.artifax && typeof RMTP.artifax.unhideEvent === 'function') {
+      const res = await RMTP.artifax.unhideEvent(ev);
+      ui.toast(res && res.isArtifax ? 'Event unhidden & restored (Artifax sync will keep it updated)' : 'Event reinstated', 'ok');
+    } else {
+      store.upsert('advancing', Object.assign({}, ev, { deleted: false }));
+      ui.toast('Event reinstated', 'ok');
+    }
     RMTP.router.render();
     window.scrollTo(0, currentScroll);
   }

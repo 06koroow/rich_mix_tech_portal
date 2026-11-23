@@ -8212,12 +8212,19 @@ RMTP.views.rota = (function () {
 
     // Listen for live venue crew specification updates, Tech Tag updates, and cloud availability refreshes
     let isRenderingFromStore = false;
+    const myRenderToken = RMTP._renderToken;
+    const isRotaStillActive = () => {
+      if (RMTP._currentView && RMTP._currentView !== 'rota') return false;
+      if (myRenderToken != null && RMTP._renderToken !== myRenderToken) return false;
+      return el.isConnected;
+    };
+
     const onVenuesUpdated = () => {
-      if (!el.isConnected) return;
+      if (!isRotaStillActive()) return;
       renderActiveTab();
     };
     const onTechTagsUpdated = () => {
-      if (!el.isConnected) return;
+      if (!isRotaStillActive()) return;
       renderActiveTab();
     };
     window.addEventListener('rmtp:venues-updated', onVenuesUpdated);
@@ -8225,16 +8232,21 @@ RMTP.views.rota = (function () {
 
     const unsubStore = store.onChange((collName) => {
       if (collName !== 'availability' && collName !== 'bookings') return;
-      if (!el.isConnected || isRenderingFromStore) return;
+      if (!isRotaStillActive() || isRenderingFromStore) return;
       isRenderingFromStore = true;
       try { renderActiveTab(); } finally { isRenderingFromStore = false; }
     });
 
-    RMTP._rotaCleanup = () => {
+    const teardownRota = () => {
       window.removeEventListener('rmtp:venues-updated', onVenuesUpdated);
       window.removeEventListener('rmtp:tech-tags-updated', onTechTagsUpdated);
       if (typeof unsubStore === 'function') unsubStore();
+      if (RMTP._rotaCleanup === teardownRota) RMTP._rotaCleanup = null;
     };
+    RMTP._rotaCleanup = teardownRota;
+    if (RMTP.router && typeof RMTP.router.onUnmount === 'function') {
+      RMTP.router.onUnmount(teardownRota);
+    }
 
     // Initial render + background cloud availability sync
     renderActiveTab();

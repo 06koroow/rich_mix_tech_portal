@@ -29,6 +29,32 @@ RMTP.router = (function () {
     return isHires ? 'hires' : RMTP.HOME;
   }
 
+  const unmountCleanups = [];
+
+  function runUnmountCleanups() {
+    while (unmountCleanups.length) {
+      const fn = unmountCleanups.pop();
+      try { if (typeof fn === 'function') fn(); } catch (e) { console.warn('[router] unmount cleanup error', e); }
+    }
+    // Also clean up any legacy view-scoped hooks so orphaned listeners can never repaint #content
+    ['_dcpUnsubscribe', '_rotaCleanup', '_proceduresCleanup'].forEach((key) => {
+      if (typeof RMTP[key] === 'function') {
+        try { RMTP[key](); } catch (e) { /* ignore */ }
+        RMTP[key] = null;
+      }
+    });
+  }
+
+  function onUnmount(fn) {
+    if (typeof fn === 'function') unmountCleanups.push(fn);
+  }
+
+  function isViewActive(viewId, token) {
+    if (RMTP._currentView !== viewId) return false;
+    if (token != null && RMTP._renderToken !== token) return false;
+    return true;
+  }
+
   function render() {
     const { view, params, query } = parse();
     const defaultHome = getDefaultHome();
@@ -57,8 +83,14 @@ RMTP.router = (function () {
     const content = document.getElementById('content');
     if (!content) return;
 
+    // Tear down any listeners/timers owned by the previous view before mounting the next view
+    runUnmountCleanups();
+
     RMTP._previousView = RMTP._currentView || null;
     RMTP._currentView = id;
+    RMTP._renderToken = (RMTP._renderToken || 0) + 1;
+    content.dataset.activeView = id;
+    content.dataset.renderToken = String(RMTP._renderToken);
 
     // Update navigation to ensure correct items are visible and active
     if (RMTP.shell && typeof RMTP.shell.renderNavigation === 'function') {
@@ -67,7 +99,8 @@ RMTP.router = (function () {
 
     content.innerHTML = '';
     try {
-      RMTP.views[id](content, params, query);
+      const maybeCleanup = RMTP.views[id](content, params, query);
+      if (typeof maybeCleanup === 'function') onUnmount(maybeCleanup);
     } catch (e) {
       console.error('[router] view "' + id + '" failed', e);
       content.innerHTML = '<div class="panel p-6"><p class="font-display font-semibold text-danger">Something went wrong</p>' +
@@ -95,5 +128,5 @@ RMTP.router = (function () {
     render();
   }
 
-  return { start, render, parse };
+  return { start, render, parse, onUnmount, isViewActive };
 })();

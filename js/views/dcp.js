@@ -3733,10 +3733,17 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     });
   }
 
+  const myRenderToken = RMTP._renderToken;
+  const isDcpStillActive = () => {
+    if (RMTP._currentView && RMTP._currentView !== 'dcp') return false;
+    if (myRenderToken != null && RMTP._renderToken !== myRenderToken) return false;
+    return document.body.contains(el);
+  };
+
   // Initial render + hydrate shared cloud dismissals in background
   renderView();
   eng.hydrateDismissalsFromDb().then(() => {
-    if (document.body.contains(el) && !eng.isSyncing()) {
+    if (isDcpStillActive() && !eng.isSyncing()) {
       renderView();
     }
   }).catch(() => {});
@@ -3748,12 +3755,26 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
   }
   if (store.onChange) {
     let _refreshTimer = null;
-    RMTP._dcpUnsubscribe = store.onChange((col) => {
+    let _unsubStore = null;
+    const teardownDcp = () => {
+      if (_refreshTimer) {
+        clearTimeout(_refreshTimer);
+        _refreshTimer = null;
+      }
+      if (typeof _unsubStore === 'function') {
+        const fn = _unsubStore;
+        _unsubStore = null;
+        try { fn(); } catch (e) { /* ignore */ }
+      }
+      if (RMTP._dcpUnsubscribe === teardownDcp) {
+        RMTP._dcpUnsubscribe = null;
+      }
+    };
+    _unsubStore = store.onChange((col) => {
       if (eng.isSyncing()) return;
       if (col && col !== 'advancing' && col !== 'dcps' && col !== 'bookings') return;
-      if (!document.body.contains(el)) {
-        if (RMTP._dcpUnsubscribe) RMTP._dcpUnsubscribe();
-        RMTP._dcpUnsubscribe = null;
+      if (!isDcpStillActive()) {
+        teardownDcp();
         return;
       }
       // Do not clobber an active input field while typing
@@ -3763,9 +3784,14 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       }
       clearTimeout(_refreshTimer);
       _refreshTimer = setTimeout(() => {
-        if (document.body.contains(el) && !eng.isSyncing()) renderView();
+        _refreshTimer = null;
+        if (isDcpStillActive() && !eng.isSyncing()) renderView();
       }, 180);
     });
+    RMTP._dcpUnsubscribe = teardownDcp;
+    if (RMTP.router && typeof RMTP.router.onUnmount === 'function') {
+      RMTP.router.onUnmount(teardownDcp);
+    }
   }
 
   // If a specific screening ID was passed in query e.g. #/dcp?id=dcp-123, open its modal automatically
@@ -3778,7 +3804,9 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       (Array.isArray(d.linkedEventIds) && d.linkedEventIds.includes(query.id))
     );
     if (target) {
-      setTimeout(() => openSignoffModal(target), 100);
+      setTimeout(() => {
+        if (isDcpStillActive()) openSignoffModal(target);
+      }, 100);
     }
   }
 };

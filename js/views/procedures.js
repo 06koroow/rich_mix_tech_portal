@@ -50,9 +50,15 @@ RMTP.views.procedures = function (el, params) {
   if (typeof RMTP._proceduresCleanup === 'function') {
     try { RMTP._proceduresCleanup(); } catch (e) {}
   }
+  const myRenderToken = RMTP._renderToken;
+  const isProcsStillActive = () => {
+    if (RMTP._currentView && RMTP._currentView !== 'procedures') return false;
+    if (myRenderToken != null && RMTP._renderToken !== myRenderToken) return false;
+    return el.isConnected;
+  };
   let isSelfRendering = false;
   const unsubProcs = store.onChange((collName) => {
-    if (collName !== 'procedures' || !el.isConnected || isSelfRendering) return;
+    if (collName !== 'procedures' || !isProcsStillActive() || isSelfRendering) return;
     isSelfRendering = true;
     try {
       RMTP.views.procedures(el, safeParams);
@@ -60,9 +66,14 @@ RMTP.views.procedures = function (el, params) {
       isSelfRendering = false;
     }
   });
-  RMTP._proceduresCleanup = () => {
+  const teardownProcs = () => {
     if (typeof unsubProcs === 'function') unsubProcs();
+    if (RMTP._proceduresCleanup === teardownProcs) RMTP._proceduresCleanup = null;
   };
+  RMTP._proceduresCleanup = teardownProcs;
+  if (RMTP.router && typeof RMTP.router.onUnmount === 'function') {
+    RMTP.router.onUnmount(teardownProcs);
+  }
 
   if (RMTP.syncSb && typeof RMTP.syncSb.pullCollection === 'function' && (!RMTP.supabase || !RMTP.supabase.isConfigured || RMTP.supabase.isConfigured())) {
     const now = Date.now();

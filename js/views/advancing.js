@@ -849,25 +849,23 @@ RMTP.views.advancing = function (el, params, query) {
   }
 
   function getRunIdentityKey(ev) {
-    const spKey = (formatSpaceLabel(ev.space) || '').trim().toLowerCase();
-    const isArtifax = !!(ev.artifaxId || (ev.id && String(ev.id).startsWith('evt-afx-')));
-    // Artifax bookings strictly follow 1 row per booked venue space — NEVER merge different rooms
-    // from the same arrangement or matching title into a multi-space card.
-    if (isArtifax) {
-      const arrId = (ev.production_package && ev.production_package.artifaxArrangementId)
-        ? String(ev.production_package.artifaxArrangementId).trim()
-        : '';
-      const normName = (ev.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
-      if (arrId) return 'afx:' + spKey + '|arr:' + arrId;
-      if (normName && normName !== 'untitled') return 'afx:' + spKey + '|name:' + normName;
-      return 'solo:' + ev.id;
-    }
+    // 1. Explicit portal group (manual multi-room creation or Merge button)
     if (ev.groupId && !String(ev.groupId).startsWith('implicit-')) {
       return 'gid:' + String(ev.groupId).trim();
     }
+    // 2. Artifax Arrangement ID — genuinely multi-room bookings under the same Artifax
+    //    arrangement combine into one multi-room card, while unrelated bookings with
+    //    similar/generic titles (different arrangement IDs) stay strictly separate.
+    const arrId = (ev.production_package && ev.production_package.artifaxArrangementId)
+      ? String(ev.production_package.artifaxArrangementId).trim()
+      : (ev.arrangementId ? String(ev.arrangementId).trim() : '');
+    if (arrId) {
+      return 'afx-arr:' + arrId;
+    }
+    // 3. Fallback for legacy/manual entries without groupId or arrangementId
     const normName = (ev.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
     if (normName && normName !== 'untitled') {
-      return 'name:' + spKey + '|' + normName;
+      return 'name:' + normName;
     }
     return 'solo:' + ev.id;
   }

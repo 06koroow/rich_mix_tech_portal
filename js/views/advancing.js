@@ -2046,20 +2046,62 @@ RMTP.views.advancing = function (el, params, query) {
     if (cancelBtn) cancelBtn.addEventListener('click', m.close);
   }
 
-  // Delegate Artifax sync to the unified RMTP.artifax v2 engine
-  RMTP.syncArtifax = async (silent = false) => {
+  // Self-healing loader in case a stale cached index.html hadn't loaded js/artifax.js yet
+  function ensureArtifaxModule() {
     if (RMTP.artifax && typeof RMTP.artifax.sync === 'function') {
-      return RMTP.artifax.sync({ silent: !!silent, dryRun: false });
+      return Promise.resolve(RMTP.artifax);
+    }
+    if (RMTP._artifaxLoadPromise) return RMTP._artifaxLoadPromise;
+    RMTP._artifaxLoadPromise = new Promise((resolve) => {
+      try {
+        const s = document.createElement('script');
+        s.src = 'js/artifax.js?v=' + Date.now();
+        s.onload = () => {
+          RMTP._artifaxLoadPromise = null;
+          resolve(RMTP.artifax || null);
+        };
+        s.onerror = () => {
+          RMTP._artifaxLoadPromise = null;
+          resolve(null);
+        };
+        document.head.appendChild(s);
+      } catch (e) {
+        RMTP._artifaxLoadPromise = null;
+        resolve(null);
+      }
+    });
+    return RMTP._artifaxLoadPromise;
+  }
+
+  // Delegate Artifax sync to the unified RMTP.artifax v3 engine
+  RMTP.syncArtifax = async (silent = false) => {
+    try {
+      const afxMod = await ensureArtifaxModule();
+      if (afxMod && typeof afxMod.sync === 'function') {
+        return afxMod.sync({ silent: !!silent, dryRun: false });
+      }
+      if (!silent) ui.toast('Could not load Artifax sync module (js/artifax.js). Try a hard refresh (Ctrl+Shift+R).', 'danger');
+    } catch (err) {
+      console.error('[advancing] Artifax sync click error:', err);
+      if (!silent) ui.toast('Artifax sync error: ' + ((err && err.message) || err), 'danger');
     }
   };
 
   const afx = el.querySelector('#artifax-sync');
-  if (afx) afx.addEventListener('click', () => RMTP.syncArtifax(false));
+  if (afx) afx.addEventListener('click', () => { RMTP.syncArtifax(false); });
 
   const afxDiag = el.querySelector('#artifax-diagnostics');
-  if (afxDiag) afxDiag.addEventListener('click', () => {
-    if (RMTP.artifax && typeof RMTP.artifax.openDiagnosticsModal === 'function') {
-      RMTP.artifax.openDiagnosticsModal();
+  if (afxDiag) afxDiag.addEventListener('click', async () => {
+    try {
+      const afxMod = await ensureArtifaxModule();
+      if (afxMod && typeof afxMod.openDiagnosticsModal === 'function') {
+        afxMod.openDiagnosticsModal();
+      } else {
+        ui.toast('Could not load Artifax diagnostics module (js/artifax.js). Try a hard refresh (Ctrl+Shift+R).', 'danger');
+      }
+    } catch (err) {
+      console.error('[advancing] Sync Log click error:', err);
+      ui.toast('Could not open Sync Log: ' + ((err && err.message) || err), 'danger');
     }
   });
 
@@ -3724,12 +3766,72 @@ RMTP.views.advancing = function (el, params, query) {
           '</div>'
         ) : '') +
 
-        // Tech Spec file
-        (ev.techSpec ? (
-          '<button id="modal-open-spec" class="inline-flex items-center gap-2 text-xs text-accent hover:underline self-start p-2.5 rounded-lg bg-panel border border-line">' +
-            ui.icon('file', 'w-4 h-4') + '<span>Tech spec: <strong>' + ui.esc(ev.techSpec.name) + '</strong> (' + files.humanSize(ev.techSpec.size) + ')</span>' +
-          '</button>'
-        ) : '') +
+        // Tech Spec & Artifax Two-Way Sync / Documents Panel
+        (() => {
+          const isAfxEv = RMTP.artifax && RMTP.artifax.isArtifaxEvent(ev);
+          if (!ev.techSpec && !isAfxEv) return '';
+          const pkg = (ev.production_package && typeof ev.production_package === 'object') ? ev.production_package : {};
+          const pushAt = pkg.artifaxLastPushedAt ? new Date(pkg.artifaxLastPushedAt).toLocaleString() : '';
+          const pushStatus = pkg.artifaxLastPushStatus || '';
+          const isPdfSpec = ev.techSpec && (
+            String(ev.techSpec.name || '').toLowerCase().endsWith('.pdf') ||
+            String(ev.techSpec.type || '').toLowerCase() === 'application/pdf'
+          );
+          const statusLine = pushStatus === 'ok' && pushAt
+            ? '<span class="text-ok font-medium">Synced to Artifax \u00b7 ' + ui.esc(pushAt) + '</span>'
+            : pushStatus === 'not_configured'
+              ? '<span class="text-warning">Artifax write-back form IDs not configured yet (open Sync Log \u2192 Discover Artifax Schema)</span>'
+              : pushStatus === 'error'
+                ? '<span class="text-danger">Last push error: ' + ui.esc(pkg.artifaxLastPushError || 'Check Artifax credentials') + '</span>'
+                : '<span class="text-muted">Not pushed to Artifax yet (auto-pushes on save)</span>';
+
+          return (
+            '<div class="p-3.5 rounded-xl bg-panel2/30 border border-line grid gap-3 text-xs">' +
+              '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+                '<span class="eyebrow">Documents' + (isAfxEv ? ' &amp; Artifax Sync' : '') + '</span>' +
+                (isAfxEv ? '<span id="modal-afx-push-status" class="text-[11px]">' + statusLine + '</span>' : '') +
+              '</div>' +
+
+              (ev.techSpec ? (
+                '<div class="flex items-center justify-between gap-2 flex-wrap p-2.5 rounded-lg bg-panel border border-line">' +
+                  '<button id="modal-open-spec" class="inline-flex items-center gap-2 text-xs text-accent hover:underline text-left">' +
+                    ui.icon('file', 'w-4 h-4 shrink-0') +
+                    '<span>Portal Tech Spec: <strong>' + ui.esc(ev.techSpec.name) + '</strong> (' + files.humanSize(ev.techSpec.size) + ')</span>' +
+                  '</button>' +
+                  (isAfxEv && canManageEvents && isPdfSpec ? (
+                    '<button id="modal-afx-upload-spec" type="button" class="btn btn-ghost !py-1 !px-2 text-[11px] border border-line">' +
+                      ui.icon('upload', 'w-3.5 h-3.5') + '<span>Push Spec PDF to Artifax</span>' +
+                    '</button>'
+                  ) : '') +
+                '</div>'
+              ) : '') +
+
+              (isAfxEv ? (
+                '<div class="grid gap-2">' +
+                  (canManageEvents ? (
+                    '<div class="flex items-center gap-2 flex-wrap">' +
+                      '<button id="modal-afx-push" type="button" class="btn btn-primary !py-1.5 text-xs inline-flex items-center gap-1.5">' +
+                        ui.icon('upload', 'w-3.5 h-3.5') + '<span>Push to Artifax</span>' +
+                      '</button>' +
+                      '<button id="modal-afx-upload-advance" type="button" class="btn btn-ghost !py-1.5 text-xs border border-line inline-flex items-center gap-1.5">' +
+                        ui.icon('file', 'w-3.5 h-3.5') + '<span>Send Advance Sheet PDF to Artifax</span>' +
+                      '</button>' +
+                      '<button id="modal-afx-refresh-docs" type="button" class="btn btn-ghost !py-1.5 text-xs inline-flex items-center gap-1.5 text-muted">' +
+                        ui.icon('reset', 'w-3.5 h-3.5') + '<span>Refresh Artifax PDFs</span>' +
+                      '</button>' +
+                    '</div>'
+                  ) : (
+                    '<div class="flex items-center justify-between">' +
+                      '<span class="text-[11px] font-semibold text-muted uppercase tracking-wider">Artifax PDF Documents</span>' +
+                      '<button id="modal-afx-refresh-docs" type="button" class="btn btn-ghost !py-1 text-[11px] text-muted">Refresh PDFs</button>' +
+                    '</div>'
+                  )) +
+                  '<div id="modal-afx-docs-list" class="grid gap-1.5"></div>' +
+                '</div>'
+              ) : '') +
+            '</div>'
+          );
+        })() +
 
         '</div>' + // end tech tab
       '<div id="modal-tab-content-hires" class="modal-tab-content hidden grid gap-4"></div>' +
@@ -3883,6 +3985,134 @@ RMTP.views.advancing = function (el, params, query) {
 
     const specBtn = m.root.querySelector('#modal-open-spec');
     if (specBtn) specBtn.addEventListener('click', () => files.open(ev.techSpec));
+
+    // Artifax Two-Way Write-Back & PDF Documents Wiring
+    if (RMTP.artifax && RMTP.artifax.isArtifaxEvent(ev)) {
+      const docsListEl = m.root.querySelector('#modal-afx-docs-list');
+      const pushStatusEl = m.root.querySelector('#modal-afx-push-status');
+      const getLatestEv = () => store.find('advancing', ev.id) || ev;
+
+      const renderArtifaxDocsList = (docs, noteText) => {
+        if (!docsListEl) return;
+        const list = Array.isArray(docs) ? docs : [];
+        if (!list.length) {
+          docsListEl.innerHTML =
+            '<div class="text-[11px] text-muted italic py-1">' +
+              ui.esc(noteText || 'No PDF documents found on this Artifax event yet.') +
+            '</div>';
+          return;
+        }
+        docsListEl.innerHTML = list.map((doc, idx) => (
+          '<div class="flex items-center justify-between gap-2 p-2 rounded-lg bg-panel border border-line">' +
+            '<div class="min-w-0 flex items-center gap-2">' +
+              ui.icon('file', 'w-3.5 h-3.5 text-accent shrink-0') +
+              '<div class="min-w-0">' +
+                '<div class="font-medium text-ink truncate">' + ui.esc(doc.name || 'Document.pdf') + '</div>' +
+                '<div class="text-[10px] text-muted">' +
+                  (doc.origin === 'portal' ? 'Uploaded from Portal' : 'From Artifax') +
+                  (doc.size ? ' \u00b7 ' + ui.esc(files.humanSize(doc.size)) : '') +
+                  (doc.uploadedAt ? ' \u00b7 ' + ui.esc(String(doc.uploadedAt).slice(0, 10)) : '') +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+            '<button type="button" data-afx-doc-idx="' + idx + '" class="btn btn-ghost !py-1 !px-2 text-[11px] text-accent shrink-0">View / Download PDF</button>' +
+          '</div>'
+        )).join('');
+
+        docsListEl.querySelectorAll('[data-afx-doc-idx]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const dIdx = parseInt(btn.getAttribute('data-afx-doc-idx'), 10);
+            const targetDoc = list[dIdx];
+            if (!targetDoc) return;
+            btn.disabled = true;
+            const prevTxt = btn.textContent;
+            btn.textContent = 'Loading...';
+            await RMTP.artifax.openArtifaxDocument(getLatestEv(), targetDoc);
+            btn.disabled = false;
+            btn.textContent = prevTxt;
+          });
+        });
+      };
+
+      const initialDocs = (ev.production_package && Array.isArray(ev.production_package.artifaxDocuments))
+        ? ev.production_package.artifaxDocuments
+        : [];
+      renderArtifaxDocsList(initialDocs, 'Checking Artifax for PDF documents...');
+
+      const loadDocsFromArtifax = async (showSpinner) => {
+        if (showSpinner && docsListEl) {
+          docsListEl.innerHTML = '<div class="text-[11px] text-muted italic py-1">Loading PDFs from Artifax...</div>';
+        }
+        const res = await RMTP.artifax.listDocuments(getLatestEv());
+        if (res && res.ok) {
+          renderArtifaxDocsList(res.documents || []);
+        } else {
+          const cached = ((getLatestEv().production_package || {}).artifaxDocuments) || [];
+          renderArtifaxDocsList(cached, (res && res.error) || 'Could not check Artifax documents.');
+        }
+      };
+
+      // Non-blocking background refresh of Artifax PDFs when detail modal opens
+      loadDocsFromArtifax(false);
+
+      const refreshDocsBtn = m.root.querySelector('#modal-afx-refresh-docs');
+      if (refreshDocsBtn) {
+        refreshDocsBtn.addEventListener('click', async () => {
+          refreshDocsBtn.disabled = true;
+          await loadDocsFromArtifax(true);
+          refreshDocsBtn.disabled = false;
+        });
+      }
+
+      const pushBtn = m.root.querySelector('#modal-afx-push');
+      if (pushBtn) {
+        pushBtn.addEventListener('click', async () => {
+          pushBtn.disabled = true;
+          const lbl = pushBtn.querySelector('span');
+          if (lbl) lbl.textContent = 'Pushing...';
+          const res = await RMTP.artifax.pushEvent(getLatestEv(), { force: true, silent: false });
+          pushBtn.disabled = false;
+          if (lbl) lbl.textContent = 'Push to Artifax';
+          if (pushStatusEl) {
+            if (res && res.ok) {
+              pushStatusEl.innerHTML = '<span class="text-ok font-medium">Synced to Artifax \u00b7 ' + ui.esc(new Date(res.pushedAt || Date.now()).toLocaleString()) + '</span>';
+            } else if (res && res.notConfigured) {
+              pushStatusEl.innerHTML = '<span class="text-warning">Custom Form IDs not configured yet (open Sync Log \u2192 Discover Artifax Schema)</span>';
+            } else if (res && res.error) {
+              pushStatusEl.innerHTML = '<span class="text-danger">Push failed: ' + ui.esc(res.error) + '</span>';
+            }
+          }
+        });
+      }
+
+      const uploadSpecBtn = m.root.querySelector('#modal-afx-upload-spec');
+      if (uploadSpecBtn) {
+        uploadSpecBtn.addEventListener('click', async () => {
+          uploadSpecBtn.disabled = true;
+          const lbl = uploadSpecBtn.querySelector('span');
+          if (lbl) lbl.textContent = 'Uploading...';
+          const res = await RMTP.artifax.uploadEventTechSpecPdf(getLatestEv(), { force: false, silent: false });
+          uploadSpecBtn.disabled = false;
+          if (lbl) lbl.textContent = 'Push Spec PDF to Artifax';
+          if (res && res.ok) await loadDocsFromArtifax(false);
+        });
+      }
+
+      const uploadAdvBtn = m.root.querySelector('#modal-afx-upload-advance');
+      if (uploadAdvBtn) {
+        uploadAdvBtn.addEventListener('click', async () => {
+          uploadAdvBtn.disabled = true;
+          const lbl = uploadAdvBtn.querySelector('span');
+          if (lbl) lbl.textContent = 'Generating PDF...';
+          const latestEv = getLatestEv();
+          const htmlContent = buildSingleRoomPrintHtml(latestEv, true);
+          const res = await RMTP.artifax.uploadGeneratedAdvancePdf(latestEv, htmlContent, { silent: false });
+          uploadAdvBtn.disabled = false;
+          if (lbl) lbl.textContent = 'Send Advance Sheet PDF to Artifax';
+          if (res && res.ok) await loadDocsFromArtifax(false);
+        });
+      }
+    }
 
     const artifaxHistorySel = m.root.querySelector('.modal-artifax-history-select');
     const artifaxNotesEl = m.root.querySelector('.modal-artifax-notes');
@@ -9826,9 +10056,38 @@ RMTP.views.advancing = function (el, params, query) {
       draft.isDirty = false;
       if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
 
+      // Non-blocking Artifax two-way write-back + Tech Spec PDF upload (never blocks or rolls back Supabase save)
+      triggerArtifaxAutoPush([record]);
+
       const savedLabel = draft.date ? (formatShortDayDate(draft.date) + ' \u00b7 ' + (draft.space || 'Space')) : (draft.space || 'current space');
       ui.toast('Saved ' + savedLabel, 'ok');
       renderSpaceTabs();
+    }
+
+    function triggerArtifaxAutoPush(records) {
+      if (!RMTP.artifax || typeof RMTP.artifax.pushEvent !== 'function') return;
+      const afxRecords = (records || []).filter((r) => r && RMTP.artifax.isArtifaxEvent(r));
+      if (!afxRecords.length) return;
+
+      (async () => {
+        let pushedCount = 0;
+        let failedMsg = '';
+        for (const rec of afxRecords) {
+          const res = await RMTP.artifax.pushEvent(rec, { silent: true, force: false });
+          if (res && res.ok && !res.skipped) pushedCount++;
+          else if (res && !res.ok && !res.skipped && !res.notConfigured && !res.needsRedeploy) {
+            failedMsg = res.error || 'Artifax write-back error';
+          }
+          if (rec.techSpec) {
+            await RMTP.artifax.uploadEventTechSpecPdf(rec, { silent: true, force: false }).catch(() => {});
+          }
+        }
+        if (pushedCount > 0) {
+          ui.toast('Synced ' + pushedCount + ' event' + (pushedCount > 1 ? 's' : '') + ' back to Artifax', 'ok');
+        } else if (failedMsg) {
+          ui.toast('Saved in portal (Artifax write-back failed: ' + failedMsg + ')', 'danger');
+        }
+      })().catch(() => {});
     }
 
     async function saveAllSpaces() {
@@ -9883,6 +10142,7 @@ RMTP.views.advancing = function (el, params, query) {
         spaceDrafts.find(d => d.groupId)?.groupId ||
         (spaceDrafts.length > 1 ? ('grp-' + store.uid('evt')) : null);
 
+      const savedRecordsForArtifax = [];
       for (let i = 0; i < spaceDrafts.length; i++) {
         const draft = spaceDrafts[i];
         await checkAndPromptScheduleImpact(draft);
@@ -9909,12 +10169,14 @@ RMTP.views.advancing = function (el, params, query) {
         }
 
         store.upsert('advancing', record);
+        savedRecordsForArtifax.push(record);
         syncPatchSheetForRecord(record, processedScheduleItems);
         syncShiftBookingsForEvent(record);
         if (RMTP.syncAdvanceToDcp) RMTP.syncAdvanceToDcp(record);
       }
 
       if (RMTP.syncSb && RMTP.syncSb.drain) await RMTP.syncSb.drain();
+      triggerArtifaxAutoPush(savedRecordsForArtifax);
 
       const dayCount = getDraftDayGroups().length;
       m.close();

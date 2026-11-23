@@ -457,10 +457,10 @@
     refreshIdentity();
     RMTP.router.start();
 
-    // Auto-sync Artifax on boot if configured and user is signed in
+    // Auto-sync Artifax on boot (gated to TM/ST/Admin with 15-min shared cooldown)
     setTimeout(() => {
-      if (auth.current() && typeof RMTP.syncArtifax === 'function') {
-        RMTP.syncArtifax(true); // pass silent flag if supported
+      if (auth.current() && RMTP.artifax && typeof RMTP.artifax.autoSyncOnBoot === 'function') {
+        RMTP.artifax.autoSyncOnBoot();
       }
     }, 2000);
   })();

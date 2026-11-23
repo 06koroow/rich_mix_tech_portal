@@ -167,10 +167,113 @@ RMTP.views.dcp = function (el, params, query) {
   }
   RMTP.calculateOverallQcOutcome = calculateOverallQcOutcome;
 
+  function getTodayIso() {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  function getNowLocalDateTime() {
+    const d = new Date();
+    return getTodayIso() + 'T' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  function normalizeEventDate(raw) {
+    if (!raw) return '';
+    if (RMTP.normalizeDateStr) return RMTP.normalizeDateStr(raw);
+    const s = String(raw).trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    return s;
+  }
+
+  function parseUniqueSpaces(spaceVal) {
+    const out = [];
+    const seen = new Set();
+    const pushItem = (val) => {
+      if (val == null) return;
+      if (Array.isArray(val)) {
+        val.forEach(pushItem);
+        return;
+      }
+      const str = String(val).trim();
+      if (!str) return;
+      if (str.startsWith('[') && str.endsWith(']')) {
+        try {
+          const parsed = JSON.parse(str);
+          if (Array.isArray(parsed)) {
+            parsed.forEach(pushItem);
+            return;
+          }
+        } catch (e) { /* fall through */ }
+      }
+      str.split(/\s*(?:,|\/|\||&|\+)\s*/).forEach((part) => {
+        const cleaned = part.trim();
+        if (!cleaned) return;
+        const key = cleaned.toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          out.push(cleaned);
+        }
+      });
+    };
+    pushItem(spaceVal);
+    return out;
+  }
+
+  function normalizeCinemaScreen(spaceName) {
+    if (!spaceName) return '';
+    const sLower = String(spaceName).trim().toLowerCase();
+    if (!sLower || sLower.includes('cinema bar') || sLower.includes('bar') || sLower.includes('foyer')) {
+      return '';
+    }
+    if (/\b(screen\s*3|screen\s*three|cinema\s*3|cinema\s*three)\b/.test(sLower)) return 'Screen Three';
+    if (/\b(screen\s*2|screen\s*two|cinema\s*2|cinema\s*two)\b/.test(sLower)) return 'Screen Two';
+    if (/\b(screen\s*1|screen\s*one|cinema\s*1|cinema\s*one)\b/.test(sLower)) return 'Screen One';
+    return '';
+  }
+
+  function isDcpTestChildShift(ev) {
+    if (!ev) return false;
+    if (ev.dcp_parent_event_id) return true;
+    if (String(ev.category || '').trim().toLowerCase() === 'dcp test') return true;
+    if (/^dcp\s*test\s*:/i.test(String(ev.name || ev.title || '').trim())) return true;
+    return false;
+  }
+
+  function isAdvancingEventCancelled(ev) {
+    if (!ev) return false;
+    const st = String(ev.status || '').trim().toLowerCase();
+    return st === 'cancelled' || st === 'canceled';
+  }
+
+  function getCinemaScreensForEvent(ev) {
+    if (!ev || ev.deleted || isDcpTestChildShift(ev)) return [];
+    const screens = [];
+    const addFrom = (val) => {
+      parseUniqueSpaces(val).forEach((sp) => {
+        const norm = normalizeCinemaScreen(sp);
+        if (norm && !screens.includes(norm)) screens.push(norm);
+      });
+    };
+    addFrom(ev.space);
+    if (!screens.length && ev.room) addFrom(ev.room);
+    if (screens.length) return screens;
+
+    // Only pull a non-screen event if cinema media/DCP was explicitly flagged on Advancing
+    const media = String(ev.media_type || ev.mediaType || '').trim().toUpperCase();
+    if (media === 'DCP' || ev.dcp_received === true || ev.dcpReceived === true) {
+      return ['Screen One'];
+    }
+    return [];
+  }
+
+  function getAdvScreeningStartTime(ev) {
+    if (!ev) return '';
+    return ev.screening_starts || ev.screening_starts_time || ev.screeningStartsTime || ev.startTime || '';
+  }
+
   function isCinemaSpace(sp) {
     if (!sp) return false;
-    if (Array.isArray(sp)) return sp.some(s => /Screen|Cinema/i.test(String(s || '')));
-    return /Screen|Cinema/i.test(String(sp || ''));
+    return parseUniqueSpaces(sp).some((s) => !!normalizeCinemaScreen(s));
   }
   RMTP.isCinemaSpace = isCinemaSpace;
 
@@ -181,26 +284,52 @@ RMTP.views.dcp = function (el, params, query) {
   }
 
   function resolveNormalizedScreen(sp, rm) {
-    let raw = 'Screen One';
-    if (Array.isArray(sp)) {
-      const match = sp.find(s => /Screen|Cinema/i.test(String(s)));
-      raw = match || sp[0] || 'Screen One';
-    } else if (sp) {
-      raw = sp;
-    } else if (rm) {
-      raw = rm;
+    const fromSp = parseUniqueSpaces(sp).map(normalizeCinemaScreen).find(Boolean);
+    if (fromSp) return fromSp;
+    const fromRm = parseUniqueSpaces(rm).map(normalizeCinemaScreen).find(Boolean);
+    if (fromRm) return fromRm;
+    return 'Screen One';
+  }
+
+  function getAssignedCrewSummary(dcp, advEv) {
+    const names = [];
+    const seen = new Set();
+    const addName = (n) => {
+      const clean = String(n || '').trim();
+      if (!clean || /^unassigned(\s+tech)?$/i.test(clean) || /^no tech/i.test(clean)) return;
+      const key = clean.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        names.push(clean);
+      }
+    };
+    const allUsers = store.all('users') || [];
+    if (dcp && dcp.eventId) {
+      const targetScreen = normalizeCinemaScreen(dcp.screen);
+      const bookings = (store.all('bookings') || []).filter((b) => {
+        if (!b || b.deleted || b.eventId !== dcp.eventId) return false;
+        const st = String(b.status || '').toLowerCase();
+        if (st === 'cancelled' || st === 'declined') return false;
+        if (b.isNoTech || b.role === 'None') return false;
+        const bScreen = normalizeCinemaScreen(b.space);
+        if (targetScreen && bScreen && bScreen !== targetScreen) return false;
+        return true;
+      });
+      bookings.forEach((b) => {
+        const u = b.userId ? allUsers.find((x) => x.id === b.userId) : null;
+        addName(u ? auth.displayName(u) : b.userName);
+      });
     }
-    const sLower = String(raw).toLowerCase();
-    if (sLower.includes('screen 3') || sLower.includes('screen three') || sLower.includes('cinema 3') || sLower.includes('cinema three')) {
-      return 'Screen Three';
+    if (!names.length && advEv && RMTP.eventTechnicians) {
+      RMTP.eventTechnicians(advEv).forEach((t) => {
+        if (!t || t.isNoTech || t.role === 'None') return;
+        const st = String(t.bookingStatus || '').toLowerCase();
+        if (st === 'cancelled' || st === 'declined') return;
+        const u = t.userId ? allUsers.find((x) => x.id === t.userId) : null;
+        addName(u ? auth.displayName(u) : t.freelancerName);
+      });
     }
-    if (sLower.includes('screen 2') || sLower.includes('screen two') || sLower.includes('cinema 2') || sLower.includes('cinema two')) {
-      return 'Screen Two';
-    }
-    if (sLower.includes('screen 1') || sLower.includes('screen one') || sLower.includes('cinema 1') || sLower.includes('cinema one') || sLower.includes('cinema bar')) {
-      return 'Screen One';
-    }
-    return HARDWARE_MEDIA_BLOCKS[raw] ? raw : 'Screen One';
+    return names;
   }
 
   /* ---- Create / Link Task in Jobs List ---- */
@@ -317,45 +446,50 @@ RMTP.views.dcp = function (el, params, query) {
       changed = true;
     }
 
-    const isPassed = dcp.outcome === 'Passed';
+    const effectiveOutcome = dcp.outcome || 'Pending';
+    const isPassed = effectiveOutcome === 'Passed';
     if (ev.checks_completed !== isPassed || ev.checksCompleted !== isPassed) {
       ev.checks_completed = isPassed;
       ev.checksCompleted = isPassed;
       changed = true;
     }
 
-    if (dcp.outcome && (ev.qc_status !== dcp.outcome || ev.dcp_qc_status !== dcp.outcome)) {
-      ev.qc_status = dcp.outcome;
-      ev.dcp_qc_status = dcp.outcome;
+    if (ev.qc_status !== effectiveOutcome || ev.dcp_qc_status !== effectiveOutcome) {
+      ev.qc_status = effectiveOutcome;
+      ev.dcp_qc_status = effectiveOutcome;
       changed = true;
     }
 
-    if (dcp.issuesNoted !== undefined && ev.dcp_notes !== dcp.issuesNoted) {
-      ev.dcp_notes = dcp.issuesNoted;
+    if (dcp.issuesNoted !== undefined && (ev.dcp_notes || '') !== (dcp.issuesNoted || '')) {
+      ev.dcp_notes = dcp.issuesNoted || '';
       changed = true;
     }
 
-    if (dcp.testedByUserId && ev.dcp_tester_user_id !== dcp.testedByUserId) {
-      ev.dcp_tester_user_id = dcp.testedByUserId;
-      ev.dcpTesterUserId = dcp.testedByUserId;
+    const testerId = dcp.testedByUserId || '';
+    if ((ev.dcp_tester_user_id || '') !== testerId) {
+      ev.dcp_tester_user_id = testerId;
+      ev.dcpTesterUserId = testerId;
       changed = true;
     }
 
-    if (dcp.testDateTime && ev.dcp_test_datetime !== dcp.testDateTime) {
-      ev.dcp_test_datetime = dcp.testDateTime;
-      ev.dcpTestDatetime = dcp.testDateTime;
+    const testDt = dcp.testDateTime || '';
+    if ((ev.dcp_test_datetime || '') !== testDt) {
+      ev.dcp_test_datetime = testDt;
+      ev.dcpTestDatetime = testDt;
       changed = true;
     }
 
-    if (dcp.furtherAction !== undefined && ev.further_action !== dcp.furtherAction) {
-      ev.further_action = dcp.furtherAction;
-      ev.furtherAction = dcp.furtherAction;
+    const furtherAct = dcp.furtherAction || '';
+    if ((ev.further_action || '') !== furtherAct) {
+      ev.further_action = furtherAct;
+      ev.furtherAction = furtherAct;
       changed = true;
     }
 
-    if (dcp.linkedTaskId && ev.linked_task_id !== dcp.linkedTaskId) {
-      ev.linked_task_id = dcp.linkedTaskId;
-      ev.linkedTaskId = dcp.linkedTaskId;
+    const linkedTask = dcp.linkedTaskId || '';
+    if ((ev.linked_task_id || '') !== linkedTask) {
+      ev.linked_task_id = linkedTask;
+      ev.linkedTaskId = linkedTask;
       changed = true;
     }
 
@@ -392,9 +526,10 @@ RMTP.views.dcp = function (el, params, query) {
     const clusterMap = new Map();
 
     dcpsList.forEach(d => {
-      // 1. Group by eventId if present
+      // 1. Group by eventId + screen if present (multi-screen events legitimately have 1 row per screen)
       if (d.eventId && String(d.eventId).trim()) {
-        const evKey = 'event:' + String(d.eventId).trim();
+        const evScreen = normalizeCinemaScreen(d.screen) || resolveNormalizedScreen(d.screen);
+        const evKey = 'event:' + String(d.eventId).trim() + '|' + evScreen;
         if (!clusterMap.has(evKey)) clusterMap.set(evKey, []);
         clusterMap.get(evKey).push(d);
       }
@@ -566,379 +701,315 @@ RMTP.views.dcp = function (el, params, query) {
   }
   RMTP.mergeDuplicateGroup = mergeDuplicateGroup;
 
-  function syncAdvanceToDcp(ev) {
-    if (!ev) return;
-    const isCinema = isCinemaSpace(ev.space) || isCinemaSpace(ev.room);
-    const isDcpCategory = (ev.category === 'Cinema' || ev.category === 'DCP Test');
-    const media = ev.media_type || ev.mediaType || '';
-    const isFilmTitle = /screening|film|cinema|dcp|preview|premiere|q&a|docu|movie/i.test(ev.name || ev.title || '');
-    const isScreenEvent = isCinema || isDcpCategory || isFilmTitle || media === 'DCP' || ev.dcp_received || ev.dcpReceived;
-    if (!isScreenEvent) return;
-
-    const allDcps = store.all('dcps') || [];
-    const normalizedScreen = resolveNormalizedScreen(ev.space, ev.room);
-    const evDedupKey = getDcpDedupKey({
-      filmTitle: ev.name || ev.title,
-      eventName: ev.name || ev.title,
-      eventDate: ev.date || '',
-      screen: normalizedScreen
-    });
-
-    let existing = allDcps.find(d => d.eventId === ev.id || d.id === 'dcp-' + ev.id);
-    if (!existing && evDedupKey) {
-      existing = allDcps.find(d => getDcpDedupKey(d) === evDedupKey);
-      if (existing && !existing.eventId) {
-        existing.eventId = ev.id;
-      }
-    }
-
-    const isEvCancelled = String(ev.status || '').trim().toLowerCase() === 'cancelled';
-    if (isEvCancelled) {
-      if (existing && !existing.isCancelled) {
-        existing.isCancelled = true;
-        existing.outcome = 'Cancelled';
-        existing.updatedAt = new Date().toISOString();
-        store.upsert('dcps', existing);
-      }
-      return;
-    }
-
-    if (existing) {
-      let changed = false;
-      if (ev.name && existing.eventName !== ev.name) { existing.eventName = ev.name; existing.filmTitle = ev.name; changed = true; }
-      const mType = ev.media_type !== undefined ? ev.media_type : (ev.mediaType || '');
-      if (existing.mediaType !== mType) { existing.mediaType = mType; changed = true; }
-      if (ev.date && existing.eventDate !== ev.date) { existing.eventDate = ev.date; changed = true; }
-      const sTime = ev.screening_starts_time || ev.screeningStartsTime || ev.startTime || '';
-      if (sTime && existing.eventStartTime !== sTime) { existing.eventStartTime = sTime; changed = true; }
-      if (ev.finishTime && existing.eventFinishTime !== ev.finishTime) { existing.eventFinishTime = ev.finishTime; changed = true; }
-      if (ev.space && existing.screen !== normalizedScreen && !existing._manualScreen) {
-        existing.screen = normalizedScreen;
-        existing.targetHardware = HARDWARE_MEDIA_BLOCKS[normalizedScreen] || (normalizedScreen + ' Media Block');
-        changed = true;
-      }
-      if (ev.dcp_received !== undefined || ev.dcpReceived !== undefined) {
-        const isRec = !!(ev.dcp_received || ev.dcpReceived);
-        if (existing.mediaReceived !== isRec) { existing.mediaReceived = isRec; changed = true; }
-      }
-      if (ev.checks_completed !== undefined || ev.checksCompleted !== undefined) {
-        const isPassed = !!(ev.checks_completed || ev.checksCompleted);
-        if (isPassed && existing.outcome !== 'Passed') { existing.outcome = 'Passed'; changed = true; }
-        if (isPassed && !existing.tested) { existing.tested = true; changed = true; }
-      }
-      if (ev.qc_status && existing.outcome !== ev.qc_status) { existing.outcome = ev.qc_status; changed = true; }
-      // Decouple from Artifax Event Description: purge any legacy Artifax event descriptions from issuesNoted
-      const artifaxDesc = (ev.techInfo || ev.notes || ev.artifaxNotes || '').trim();
-      if (artifaxDesc && ev.dcp_notes && ev.dcp_notes.trim() === artifaxDesc) {
-        ev.dcp_notes = '';
-      }
-      if (artifaxDesc && existing.issuesNoted && existing.issuesNoted.trim() === artifaxDesc && !ev.dcp_notes) {
-        existing.issuesNoted = '';
-        changed = true;
-      }
-      if (ev.dcp_notes && existing.issuesNoted !== ev.dcp_notes) { existing.issuesNoted = ev.dcp_notes; changed = true; }
-      if (ev.further_action && existing.furtherAction !== ev.further_action) {
-        existing.furtherAction = ev.further_action;
-        existing.hasFurtherAction = true;
-        changed = true;
-      }
-      if (ev.linked_task_id && existing.linkedTaskId !== ev.linked_task_id) {
-        existing.linkedTaskId = ev.linked_task_id;
-        changed = true;
-      }
-      if (changed) {
-        existing.updatedAt = new Date().toISOString();
-        store.upsert('dcps', existing);
-      }
-    } else {
-      const isRcvd = !!(ev.dcp_received || ev.dcpReceived);
-      const isPassed = !!(ev.checks_completed || ev.checksCompleted);
-      const outcomeVal = isPassed ? 'Passed' : (ev.qc_status || 'Pending');
-
-      const newRec = {
-        id: 'dcp-' + ev.id,
-        eventId: ev.id,
-        eventName: ev.name,
-        filmTitle: ev.name,
-        mediaType: ev.media_type || ev.mediaType || '',
-        eventDate: ev.date || '',
-        eventStartTime: ev.screening_starts_time || ev.screeningStartsTime || ev.startTime || '',
-        eventFinishTime: ev.finishTime || '',
-        screen: normalizedScreen,
-        targetHardware: HARDWARE_MEDIA_BLOCKS[normalizedScreen] || (normalizedScreen + ' Media Block'),
-        // Simplified Checklist
-        mediaReceived: isRcvd,
-        kdmCplReceived: (media === 'DCP' ? isRcvd : true),
-        playlistMade: isPassed,
-        tested: isPassed,
-        holdingSlidesReady: false,
-        subsAudioSync: isPassed,
-        issuesNoted: (ev.dcp_notes || '').trim(),
-        outcome: outcomeVal,
-        hasFurtherAction: !!ev.further_action,
-        furtherAction: ev.further_action || '',
-        linkedTaskId: ev.linked_task_id || '',
-        testedByUserId: ev.dcp_tester_user_id || ev.dcpTesterUserId || '',
-        testedByUserName: userName(ev.dcp_tester_user_id || ev.dcpTesterUserId),
-        testDateTime: ev.dcp_test_datetime || ev.dcpTestDatetime || '',
-        createdAt: ev.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      store.upsert('dcps', newRec);
-    }
+  function isManualScreeningRecord(d) {
+    if (!d) return false;
+    if (d.isManual === true) return true;
+    if (!d.eventId && String(d.id || '').startsWith('dcp-manual-')) return true;
+    return false;
   }
-  RMTP.syncAdvanceToDcp = syncAdvanceToDcp;
 
-  /* ---- Auto-Sync Engine: Bridge all screen events into `dcps` ---- */
-  function syncAdvancingToDcps() {
-    const allAdv = store.all('advancing').filter(x => !x.deleted);
-    let dcps = store.all('dcps') || [];
+  function reconcileSingleAdvanceEvent(ev, allDcpsRef) {
+    if (!ev) return { keptIds: [], modified: false };
     let modified = false;
+    const keptIds = [];
+    const screens = getCinemaScreensForEvent(ev);
+    const linkedRows = allDcpsRef.filter((d) =>
+      !isManualScreeningRecord(d) && (
+        d.eventId === ev.id ||
+        d.id === 'dcp-' + ev.id ||
+        String(d.id || '').startsWith('dcp-' + ev.id + '-')
+      )
+    );
 
-    // First run seed if entirely empty
-    if (!dcps.length) {
-      const initialDcpSeeds = [
-        {
-          id: 'dcp-seed-01',
-          eventId: '',
-          eventName: 'Past Lives',
-          filmTitle: 'Past Lives',
-          mediaType: 'DCP',
-          eventDate: '2026-10-20',
-          eventStartTime: '19:30',
-          eventFinishTime: '21:30',
-          screen: 'Screen One',
-          targetHardware: HARDWARE_MEDIA_BLOCKS['Screen One'],
-          mediaReceived: true,
-          kdmCplReceived: true,
-          playlistMade: true,
-          tested: true,
-          holdingSlidesReady: true,
-          subsAudioSync: true,
-          issuesNoted: 'Framing 1.85:1 verified. Audio anchored cleanly to Centre.',
-          outcome: 'Passed',
-          hasFurtherAction: false,
-          furtherAction: '',
-          linkedTaskId: '',
-          testedByUserId: 'user-3',
-          testedByUserName: 'Sam Okafor',
-          testDateTime: '2026-10-20T14:30:00',
-          createdAt: '2026-10-20T10:00:00Z',
-          updatedAt: '2026-10-20T14:35:00Z'
-        },
-        {
-          id: 'dcp-seed-02',
-          eventId: '',
-          eventName: 'Anatomy of a Fall',
-          filmTitle: 'Anatomy of a Fall',
-          mediaType: 'DCP',
-          eventDate: '2026-10-22',
-          eventStartTime: '19:00',
-          eventFinishTime: '21:45',
-          screen: 'Screen Two',
-          targetHardware: HARDWARE_MEDIA_BLOCKS['Screen Two'],
-          mediaReceived: true,
-          kdmCplReceived: true,
-          playlistMade: true,
-          tested: true,
-          holdingSlidesReady: true,
-          subsAudioSync: true,
-          issuesNoted: 'Scope 2.39:1 masking auto-triggered. Dialogue centered.',
-          outcome: 'Passed',
-          hasFurtherAction: false,
-          furtherAction: '',
-          linkedTaskId: '',
-          testedByUserId: 'user-4',
-          testedByUserName: 'Danny Cole',
-          testDateTime: '2026-10-22T11:00:00',
-          createdAt: '2026-10-22T09:00:00Z',
-          updatedAt: '2026-10-22T11:15:00Z'
-        },
-        {
-          id: 'dcp-seed-03',
-          eventId: '',
-          eventName: 'East End Shorts Festival: Showcase Reel',
-          filmTitle: 'East End Shorts Reel A',
-          mediaType: 'Laptop via HDMI',
-          eventDate: '2026-10-23',
-          eventStartTime: '20:00',
-          eventFinishTime: '21:30',
-          screen: 'Screen Three',
-          targetHardware: HARDWARE_MEDIA_BLOCKS['Screen Three'],
-          mediaReceived: true,
-          kdmCplReceived: true,
-          playlistMade: false,
-          tested: true,
-          holdingSlidesReady: false,
-          subsAudioSync: true,
-          issuesNoted: 'Audio level variance between shorts 2 and 3; keep booth fader at 6.5.',
-          outcome: 'Passed with Caveats',
-          hasFurtherAction: true,
-          furtherAction: 'Provide audio booster lead at booth desk before 19:30 doors',
-          linkedTaskId: '',
-          testedByUserId: 'user-3',
-          testedByUserName: 'Sam Okafor',
-          testDateTime: '2026-10-23T09:15:00',
-          createdAt: '2026-10-23T08:00:00Z',
-          updatedAt: '2026-10-23T09:30:00Z'
-        }
-      ];
-      initialDcpSeeds.forEach(s => store.upsert('dcps', s));
-      dcps = store.all('dcps');
+    // If event was deleted, moved out of Screen 1/2/3, or is a DCP Test child shift -> remove stale rows
+    if (!screens.length) {
+      linkedRows.forEach((row) => {
+        store.remove('dcps', row.id);
+        modified = true;
+      });
+      return { keptIds, modified };
     }
 
-    allAdv.forEach(ev => {
-      const isCinema = isCinemaSpace(ev.space) || isCinemaSpace(ev.room);
-      const isDcpCategory = (ev.category === 'Cinema' || ev.category === 'DCP Test');
-      const media = ev.media_type || ev.mediaType || '';
-      const isFilmTitle = /screening|film|cinema|dcp|preview|premiere|q&a|docu|movie/i.test(ev.name || ev.title || '');
-      const isScreenEvent = isCinema || isDcpCategory || isFilmTitle || media === 'DCP' || ev.dcp_received || ev.dcpReceived;
+    const isEvCancelled = isAdvancingEventCancelled(ev);
+    const evName = (ev.name || ev.title || 'Screening').trim();
+    const evDate = normalizeEventDate(ev.date);
+    const evStart = getAdvScreeningStartTime(ev);
+    const evFinish = ev.finishTime || '';
+    const mType = ev.media_type !== undefined ? ev.media_type : (ev.mediaType || '');
+    const hasRecFlag = ev.dcp_received !== undefined || ev.dcpReceived !== undefined;
+    const isRecFlag = !!(ev.dcp_received !== undefined ? ev.dcp_received : ev.dcpReceived);
+    const hasChecksFlag = ev.checks_completed !== undefined || ev.checksCompleted !== undefined;
+    const isChecksFlag = !!(ev.checks_completed !== undefined ? ev.checks_completed : ev.checksCompleted);
+    const advQcStatus = ev.qc_status || ev.dcp_qc_status || '';
+    const artifaxDesc = (ev.techInfo || ev.notes || ev.artifaxNotes || '').trim();
+    const advClient = (ev.clientContact || ev.clientName || ev.client || '').trim();
+    const advTesterId = ev.dcp_tester_user_id || ev.dcpTesterUserId || '';
+    const advTestDt = ev.dcp_test_datetime || ev.dcpTestDatetime || '';
+    const advFurtherAction = ev.further_action !== undefined ? ev.further_action : (ev.furtherAction || '');
+    const advLinkedTask = ev.linked_task_id || ev.linkedTaskId || '';
 
-      if (!isScreenEvent) return;
+    const usedIds = new Set();
 
-      const normalizedScreen = resolveNormalizedScreen(ev.space, ev.room);
-      const evDedupKey = getDcpDedupKey({
-        filmTitle: ev.name || ev.title,
-        eventName: ev.name || ev.title,
-        eventDate: ev.date || '',
-        screen: normalizedScreen
-      });
+    screens.forEach((screen) => {
+      const canonicalId = screens.length === 1
+        ? ('dcp-' + ev.id)
+        : ('dcp-' + ev.id + '-' + (RMTP.slug ? RMTP.slug(screen) : screen.toLowerCase().replace(/[^a-z0-9]+/g, '-')));
 
-      let existing = dcps.find(d => d.eventId === ev.id || d.id === 'dcp-' + ev.id);
-      if (!existing && evDedupKey) {
-        existing = dcps.find(d => getDcpDedupKey(d) === evDedupKey);
-        if (existing && !existing.eventId) {
-          existing.eventId = ev.id;
+      // Match existing rows for this (ev.id, screen)
+      let matches = linkedRows.filter((d) =>
+        !usedIds.has(d.id) && (
+          d.id === canonicalId ||
+          normalizeCinemaScreen(d.screen) === screen ||
+          (screens.length === 1 && (d.eventId === ev.id || d.id === 'dcp-' + ev.id))
+        )
+      );
+
+      if (!matches.length) {
+        const evDedupKey = getDcpDedupKey({
+          filmTitle: evName,
+          eventName: evName,
+          eventDate: evDate,
+          screen: screen
+        });
+        if (evDedupKey) {
+          const orphanMatch = allDcpsRef.find((d) =>
+            !usedIds.has(d.id) &&
+            !isManualScreeningRecord(d) &&
+            !d.eventId &&
+            getDcpDedupKey(d) === evDedupKey
+          );
+          if (orphanMatch) matches = [orphanMatch];
         }
       }
 
-      const isEvCancelled = String(ev.status || '').trim().toLowerCase() === 'cancelled';
-      if (isEvCancelled) {
-        if (existing && !existing.isCancelled) {
-          existing.isCancelled = true;
-          existing.outcome = 'Cancelled';
-          existing.updatedAt = new Date().toISOString();
-          store.upsert('dcps', existing);
-          modified = true;
-        }
-        return;
-      }
-
-      if (!existing) {
-        const isRec = !!(ev.dcp_received || ev.dcpReceived);
-        const isPassed = !!(ev.checks_completed || ev.checksCompleted);
-        const outcomeVal = isPassed ? 'Passed' : (ev.qc_status || 'Pending');
-
-        const newRec = {
-          id: 'dcp-' + ev.id,
-          eventId: ev.id,
-          eventName: ev.name,
-          filmTitle: ev.name,
-          mediaType: ev.media_type || ev.mediaType || '',
-          eventDate: ev.date || '',
-          eventStartTime: ev.screening_starts_time || ev.screeningStartsTime || ev.startTime || '',
-          eventFinishTime: ev.finishTime || '',
-          screen: normalizedScreen,
-          targetHardware: HARDWARE_MEDIA_BLOCKS[normalizedScreen] || (normalizedScreen + ' Media Block'),
-          mediaReceived: isRec,
-          kdmCplReceived: (media === 'DCP' ? isRec : true),
-          playlistMade: isPassed,
-          tested: isPassed,
-          holdingSlidesReady: false,
-          subsAudioSync: isPassed,
-          issuesNoted: (ev.dcp_notes || '').trim(),
-          outcome: outcomeVal,
-          hasFurtherAction: !!ev.further_action,
-          furtherAction: ev.further_action || '',
-          linkedTaskId: ev.linked_task_id || '',
-          testedByUserId: ev.dcp_tester_user_id || ev.dcpTesterUserId || '',
-          testedByUserName: userName(ev.dcp_tester_user_id || ev.dcpTesterUserId),
-          testDateTime: ev.dcp_test_datetime || ev.dcpTestDatetime || '',
-          createdAt: ev.createdAt || new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        };
-        store.upsert('dcps', newRec);
+      // If multiple duplicate rows exist for the same (ev.id, screen), consolidate into the best one
+      let existing = null;
+      if (matches.length > 1) {
+        existing = mergeDuplicateGroup(matches);
         modified = true;
-      } else {
+      } else if (matches.length === 1) {
+        existing = matches[0];
+      }
+
+      if (existing) {
+        usedIds.add(existing.id);
+        keptIds.push(existing.id);
         let changed = false;
-        if (existing.eventName !== ev.name) { existing.eventName = ev.name; changed = true; }
-        if (!existing.filmTitle) { existing.filmTitle = ev.name; changed = true; }
-        const mType = ev.media_type || ev.mediaType || '';
+
+        if (existing.eventId !== ev.id) { existing.eventId = ev.id; changed = true; }
+        if (existing.isManual) { existing.isManual = false; changed = true; }
+        if (existing._manualScreen) { existing._manualScreen = false; changed = true; }
+
+        const prevEventName = existing.eventName || '';
+        if (existing.eventName !== evName) {
+          existing.eventName = evName;
+          if (!existing.filmTitle || existing.filmTitle === prevEventName) {
+            existing.filmTitle = evName;
+          }
+          changed = true;
+        }
+        if (!existing.filmTitle) { existing.filmTitle = evName; changed = true; }
+        if (advClient && !existing.clientName) { existing.clientName = advClient; changed = true; }
         if (existing.mediaType !== mType) { existing.mediaType = mType; changed = true; }
-        if (ev.date && existing.eventDate !== ev.date) { existing.eventDate = ev.date; changed = true; }
-        const sTime = ev.screening_starts_time || ev.screeningStartsTime || ev.startTime || '';
-        if (sTime && existing.eventStartTime !== sTime) { existing.eventStartTime = sTime; changed = true; }
-        if (ev.space && existing.screen !== normalizedScreen && !existing._manualScreen) {
-          existing.screen = normalizedScreen;
-          existing.targetHardware = HARDWARE_MEDIA_BLOCKS[normalizedScreen] || (normalizedScreen + ' Media Block');
+        if (evDate && existing.eventDate !== evDate) { existing.eventDate = evDate; changed = true; }
+        if ((existing.eventStartTime || '') !== evStart) { existing.eventStartTime = evStart; changed = true; }
+        if ((existing.eventFinishTime || '') !== evFinish) { existing.eventFinishTime = evFinish; changed = true; }
+
+        // Screen is always authoritative from Event Advancing
+        if (existing.screen !== screen) {
+          existing.screen = screen;
+          existing.targetHardware = HARDWARE_MEDIA_BLOCKS[screen] || (screen + ' Media Block');
+          changed = true;
+        } else if (!existing.targetHardware) {
+          existing.targetHardware = HARDWARE_MEDIA_BLOCKS[screen] || (screen + ' Media Block');
           changed = true;
         }
-        if (ev.dcp_received !== undefined && existing.mediaReceived !== !!ev.dcp_received) {
-          existing.mediaReceived = !!ev.dcp_received;
-          changed = true;
+
+        // Cancelled state (handles both 'cancelled' and 'canceled', and restores if un-cancelled)
+        if (isEvCancelled) {
+          if (!existing.isCancelled || existing.outcome !== 'Cancelled') {
+            existing.isCancelled = true;
+            existing.outcome = 'Cancelled';
+            changed = true;
+          }
+        } else {
+          if (existing.isCancelled || existing.outcome === 'Cancelled') {
+            existing.isCancelled = false;
+            existing.outcome = isChecksFlag ? 'Passed' : (advQcStatus && advQcStatus !== 'Cancelled' ? advQcStatus : 'Pending');
+            changed = true;
+          }
+
+          if (hasRecFlag && existing.mediaReceived !== isRecFlag) {
+            existing.mediaReceived = isRecFlag;
+            if (existing.qc_criteria && existing.qc_criteria.ingestion) {
+              if (isRecFlag && existing.qc_criteria.ingestion.status === 'Pending') {
+                existing.qc_criteria.ingestion.status = 'Pass';
+              } else if (!isRecFlag && !existing.tested && existing.qc_criteria.ingestion.status === 'Pass') {
+                existing.qc_criteria.ingestion.status = 'Pending';
+              }
+            }
+            changed = true;
+          }
+
+          if (isChecksFlag) {
+            if (existing.outcome !== 'Passed') { existing.outcome = 'Passed'; changed = true; }
+            if (!existing.tested) { existing.tested = true; changed = true; }
+          } else if (advQcStatus && advQcStatus !== 'Cancelled' && existing.outcome !== advQcStatus) {
+            existing.outcome = advQcStatus;
+            if (advQcStatus === 'Pending') existing.tested = false;
+            changed = true;
+          } else if (hasChecksFlag && !isChecksFlag && existing.outcome === 'Passed' && advQcStatus !== 'Passed') {
+            // Unchecking "Checks Completed" on Advancing clears Passed state back to Pending
+            existing.outcome = 'Pending';
+            existing.tested = false;
+            changed = true;
+          }
         }
-        if (ev.checks_completed && existing.outcome !== 'Passed') {
-          existing.outcome = 'Passed';
-          existing.tested = true;
-          changed = true;
-        }
-        // Decouple issuesNoted from Artifax Event Description
-        const artifaxDesc = (ev.techInfo || ev.notes || ev.artifaxNotes || '').trim();
-        if (artifaxDesc && ev.dcp_notes && ev.dcp_notes.trim() === artifaxDesc) {
-          ev.dcp_notes = '';
-        }
+
+        // Decouple from Artifax Event Description
         if (artifaxDesc && existing.issuesNoted && existing.issuesNoted.trim() === artifaxDesc && !ev.dcp_notes) {
           existing.issuesNoted = '';
           changed = true;
         }
-        if (ev.dcp_notes && existing.issuesNoted !== ev.dcp_notes) {
-          existing.issuesNoted = ev.dcp_notes;
+        if (ev.dcp_notes !== undefined) {
+          const cleanAdvNote = (artifaxDesc && String(ev.dcp_notes).trim() === artifaxDesc) ? '' : String(ev.dcp_notes || '');
+          if ((existing.issuesNoted || '') !== cleanAdvNote) {
+            existing.issuesNoted = cleanAdvNote;
+            changed = true;
+          }
+        }
+
+        if (advTesterId && existing.testedByUserId !== advTesterId) {
+          existing.testedByUserId = advTesterId;
+          existing.testedByUserName = userName(advTesterId);
           changed = true;
         }
-        if (ev.further_action && existing.furtherAction !== ev.further_action) {
-          existing.furtherAction = ev.further_action;
+        if (advTestDt && existing.testDateTime !== advTestDt) {
+          existing.testDateTime = advTestDt;
+          changed = true;
+        }
+        if (advFurtherAction && existing.furtherAction !== advFurtherAction) {
+          existing.furtherAction = advFurtherAction;
           existing.hasFurtherAction = true;
           changed = true;
         }
-        if (ev.linked_task_id && existing.linkedTaskId !== ev.linked_task_id) {
-          existing.linkedTaskId = ev.linked_task_id;
+        if (advLinkedTask && existing.linkedTaskId !== advLinkedTask) {
+          existing.linkedTaskId = advLinkedTask;
           changed = true;
         }
+
         if (changed) {
           existing.updatedAt = new Date().toISOString();
           store.upsert('dcps', existing);
           modified = true;
         }
+      } else if (!isEvCancelled) {
+        const outcomeVal = isChecksFlag ? 'Passed' : (advQcStatus && advQcStatus !== 'Cancelled' ? advQcStatus : 'Pending');
+        const cleanAdvNote = (artifaxDesc && String(ev.dcp_notes || '').trim() === artifaxDesc) ? '' : String(ev.dcp_notes || '').trim();
+        const newRec = {
+          id: canonicalId,
+          eventId: ev.id,
+          isManual: false,
+          eventName: evName,
+          filmTitle: evName,
+          clientName: advClient,
+          mediaType: mType,
+          eventDate: evDate,
+          eventStartTime: evStart,
+          eventFinishTime: evFinish,
+          screen: screen,
+          targetHardware: HARDWARE_MEDIA_BLOCKS[screen] || (screen + ' Media Block'),
+          mediaReceived: isRecFlag,
+          kdmCplReceived: (mType === 'DCP' ? isRecFlag : true),
+          playlistMade: isChecksFlag,
+          tested: isChecksFlag,
+          holdingSlidesReady: false,
+          subsAudioSync: isChecksFlag,
+          issuesNoted: cleanAdvNote,
+          outcome: outcomeVal,
+          isCancelled: false,
+          hasFurtherAction: !!advFurtherAction,
+          furtherAction: advFurtherAction || '',
+          linkedTaskId: advLinkedTask || '',
+          testedByUserId: advTesterId,
+          testedByUserName: userName(advTesterId),
+          testDateTime: advTestDt,
+          createdAt: ev.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        store.upsert('dcps', newRec);
+        usedIds.add(newRec.id);
+        keptIds.push(newRec.id);
+        modified = true;
       }
     });
 
-    // Ensure any previously synced DCP records with Artifax event descriptions in issuesNoted are cleaned up
-    dcps.forEach(dcp => {
-      if (dcp.issuesNoted) {
-        let matchedArtifax = false;
-        if (dcp.eventId) {
-          const advEv = store.find('advancing', dcp.eventId);
-          if (advEv) {
-            const artDesc = (advEv.techInfo || advEv.notes || advEv.artifaxNotes || '').trim();
-            if (artDesc && dcp.issuesNoted.trim() === artDesc) {
-              matchedArtifax = true;
-            }
-          }
-        }
-        if (matchedArtifax) {
-          dcp.issuesNoted = '';
-          dcp.updatedAt = new Date().toISOString();
-          store.upsert('dcps', dcp);
+    // Remove any leftover linked rows for screens that were removed from this event
+    linkedRows.forEach((row) => {
+      if (!usedIds.has(row.id)) {
+        store.remove('dcps', row.id);
+        modified = true;
+      }
+    });
+
+    return { keptIds, modified };
+  }
+
+  function syncAdvanceToDcp(ev) {
+    if (!ev) return;
+    const allDcps = store.all('dcps') || [];
+    reconcileSingleAdvanceEvent(ev, allDcps);
+  }
+  RMTP.syncAdvanceToDcp = syncAdvanceToDcp;
+
+  /* ---- Auto-Sync Engine: Mirror Event Advancing Screen 1/2/3 Events 1-to-1 ---- */
+  let _syncingDcps = false;
+  function syncAdvancingToDcps() {
+    if (_syncingDcps) return store.all('dcps') || [];
+    _syncingDcps = true;
+    try {
+      const allAdv = (store.all('advancing') || []).filter((x) => x && !x.deleted);
+      let dcps = (store.all('dcps') || []).slice();
+      let modified = false;
+
+      // 1. Purge legacy fake seed screenings (Past Lives / Anatomy of a Fall / East End Shorts)
+      dcps.forEach((d) => {
+        if (d && String(d.id || '').startsWith('dcp-seed-')) {
+          store.remove('dcps', d.id);
           modified = true;
         }
-      }
-    });
+      });
+      if (modified) dcps = (store.all('dcps') || []).slice();
 
-    if (modified) {
-      dcps = store.all('dcps');
+      // 2. Reconcile every active Advancing event (Screen One, Screen Two, Screen Three)
+      const validKeptIds = new Set();
+      allAdv.forEach((ev) => {
+        const res = reconcileSingleAdvanceEvent(ev, dcps);
+        res.keptIds.forEach((id) => validKeptIds.add(id));
+        if (res.modified) {
+          modified = true;
+          dcps = (store.all('dcps') || []).slice();
+        }
+      });
+
+      // 3. Prune orphaned Advancing-linked rows (deleted events, non-screen events, DCP Test child shifts)
+      const currentDcps = (store.all('dcps') || []).slice();
+      currentDcps.forEach((d) => {
+        if (!d) return;
+        if (isManualScreeningRecord(d)) return;
+        const isAdvLinked = !!(d.eventId || String(d.id || '').startsWith('dcp-'));
+        if (isAdvLinked && !validKeptIds.has(d.id)) {
+          store.remove('dcps', d.id);
+          modified = true;
+        }
+      });
+
+      return store.all('dcps') || [];
+    } finally {
+      _syncingDcps = false;
     }
-    return dcps;
   }
+  RMTP.syncAdvancingToDcps = syncAdvancingToDcps;
   /* ---- QC Report & Client Email Generator Engine ---- */
   function generateQcEmail(dcp) {
     const crit = ensureQcCriteria(dcp);
@@ -1485,19 +1556,25 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
 
   function renderView() {
     const dcps = syncAdvancingToDcps();
-    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayIso = getTodayIso();
 
     // Calculate duplicate clusters across full ingested dcps
     const duplicatesInfo = findDuplicateClusters(dcps);
     currentDuplicatesInfo = duplicatesInfo;
 
-    // Calculate cancelled events and active screenings
-    const cancelledEventIds = new Set(
-      (store.all('advancing') || [])
-        .filter(e => String(e.status || '').trim().toLowerCase() === 'cancelled')
-        .map(e => e.id)
+    // Build lookup map of active Advancing events for live status/crew display
+    const advById = new Map();
+    const cancelledEventIds = new Set();
+    (store.all('advancing') || []).forEach((e) => {
+      if (!e || e.deleted) return;
+      advById.set(e.id, e);
+      if (isAdvancingEventCancelled(e)) cancelledEventIds.add(e.id);
+    });
+    const isDcpCancelled = (d) => !!(
+      d.isCancelled ||
+      d.outcome === 'Cancelled' ||
+      (d.eventId && (cancelledEventIds.has(d.eventId) || cancelledEventIds.has(String(d.eventId).replace(/^evt-afx-/, ''))))
     );
-    const isDcpCancelled = (d) => !!(d.isCancelled || d.outcome === 'Cancelled' || (d.eventId && (cancelledEventIds.has(d.eventId) || cancelledEventIds.has(d.eventId.replace(/^evt-afx-/, '')))));
 
     const activeDcps = dcps.filter(d => !isDcpCancelled(d));
     const cancelledCount = dcps.filter(d => isDcpCancelled(d)).length;
@@ -1894,13 +1971,49 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     );
   }
 
+  /* ---- Render Advancing Status + Crew Context Helper ---- */
+  function renderAdvancingContextHtml(dcp) {
+    const advEv = dcp.eventId ? store.find('advancing', dcp.eventId) : null;
+    const parts = [];
+    if (advEv && advEv.status) {
+      const stLower = String(advEv.status).trim().toLowerCase();
+      const stCls = stLower === 'confirmed'
+        ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+        : (stLower === 'cancelled' || stLower === 'canceled'
+          ? 'bg-danger/15 text-danger border-danger/30'
+          : 'bg-amber-500/15 text-amber-400 border-amber-500/30');
+      parts.push('<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold border ' + stCls + '">' + ui.esc(advEv.status) + '</span>');
+    } else if (isManualScreeningRecord(dcp)) {
+      parts.push('<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold border bg-panel2 text-muted border-line">Manual</span>');
+    }
+
+    const crewNames = getAssignedCrewSummary(dcp, advEv);
+    if (advEv && advEv.noTechNeeded && !crewNames.length) {
+      parts.push('<span class="text-[10px] font-mono text-muted">No Tech Required</span>');
+    } else if (crewNames.length) {
+      parts.push('<span class="text-[10px] text-ink/90 font-medium truncate max-w-[160px]" title="Assigned Crew: ' + ui.esc(crewNames.join(', ')) + '">' + ui.icon('users', 'w-3 h-3 inline mr-0.5 text-muted') + ui.esc(crewNames.join(', ')) + '</span>');
+    }
+
+    if (dcp.eventId && advEv) {
+      parts.push('<a href="#/advancing/' + encodeURIComponent(dcp.eventId) + '" class="inline-flex items-center gap-0.5 text-[10px] font-semibold text-accent hover:underline" onclick="event.stopPropagation()" title="Open full Event Advance sheet">Advance &rarr;</a>');
+    }
+
+    return parts.length
+      ? '<div class="flex items-center flex-wrap gap-1.5 mt-1">' + parts.join('') + '</div>'
+      : '';
+  }
+
   /* ---- Render Desktop Row ---- */
   function renderScreeningRow(dcp, dupInfo) {
-    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayIso = getTodayIso();
     const isPast = dcp.eventDate && dcp.eventDate < todayIso;
     const isDup = dupInfo && dupInfo.dupGroupMap && dupInfo.dupGroupMap.has(dcp.id);
     const dupGroup = isDup ? dupInfo.dupGroupMap.get(dcp.id) : null;
     const isSigned = isDcpSignedOff(dcp);
+    const formattedDate = dcp.eventDate ? (ui.formatDate ? ui.formatDate(dcp.eventDate) : dcp.eventDate) : 'Date TBC';
+    const timeLabel = dcp.eventStartTime
+      ? (dcp.eventFinishTime ? (dcp.eventStartTime + '\u2013' + dcp.eventFinishTime) : dcp.eventStartTime)
+      : '';
 
     // Outcome Badge
     let outcomeBadge = '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-panel2 text-muted border border-line">Pending</span>';
@@ -1910,6 +2023,8 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       outcomeBadge = '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-warning/15 text-warning border border-warning/30">CAVEATS</span>';
     } else if (dcp.outcome === 'Failed') {
       outcomeBadge = '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-danger/15 text-danger border border-danger/30">' + ui.icon('x', 'w-3 h-3') + 'FAILED</span>';
+    } else if (dcp.outcome === 'Cancelled') {
+      outcomeBadge = '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-danger/15 text-danger border border-danger/30">CANCELLED</span>';
     }
 
     // Task display
@@ -1945,7 +2060,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     return (
       '<tr class="hover:bg-panel2/30 transition-colors group ' + (isDup ? 'bg-amber-500/[0.03]' : '') + ' ' + (isPast ? 'opacity-85' : '') + '">' +
         // 1. Media Type & Advance Dropdown (first column as requested)
-        '<td class="py-3 px-3 align-top min-w-[170px] border-b border-line/60">' +
+        '<td class="py-3 px-3 align-top min-w-[175px] border-b border-line/60">' +
           '<div class="mb-1.5">' +
             '<select data-screening-media="' + dcp.id + '" class="field !py-1 !px-2 !text-xs font-semibold bg-panel border-line text-ink w-full shadow-2xs" title="Screening Media Type (Bidirectional with Event Advance)">' +
               '<option value="">\u2014 Blank \u2014</option>' +
@@ -1954,10 +2069,10 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
               ).join('') +
             '</select>' +
           '</div>' +
-          '<div class="flex items-center gap-1.5 font-mono text-[11px] text-muted">' +
+          '<div class="flex items-center gap-1.5 font-mono text-[11px] text-muted flex-wrap">' +
             ui.icon('calendar', 'w-3 h-3 text-muted shrink-0') +
-            '<span>' + ui.esc(dcp.eventDate || 'Date TBC') + '</span>' +
-            (dcp.eventStartTime ? '<span class="text-ink font-semibold">' + ui.esc(dcp.eventStartTime) + '</span>' : '') +
+            '<span>' + ui.esc(formattedDate) + '</span>' +
+            (timeLabel ? '<span class="text-ink font-semibold">' + ui.esc(timeLabel) + '</span>' : '') +
           '</div>' +
           '<div class="mt-1">' +
             '<span class="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.2 rounded bg-panel2 text-muted border border-line">' +
@@ -1967,10 +2082,11 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
         '</td>' +
 
         // 2. Film & Screening Title
-        '<td class="py-3 px-3 align-top min-w-[200px] max-w-[300px] border-b border-line/60">' +
+        '<td class="py-3 px-3 align-top min-w-[215px] max-w-[300px] border-b border-line/60">' +
           '<div class="font-display font-bold text-ink text-sm group-hover:text-accent transition-colors cursor-pointer" data-open-signoff="' + dcp.id + '" title="Click to open pre-screening sign-off sheet">' +
             ui.esc(dcp.filmTitle || dcp.eventName || 'Screening') +
           '</div>' +
+          renderAdvancingContextHtml(dcp) +
           (isDup && dupGroup ? (
             '<div class="mt-1">' +
               '<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono bg-amber-500/15 text-amber-400 border border-amber-500/30" title="This screening has ' + dupGroup.items.length + ' matching records in the tracker">' +
@@ -1978,7 +2094,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
               '</span>' +
             '</div>'
           ) : '') +
-          '<div class="text-[11px] text-muted mt-0.5">' +
+          '<div class="text-[11px] text-muted mt-1">' +
             (dcp.testedByUserName ? 'Tested by <span class="text-ink font-medium">' + ui.esc(dcp.testedByUserName) + '</span>' : '<span class="text-muted/80">Untested</span>') +
             (dcp.testDateTime ? ' \u00b7 ' + (/^\d{4}-\d{2}-\d{2}$/.test(String(dcp.testDateTime).trim()) ? ui.formatDate(dcp.testDateTime) : new Date(dcp.testDateTime).toLocaleDateString('en-GB', { month: 'short', day: 'numeric', timeZone: 'Europe/London' })) : '') +
           '</div>' +
@@ -2034,11 +2150,15 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
 
   /* ---- Render Mobile Card (< md) ---- */
   function renderScreeningMobileCard(dcp, dupInfo) {
-    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayIso = getTodayIso();
     const isPast = dcp.eventDate && dcp.eventDate < todayIso;
     const isDup = dupInfo && dupInfo.dupGroupMap && dupInfo.dupGroupMap.has(dcp.id);
     const dupGroup = isDup ? dupInfo.dupGroupMap.get(dcp.id) : null;
     const isSigned = isDcpSignedOff(dcp);
+    const formattedDate = dcp.eventDate ? (ui.formatDate ? ui.formatDate(dcp.eventDate) : dcp.eventDate) : 'Date TBC';
+    const timeLabel = dcp.eventStartTime
+      ? (dcp.eventFinishTime ? (dcp.eventStartTime + '\u2013' + dcp.eventFinishTime) : dcp.eventStartTime)
+      : '';
 
     let outcomeClass = 'border-line';
     if (dcp.outcome === 'Passed') outcomeClass = 'border-ok/40 bg-ok/5';
@@ -2054,8 +2174,8 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
               ui.icon('pin', 'w-3 h-3 text-accent') + ui.esc(dcp.screen || 'Screen One') +
             '</span>' +
             '<span class="inline-flex items-center gap-1 text-xs font-mono text-muted">' +
-              ui.icon('calendar', 'w-3 h-3') + ui.esc(dcp.eventDate || 'Date TBC') +
-              (dcp.eventStartTime ? ' <strong class="text-ink">' + ui.esc(dcp.eventStartTime) + '</strong>' : '') +
+              ui.icon('calendar', 'w-3 h-3') + ui.esc(formattedDate) +
+              (timeLabel ? ' <strong class="text-ink">' + ui.esc(timeLabel) + '</strong>' : '') +
             '</span>' +
           '</div>' +
           '<div class="w-full sm:w-auto">' +
@@ -2079,7 +2199,8 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
               '</span>'
             ) : '') +
           '</div>' +
-          '<div class="text-xs text-muted mt-0.5">' +
+          renderAdvancingContextHtml(dcp) +
+          '<div class="text-xs text-muted mt-1">' +
             (dcp.testedByUserName ? 'Tested by ' + ui.esc(dcp.testedByUserName) : 'Untested') +
           '</div>' +
         '</div>' +
@@ -2130,6 +2251,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     const item = existing ? JSON.parse(JSON.stringify(existing)) : {
       id: 'dcp-manual-' + store.uid('dcp'),
       eventId: '',
+      isManual: true,
       eventName: '',
       filmTitle: '',
       clientName: '',
@@ -2137,7 +2259,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       audioFormat: '5.1 Surround',
       deadlineDate: '',
       mediaType: 'DCP',
-      eventDate: new Date().toISOString().slice(0, 10),
+      eventDate: getTodayIso(),
       eventStartTime: '19:00',
       eventFinishTime: '21:00',
       screen: 'Screen One',
@@ -2155,7 +2277,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       linkedTaskId: '',
       testedByUserId: auth.current() ? auth.current().id : '',
       testedByUserName: auth.displayName(auth.current()) || '',
-      testDateTime: new Date().toISOString().slice(0, 16),
+      testDateTime: getNowLocalDateTime(),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -2163,6 +2285,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
     // Ensure 7 QC criteria initialized
     ensureQcCriteria(item);
 
+    const linkedAdv = item.eventId ? store.find('advancing', item.eventId) : null;
     const users = store.all('users');
     const userOptions = users.map(u =>
       '<option value="' + u.id + '"' + (item.testedByUserId === u.id ? ' selected' : '') + '>' + ui.esc(auth.displayName(u)) + ' (' + ui.esc(u.position || u.role) + ')</option>'
@@ -2172,6 +2295,17 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
 
     const modalBody =
       '<div class="space-y-6 text-xs max-h-[75vh] overflow-y-auto pr-1">' +
+        // Linked Advancing banner
+        (linkedAdv ? (
+          '<div class="p-3 rounded-xl bg-accent/10 border border-accent/30 flex items-center justify-between gap-2.5 flex-wrap">' +
+            '<div class="text-[11px] text-ink">' +
+              '<span class="font-bold text-accent">Synced with Event Advancing:</span> ' +
+              '<span>' + ui.esc(linkedAdv.name || item.eventName || 'Event') + '</span>' +
+              (linkedAdv.status ? ' <span class="font-mono text-muted">(' + ui.esc(linkedAdv.status) + ')</span>' : '') +
+            '</div>' +
+            '<a href="#/advancing/' + encodeURIComponent(linkedAdv.id) + '" class="text-[11px] font-bold text-accent hover:underline" data-close-before-nav>Open Event Advance &rarr;</a>' +
+          '</div>'
+        ) : '') +
         // Duplicate warning banner if screening has duplicates
         (dupGroup ? (
           '<div class="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">' +
@@ -2205,8 +2339,8 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
               '<input type="text" id="m-client-name" value="' + ui.esc(item.clientName || '') + '" placeholder="e.g. StudioCanal / A24 / Private Booking" class="field !text-xs w-full text-ink" />' +
             '</div>' +
             '<div>' +
-              '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Screen / Venue</label>' +
-              '<select id="m-screen" class="field !text-xs w-full font-semibold text-ink">' +
+              '<label class="block text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Screen / Venue' + (linkedAdv ? ' (from Advancing)' : '') + '</label>' +
+              '<select id="m-screen" class="field !text-xs w-full font-semibold text-ink" ' + (linkedAdv ? 'disabled title="Screen is synced from Event Advancing"' : '') + '>' +
                 ['Screen One', 'Screen Two', 'Screen Three'].map(s =>
                   '<option value="' + s + '"' + (item.screen === s ? ' selected' : '') + '>' + s + '</option>'
                 ).join('') +
@@ -2580,11 +2714,16 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
           m.root.querySelector('#m-tester').value = auth.current().id;
         }
         if (!m.root.querySelector('#m-test-date').value) {
-          m.root.querySelector('#m-test-date').value = new Date().toISOString().slice(0, 16);
+          m.root.querySelector('#m-test-date').value = getNowLocalDateTime();
         }
         ui.toast('Marked all 7 QC criteria as PASSED', 'ok');
       });
     }
+
+    // Close modal cleanly if clicking Open Event Advance link
+    m.root.querySelector('[data-close-before-nav]')?.addEventListener('click', () => {
+      m.close();
+    });
 
     // Toggle further action fields
     const chkAction = m.root.querySelector('#chk-m-further-action');
@@ -2615,10 +2754,12 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       const furtherActionText = m.root.querySelector('#m-further-action')?.value.trim() || '';
 
       item.filmTitle = titleVal;
-      item.eventName = titleVal;
+      if (!linkedAdv) item.eventName = titleVal;
       item.clientName = m.root.querySelector('#m-client-name')?.value.trim() || '';
-      item.screen = m.root.querySelector('#m-screen')?.value || 'Screen One';
-      item._manualScreen = true;
+      if (!linkedAdv) {
+        item.screen = m.root.querySelector('#m-screen')?.value || 'Screen One';
+        item.isManual = true;
+      }
       item.targetHardware = HARDWARE_MEDIA_BLOCKS[item.screen] || (item.screen + ' Media Block');
       item.mediaType = m.root.querySelector('#m-media-type')?.value || '';
       item.pictureFormat = m.root.querySelector('#m-picture-format')?.value || 'Flat (1.85:1)';
@@ -2854,19 +2995,26 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
       });
     }
 
-    // Sync button (Full refresh from Artifax edge function + local DCP bridge)
+    // Sync button (Pull latest Supabase advancing/dcps + Artifax edge function + reconcile)
     const btnSync = el.querySelector('#btn-sync-dcps');
     if (btnSync) {
       btnSync.addEventListener('click', async () => {
         btnSync.disabled = true;
         const originalContent = btnSync.innerHTML;
-        btnSync.innerHTML = ui.icon('refresh', 'w-4 h-4 animate-spin') + '<span>Syncing with Artifax...</span>';
+        btnSync.innerHTML = ui.icon('refresh', 'w-4 h-4 animate-spin') + '<span>Syncing Advances...</span>';
         try {
+          if (RMTP.syncSb && RMTP.syncSb.pullCollection) {
+            await Promise.all([
+              RMTP.syncSb.pullCollection('advancing'),
+              RMTP.syncSb.pullCollection('dcps'),
+              RMTP.syncSb.pullCollection('bookings')
+            ]);
+          }
           if (RMTP.syncArtifax) {
             await RMTP.syncArtifax(true);
           }
         } catch (err) {
-          console.warn('[Pre-Screening] Artifax sync error:', err);
+          console.warn('[Pre-Screening] Sync error:', err);
         }
         syncAdvancingToDcps();
         ui.toast('Synchronized cinema advances with Pre-Screening Tracker', 'ok');
@@ -2918,7 +3066,17 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
         const dcp = store.find('dcps', id);
         if (!dcp) return;
         dcp.outcome = sel.value;
-        if (sel.value === 'Passed') dcp.tested = true;
+        if (sel.value === 'Passed') {
+          dcp.tested = true;
+          const crit = ensureQcCriteria(dcp);
+          QC_CRITERIA_DEFINITIONS.forEach((def) => {
+            if (!crit[def.id] || crit[def.id].status === 'Pending') {
+              crit[def.id] = { status: 'Pass', notes: (crit[def.id] && crit[def.id].notes) || '' };
+            }
+          });
+        } else if (sel.value === 'Pending') {
+          dcp.tested = false;
+        }
         dcp.updatedAt = new Date().toISOString();
         store.upsert('dcps', dcp);
         syncDcpToAdvance(dcp);
@@ -3002,6 +3160,33 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
 
   // Initial render
   renderView();
+
+  // Keep Pre-Screening Tracker live-synced when Advancing/DCPs/Bookings update in background
+  if (RMTP._dcpUnsubscribe) {
+    try { RMTP._dcpUnsubscribe(); } catch (e) { /* ignore */ }
+    RMTP._dcpUnsubscribe = null;
+  }
+  if (store.onChange) {
+    let _refreshTimer = null;
+    RMTP._dcpUnsubscribe = store.onChange((col) => {
+      if (_syncingDcps) return;
+      if (col && col !== 'advancing' && col !== 'dcps' && col !== 'bookings') return;
+      if (!document.body.contains(el)) {
+        if (RMTP._dcpUnsubscribe) RMTP._dcpUnsubscribe();
+        RMTP._dcpUnsubscribe = null;
+        return;
+      }
+      // Do not clobber an active input field while typing
+      const activeEl = document.activeElement;
+      if (activeEl && el.contains(activeEl) && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT')) {
+        return;
+      }
+      clearTimeout(_refreshTimer);
+      _refreshTimer = setTimeout(() => {
+        if (document.body.contains(el) && !_syncingDcps) renderView();
+      }, 180);
+    });
+  }
 
   // If a specific screening ID was passed in query e.g. #/dcp?id=dcp-123, open its modal automatically
   if (query && query.id) {

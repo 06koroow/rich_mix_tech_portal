@@ -8873,7 +8873,9 @@ RMTP.views.advancing = function (el, params, query) {
           } else if (avail) {
             if (avail.type === 'available') {
               let dpLabel = 'All Day';
-              if (avail.dayPart === 'morning') dpLabel = 'Morning (08:00–13:00)';
+              const isAllDaySlot = avail.dayPart === 'all_day' || (!avail.dayPart && (!avail.startTime || (avail.startTime === '08:00' && avail.finishTime === '23:30'))) || (avail.startTime === '08:00' && avail.finishTime === '23:30');
+              if (isAllDaySlot) dpLabel = 'All Day';
+              else if (avail.dayPart === 'morning') dpLabel = 'Morning (08:00–13:00)';
               else if (avail.dayPart === 'afternoon') dpLabel = 'Afternoon (13:00–18:00)';
               else if (avail.dayPart === 'evening') dpLabel = 'Evening (18:00–23:30)';
               else if (avail.dayPart === 'custom') dpLabel = (avail.startTime || '') + '–' + (avail.finishTime || '');

@@ -81,8 +81,70 @@ RMTP.normalizeDateStr = function (raw) {
    Per-shift role a tagged technician is covering on an event —
    distinct from a user's job title (position). An event can carry
    several technicians, each with their own role for that shift. */
-RMTP.SHIFT_ROLES = ['Sound', 'Lighting', 'Cinema', 'AV', 'Stage', 'Support', 'Duty Manager'];
+RMTP.SHIFT_ROLES = ['Sound', 'Lighting', 'Sound & Lighting', 'Cinema', 'AV', 'Stage', 'Support', 'Duty Manager'];
 RMTP.DISCIPLINES = ['Sound', 'Lighting', 'Cinema', 'AV', 'Stage', 'Support', 'Duty Manager'];
+
+/* Multi-role / selective understaffing helpers:
+   Supports a single technician covering multiple disciplines on one shift
+   (e.g. "Sound & Lighting") and collapses duplicate role bookings cleanly. */
+RMTP.parseShiftRoles = function (roleStr) {
+  if (!roleStr) return [];
+  const rawList = Array.isArray(roleStr)
+    ? roleStr
+    : String(roleStr).split(/\s*(?:&|\+|\/|,|\band\b)\s*/i);
+  const seen = new Set();
+  const out = [];
+  rawList.forEach((part) => {
+    const clean = String(part || '').trim();
+    if (!clean || /^none$/i.test(clean)) return;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(clean);
+  });
+  return out;
+};
+
+RMTP.mergeShiftRoles = function () {
+  const order = ['sound', 'lighting', 'cinema', 'av', 'stage', 'support', 'duty manager'];
+  const seen = new Map();
+  for (let i = 0; i < arguments.length; i++) {
+    const parts = RMTP.parseShiftRoles(arguments[i]);
+    parts.forEach((p) => {
+      const k = p.toLowerCase();
+      if (!seen.has(k)) seen.set(k, p);
+    });
+  }
+  const list = Array.from(seen.values());
+  if (!list.length) return 'Tech';
+  list.sort((a, b) => {
+    const ia = order.indexOf(a.toLowerCase());
+    const ib = order.indexOf(b.toLowerCase());
+    if (ia !== -1 && ib !== -1) return ia - ib;
+    if (ia !== -1) return -1;
+    if (ib !== -1) return 1;
+    return a.localeCompare(b);
+  });
+  return list.join(' & ');
+};
+
+RMTP.roleCoversDiscipline = function (techRoleStr, requiredDiscipline) {
+  const cr = String(requiredDiscipline || '').trim().toLowerCase();
+  if (!cr) return false;
+  const roles = RMTP.parseShiftRoles(techRoleStr);
+  if (!roles.length) return false;
+  return roles.some((r) => {
+    const tr = r.toLowerCase();
+    return tr === cr ||
+      (cr.includes('sound') && tr.includes('sound')) ||
+      (cr.includes('light') && tr.includes('light')) ||
+      (cr.includes('cinema') && tr.includes('cinema')) ||
+      (cr === 'av' && (tr === 'av' || tr.includes('audio visual'))) ||
+      (cr.includes('stage') && tr.includes('stage')) ||
+      (cr.includes('support') && tr.includes('support')) ||
+      (cr.includes('duty') && tr.includes('duty'));
+  });
+};
 RMTP.BOOKING_STATUSES = ['pencil', 'confirmed', 'declined', 'cancelled'];
 RMTP.DAY_PARTS = [
   { id: 'all_day', label: 'All Day', start: '08:00', end: '23:30' },
@@ -448,22 +510,97 @@ RMTP.syncRotaToAdvancing = function (eventId, opts) {
     return !s || s === 'unassigned' || s === 'unassigned tech' || s === 'no tech required';
   };
 
+  const isNoTechBookingRecord = (b) => {
+    if (!b) return false;
+    return !!(b.isNoTech || b.role === 'None' || /^no tech/i.test(String(b.userName || '').trim()));
+  };
+
   const assignedBookings = activeBookings.filter((b) => {
-    if (b.isNoTech || b.role === 'None') return false;
+    if (isNoTechBookingRecord(b)) return false;
     return !!(b.userId || !isPlaceholderName(b.userName));
   });
-  const noTechBookings = activeBookings.filter((b) => b.isNoTech || b.role === 'None');
+  const noTechBookings = activeBookings.filter((b) => isNoTechBookingRecord(b));
+  const placeholderBookings = activeBookings.filter((b) => !isNoTechBookingRecord(b) && !b.userId && isPlaceholderName(b.userName));
+
+  // Explicit "Mark as No Tech Needed" override from Shift Booking modal:
+  // remove leftover placeholder/crew bookings for the target space (or entire event if single-space)
+  // and set Advancing to Self-Service when no other rooms retain assigned crew.
+  if (opts.forceNoTech) {
+    const normTargetSpace = opts.space ? (RMTP.normalizeSpaceName ? RMTP.normalizeSpaceName(opts.space) : String(opts.space).trim()).toLowerCase() : '';
+    const matchesTargetSpace = (b) => {
+      if (!normTargetSpace) return true;
+      const bsp = (RMTP.normalizeSpaceName ? RMTP.normalizeSpaceName(b.space) : String(b.space || '').trim()).toLowerCase();
+      return !bsp || bsp === normTargetSpace;
+    };
+
+    placeholderBookings.forEach((pb) => {
+      if (matchesTargetSpace(pb)) store.remove('bookings', pb.id);
+    });
+    assignedBookings.forEach((ab) => {
+      if (matchesTargetSpace(ab) && (!opts.keepBookingId || ab.id !== opts.keepBookingId)) {
+        store.remove('bookings', ab.id);
+      }
+    });
+
+    const remainingAssigned = assignedBookings.filter((ab) => !matchesTargetSpace(ab));
+    if (remainingAssigned.length === 0) {
+      const noTechTechEntry = {
+        userId: '',
+        role: 'None',
+        isNoTech: true,
+        isFreelancer: false,
+        freelancerName: '',
+        startTime: advEv.startTime || '',
+        finishTime: advEv.finishTime || '',
+        bookingStatus: 'confirmed',
+      };
+      const updatedEv = Object.assign({}, advEv, {
+        noTechNeeded: true,
+        techUserId: '',
+        technicians: [noTechTechEntry],
+      });
+      store.upsert('advancing', updatedEv);
+      return updatedEv;
+    }
+    // Multi-room event where another room still has assigned crew: fall through using remainingAssigned
+  }
 
   const nextTechs = [];
   const coveredUserIds = new Set();
   const coveredFreelancers = new Set();
+  const mergedTechByKey = new Map();
 
-  assignedBookings.forEach((b) => {
+  // Re-read active assigned bookings after any forceNoTech space cleanup
+  const effectiveAssignedBookings = (store.all('bookings') || []).filter((b) => {
+    if (b.eventId !== eventId) return false;
+    if (b.status === 'cancelled' || b.status === 'declined') return false;
+    if (isNoTechBookingRecord(b)) return false;
+    return !!(b.userId || !isPlaceholderName(b.userName));
+  });
+
+  effectiveAssignedBookings.forEach((b) => {
+    const bSpace = RMTP.normalizeSpaceName ? RMTP.normalizeSpaceName(b.space) : (b.space || '');
+    const isSplitLeg = !!(b.splitFromId || b.legIndex);
+    const personKey = b.userId
+      ? ('u:' + b.userId)
+      : ('n:' + String(b.userName || '').trim().toLowerCase());
+    const mergeKey = isSplitLeg
+      ? (personKey + '|split|' + b.id)
+      : (personKey + '|' + bSpace.toLowerCase());
+
+    const existingMerged = mergedTechByKey.get(mergeKey);
+    if (existingMerged) {
+      existingMerged.role = RMTP.mergeShiftRoles ? RMTP.mergeShiftRoles(existingMerged.role, b.role) : (existingMerged.role || b.role || 'Tech');
+      if (b.status === 'confirmed') existingMerged.bookingStatus = 'confirmed';
+      return;
+    }
+
     if (b.userId) {
       coveredUserIds.add(b.userId);
-      nextTechs.push({
+      const entry = {
         bookingId: b.id,
         userId: b.userId,
+        space: bSpace,
         role: b.role || 'Tech',
         startTime: b.startTime || advEv.startTime || '',
         finishTime: b.finishTime || advEv.finishTime || '',
@@ -474,13 +611,16 @@ RMTP.syncRotaToAdvancing = function (eventId, opts) {
         legIndex: b.legIndex || '',
         rate: b.rate || '',
         notes: b.notes || '',
-      });
+      };
+      mergedTechByKey.set(mergeKey, entry);
+      nextTechs.push(entry);
     } else if (!isPlaceholderName(b.userName)) {
       const fn = String(b.userName).trim();
       coveredFreelancers.add(fn.toLowerCase());
-      nextTechs.push({
+      const entry = {
         bookingId: b.id,
         userId: '',
+        space: bSpace,
         isFreelancer: true,
         freelancerName: fn,
         role: b.role || 'Tech',
@@ -491,7 +631,9 @@ RMTP.syncRotaToAdvancing = function (eventId, opts) {
         legIndex: b.legIndex || '',
         rate: b.rate || '',
         notes: b.notes || '',
-      });
+      };
+      mergedTechByKey.set(mergeKey, entry);
+      nextTechs.push(entry);
     }
   });
 
@@ -505,7 +647,7 @@ RMTP.syncRotaToAdvancing = function (eventId, opts) {
   existingTechs.forEach((t) => {
     if (!t || t.isNoTech || t.role === 'None') return;
     if (removedBookingId && t.bookingId && t.bookingId === removedBookingId) return;
-    if (t.bookingId && !assignedBookings.some((b) => b.id === t.bookingId)) return;
+    if (t.bookingId && !effectiveAssignedBookings.some((b) => b.id === t.bookingId)) return;
     if (t.userId) {
       if (coveredUserIds.has(t.userId)) return;
       if (removedUserId && t.userId === removedUserId) return;
@@ -525,12 +667,19 @@ RMTP.syncRotaToAdvancing = function (eventId, opts) {
     techUserId: nextTechs.find((t) => t.userId)?.userId || '',
   });
 
-  if (assignedBookings.length > 0) {
+  if (effectiveAssignedBookings.length > 0) {
     updatedEv.noTechNeeded = false;
-    // Clean up obsolete No-Tech placeholder bookings now that real crew are assigned
-    noTechBookings.forEach((ntb) => store.remove('bookings', ntb.id));
+    // Clean up obsolete No-Tech placeholder bookings on spaces that now have real crew
+    const spacesWithCrew = new Set(effectiveAssignedBookings.map((b) => (RMTP.normalizeSpaceName ? RMTP.normalizeSpaceName(b.space) : String(b.space || '').trim()).toLowerCase()));
+    noTechBookings.forEach((ntb) => {
+      const nsp = (RMTP.normalizeSpaceName ? RMTP.normalizeSpaceName(ntb.space) : String(ntb.space || '').trim()).toLowerCase();
+      if (!nsp || spacesWithCrew.has(nsp)) store.remove('bookings', ntb.id);
+    });
   } else if (noTechBookings.length > 0 && nextTechs.length === 0) {
     updatedEv.noTechNeeded = true;
+    updatedEv.technicians = [{ userId: '', role: 'None', isNoTech: true, bookingStatus: 'confirmed' }];
+    // Clean up stale unassigned placeholders so the event does not stay stuck in Needs Covering
+    placeholderBookings.forEach((pb) => store.remove('bookings', pb.id));
   } else if (opts.clearNoTech) {
     updatedEv.noTechNeeded = false;
   }

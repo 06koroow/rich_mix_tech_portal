@@ -17,8 +17,19 @@ RMTP.views.users = function (el, params) {
 
   let dirSearch = '';
   let dirRole = 'All';
-  let activeAdminTab = (params && params[0] === 'views') ? 'views' : (RMTP._usersAdminTab || 'team');
+  let tagSearch = '';
+  let activeTagFilter = '';
+  let activeAdminTab = (params && (params[0] === 'views' || params[0] === 'tags')) ? params[0] : (RMTP._usersAdminTab || 'team');
   RMTP._usersAdminTab = activeAdminTab;
+
+  function getUserTags(u) {
+    return (auth.getUserTechTags && u) ? auth.getUserTechTags(u) : [];
+  }
+
+  function formatTagsInline(tags) {
+    if (!tags || !tags.length) return '';
+    return tags.map((t) => ui.esc(t)).join(' \u00b7 ');
+  }
 
   function competencies() {
     const out = [];
@@ -31,12 +42,13 @@ RMTP.views.users = function (el, params) {
   function adminCount() { return store.all('users').filter((u) => u.admin).length; }
 
   render();
-  // Supabase mode: on every visit to this page, refresh the users list and
-  // latest role-view settings from the database, then re-render once.
+  // Supabase mode: on every visit to this page, refresh the users list,
+  // latest role-view settings, and engineer tech tags from the database.
   if (sbMode()) {
     Promise.all([
       RMTP.syncSb.pullCollection('users').catch(() => {}),
       RMTP.syncSb.pullRoleViews ? RMTP.syncSb.pullRoleViews({ force: true }).catch(() => {}) : Promise.resolve(),
+      auth.pullTechTags ? auth.pullTechTags({ force: true }).catch(() => {}) : Promise.resolve(),
     ]).then(() => {
       if (RMTP._currentView === 'users') {
         render();
@@ -57,7 +69,8 @@ RMTP.views.users = function (el, params) {
         (u.position || '') + ' ' +
         (u.discipline || '') + ' ' +
         (u.email || '') + ' ' +
-        (u.phone || '')
+        (u.phone || '') + ' ' +
+        getUserTags(u).join(' ')
       ).toLowerCase();
       return haystack.includes(q);
     });
@@ -116,6 +129,9 @@ RMTP.views.users = function (el, params) {
                         ui.pill(pos, roleColor) +
                         (u.discipline ? ui.pill(u.discipline, 'var(--accent)') : '') +
                       '</div>' +
+                      (getUserTags(u).length
+                        ? '<p class="text-[11px] font-mono text-accent/90 mt-1.5 truncate" title="' + ui.esc(getUserTags(u).join(' ')) + '">' + formatTagsInline(getUserTags(u)) + '</p>'
+                        : '') +
                     '</div>' +
                   '</div>' +
 
@@ -224,6 +240,12 @@ RMTP.views.users = function (el, params) {
                   '<span class="font-medium text-ink">' + ui.esc(u.discipline) + '</span>' +
                 '</div>'
               ) : '') +
+              (getUserTags(u).length ? (
+                '<div class="flex items-start justify-between gap-3 p-2 rounded-lg bg-panel border border-line">' +
+                  '<span class="text-muted shrink-0">Tech Tags:</span>' +
+                  '<span class="font-mono text-[11px] text-accent text-right">' + formatTagsInline(getUserTags(u)) + '</span>' +
+                '</div>'
+              ) : '') +
               '<div class="flex items-center justify-between p-2 rounded-lg bg-panel border border-line">' +
                 '<span class="text-muted">Status:</span>' +
                 '<span class="text-ok font-semibold flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-ok"></span>Active Crew</span>' +
@@ -282,14 +304,22 @@ RMTP.views.users = function (el, params) {
     const total = competencies().length;
     RMTP._usersAdminTab = activeAdminTab;
 
+    const taggedCount = users.filter((u) => getUserTags(u).length > 0).length;
     const adminTabsHtml =
-      '<div class="inline-flex items-center gap-1 p-1 rounded-lg bg-panel border border-line mb-5" role="tablist" aria-label="Users administration sections">' +
+      '<div class="inline-flex items-center gap-1 p-1 rounded-lg bg-panel border border-line mb-5 flex-wrap" role="tablist" aria-label="Users administration sections">' +
         '<button type="button" role="tab" aria-selected="' + (activeAdminTab === 'team' ? 'true' : 'false') + '" data-admin-tab="team" ' +
           'class="px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 flex items-center gap-2 ' +
           (activeAdminTab === 'team' ? 'bg-accent text-accent-ink' : 'text-muted hover:text-ink') + '">' +
           ui.icon('users', 'w-3.5 h-3.5') +
           '<span>Team &amp; Training</span>' +
           '<span class="font-mono tabular-nums text-[11px] opacity-80">' + users.length + '</span>' +
+        '</button>' +
+        '<button type="button" role="tab" aria-selected="' + (activeAdminTab === 'tags' ? 'true' : 'false') + '" data-admin-tab="tags" ' +
+          'class="px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 flex items-center gap-2 ' +
+          (activeAdminTab === 'tags' ? 'bg-accent text-accent-ink' : 'text-muted hover:text-ink') + '">' +
+          ui.icon('tag', 'w-3.5 h-3.5') +
+          '<span>Tech Tags</span>' +
+          '<span class="font-mono tabular-nums text-[11px] opacity-80">' + taggedCount + '/' + users.length + '</span>' +
         '</button>' +
         '<button type="button" role="tab" aria-selected="' + (activeAdminTab === 'views' ? 'true' : 'false') + '" data-admin-tab="views" ' +
           'class="px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 flex items-center gap-2 ' +
@@ -298,6 +328,11 @@ RMTP.views.users = function (el, params) {
           '<span>Set-Up User Views</span>' +
         '</button>' +
       '</div>';
+
+    if (activeAdminTab === 'tags') {
+      renderTechTagsTab(users, adminTabsHtml);
+      return;
+    }
 
     if (activeAdminTab === 'views') {
       renderUserViewsSetup(users, adminTabsHtml);
@@ -350,6 +385,210 @@ RMTP.views.users = function (el, params) {
     const ago = ui.timeAgo ? ui.timeAgo(cfg.updatedAt) : new Date(cfg.updatedAt).toLocaleString();
     const by = cfg.updatedBy ? ' \u00b7 Updated by ' + cfg.updatedBy : '';
     return 'Last updated ' + ago + by + ' \u00b7 Live for all users';
+  }
+
+  function renderTechTagsTab(users, adminTabsHtml) {
+    const venueTags = auth.getAllVenueTechTags ? auth.getAllVenueTechTags() : [];
+    const suggested = (auth.SUGGESTED_TECH_TAGS || ['#Lighting', '#ETC', '#Sound', '#Cinema', '#Projection', '#AV', '#Stage', '#Rigging', '#Video', '#DutyManager']);
+    const techUsers = users.filter((u) => !(auth.isHiresTeam && auth.isHiresTeam(u)));
+    const q = tagSearch.trim().toLowerCase();
+
+    const filteredUsers = techUsers.filter((u) => {
+      const uTags = getUserTags(u);
+      if (activeTagFilter) {
+        const needle = activeTagFilter.toLowerCase();
+        if (!uTags.some((t) => t.toLowerCase() === needle)) return false;
+      }
+      if (!q) return true;
+      const hay = [auth.displayName(u), u.position || '', u.discipline || '', uTags.join(' ')].join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+
+    // Build quick-add pool: active venue tags first, then starter suggestions not yet used
+    const quickPool = [];
+    const seenQuick = new Set();
+    venueTags.forEach((vt) => {
+      const k = vt.tag.toLowerCase();
+      if (!seenQuick.has(k)) { seenQuick.add(k); quickPool.push(vt.tag); }
+    });
+    suggested.forEach((st) => {
+      const k = st.toLowerCase();
+      if (!seenQuick.has(k)) { seenQuick.add(k); quickPool.push(st); }
+    });
+
+    const cfg = auth.getTechTagsConfig ? auth.getTechTagsConfig() : null;
+    const metaText = (cfg && cfg.updatedAt)
+      ? ('Last updated ' + (ui.timeAgo ? ui.timeAgo(cfg.updatedAt) : new Date(cfg.updatedAt).toLocaleString()) + (cfg.updatedBy ? (' \u00b7 by ' + cfg.updatedBy) : '') + ' \u00b7 Visible in Rota & Shift Booking')
+      : 'Tag engineers with #hashtags (e.g. #Lighting #ETC #Sound #Cinema) \u00b7 Tags appear and filter directly in Rota & Shifts';
+
+    const indexButtonsHtml =
+      '<button type="button" data-tt-filter="" class="px-2.5 py-1 rounded-md border text-xs font-medium transition cursor-pointer ' +
+        (!activeTagFilter ? 'bg-accent text-accent-ink border-accent font-semibold' : 'bg-panel border-line text-muted hover:text-ink') + '">' +
+        'All Crew <span class="font-mono tabular-nums opacity-80 ml-1">' + techUsers.length + '</span>' +
+      '</button>' +
+      venueTags.map((vt) => {
+        const isAct = activeTagFilter.toLowerCase() === vt.tag.toLowerCase();
+        return '<button type="button" data-tt-filter="' + ui.esc(vt.tag) + '" class="px-2.5 py-1 rounded-md border text-xs font-mono transition cursor-pointer ' +
+          (isAct ? 'bg-accent text-accent-ink border-accent font-semibold' : 'bg-panel border-line text-ink hover:border-accent/60') + '">' +
+          ui.esc(vt.tag) + ' <span class="tabular-nums opacity-75 ml-0.5">' + vt.count + '</span>' +
+        '</button>';
+      }).join('');
+
+    const rowsHtml = filteredUsers.map((u) => {
+      const uTags = getUserTags(u);
+      const uTagSet = new Set(uTags.map((t) => t.toLowerCase()));
+      const quickOptions = quickPool.filter((t) => !uTagSet.has(t.toLowerCase())).slice(0, 8);
+
+      return (
+        '<div class="p-4 flex flex-col gap-3" data-tt-user-row="' + ui.esc(u.id) + '">' +
+          '<div class="flex flex-col lg:flex-row lg:items-start justify-between gap-3">' +
+            '<div class="flex items-start gap-3 min-w-0">' +
+              '<div class="w-9 h-9 rounded-full bg-panel2 border border-line flex items-center justify-center text-xs font-display font-semibold shrink-0">' +
+                ui.esc(auth.initials(u)) +
+              '</div>' +
+              '<div class="min-w-0 flex-1">' +
+                '<div class="flex items-center gap-2 flex-wrap">' +
+                  '<span class="font-medium text-sm text-ink">' + ui.esc(auth.displayName(u)) + '</span>' +
+                  '<span class="text-xs text-muted">' + ui.esc(u.position || 'Tech') + (u.discipline ? (' \u00b7 ' + ui.esc(u.discipline)) : '') + '</span>' +
+                '</div>' +
+                '<div class="mt-2 flex items-center gap-1.5 flex-wrap">' +
+                  (uTags.length
+                    ? uTags.map((tag) => (
+                        '<button type="button" data-tt-remove-uid="' + ui.esc(u.id) + '" data-tt-remove-tag="' + ui.esc(tag) + '" ' +
+                          'class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-accent/35 bg-accent/10 text-accent hover:bg-danger/15 hover:border-danger/40 hover:text-danger font-mono text-xs transition cursor-pointer" ' +
+                          'title="Click to remove ' + ui.esc(tag) + '">' +
+                          '<span>' + ui.esc(tag) + '</span>' +
+                          '<span aria-hidden="true" class="opacity-70">\u00d7</span>' +
+                        '</button>'
+                      )).join('')
+                    : '<span class="text-xs text-muted">No skill tags assigned yet</span>') +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+
+            '<form data-tt-form="' + ui.esc(u.id) + '" class="flex items-center gap-2 w-full lg:w-auto lg:min-w-[300px] shrink-0">' +
+              '<input type="text" data-tt-input="' + ui.esc(u.id) + '" class="field !py-1.5 text-xs font-mono flex-1" placeholder="#Lighting #ETC #Sound\u2026" autocomplete="off" />' +
+              '<button type="submit" class="btn btn-primary !py-1.5 !px-3 text-xs font-semibold shrink-0">Add</button>' +
+            '</form>' +
+          '</div>' +
+
+          (quickOptions.length ? (
+            '<div class="flex items-center gap-1.5 flex-wrap pl-0 sm:pl-12 pt-1 border-t border-line/40">' +
+              '<span class="text-[11px] text-muted mr-1">Quick add:</span>' +
+              quickOptions.map((qt) => (
+                '<button type="button" data-tt-quick-uid="' + ui.esc(u.id) + '" data-tt-quick-tag="' + ui.esc(qt) + '" ' +
+                  'class="px-2 py-0.5 rounded border border-line bg-panel2/40 hover:border-accent hover:text-accent text-[11px] font-mono text-muted transition cursor-pointer">' +
+                  '+ ' + ui.esc(qt) +
+                '</button>'
+              )).join('') +
+            '</div>'
+          ) : '') +
+        '</div>'
+      );
+    }).join('');
+
+    el.innerHTML =
+      '<div class="view-enter">' +
+        ui.pageHeader('Users', 'Skill Directory & Tech Tags', '') +
+        adminTabsHtml +
+        '<div class="mb-5 space-y-1.5">' +
+          '<p class="text-sm text-muted max-w-3xl">' +
+            'Assign specialist <span class="font-mono text-ink">#hashtags</span> to each technician so managers can see skills at a glance and filter crew in Rota &amp; Shifts. Type multiple tags separated by spaces or commas (e.g. <span class="font-mono text-ink">#Lighting #ETC #Sound</span>).' +
+          '</p>' +
+          '<p class="text-xs text-muted font-mono tabular-nums">' + ui.esc(metaText) + '</p>' +
+        '</div>' +
+
+        // Venue Tag Index + Search
+        '<div class="panel p-4 border border-line space-y-3 mb-4">' +
+          '<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">' +
+            '<div class="relative flex-1 max-w-md">' +
+              '<span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-muted">' +
+                ui.icon('search', 'w-4 h-4') +
+              '</span>' +
+              '<input id="tt-search" type="search" class="field !pl-9 !py-1.5 text-xs w-full" placeholder="Filter engineers by name, role, or #tag\u2026" value="' + ui.esc(tagSearch) + '" />' +
+            '</div>' +
+            '<div class="text-xs font-mono tabular-nums text-muted">' +
+              'Showing ' + filteredUsers.length + ' of ' + techUsers.length + ' engineers' +
+              (venueTags.length ? (' \u00b7 ' + venueTags.length + ' active ' + (venueTags.length === 1 ? 'tag' : 'tags')) : '') +
+            '</div>' +
+          '</div>' +
+          '<div class="flex items-center gap-1.5 flex-wrap pt-2.5 border-t border-line/60">' +
+            '<span class="text-[11px] font-semibold text-muted uppercase tracking-wider mr-1">Filter by Tag:</span>' +
+            indexButtonsHtml +
+          '</div>' +
+        '</div>' +
+
+        // Engineer Rows
+        (filteredUsers.length
+          ? '<div class="panel border border-line divide-y divide-line overflow-hidden">' + rowsHtml + '</div>'
+          : ui.empty('tag', 'No matching engineers', 'Clear the active tag filter or search term to see all technical crew.')) +
+      '</div>';
+
+    bindAdminTabs();
+
+    const searchInp = el.querySelector('#tt-search');
+    if (searchInp) {
+      searchInp.addEventListener('input', (e) => {
+        tagSearch = e.target.value;
+        const pos = e.target.selectionStart;
+        renderTechTagsTab(users, adminTabsHtml);
+        const reInp = el.querySelector('#tt-search');
+        if (reInp) {
+          reInp.focus();
+          if (typeof pos === 'number') reInp.setSelectionRange(pos, pos);
+        }
+      });
+    }
+
+    el.querySelectorAll('[data-tt-filter]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const nextTag = btn.getAttribute('data-tt-filter') || '';
+        activeTagFilter = (activeTagFilter.toLowerCase() === nextTag.toLowerCase()) ? '' : nextTag;
+        render();
+      });
+    });
+
+    el.querySelectorAll('[data-tt-form]').forEach((form) => {
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const uid = form.getAttribute('data-tt-form');
+        const inp = form.querySelector('[data-tt-input]');
+        const val = inp ? inp.value.trim() : '';
+        if (!val) return;
+        const res = auth.addUserTechTags(uid, val);
+        if (!res || !res.ok) {
+          if (res && res.reason === 'forbidden') ui.toast('Only Technical Managers & Admins can edit Tech Tags.', 'danger');
+          else ui.toast('Enter at least one valid #tag (letters or numbers).', 'info');
+          return;
+        }
+        ui.toast('Updated Tech Tags', 'ok');
+        render();
+      });
+    });
+
+    el.querySelectorAll('[data-tt-quick-uid]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const uid = btn.getAttribute('data-tt-quick-uid');
+        const tag = btn.getAttribute('data-tt-quick-tag');
+        const res = auth.addUserTechTags(uid, tag);
+        if (res && res.ok) {
+          ui.toast('Added ' + tag, 'ok');
+          render();
+        }
+      });
+    });
+
+    el.querySelectorAll('[data-tt-remove-uid]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const uid = btn.getAttribute('data-tt-remove-uid');
+        const tag = btn.getAttribute('data-tt-remove-tag');
+        const res = auth.removeUserTechTag(uid, tag);
+        if (res && res.ok) {
+          ui.toast('Removed ' + tag, 'info');
+          render();
+        }
+      });
+    });
   }
 
   function renderUserViewsSetup(users, adminTabsHtml) {
@@ -609,12 +848,15 @@ RMTP.views.users = function (el, params) {
   function row(u, total) {
     const done = signedFor(u.id).length;
     const pct = total ? Math.round((done / total) * 100) : 0;
+    const uTags = getUserTags(u);
     return '<button data-open="' + u.id + '" class="w-full text-left px-4 py-3 flex items-center gap-4 hover:bg-panel2/50 transition-colors">' +
       '<div class="w-10 h-10 rounded-full bg-panel2 border border-line flex items-center justify-center text-sm font-display font-semibold shrink-0">' +
         ui.esc(auth.initials(u)) + '</div>' +
       '<div class="min-w-0 flex-1">' +
         '<p class="font-medium truncate">' + ui.esc(auth.displayName(u)) + '</p>' +
-        '<p class="text-xs text-muted mt-0.5">' + ui.esc(u.position) + '</p>' +
+        '<p class="text-xs text-muted mt-0.5 truncate">' + ui.esc(u.position) +
+          (uTags.length ? ' <span class="text-line mx-1" aria-hidden="true">\u00b7</span> <span class="font-mono text-[11px] text-accent/90">' + formatTagsInline(uTags) + '</span>' : '') +
+        '</p>' +
       '</div>' +
       '<div class="hidden sm:flex">' + auth.badges(u) + '</div>' +
       '<div class="w-28 shrink-0 hidden md:block">' +
@@ -677,12 +919,15 @@ RMTP.views.users = function (el, params) {
       title: auth.displayName(u),
       size: 'md:max-w-lg',
       body:
-        '<div class="flex items-center justify-between gap-3 mb-4">' +
+        '<div class="flex items-center justify-between gap-3 mb-2">' +
           '<div class="flex items-center gap-2 flex-wrap">' +
             '<span class="text-sm text-muted">' + ui.esc(u.position) + '</span>' + auth.badges(u) +
           '</div>' +
           (canManage ? '<button data-edit class="btn btn-ghost !px-2.5 !py-1.5 text-xs shrink-0">' + ui.icon('pen', 'w-4 h-4') + 'Edit</button>' : '') +
         '</div>' +
+        (getUserTags(u).length
+          ? '<p class="text-xs font-mono text-accent/90 mb-4">' + formatTagsInline(getUserTags(u)) + '</p>'
+          : '<div class="mb-2"></div>') +
         '<p class="eyebrow mb-3">Training</p>' + sheet,
       footer:
         (canManage ? '<button data-remove class="btn btn-danger mr-auto"' + (isSelf ? ' disabled title="You can\u2019t remove yourself"' : '') + '>' + ui.icon('trash', 'w-4 h-4') + 'Remove</button>' : '') +

@@ -1086,7 +1086,12 @@ RMTP.syncSb = (function () {
         if (RMTP.artifax && typeof RMTP.artifax.hydrateFromDb === 'function') {
           await RMTP.artifax.hydrateFromDb().catch(() => {});
         }
-        await Promise.allSettled(COLLS.map((c) => pullCollection(c)));
+        await Promise.allSettled([
+          ...COLLS.map((c) => pullCollection(c)),
+          (RMTP.auth && typeof RMTP.auth.pullTechTags === 'function')
+            ? RMTP.auth.pullTechTags().catch(() => {})
+            : Promise.resolve(),
+        ]);
       } catch (err) {
         console.error('[syncSb] pull error', err);
       } finally {
@@ -1322,6 +1327,45 @@ RMTP.syncSb = (function () {
     }
   }
 
+  // Batch delete for bulk availability clearing (1 localStorage write + 1 chunked DB delete)
+  async function deleteAvailabilityBatch(ids) {
+    const cleanIds = Array.from(new Set((Array.isArray(ids) ? ids : []).map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!cleanIds.length) return { ok: true, count: 0 };
+
+    const idSet = new Set(cleanIds);
+    const existing = store.all('availability') || [];
+    const remaining = existing.filter((r) => r && r.id && !idSet.has(String(r.id)));
+    const queuedEntries = [];
+
+    cleanIds.forEach((id) => {
+      if (store.markDeleted) store.markDeleted('availability', id);
+      if (sb && sb.isConfigured()) {
+        const ts = enqueueAvailOp('delete', id, null);
+        queuedEntries.push({ id, ts });
+      }
+    });
+
+    store.write('availability', remaining);
+
+    if (!sb || !sb.isConfigured()) {
+      return { ok: true, count: cleanIds.length, backend: 'local' };
+    }
+
+    try {
+      const CHUNK = 50;
+      for (let i = 0; i < cleanIds.length; i += CHUNK) {
+        const res = await deleteAvailIdsRemote(cleanIds.slice(i, i + CHUNK));
+        if (!res || !res.ok) {
+          return { ok: false, count: cleanIds.length, queued: true, message: res && res.message };
+        }
+      }
+      dequeueAvailOps(queuedEntries);
+      return { ok: true, count: cleanIds.length, backend: availBackend };
+    } catch (e) {
+      return { ok: false, count: cleanIds.length, queued: true, message: e && e.message };
+    }
+  }
+
   async function verifySync() {
     if (!sb || !sb.isConfigured()) return { status: 'local', message: 'Running in offline/local storage mode.', queueLength: 0, tables: {} };
     
@@ -1457,7 +1501,7 @@ RMTP.syncSb = (function () {
   return {
     pull, pullAll: pull, pullCollection, wire, verifySync,
     pullRoleViews, startRoleViewsLiveSync,
-    upsertAvailabilityBatch,
+    upsertAvailabilityBatch, deleteAvailabilityBatch,
     getAppSetting, setAppSetting,
     getAvailabilityBackend: () => availBackend,
     getPendingAvailabilityCount: () => Object.keys(readAvailQueue()).length,

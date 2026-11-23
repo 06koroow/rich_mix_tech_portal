@@ -921,6 +921,170 @@ RMTP.auth = (function () {
     if (RMTP.shell && typeof RMTP.shell.refreshIdentity === 'function') RMTP.shell.refreshIdentity();
   }
 
+  /* ---- Engineer Tech Tags (#hashtags) ----
+     Stored in Supabase `app_settings` under key `user_tech_tags` + localStorage
+     cache so zero SQL schema migrations are required. Managers & Admins edit tags;
+     all views (Users, Rota, Booking Modal) read through this canonical API. */
+  const TECH_TAGS_KEY = 'user_tech_tags';
+  const SUGGESTED_TECH_TAGS = [
+    '#Lighting', '#ETC', '#Sound', '#Cinema', '#Projection',
+    '#AV', '#Stage', '#Rigging', '#Video', '#DutyManager'
+  ];
+  const UPPERCASE_TAG_TOKENS = new Set([
+    'etc', 'av', 'dmx', 'foh', 'dcp', 'pa', 'lx', 'sx', 'rf', 'led', 'sdi', 'ndi', 'qsc', 'yamaha', 'ql', 'cl', 'sq', 'ma', 'ma2', 'ma3'
+  ]);
+
+  function normalizeTechTag(raw) {
+    let s = String(raw || '').trim();
+    if (!s) return '';
+    s = s.replace(/^#+/, '').trim();
+    s = s.replace(/[^a-zA-Z0-9_\-+/]/g, '');
+    if (!s) return '';
+    const lower = s.toLowerCase();
+    if (UPPERCASE_TAG_TOKENS.has(lower)) {
+      s = s.toUpperCase();
+    } else if (s === lower) {
+      s = s.charAt(0).toUpperCase() + s.slice(1);
+    }
+    return '#' + s;
+  }
+
+  function normalizeTechTagList(rawInput) {
+    const tokens = Array.isArray(rawInput)
+      ? rawInput
+      : String(rawInput || '').split(/[\s,;]+/);
+    const seen = new Map();
+    tokens.forEach((tok) => {
+      const norm = normalizeTechTag(tok);
+      if (!norm) return;
+      const key = norm.toLowerCase();
+      if (!seen.has(key)) seen.set(key, norm);
+    });
+    return Array.from(seen.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }
+
+  function defaultTechTagsConfig() {
+    return { version: 1, updatedAt: 0, updatedBy: '', tagsByUser: {} };
+  }
+
+  function normalizeTechTagsConfig(raw) {
+    const out = defaultTechTagsConfig();
+    if (!raw || typeof raw !== 'object') return out;
+    out.updatedAt = typeof raw.updatedAt === 'number' && !isNaN(raw.updatedAt) ? raw.updatedAt : (Date.parse(raw.updatedAt) || 0);
+    out.updatedBy = typeof raw.updatedBy === 'string' ? raw.updatedBy : '';
+    const map = (raw.tagsByUser && typeof raw.tagsByUser === 'object' && !Array.isArray(raw.tagsByUser))
+      ? raw.tagsByUser
+      : {};
+    Object.keys(map).forEach((uid) => {
+      const clean = normalizeTechTagList(map[uid]);
+      if (clean.length) out.tagsByUser[uid] = clean;
+    });
+    return out;
+  }
+
+  function getTechTagsConfig() {
+    const raw = RMTP.store.read(TECH_TAGS_KEY, null);
+    return normalizeTechTagsConfig(raw);
+  }
+
+  function getUserTechTags(userOrId) {
+    const uid = (userOrId && typeof userOrId === 'object') ? userOrId.id : String(userOrId || '');
+    if (!uid) return [];
+    const cfg = getTechTagsConfig();
+    const fromCfg = (cfg.tagsByUser && Array.isArray(cfg.tagsByUser[uid])) ? cfg.tagsByUser[uid] : [];
+    const userObj = (userOrId && typeof userOrId === 'object') ? userOrId : (RMTP.store.find ? RMTP.store.find('users', uid) : null);
+    const fromUser = (userObj && Array.isArray(userObj.techTags)) ? userObj.techTags : [];
+    if (!fromCfg.length && !fromUser.length) return [];
+    return normalizeTechTagList(fromCfg.concat(fromUser));
+  }
+
+  function setUserTechTags(userId, rawTags) {
+    if (!isTechManagerOrAdmin()) {
+      return { ok: false, reason: 'forbidden', tags: getUserTechTags(userId) };
+    }
+    const uid = String(userId || '').trim();
+    if (!uid) return { ok: false, reason: 'invalid-user', tags: [] };
+    const clean = normalizeTechTagList(rawTags);
+    const cfg = getTechTagsConfig();
+    if (clean.length) cfg.tagsByUser[uid] = clean;
+    else delete cfg.tagsByUser[uid];
+    const actor = realCurrent() || current();
+    cfg.updatedAt = Date.now();
+    cfg.updatedBy = actor ? displayName(actor) : 'Admin';
+    RMTP.store.write(TECH_TAGS_KEY, cfg);
+
+    if (RMTP.syncSb && typeof RMTP.syncSb.setAppSetting === 'function' && sbActive()) {
+      RMTP.syncSb.setAppSetting(TECH_TAGS_KEY, cfg).catch((e) => {
+        console.warn('[auth] Failed syncing user_tech_tags to Supabase:', e && e.message);
+      });
+    }
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      try {
+        window.dispatchEvent(new CustomEvent('rmtp:tech-tags-updated', { detail: { userId: uid, tags: clean } }));
+      } catch (e) {}
+    }
+    return { ok: true, tags: clean, config: cfg };
+  }
+
+  function addUserTechTags(userId, rawInput) {
+    const existing = getUserTechTags(userId);
+    const incoming = normalizeTechTagList(rawInput);
+    if (!incoming.length) return { ok: false, reason: 'empty', tags: existing };
+    return setUserTechTags(userId, existing.concat(incoming));
+  }
+
+  function removeUserTechTag(userId, tag) {
+    const normTarget = normalizeTechTag(tag).toLowerCase();
+    const next = getUserTechTags(userId).filter((t) => t.toLowerCase() !== normTarget);
+    return setUserTechTags(userId, next);
+  }
+
+  function getAllVenueTechTags() {
+    const users = (RMTP.store.all('users') || []).filter((u) => u && u.status !== 'pending');
+    const counts = new Map();
+    const canonical = new Map();
+    users.forEach((u) => {
+      getUserTechTags(u).forEach((t) => {
+        const key = t.toLowerCase();
+        if (!canonical.has(key)) canonical.set(key, t);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      });
+    });
+    return Array.from(counts.entries())
+      .map(([key, count]) => ({ tag: canonical.get(key), count }))
+      .sort((a, b) => (b.count - a.count) || a.tag.localeCompare(b.tag, undefined, { sensitivity: 'base' }));
+  }
+
+  function applyRemoteTechTags(rawCfg, opts) {
+    if (!rawCfg || typeof rawCfg !== 'object') return false;
+    const incoming = normalizeTechTagsConfig(rawCfg);
+    const cur = getTechTagsConfig();
+    const force = !!(opts && opts.force);
+    const changed = JSON.stringify(cur.tagsByUser) !== JSON.stringify(incoming.tagsByUser);
+    if (!force && incoming.updatedAt < cur.updatedAt) return false;
+    if (!force && incoming.updatedAt === cur.updatedAt && !changed) return false;
+    RMTP.store.write(TECH_TAGS_KEY, incoming);
+    if (changed && typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      try {
+        window.dispatchEvent(new CustomEvent('rmtp:tech-tags-updated', { detail: { remote: true } }));
+      } catch (e) {}
+    }
+    return changed;
+  }
+
+  async function pullTechTags(opts) {
+    if (!sbActive() || !RMTP.syncSb || typeof RMTP.syncSb.getAppSetting !== 'function') return false;
+    try {
+      const remote = await RMTP.syncSb.getAppSetting(TECH_TAGS_KEY);
+      if (remote && typeof remote === 'object') {
+        return applyRemoteTechTags(remote, opts);
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
   return {
     POSITIONS,
     displayName, initials, badges, hashPassword,
@@ -936,5 +1100,9 @@ RMTP.auth = (function () {
     defaultRoleViewsConfig, getRoleViewsConfig, saveRoleViewsConfig, applyRemoteRoleViews,
     resolveUserRoleKey, getAllowedViews, canAccessView, getDefaultHome,
     isRoleViewLocked, setRoleViewAccess, setRoleAllViews, setRoleDefaultHome, resetRoleViewsConfig,
+    TECH_TAGS_KEY, SUGGESTED_TECH_TAGS,
+    normalizeTechTag, normalizeTechTagList,
+    getTechTagsConfig, getUserTechTags, setUserTechTags, addUserTechTags, removeUserTechTag,
+    getAllVenueTechTags, applyRemoteTechTags, pullTechTags,
   };
 })();

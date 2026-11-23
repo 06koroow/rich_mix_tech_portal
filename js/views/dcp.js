@@ -1980,7 +1980,7 @@ richmix.org.uk | Company number: 04293133 | Charity number: 1089163`;
           ) : '') +
           '<div class="text-[11px] text-muted mt-0.5">' +
             (dcp.testedByUserName ? 'Tested by <span class="text-ink font-medium">' + ui.esc(dcp.testedByUserName) + '</span>' : '<span class="text-muted/80">Untested</span>') +
-            (dcp.testDateTime ? ' \u00b7 ' + new Date(dcp.testDateTime).toLocaleDateString([], { month: 'short', day: 'numeric' }) : '') +
+            (dcp.testDateTime ? ' \u00b7 ' + (/^\d{4}-\d{2}-\d{2}$/.test(String(dcp.testDateTime).trim()) ? ui.formatDate(dcp.testDateTime) : new Date(dcp.testDateTime).toLocaleDateString('en-GB', { month: 'short', day: 'numeric', timeZone: 'Europe/London' })) : '') +
           '</div>' +
         '</td>' +
 

@@ -88,6 +88,10 @@ RMTP.ui = (function () {
     edit:   '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
     info:   '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
     split:  '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/>',
+    tag:    '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
+    hash:   '<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>',
+    slash:  '<circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>',
+    phone:  '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>',
     scissors:'<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/>',
     chat:   '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
     lock:   '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
@@ -255,9 +259,42 @@ RMTP.ui = (function () {
 
   function formatDate(iso) {
     if (!iso) return '';
-    const d = new Date(iso);
-    if (isNaN(d)) return esc(iso);
-    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const s = String(iso).trim();
+    if (!s) return '';
+
+    // Date-only ISO (YYYY-MM-DD) or midnight UTC ISO (YYYY-MM-DDT00:00:00Z):
+    // format purely as a calendar date so negative-UTC timezones never shift it a day earlier.
+    const ymd = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})(?:$|T00:00:00(?:\.0+)?(?:Z|[+-]00:?00)?$)/);
+    if (ymd) {
+      const y = parseInt(ymd[1], 10);
+      const m = parseInt(ymd[2], 10) - 1;
+      const day = parseInt(ymd[3], 10);
+      const utcDate = new Date(Date.UTC(y, m, day));
+      if (!isNaN(utcDate.getTime())) {
+        return utcDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
+      }
+    }
+
+    // UK DD/MM/YYYY date-only string
+    const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (dmy) {
+      const y = parseInt(dmy[3], 10);
+      const m = parseInt(dmy[2], 10) - 1;
+      const day = parseInt(dmy[1], 10);
+      const utcDate = new Date(Date.UTC(y, m, day));
+      if (!isNaN(utcDate.getTime())) {
+        return utcDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
+      }
+    }
+
+    // Full timestamp with time-of-day: always display in London venue timezone
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return esc(iso);
+    try {
+      return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Europe/London' });
+    } catch (e) {
+      return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    }
   }
   function timeAgo(ts) {
     const s = Math.floor((Date.now() - ts) / 1000);

@@ -62,6 +62,14 @@ RMTP.views.rota = (function () {
     if (!state.selectedDay) state.selectedDay = formatDate(new Date());
     if (!state.dayPlannerAvailFilter) state.dayPlannerAvailFilter = 'all';
     if (state.dayPlannerTechSearch === undefined) state.dayPlannerTechSearch = '';
+    if (!Array.isArray(state.dayPlannerTagFilters)) state.dayPlannerTagFilters = [];
+    if (state.availMultiSelectMode === undefined) state.availMultiSelectMode = false;
+    if (!Array.isArray(state.selectedAvailDates)) state.selectedAvailDates = [];
+    if (state.lastSelectedAvailDate === undefined) state.lastSelectedAvailDate = '';
+    if (!state.availBatchDayPart) state.availBatchDayPart = 'all_day';
+    if (!state.availBatchStart) state.availBatchStart = '09:00';
+    if (!state.availBatchEnd) state.availBatchEnd = '18:00';
+    if (state.availBatchNotes === undefined) state.availBatchNotes = '';
     if (state.mobileDayFilter === undefined) state.mobileDayFilter = 'all';
     // Ensure Technical Managers and Admins default to 'all' events (including gaps)
     if (state.eventsFilter === undefined || (isTMOrAdmin && state.eventsFilter !== 'staffed')) {
@@ -111,7 +119,10 @@ RMTP.views.rota = (function () {
       if (!str) return new Date();
       const norm = normalizeDate(str);
       const parts = norm.split('-');
-      return new Date(parts[0], parts[1] - 1, parts[2]);
+      if (parts.length === 3) {
+        return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 12, 0, 0);
+      }
+      return new Date();
     }
 
     function formatDisplayDate(dateStr) {
@@ -187,6 +198,20 @@ RMTP.views.rota = (function () {
       return store.all('users') || [];
     }
     const allUsers = getAllUsers();
+
+    function getTechTags(userOrId) {
+      return (auth.getUserTechTags && userOrId) ? auth.getUserTechTags(userOrId) : [];
+    }
+
+    function isPlaceholderBooking(b, usersList) {
+      if (!b) return true;
+      const uid = String(b.userId || '').trim();
+      const name = String(b.userName || '').trim();
+      const pool = usersList || getAllUsers();
+      if (uid && pool.some((u) => u && u.id === uid)) return false;
+      if (!name || /^unassigned(\s+tech)?$/i.test(name)) return true;
+      return false;
+    }
 
     function getAllEvents(includeNonCore = false) {
       return (store.all('advancing') || []).filter((e) => {
@@ -480,14 +505,18 @@ RMTP.views.rota = (function () {
 
       const items = [];
       const handledEventIds = new Set();
+      const takeoverEventIds = new Set();
       const handledBookingIds = new Set();
       const bookedTechKeysByEvent = new Map(); // eventId -> Set of userId or lowercase userName
+      const seenNoTechKeys = new Set();
+
+      function noTechDedupKey(eventId, eventName, spaceName) {
+        const sp = normalizeSpace(spaceName || 'Venue').toLowerCase();
+        if (eventId) return 'ev:' + String(eventId) + '|' + sp;
+        return 'nm:' + String(eventName || '').trim().toLowerCase() + '|' + sp;
+      }
 
       // --- STEP 1: DETECT AND CLUSTER MULTI-ROOM TAKEOVERS ---
-      // A takeover is an event that:
-      // - Has ev.isTakeover === true, OR
-      // - Has multiple spaces in ev.space (array) or ev.spaces (array), OR
-      // - Multiple events on this date share the same groupId or same name (case-insensitive) across spaces
       const takeoverClusters = [];
       const usedEventIdsForTakeover = new Set();
 
@@ -535,7 +564,10 @@ RMTP.views.rota = (function () {
 
       // --- BUILD CONSOLIDATED TAKEOVER ITEMS ---
       takeoverClusters.forEach((cl) => {
-        cl.events.forEach((e) => handledEventIds.add(e.id));
+        cl.events.forEach((e) => {
+          handledEventIds.add(e.id);
+          takeoverEventIds.add(e.id);
+        });
 
         const spaces = cl.spaces.length > 0 ? cl.spaces : ['The Stage', 'The Studio'];
         const totalCrewNeeded = spaces.reduce((sum, sp) => sum + getSpaceBasicCrew(sp), 0);
@@ -544,7 +576,7 @@ RMTP.views.rota = (function () {
         const takeoverBookings = allB.filter((b) => {
           if (cl.events.some((e) => e.id === b.eventId)) return true;
           if (b.groupId && b.groupId === cl.groupId) return true;
-          if (spaces.includes(normalizeSpace(b.space)) && b.eventName && b.eventName.trim().toLowerCase() === cl.name.trim().toLowerCase()) return true;
+          if (spaces.includes(normalizeSpace(b.space)) && b.eventName && cl.name && b.eventName.trim().toLowerCase() === cl.name.trim().toLowerCase()) return true;
           return false;
         });
         takeoverBookings.forEach((b) => handledBookingIds.add(b.id));
@@ -556,7 +588,7 @@ RMTP.views.rota = (function () {
           techs.forEach((t) => allEvTechs.push({ ...t, eventSpace: Array.isArray(e.space) ? e.space[0] : e.space }));
         });
 
-        // Compute space breakdown with discipline fulfillment
+        // Compute space breakdown with real-crew counting (excluding unassigned placeholders)
         const spaceBreakdown = spaces.map((sp) => {
           const specs = RMTP.getSpaceCrewSpecs ? RMTP.getSpaceCrewSpecs(sp) : { total: getSpaceBasicCrew(sp), disciplines: [{ role: 'Sound', count: 1 }], summary: '1x Sound' };
           const basic = specs.total;
@@ -564,29 +596,53 @@ RMTP.views.rota = (function () {
           const spTechs = allEvTechs.filter((t) => (normalizeSpace(t.space) === sp || normalizeSpace(t.eventSpace) === sp) && (t.bookingStatus || 'confirmed') !== 'cancelled' && (t.bookingStatus || 'confirmed') !== 'declined');
 
           const assignedTechs = [];
+          const placeholderBookings = [];
+          const seenTechKeys = new Set();
+
           spBookings.forEach((b) => {
+            if (b.isNoTech || b.role === 'None') return;
+            if (isPlaceholderBooking(b, allUsers)) {
+              placeholderBookings.push({
+                bookingId: b.id,
+                role: b.role || 'Tech',
+                status: b.status || 'pencil',
+              });
+              return;
+            }
             const u = allUsers.find((u) => u.id === b.userId);
+            const resolvedName = b.userName || (u ? auth.displayName(u) : 'Technician');
+            const techKey = b.userId ? ('u:' + b.userId) : ('n:' + resolvedName.trim().toLowerCase());
+            seenTechKeys.add(techKey);
             assignedTechs.push({
               id: b.userId || b.id,
-              name: b.userName || (u ? auth.displayName(u) : 'Technician'),
+              userId: b.userId || '',
+              name: resolvedName,
               role: b.role || 'Tech',
               status: b.status || 'pencil',
               bookingId: b.id,
             });
           });
+
           spTechs.forEach((t) => {
+            if (t.isNoTech || t.role === 'None') return;
             const u = allUsers.find((u) => u.id === t.userId);
-            if (!assignedTechs.some((at) => at.id === t.userId)) {
+            const hasReal = !!(u || (t.freelancerName && t.freelancerName.trim() && !/^unassigned(\s+tech)?$/i.test(t.freelancerName.trim())));
+            if (!hasReal) return;
+            const resolvedName = t.freelancerName || (u ? auth.displayName(u) : 'Technician');
+            const techKey = t.userId ? ('u:' + t.userId) : ('n:' + resolvedName.trim().toLowerCase());
+            if (!seenTechKeys.has(techKey)) {
+              seenTechKeys.add(techKey);
               assignedTechs.push({
-                id: t.userId || 'tech',
-                name: t.freelancerName || (u ? auth.displayName(u) : 'Technician'),
+                id: t.userId || techKey,
+                userId: t.userId || '',
+                name: resolvedName,
                 role: t.role || 'Tech',
                 status: t.bookingStatus || 'confirmed',
               });
             }
           });
 
-          // Discipline fulfillment status for this space
+          // Discipline fulfillment status for this space (real assigned crew only)
           const disciplineStatus = (specs.disciplines || []).map((cd) => {
             const reqCount = cd.count || 1;
             const assignedCount = assignedTechs.filter((t) => {
@@ -610,6 +666,7 @@ RMTP.views.rota = (function () {
 
           const assignedCount = assignedTechs.length;
           const gap = Math.max(0, basic - assignedCount);
+          const isFilled = assignedCount >= basic && missingDisciplines.length === 0;
           return {
             space: sp,
             basicCrew: basic,
@@ -619,23 +676,28 @@ RMTP.views.rota = (function () {
             missingDisciplines: missingDisciplines,
             assignedCount: assignedCount,
             assignedTechs: assignedTechs,
+            placeholderBookings: placeholderBookings,
             gap: gap,
-            isFilled: assignedCount >= basic,
+            isFilled: isFilled,
           };
         });
 
         const totalCrewAssigned = spaceBreakdown.reduce((sum, sb) => sum + sb.assignedCount, 0);
+        const allAssignedTechs = spaceBreakdown.flatMap((sb) => sb.assignedTechs || []);
+        const allConfirmed = allAssignedTechs.length > 0 && allAssignedTechs.every((t) => String(t.status || '').toLowerCase() === 'confirmed');
         const unfilledSpaces = spaceBreakdown.filter((sb) => !sb.isFilled).map((sb) => sb.space);
-        const isFullyStaffed = unfilledSpaces.length === 0 && totalCrewAssigned >= totalCrewNeeded;
+        const isAllNoTech = cl.events.every((e) => !!e.noTechNeeded) && totalCrewAssigned === 0;
+        const needsCovering = !isAllNoTech && (unfilledSpaces.length > 0 || totalCrewAssigned < totalCrewNeeded);
+        const isFullyStaffed = !needsCovering;
 
         // Apply filters
         if (state.spaceFilter && !spaces.includes(state.spaceFilter)) return;
-        if (state.unfilledOnly && isFullyStaffed) return;
-        if (state.eventsFilter === 'staffed' && !isFullyStaffed && totalCrewAssigned === 0) return;
+        if (state.unfilledOnly && !needsCovering) return;
+        if (state.eventsFilter === 'staffed' && needsCovering && totalCrewAssigned === 0) return;
         if (state.statusFilter) {
-          const matchesStatus = (state.statusFilter === 'confirmed' && isFullyStaffed) ||
-                                (state.statusFilter === 'pencil' && !isFullyStaffed && totalCrewAssigned > 0) ||
-                                (state.statusFilter === 'unfilled' && !isFullyStaffed);
+          const derivedStatus = isAllNoTech ? 'confirmed' : (needsCovering ? 'unfilled' : (allConfirmed ? 'confirmed' : 'pencil'));
+          const matchesStatus = (state.statusFilter === derivedStatus) ||
+                                (state.statusFilter === 'pencil' && needsCovering && totalCrewAssigned > 0);
           if (!matchesStatus) return;
         }
         if (state.techFilter) {
@@ -651,6 +713,7 @@ RMTP.views.rota = (function () {
         }
 
         const primary = cl.primaryEvent;
+        const itemStatus = isAllNoTech ? 'confirmed' : (needsCovering ? 'unfilled' : (allConfirmed ? 'confirmed' : 'pencil'));
         const item = {
           key: 'takeover_' + (cl.groupId || primary.id),
           type: 'takeover',
@@ -669,8 +732,10 @@ RMTP.views.rota = (function () {
           spaceBreakdown: spaceBreakdown,
           unfilledSpaces: unfilledSpaces,
           isFullyStaffed: isFullyStaffed,
-          isUnfilled: unfilledSpaces.length > 0,
-          status: isFullyStaffed ? 'confirmed' : (totalCrewAssigned > 0 ? 'pencil' : 'unfilled'),
+          isUnfilled: needsCovering,
+          needsCovering: needsCovering,
+          isNoTech: isAllNoTech,
+          status: itemStatus,
           notes: primary.notes || primary.techInfo || '',
         };
         items.push(item);
@@ -680,16 +745,28 @@ RMTP.views.rota = (function () {
       // --- STEP 2: REMAINING REGULAR BOOKINGS ---
       allB.forEach((b) => {
         if (handledBookingIds.has(b.id)) return;
+        if (b.eventId && takeoverEventIds.has(b.eventId)) return;
+        if (b.status === 'cancelled' || b.status === 'declined') return;
+
         const bSpace = normalizeSpace(b.space) || 'Venue';
         const isBookingNoTech = !!b.isNoTech || b.role === 'None';
-        const isPlaceholderTech = !b.userId && (!b.userName || /^unassigned(\s+tech)?$/i.test(String(b.userName).trim()));
-        const isBookingUnfilled = !isBookingNoTech && isPlaceholderTech && b.status !== 'cancelled';
+        const isPlaceholderTech = isPlaceholderBooking(b, allUsers);
+        const isBookingUnfilled = !isBookingNoTech && isPlaceholderTech;
+
+        // Deduplicate duplicate No-Tech bookings for the same event & space
+        if (isBookingNoTech) {
+          const ntKey = noTechDedupKey(b.eventId, b.eventName, bSpace);
+          const nmKey = noTechDedupKey('', b.eventName, bSpace);
+          if (seenNoTechKeys.has(ntKey) || (b.eventName && seenNoTechKeys.has(nmKey))) return;
+          seenNoTechKeys.add(ntKey);
+          if (b.eventName) seenNoTechKeys.add(nmKey);
+        }
 
         if (state.spaceFilter && bSpace !== state.spaceFilter) return;
         if (state.roleFilter && b.role !== state.roleFilter) return;
         if (state.statusFilter) {
           if (state.statusFilter === 'unfilled' && !isBookingUnfilled) return;
-          if (state.statusFilter !== 'unfilled' && b.status !== state.statusFilter) return;
+          if (state.statusFilter !== 'unfilled' && (isBookingUnfilled || b.status !== state.statusFilter)) return;
         }
         if (state.techFilter && b.userId !== state.techFilter) return;
         if (state.unfilledOnly && !isBookingUnfilled) return;
@@ -703,7 +780,7 @@ RMTP.views.rota = (function () {
           if (!match) return;
         }
 
-        if (b.eventId && b.status !== 'cancelled' && b.status !== 'declined') {
+        if (b.eventId) {
           handledEventIds.add(b.eventId);
           if (!bookedTechKeysByEvent.has(b.eventId)) bookedTechKeysByEvent.set(b.eventId, new Set());
           if (b.userId) bookedTechKeysByEvent.get(b.eventId).add('u:' + b.userId);
@@ -721,8 +798,8 @@ RMTP.views.rota = (function () {
           date: normDay,
           startTime: b.startTime || '17:00',
           finishTime: b.finishTime || '23:30',
-          userId: isBookingNoTech ? '' : b.userId,
-          userName: isBookingNoTech ? 'No Tech Required' : (isBookingUnfilled ? 'Unassigned' : (b.userName || (techObj ? auth.displayName(techObj) : 'Unassigned Tech'))),
+          userId: isBookingNoTech || isBookingUnfilled ? '' : b.userId,
+          userName: isBookingNoTech ? 'No Tech Required' : (isBookingUnfilled ? 'Unassigned' : (b.userName || (techObj ? auth.displayName(techObj) : 'Technician'))),
           role: isBookingNoTech ? 'None' : (b.role || 'Tech'),
           status: isBookingNoTech ? 'confirmed' : (isBookingUnfilled ? 'unfilled' : (b.status || 'pencil')),
           rate: b.rate,
@@ -730,6 +807,7 @@ RMTP.views.rota = (function () {
           splitFromId: b.splitFromId || '',
           legIndex: b.legIndex || '',
           isUnfilled: isBookingUnfilled,
+          needsCovering: isBookingUnfilled,
           isNoTech: isBookingNoTech,
         };
         items.push(item);
@@ -738,6 +816,9 @@ RMTP.views.rota = (function () {
 
       // --- STEP 3: REMAINING ADVANCING EVENTS (SINGLE ROOM) ---
       allEv.forEach((ev) => {
+        // Unconditionally skip events already consolidated into a Multi-Room Takeover in Step 1
+        if (takeoverEventIds.has(ev.id)) return;
+
         const spaceVal = normalizeSpace(Array.isArray(ev.space) ? ev.space[0] : (ev.space || 'Venue')) || 'Venue';
         if (state.spaceFilter && spaceVal !== state.spaceFilter) return;
 
@@ -755,7 +836,9 @@ RMTP.views.rota = (function () {
 
         const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(ev) : [];
         if (evTechs && evTechs.length > 0) {
+          const seenEvTechs = new Set();
           evTechs.forEach((t, idx) => {
+            if ((t.bookingStatus || 'confirmed') === 'cancelled' || (t.bookingStatus || 'confirmed') === 'declined') return;
             // Skip any tech already rendered via a booking record in Step 2
             if (alreadyHasBookings) {
               if (t.userId && bookedSet.has('u:' + t.userId)) return;
@@ -763,17 +846,34 @@ RMTP.views.rota = (function () {
               if (t.isNoTech || t.role === 'None') return;
               if (!t.userId && !(t.freelancerName && t.freelancerName.trim())) return;
             }
-            if (state.techFilter && t.userId !== state.techFilter) return;
-            if (state.roleFilter && t.role !== state.roleFilter) return;
-            if (state.statusFilter && (t.bookingStatus || 'confirmed') !== state.statusFilter) return;
-
             const techObj = allUsers.find((u) => u.id === t.userId);
             const isNoTech = isEventNoTech || !!t.isNoTech || t.role === 'None';
-            const hasAssigned = !!(t.userId || (t.freelancerName && t.freelancerName.trim()));
+            if (isNoTech) {
+              const ntKey = noTechDedupKey(ev.id, ev.name, spaceVal);
+              const nmKey = noTechDedupKey('', ev.name, spaceVal);
+              if (seenNoTechKeys.has(ntKey) || (ev.name && seenNoTechKeys.has(nmKey))) return;
+              seenNoTechKeys.add(ntKey);
+              if (ev.name) seenNoTechKeys.add(nmKey);
+            }
+
+            const hasAssigned = !!(techObj || (t.freelancerName && t.freelancerName.trim() && !/^unassigned(\s+tech)?$/i.test(t.freelancerName.trim())));
             const isSlotUnfilled = !isNoTech && !hasAssigned;
+
+            const dedupKey = isNoTech
+              ? 'notech'
+              : ((t.userId ? ('u:' + t.userId) : ('n:' + String(t.freelancerName || 'unassigned').trim().toLowerCase())) + '|' + String(t.role || 'Tech').toLowerCase());
+            if (seenEvTechs.has(dedupKey)) return;
+            seenEvTechs.add(dedupKey);
+
+            if (state.techFilter && t.userId !== state.techFilter) return;
+            if (state.roleFilter && t.role !== state.roleFilter) return;
+            if (state.statusFilter) {
+              const effSt = isSlotUnfilled ? 'unfilled' : (t.bookingStatus || 'confirmed');
+              if (effSt !== state.statusFilter) return;
+            }
             if (state.unfilledOnly && !isSlotUnfilled) return;
             if (state.eventsFilter === 'staffed' && isSlotUnfilled) return;
-            const tName = isNoTech ? 'No Tech Required' : (t.freelancerName || (techObj ? auth.displayName(techObj) : (t.userId ? 'Tech' : 'Unassigned')));
+            const tName = isNoTech ? 'No Tech Required' : (t.freelancerName || (techObj ? auth.displayName(techObj) : 'Unassigned'));
 
             const item = {
               key: 'evtech_' + ev.id + '_' + idx,
@@ -785,7 +885,7 @@ RMTP.views.rota = (function () {
               date: normDay,
               startTime: t.startTime || ev.startTime || '18:00',
               finishTime: t.finishTime || ev.finishTime || '23:00',
-              userId: isNoTech ? '' : t.userId,
+              userId: isNoTech || isSlotUnfilled ? '' : t.userId,
               userName: tName,
               role: isNoTech ? 'None' : (t.role || 'Tech'),
               status: isSlotUnfilled ? 'unfilled' : (t.bookingStatus || 'confirmed'),
@@ -793,6 +893,7 @@ RMTP.views.rota = (function () {
               legIndex: t.legIndex || '',
               notes: ev.notes || ev.techInfo || (ev.artifaxHistory && ev.artifaxHistory.length ? ev.artifaxHistory[ev.artifaxHistory.length - 1].notes : '') || ev.artifaxNotes || '',
               isUnfilled: isSlotUnfilled,
+              needsCovering: isSlotUnfilled,
               isNoTech: isNoTech,
             };
             items.push(item);
@@ -804,6 +905,11 @@ RMTP.views.rota = (function () {
         } else if (isEventNoTech) {
           // Self-Service advancing event with zero crew needed
           if (state.unfilledOnly) return;
+          const ntKey = noTechDedupKey(ev.id, ev.name, spaceVal);
+          const nmKey = noTechDedupKey('', ev.name, spaceVal);
+          if (seenNoTechKeys.has(ntKey) || (ev.name && seenNoTechKeys.has(nmKey))) return;
+          seenNoTechKeys.add(ntKey);
+          if (ev.name) seenNoTechKeys.add(nmKey);
           const item = {
             key: 'notech_' + ev.id,
             type: 'notech',
@@ -811,7 +917,7 @@ RMTP.views.rota = (function () {
             advEvent: ev,
             eventName: ev.name,
             space: spaceVal,
-            date: ev.date,
+            date: normDay,
             startTime: ev.startTime || '18:00',
             finishTime: ev.finishTime || '23:00',
             userId: '',
@@ -820,13 +926,13 @@ RMTP.views.rota = (function () {
             status: 'confirmed',
             notes: ev.notes || ev.techInfo || (ev.artifaxHistory && ev.artifaxHistory.length ? ev.artifaxHistory[ev.artifaxHistory.length - 1].notes : '') || ev.artifaxNotes || '',
             isUnfilled: false,
+            needsCovering: false,
             isNoTech: true,
           };
           items.push(item);
           allScheduleItemsMap.set(item.key, item);
         } else {
           // Unfilled advancing event (Gap!)
-          // If specifically set to 'staffed' only, skip unfilled gaps
           if (state.eventsFilter === 'staffed') return;
           if (state.roleFilter) return;
           if (state.techFilter) return;
@@ -842,7 +948,7 @@ RMTP.views.rota = (function () {
             advEvent: ev,
             eventName: ev.name,
             space: spaceVal,
-            date: ev.date,
+            date: normDay,
             startTime: ev.startTime || '18:00',
             finishTime: ev.finishTime || '23:00',
             userId: '',
@@ -851,6 +957,7 @@ RMTP.views.rota = (function () {
             status: 'unfilled',
             notes: ev.notes || ev.techInfo || (ev.artifaxHistory && ev.artifaxHistory.length ? ev.artifaxHistory[ev.artifaxHistory.length - 1].notes : '') || ev.artifaxNotes || '',
             isUnfilled: true,
+            needsCovering: true,
             isNoTech: false,
           };
           items.push(item);
@@ -1418,6 +1525,10 @@ RMTP.views.rota = (function () {
               <span>Shift Swaps</span>
             </button>
             ${isManagerOrSenior ? `
+              <button id="btn-pdf-rota" class="btn btn-ghost text-xs flex-1 sm:flex-initial justify-center border border-line hover:border-accent">
+                ${ui.icon('mail', 'w-4 h-4')}
+                <span>Send PDF Rota</span>
+              </button>
               <button id="btn-add-booking" class="btn btn-ghost text-xs flex-1 sm:flex-initial justify-center">
                 ${ui.icon('plus', 'w-4 h-4')}
                 <span>+ Book Shift</span>
@@ -2885,6 +2996,7 @@ RMTP.views.rota = (function () {
       const selectedUserId = state.selectedUserForAvail || (me ? me.id : 'user-3');
       const targetUser = allUsers.find((u) => u.id === selectedUserId) || me;
       const targetName = targetUser ? auth.displayName(targetUser) : 'Technician';
+      const targetTags = targetUser ? getTechTags(targetUser) : [];
 
       // Month calculation
       const [yStr, mStr] = state.availMonth.split('-');
@@ -2905,31 +3017,41 @@ RMTP.views.rota = (function () {
       const nextMonthName = nextMonthFirst.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
       const nextMonthKey = `${nextMonthFirst.getFullYear()}-${String(nextMonthFirst.getMonth() + 1).padStart(2, '0')}`;
 
+      const multiMode = !!state.availMultiSelectMode;
+      const selectedSet = new Set(Array.isArray(state.selectedAvailDates) ? state.selectedAvailDates : []);
+      const selectedCount = selectedSet.size;
+      const batchDayPart = state.availBatchDayPart || 'all_day';
+
       let out = `
         <div class="space-y-4">
           <!-- Calendar Availability Guidance Banner -->
-          <div class="p-3.5 rounded-xl bg-accent/10 border border-accent/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+          <div class="p-3.5 rounded-xl bg-accent/10 border border-accent/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div class="flex items-center gap-3">
               <span class="w-9 h-9 rounded-xl bg-accent/20 text-accent font-bold flex items-center justify-center shrink-0">
                 ${ui.icon('calendar', 'w-5 h-5')}
               </span>
               <div>
-                <div class="text-xs font-bold text-ink flex items-center gap-2">
+                <div class="text-xs font-bold text-ink flex items-center gap-2 flex-wrap">
                   <span>Freelancer Availability Calendar · ${monthName}</span>
-                  <span class="px-2 py-0.2 rounded-full text-[10px] font-bold bg-accent/20 text-accent border border-accent/30">Calendar View</span>
                 </div>
                 <div class="text-[11px] text-muted mt-0.5">
-                  Click the <strong class="text-ink">[+ Add]</strong> pill on any day below to quickly log <strong>All Day</strong> or a <strong>Specific Time Range</strong>.
+                  ${multiMode
+                    ? 'Multi-select active: click dates (or Shift-click a range), then mark all selected dates Available, Unavailable, or Clear below.'
+                    : 'Click any day to set availability, or toggle <strong class="text-ink">Select Multiple Dates</strong> (or Shift-click) to update several dates at once.'}
                 </div>
               </div>
             </div>
             <div class="flex items-center gap-2 flex-wrap">
-              <button id="btn-avail-add-today" class="btn btn-primary text-xs font-semibold shadow-xs flex items-center gap-1.5 whitespace-nowrap">
-                ${ui.icon('plus', 'w-3.5 h-3.5')}
-                <span>+ Add Today's Availability</span>
+              <button type="button" id="btn-toggle-multi-avail" class="btn ${multiMode ? 'btn-primary' : 'btn-ghost border border-accent/40 text-accent hover:bg-accent/10'} text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap">
+                ${ui.icon('check', 'w-3.5 h-3.5')}
+                <span>${multiMode ? 'Done Multi-Select' : 'Select Multiple Dates'}</span>
               </button>
-              <button id="btn-jump-next-month" class="btn btn-ghost text-xs whitespace-nowrap">
-                View ${nextMonthName} →
+              <button type="button" id="btn-avail-add-today" class="btn btn-ghost border border-line text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap">
+                ${ui.icon('plus', 'w-3.5 h-3.5')}
+                <span>Today</span>
+              </button>
+              <button type="button" id="btn-jump-next-month" class="btn btn-ghost text-xs whitespace-nowrap">
+                ${nextMonthName} →
               </button>
             </div>
           </div>
@@ -2941,11 +3063,12 @@ RMTP.views.rota = (function () {
                 ${(targetName[0] || 'T').toUpperCase()}
               </span>
               <div>
-                <div class="text-xs font-bold text-ink flex items-center gap-2">
+                <div class="text-xs font-bold text-ink flex items-center gap-2 flex-wrap">
                   <span>${ui.esc(targetName)}</span>
-                  ${targetUser && targetUser.position ? `<span class="px-2 py-0.2 rounded bg-panel2 text-[10px] text-muted border border-line">${ui.esc(targetUser.position)}</span>` : ''}
+                  ${targetUser && targetUser.position ? `<span class="text-[11px] font-normal text-muted">${ui.esc(targetUser.position)}</span>` : ''}
+                  ${targetTags.length ? `<span class="text-[11px] font-mono text-accent/90 font-normal">${targetTags.map(ui.esc).join(' · ')}</span>` : ''}
                 </div>
-                <div class="text-[11px] text-muted mt-0.5">
+                <div class="text-[11px] text-muted mt-0.5 font-mono tabular-nums">
                   ${userAvails.length} availability date(s) logged · ${userBookings.length} upcoming venue shift(s)
                 </div>
               </div>
@@ -2981,7 +3104,9 @@ RMTP.views.rota = (function () {
               <div class="flex items-center justify-between pb-2 border-b border-line/60 flex-wrap gap-2">
                 <div class="text-xs font-semibold text-ink flex items-center gap-2">
                   <span>Availability Calendar</span>
-                  <span class="text-[11px] text-muted hidden sm:inline">(Click "+ Add" on any date to set availability)</span>
+                  <span class="text-[11px] text-muted hidden sm:inline">
+                    ${multiMode ? '(Click dates to toggle · Shift-click for range)' : '(Click any date or toggle Select Multiple Dates)'}
+                  </span>
                 </div>
                 <div class="flex items-center gap-2.5 text-[11px] flex-wrap">
                   <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-400"></span> Available</span>
@@ -2989,6 +3114,68 @@ RMTP.views.rota = (function () {
                   <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-400"></span> Booked Shift</span>
                 </div>
               </div>
+
+              ${multiMode ? `
+                <!-- Multi-Select Batch Action Bar -->
+                <div class="p-3 rounded-lg bg-panel2/70 border border-accent/40 space-y-2.5">
+                  <div class="flex items-center justify-between gap-2 flex-wrap">
+                    <div class="flex items-center gap-2 text-xs">
+                      <span class="font-mono tabular-nums font-bold text-accent">${selectedCount} ${selectedCount === 1 ? 'date' : 'dates'} selected</span>
+                      <span class="text-line" aria-hidden="true">|</span>
+                      <button type="button" id="batch-select-empty" class="text-[11px] text-muted hover:text-ink underline cursor-pointer">Select Empty in Month</button>
+                      <button type="button" id="batch-select-weekends" class="text-[11px] text-muted hover:text-ink underline cursor-pointer">Weekends</button>
+                      ${selectedCount > 0 ? `<button type="button" id="batch-clear-sel" class="text-[11px] text-muted hover:text-danger underline cursor-pointer">Clear Selection</button>` : ''}
+                    </div>
+                    <button type="button" id="batch-cancel-mode" class="text-[11px] text-muted hover:text-ink font-medium cursor-pointer">Cancel</button>
+                  </div>
+
+                  <div class="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
+                    <div class="sm:col-span-4">
+                      <label class="block text-[10px] font-semibold uppercase tracking-wider text-muted mb-1">Availability Window</label>
+                      <select id="batch-avail-daypart" class="field !py-1.5 text-xs">
+                        <option value="all_day" ${batchDayPart === 'all_day' ? 'selected' : ''}>All Day (08:00–23:30)</option>
+                        <option value="morning" ${batchDayPart === 'morning' ? 'selected' : ''}>Morning (08:00–13:00)</option>
+                        <option value="afternoon" ${batchDayPart === 'afternoon' ? 'selected' : ''}>Afternoon (13:00–18:00)</option>
+                        <option value="evening" ${batchDayPart === 'evening' ? 'selected' : ''}>Evening (18:00–23:30)</option>
+                        <option value="custom" ${batchDayPart === 'custom' ? 'selected' : ''}>Custom Hours</option>
+                      </select>
+                    </div>
+                    ${batchDayPart === 'custom' ? `
+                      <div class="sm:col-span-2">
+                        <label class="block text-[10px] font-semibold uppercase tracking-wider text-muted mb-1">Start</label>
+                        <input type="time" id="batch-avail-start" class="field !py-1.5 text-xs font-mono" value="${ui.esc(state.availBatchStart || '09:00')}" />
+                      </div>
+                      <div class="sm:col-span-2">
+                        <label class="block text-[10px] font-semibold uppercase tracking-wider text-muted mb-1">Finish</label>
+                        <input type="time" id="batch-avail-end" class="field !py-1.5 text-xs font-mono" value="${ui.esc(state.availBatchEnd || '18:00')}" />
+                      </div>
+                      <div class="sm:col-span-4">
+                        <label class="block text-[10px] font-semibold uppercase tracking-wider text-muted mb-1">Notes (Optional)</label>
+                        <input type="text" id="batch-avail-notes" class="field !py-1.5 text-xs" placeholder="e.g. Free after 2pm" value="${ui.esc(state.availBatchNotes || '')}" />
+                      </div>
+                    ` : `
+                      <div class="sm:col-span-8">
+                        <label class="block text-[10px] font-semibold uppercase tracking-wider text-muted mb-1">Notes (Optional)</label>
+                        <input type="text" id="batch-avail-notes" class="field !py-1.5 text-xs" placeholder="e.g. Holiday, preferred late shift..." value="${ui.esc(state.availBatchNotes || '')}" />
+                      </div>
+                    `}
+                  </div>
+
+                  <div class="flex items-center gap-2 flex-wrap pt-1 border-t border-line/50">
+                    <button type="button" id="batch-apply-avail" class="btn btn-primary !py-1.5 !px-3 text-xs font-semibold flex items-center gap-1.5" ${selectedCount === 0 ? 'disabled' : ''}>
+                      ${ui.icon('check', 'w-3.5 h-3.5')}
+                      <span>Mark Available (${selectedCount})</span>
+                    </button>
+                    <button type="button" id="batch-apply-unavail" class="btn btn-ghost !py-1.5 !px-3 text-xs font-semibold border border-danger/40 text-danger hover:bg-danger/10 flex items-center gap-1.5" ${selectedCount === 0 ? 'disabled' : ''}>
+                      ${ui.icon('x', 'w-3.5 h-3.5')}
+                      <span>Mark Unavailable (${selectedCount})</span>
+                    </button>
+                    <button type="button" id="batch-apply-clear" class="btn btn-ghost !py-1.5 !px-3 text-xs border border-line text-muted hover:text-ink" ${selectedCount === 0 ? 'disabled' : ''}>
+                      Clear Dates
+                    </button>
+                  </div>
+                </div>
+              ` : ''}
 
               <!-- Calendar Grid with Mobile Scroll Safety -->
               <div class="overflow-x-auto scrollbar-hide">
@@ -3014,11 +3201,15 @@ RMTP.views.rota = (function () {
             const avail = userAvails.find((a) => normalizeDate(a.date) === dateStr);
             const dayBookings = userBookings.filter((b) => normalizeDate(b.date) === dateStr);
             const isToday = dateStr === todayStr;
+            const isSelected = selectedSet.has(dateStr);
 
             let statusBorder = 'border-line';
             let statusBg = 'bg-panel2/40';
 
-            if (dayBookings.length > 0) {
+            if (isSelected) {
+              statusBorder = 'border-accent ring-2 ring-accent/80';
+              statusBg = 'bg-accent/15';
+            } else if (dayBookings.length > 0) {
               statusBorder = 'border-amber-400/40';
               statusBg = 'bg-amber-400/5';
             } else if (avail) {
@@ -3032,40 +3223,39 @@ RMTP.views.rota = (function () {
             }
 
             out += `
-              <div data-cell-date="${dateStr}" class="p-1 sm:p-1.5 min-h-[62px] sm:min-h-[82px] rounded-lg border ${statusBorder} ${statusBg} ${isToday ? 'ring-1 ring-accent' : ''} hover:border-accent cursor-pointer transition flex flex-col justify-between group">
+              <div data-cell-date="${dateStr}" class="p-1 sm:p-1.5 min-h-[62px] sm:min-h-[82px] rounded-lg border ${statusBorder} ${statusBg} ${isToday && !isSelected ? 'ring-1 ring-accent' : ''} hover:border-accent cursor-pointer transition flex flex-col justify-between group select-none">
                 <div class="flex items-center justify-between">
-                  <span class="text-xs font-mono font-bold ${isToday ? 'text-accent' : 'text-ink'}">${dayNum}</span>
-                  ${isToday ? `<span class="px-1 py-0.2 rounded text-[8.5px] font-bold bg-accent text-accent-ink uppercase tracking-wider leading-none">Today</span>` : (avail ? `
+                  <span class="text-xs font-mono tabular-nums font-bold ${isToday || isSelected ? 'text-accent' : 'text-ink'}">${dayNum}</span>
+                  ${multiMode ? `
+                    <span class="w-4 h-4 rounded border flex items-center justify-center text-[10px] font-bold transition ${isSelected ? 'bg-accent border-accent text-accent-ink' : 'border-line bg-panel text-transparent'}">
+                      ✓
+                    </span>
+                  ` : (isToday ? `<span class="px-1 py-0.2 rounded text-[8.5px] font-bold bg-accent text-accent-ink uppercase tracking-wider leading-none">Today</span>` : (avail ? `
                     <span class="w-1.5 h-1.5 rounded-full ${avail.type === 'available' ? 'bg-emerald-400' : 'bg-rose-400'}"></span>
-                  ` : '')}
+                  ` : ''))}
                 </div>
 
-                <!-- Availability Pill (Pill with + sign if unset, or formatted status pill if set) -->
+                <!-- Availability Control -->
                 <div class="my-1">
                   ${avail ? `
                     ${avail.type === 'available' ? `
-                      <button type="button" data-edit-avail-date="${dateStr}" class="w-full inline-flex items-center justify-between gap-1 py-1 px-2 rounded-full text-[10.5px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/35 hover:bg-emerald-500/25 transition shadow-2xs group/pill cursor-pointer" title="Available ${avail.dayPart === 'custom' ? `${avail.startTime || ''}–${avail.finishTime || ''}` : (avail.dayPart === 'all_day' ? 'All Day' : (avail.dayPart || 'All Day'))} (Click to edit)">
-                        <span class="flex items-center gap-1 truncate">
-                          <span class="text-xs leading-none">${avail.dayPart === 'custom' ? '⏱' : '☀️'}</span>
-                          <span class="truncate font-medium">${avail.dayPart === 'custom' ? `${avail.startTime || '17:00'}–${avail.finishTime || '23:30'}` : (avail.dayPart === 'all_day' ? 'All Day' : (avail.dayPart || 'All Day'))}</span>
-                        </span>
-                        <span class="text-[9.5px] opacity-60 group-hover/pill:opacity-100 font-mono">✎</span>
+                      <button type="button" data-edit-avail-date="${dateStr}" class="w-full inline-flex items-center justify-between gap-1 py-1 px-2 rounded-md text-[10.5px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/35 hover:bg-emerald-500/25 transition cursor-pointer" title="Available ${avail.dayPart === 'custom' ? `${avail.startTime || ''}–${avail.finishTime || ''}` : (avail.dayPart === 'all_day' ? 'All Day' : (avail.dayPart || 'All Day'))}">
+                        <span class="truncate font-medium">${avail.dayPart === 'custom' ? `${avail.startTime || '17:00'}–${avail.finishTime || '23:30'}` : (avail.dayPart === 'all_day' ? 'All Day' : (avail.dayPart || 'All Day'))}</span>
                       </button>
                     ` : `
-                      <button type="button" data-edit-avail-date="${dateStr}" class="w-full inline-flex items-center justify-between gap-1 py-1 px-2 rounded-full text-[10.5px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/35 hover:bg-rose-500/25 transition shadow-2xs group/pill cursor-pointer" title="Unavailable (Click to edit)">
-                        <span class="flex items-center gap-1 truncate">
-                          <span class="text-xs leading-none">✕</span>
-                          <span class="truncate font-medium">Unavailable</span>
-                        </span>
-                        <span class="text-[9.5px] opacity-60 group-hover/pill:opacity-100 font-mono">✎</span>
+                      <button type="button" data-edit-avail-date="${dateStr}" class="w-full inline-flex items-center justify-between gap-1 py-1 px-2 rounded-md text-[10.5px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/35 hover:bg-rose-500/25 transition cursor-pointer" title="Unavailable">
+                        <span class="truncate font-medium">Unavailable</span>
                       </button>
                     `}
+                  ` : (multiMode ? `
+                    <div class="text-[10px] text-center py-1 font-mono ${isSelected ? 'text-accent font-semibold' : 'text-muted/70'}">
+                      ${isSelected ? 'Selected' : '—'}
+                    </div>
                   ` : `
-                    <button type="button" data-add-avail-date="${dateStr}" class="w-full inline-flex items-center justify-center gap-1 py-1 px-2 rounded-full text-[10.5px] font-semibold bg-panel/90 hover:bg-accent hover:text-accent-ink text-muted hover:border-accent border border-dashed border-line transition shadow-2xs group/btn cursor-pointer" title="Add availability for ${formatDisplayDate(dateStr)}">
-                      <span class="w-3.5 h-3.5 rounded-full bg-accent/20 group-hover/btn:bg-accent-ink group-hover/btn:text-accent text-accent flex items-center justify-center text-xs font-bold leading-none">+</span>
-                      <span>Add</span>
+                    <button type="button" data-add-avail-date="${dateStr}" class="w-full inline-flex items-center justify-center gap-1 py-1 px-2 rounded-md text-[10.5px] font-semibold bg-panel/90 hover:bg-accent hover:text-accent-ink text-muted hover:border-accent border border-dashed border-line transition cursor-pointer" title="Add availability for ${formatDisplayDate(dateStr)}">
+                      <span>+ Add</span>
                     </button>
-                  `}
+                  `)}
                 </div>
 
                 <!-- Bookings Tag -->
@@ -3073,7 +3263,7 @@ RMTP.views.rota = (function () {
                   ${dayBookings.map((b) => `
                     <div class="text-[9px] leading-tight px-1 py-0.5 rounded font-semibold truncate bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center justify-between gap-1" title="${ui.esc(b.space || 'Shift')}: ${b.startTime}–${b.finishTime}">
                       <span class="truncate">${ui.esc(b.space || 'Shift')}</span>
-                      <span class="font-mono text-[8px] opacity-75 shrink-0">${b.startTime}</span>
+                      <span class="font-mono tabular-nums text-[8px] opacity-75 shrink-0">${b.startTime}</span>
                     </div>
                   `).join('')}
                 </div>
@@ -3084,18 +3274,20 @@ RMTP.views.rota = (function () {
           out += `
                   </div>
                 </div>
+              </div>
+            </div>
 
-                <!-- 1-col: Personal Assigned Shifts Log -->
-                <div class="p-4 rounded-xl bg-panel border border-line space-y-3">
-                  <div class="flex items-center justify-between pb-2 border-b border-line/60">
-                    <span class="text-xs font-semibold text-ink flex items-center gap-1.5">
-                      ${ui.icon('clip', 'w-3.5 h-3.5 text-accent')}
-                      <span>Upcoming Venue Shifts</span>
-                    </span>
-                    <span class="text-[11px] font-mono text-muted tabular-nums">${userBookings.length} assigned</span>
-                  </div>
+            <!-- 1-col: Personal Assigned Shifts Log -->
+            <div class="p-4 rounded-xl bg-panel border border-line space-y-3">
+              <div class="flex items-center justify-between pb-2 border-b border-line/60">
+                <span class="text-xs font-semibold text-ink flex items-center gap-1.5">
+                  ${ui.icon('clip', 'w-3.5 h-3.5 text-accent')}
+                  <span>Upcoming Venue Shifts</span>
+                </span>
+                <span class="text-[11px] font-mono text-muted tabular-nums">${userBookings.length} assigned</span>
+              </div>
 
-                  <div class="space-y-2.5 max-h-[500px] overflow-y-auto pr-1">
+              <div class="space-y-2.5 max-h-[500px] overflow-y-auto pr-1">
           `;
 
           if (userBookings.length === 0) {
@@ -3149,100 +3341,279 @@ RMTP.views.rota = (function () {
           }
 
           out += `
-                  </div>
-                </div>
               </div>
             </div>
-          `;
+          </div>
+        </div>
+      `;
 
-          tabContainer.innerHTML = out;
-          wireMyAvailEvents(nextMonthKey);
+      tabContainer.innerHTML = out;
+      wireMyAvailEvents(nextMonthKey, year, month, daysInMonth);
+    }
+
+    function wireMyAvailEvents(nextMonthKey, year, month, daysInMonth) {
+      function toggleDateSelection(dateStr, shiftKey) {
+        const set = new Set(Array.isArray(state.selectedAvailDates) ? state.selectedAvailDates : []);
+        if (shiftKey && state.lastSelectedAvailDate) {
+          const a = parseDate(state.lastSelectedAvailDate);
+          const b = parseDate(dateStr);
+          const start = a <= b ? a : b;
+          const end = a <= b ? b : a;
+          const cur = new Date(start);
+          while (cur <= end) {
+            set.add(formatDate(cur));
+            cur.setDate(cur.getDate() + 1);
+          }
+        } else {
+          if (set.has(dateStr)) set.delete(dateStr);
+          else set.add(dateStr);
+        }
+        state.lastSelectedAvailDate = dateStr;
+        state.selectedAvailDates = Array.from(set).sort();
+        renderMyAvailTab();
+      }
+
+      async function applyBatchAvailability(mode) {
+        const dates = Array.isArray(state.selectedAvailDates) ? state.selectedAvailDates.slice().sort() : [];
+        if (!dates.length) {
+          ui.toast('Select at least one date on the calendar first.', 'info');
+          return;
+        }
+        const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
+        const userObj = getAllUsers().find((u) => u.id === userId) || me;
+        const userName = userObj ? auth.displayName(userObj) : 'Technician';
+        const existingUserAvails = getAllAvailability().filter((a) => a.userId === userId);
+        const existingByDate = new Map(existingUserAvails.map((a) => [normalizeDate(a.date), a]));
+
+        if (mode === 'clear') {
+          const idsToDelete = dates
+            .map((d) => existingByDate.get(d))
+            .filter((rec) => rec && rec.id)
+            .map((rec) => rec.id);
+          if (!idsToDelete.length) {
+            ui.toast('No saved availability entries on the selected dates.', 'info');
+            return;
+          }
+          if (RMTP.syncSb && typeof RMTP.syncSb.deleteAvailabilityBatch === 'function') {
+            await RMTP.syncSb.deleteAvailabilityBatch(idsToDelete);
+          } else {
+            idsToDelete.forEach((id) => store.remove('availability', id));
+          }
+          state.selectedAvailDates = [];
+          state.lastSelectedAvailDate = '';
+          ui.toast(`Cleared availability for ${idsToDelete.length} date${idsToDelete.length === 1 ? '' : 's'}`, 'ok');
+          renderMyAvailTab();
+          return;
         }
 
-        function wireMyAvailEvents(nextMonthKey) {
-          // Banner buttons
-          tabContainer.querySelector('#btn-avail-add-today')?.addEventListener('click', () => {
-            const todayStr = formatDate(new Date());
-            const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
-            const existing = getUserAvailability(userId, todayStr);
-            openAvailabilityModal({
-              date: todayStr,
-              userId: userId,
-              ...(existing || {})
-            });
-          });
-          tabContainer.querySelector('#btn-jump-next-month')?.addEventListener('click', () => {
-            if (nextMonthKey) {
-              state.availMonth = nextMonthKey;
-              renderMyAvailTab();
-            }
-          });
+        const dayPart = mode === 'unavailable' ? 'all_day' : (state.availBatchDayPart || 'all_day');
+        const startTime = dayPart === 'custom' ? (state.availBatchStart || '09:00') : '';
+        const finishTime = dayPart === 'custom' ? (state.availBatchEnd || '18:00') : '';
+        if (mode === 'available' && dayPart === 'custom' && (!startTime || !finishTime)) {
+          ui.toast('Please specify both start and finish times for Custom Hours.', 'danger');
+          return;
+        }
+        const notes = String(state.availBatchNotes || '').trim();
+        const nowIso = new Date().toISOString();
 
-          tabContainer.querySelector('#avail-user-select')?.addEventListener('change', (e) => {
-            state.selectedUserForAvail = e.target.value;
-            renderMyAvailTab();
-          });
+        const records = dates.map((d) => {
+          const prev = existingByDate.get(d);
+          return {
+            id: (prev && prev.id) ? prev.id : `avail_${userId}_${d}`,
+            userId: userId,
+            userName: userName,
+            date: d,
+            type: mode === 'unavailable' ? 'unavailable' : 'available',
+            dayPart: dayPart,
+            startTime: startTime,
+            finishTime: finishTime,
+            notes: notes,
+            updatedAt: nowIso,
+          };
+        });
 
-          tabContainer.querySelector('#month-prev')?.addEventListener('click', () => {
-            const [yStr, mStr] = state.availMonth.split('-');
-            let y = parseInt(yStr, 10);
-            let m = parseInt(mStr, 10) - 1;
-            if (m < 1) { m = 12; y -= 1; }
-            state.availMonth = `${y}-${String(m).padStart(2, '0')}`;
-            renderMyAvailTab();
-          });
+        if (RMTP.syncSb && typeof RMTP.syncSb.upsertAvailabilityBatch === 'function') {
+          const res = await RMTP.syncSb.upsertAvailabilityBatch(records);
+          if (res && res.queued) {
+            ui.toast(`Saved ${records.length} dates locally (sync queued)`, 'info');
+          } else {
+            ui.toast(`Marked ${records.length} date${records.length === 1 ? '' : 's'} as ${mode === 'unavailable' ? 'Unavailable' : 'Available'}`, 'ok');
+          }
+        } else {
+          records.forEach((r) => store.upsert('availability', r));
+          ui.toast(`Marked ${records.length} date${records.length === 1 ? '' : 's'} as ${mode === 'unavailable' ? 'Unavailable' : 'Available'}`, 'ok');
+        }
 
-          tabContainer.querySelector('#month-next')?.addEventListener('click', () => {
-            const [yStr, mStr] = state.availMonth.split('-');
-            let y = parseInt(yStr, 10);
-            let m = parseInt(mStr, 10) + 1;
-            if (m > 12) { m = 1; y += 1; }
-            state.availMonth = `${y}-${String(m).padStart(2, '0')}`;
-            renderMyAvailTab();
-          });
+        state.selectedAvailDates = [];
+        state.lastSelectedAvailDate = '';
+        renderMyAvailTab();
+      }
 
-          // Click pill with + sign to add availability
-          tabContainer.querySelectorAll('[data-add-avail-date]').forEach((btn) => {
-            btn.addEventListener('click', (e) => {
-              e.stopPropagation();
-              const d = btn.getAttribute('data-add-avail-date');
-              const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
-              openAvailabilityModal({
-                date: d,
-                userId: userId,
-              });
-            });
-          });
+      tabContainer.querySelector('#btn-toggle-multi-avail')?.addEventListener('click', () => {
+        state.availMultiSelectMode = !state.availMultiSelectMode;
+        if (!state.availMultiSelectMode) {
+          state.selectedAvailDates = [];
+          state.lastSelectedAvailDate = '';
+        }
+        renderMyAvailTab();
+      });
 
-          // Click existing pill to edit availability
-          tabContainer.querySelectorAll('[data-edit-avail-date]').forEach((btn) => {
-            btn.addEventListener('click', (e) => {
-              e.stopPropagation();
-              const d = btn.getAttribute('data-edit-avail-date');
-              const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
-              const existing = getUserAvailability(userId, d);
-              openAvailabilityModal({
-                date: d,
-                userId: userId,
-                ...(existing || {})
-              });
-            });
-          });
+      tabContainer.querySelector('#batch-cancel-mode')?.addEventListener('click', () => {
+        state.availMultiSelectMode = false;
+        state.selectedAvailDates = [];
+        state.lastSelectedAvailDate = '';
+        renderMyAvailTab();
+      });
 
-          // Click cell anywhere
-          tabContainer.querySelectorAll('[data-cell-date]').forEach((cell) => {
-            cell.addEventListener('click', (e) => {
-              if (e.target.closest('button')) return;
-              const d = cell.getAttribute('data-cell-date');
-              const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
-              const existing = getUserAvailability(userId, d);
-              openAvailabilityModal({
-                date: d,
-                userId: userId,
-                ...(existing || {})
-              });
-            });
+      tabContainer.querySelector('#batch-clear-sel')?.addEventListener('click', () => {
+        state.selectedAvailDates = [];
+        state.lastSelectedAvailDate = '';
+        renderMyAvailTab();
+      });
+
+      tabContainer.querySelector('#batch-select-empty')?.addEventListener('click', () => {
+        const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
+        const existingSet = new Set(getAllAvailability().filter((a) => a.userId === userId).map((a) => normalizeDate(a.date)));
+        const sel = new Set(Array.isArray(state.selectedAvailDates) ? state.selectedAvailDates : []);
+        for (let dNum = 1; dNum <= daysInMonth; dNum++) {
+          const ds = `${year}-${String(month + 1).padStart(2, '0')}-${String(dNum).padStart(2, '0')}`;
+          if (!existingSet.has(ds)) sel.add(ds);
+        }
+        state.selectedAvailDates = Array.from(sel).sort();
+        renderMyAvailTab();
+      });
+
+      tabContainer.querySelector('#batch-select-weekends')?.addEventListener('click', () => {
+        const sel = new Set(Array.isArray(state.selectedAvailDates) ? state.selectedAvailDates : []);
+        for (let dNum = 1; dNum <= daysInMonth; dNum++) {
+          const dObj = new Date(year, month, dNum, 12, 0, 0);
+          const dow = dObj.getDay();
+          if (dow === 0 || dow === 6) {
+            sel.add(`${year}-${String(month + 1).padStart(2, '0')}-${String(dNum).padStart(2, '0')}`);
+          }
+        }
+        state.selectedAvailDates = Array.from(sel).sort();
+        renderMyAvailTab();
+      });
+
+      tabContainer.querySelector('#batch-avail-daypart')?.addEventListener('change', (e) => {
+        state.availBatchDayPart = e.target.value;
+        renderMyAvailTab();
+      });
+      tabContainer.querySelector('#batch-avail-start')?.addEventListener('change', (e) => {
+        state.availBatchStart = e.target.value;
+      });
+      tabContainer.querySelector('#batch-avail-end')?.addEventListener('change', (e) => {
+        state.availBatchEnd = e.target.value;
+      });
+      tabContainer.querySelector('#batch-avail-notes')?.addEventListener('input', (e) => {
+        state.availBatchNotes = e.target.value;
+      });
+
+      tabContainer.querySelector('#batch-apply-avail')?.addEventListener('click', () => applyBatchAvailability('available'));
+      tabContainer.querySelector('#batch-apply-unavail')?.addEventListener('click', () => applyBatchAvailability('unavailable'));
+      tabContainer.querySelector('#batch-apply-clear')?.addEventListener('click', () => applyBatchAvailability('clear'));
+
+      // Banner buttons
+      tabContainer.querySelector('#btn-avail-add-today')?.addEventListener('click', () => {
+        const todayStr = formatDate(new Date());
+        const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
+        const existing = getUserAvailability(userId, todayStr);
+        openAvailabilityModal({
+          date: todayStr,
+          userId: userId,
+          ...(existing || {})
+        });
+      });
+      tabContainer.querySelector('#btn-jump-next-month')?.addEventListener('click', () => {
+        if (nextMonthKey) {
+          state.availMonth = nextMonthKey;
+          renderMyAvailTab();
+        }
+      });
+
+      tabContainer.querySelector('#avail-user-select')?.addEventListener('change', (e) => {
+        state.selectedUserForAvail = e.target.value;
+        state.selectedAvailDates = [];
+        state.lastSelectedAvailDate = '';
+        renderMyAvailTab();
+      });
+
+      tabContainer.querySelector('#month-prev')?.addEventListener('click', () => {
+        const [yStr, mStr] = state.availMonth.split('-');
+        let y = parseInt(yStr, 10);
+        let m = parseInt(mStr, 10) - 1;
+        if (m < 1) { m = 12; y -= 1; }
+        state.availMonth = `${y}-${String(m).padStart(2, '0')}`;
+        renderMyAvailTab();
+      });
+
+      tabContainer.querySelector('#month-next')?.addEventListener('click', () => {
+        const [yStr, mStr] = state.availMonth.split('-');
+        let y = parseInt(yStr, 10);
+        let m = parseInt(mStr, 10) + 1;
+        if (m > 12) { m = 1; y += 1; }
+        state.availMonth = `${y}-${String(m).padStart(2, '0')}`;
+        renderMyAvailTab();
+      });
+
+      // Click pill with + sign to add availability (or toggle if multi-select/Shift)
+      tabContainer.querySelectorAll('[data-add-avail-date]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const d = btn.getAttribute('data-add-avail-date');
+          if (state.availMultiSelectMode || e.shiftKey) {
+            state.availMultiSelectMode = true;
+            toggleDateSelection(d, e.shiftKey);
+            return;
+          }
+          const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
+          openAvailabilityModal({
+            date: d,
+            userId: userId,
           });
+        });
+      });
+
+      // Click existing pill to edit availability (or toggle if multi-select/Shift)
+      tabContainer.querySelectorAll('[data-edit-avail-date]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const d = btn.getAttribute('data-edit-avail-date');
+          if (state.availMultiSelectMode || e.shiftKey) {
+            state.availMultiSelectMode = true;
+            toggleDateSelection(d, e.shiftKey);
+            return;
+          }
+          const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
+          const existing = getUserAvailability(userId, d);
+          openAvailabilityModal({
+            date: d,
+            userId: userId,
+            ...(existing || {})
+          });
+        });
+      });
+
+      // Click cell anywhere
+      tabContainer.querySelectorAll('[data-cell-date]').forEach((cell) => {
+        cell.addEventListener('click', (e) => {
+          const d = cell.getAttribute('data-cell-date');
+          if (state.availMultiSelectMode || e.shiftKey) {
+            state.availMultiSelectMode = true;
+            toggleDateSelection(d, e.shiftKey);
+            return;
+          }
+          if (e.target.closest('button')) return;
+          const userId = state.selectedUserForAvail || (me ? me.id : 'user-3');
+          const existing = getUserAvailability(userId, d);
+          openAvailabilityModal({
+            date: d,
+            userId: userId,
+            ...(existing || {})
+          });
+        });
+      });
 
       tabContainer.querySelectorAll('[data-offer-my-swap]').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -3647,7 +4018,7 @@ RMTP.views.rota = (function () {
           const live = getTechLiveStatus(u.id, ds);
           if (live.available === true && !live.booked) availCount++;
         });
-        const unfilledDayCount = dayItems.filter((it) => it.isUnfilled).length;
+        const unfilledDayCount = dayItems.filter((it) => it.needsCovering || it.isUnfilled).length;
         weekStripDays.push({
           date: ds,
           dayShort: d.toLocaleDateString('en-GB', { weekday: 'short' }),
@@ -3661,22 +4032,29 @@ RMTP.views.rota = (function () {
         });
       }
 
-      // Compute full venue shifts for selected day
+      // Compute full venue shifts for selected day — cleanly split into Needs Covering vs Covered & Booked
       const dayItems = getFullDayScheduleSnapshot(targetDate);
-      const unfilledShifts = dayItems.filter((it) => it.isUnfilled);
-      const confirmedShifts = dayItems.filter((it) => !it.isUnfilled && !it.isNoTech && it.status === 'confirmed');
-      const pencilShifts = dayItems.filter((it) => !it.isUnfilled && !it.isNoTech && it.status === 'pencil');
+      const needsCoveringItems = dayItems.filter((it) => it.needsCovering || it.isUnfilled);
+      const coveredItems = dayItems.filter((it) => !(it.needsCovering || it.isUnfilled));
+      const confirmedShifts = coveredItems.filter((it) => !it.isNoTech && it.status === 'confirmed');
+      const pencilShifts = coveredItems.filter((it) => !it.isNoTech && it.status === 'pencil');
+      const selfServiceShifts = coveredItems.filter((it) => it.isNoTech);
 
-      // Compute technician availability for selected day
+      // Compute technician availability & Tech Tags for selected day
+      const venueTags = auth.getAllVenueTechTags ? auth.getAllVenueTechTags() : [];
+      const activeTagFilters = Array.isArray(state.dayPlannerTagFilters) ? state.dayPlannerTagFilters : [];
+      const activeTagSet = new Set(activeTagFilters.map((t) => t.toLowerCase()));
+
       const techEntries = techUsers.map((u) => {
         const live = getTechLiveStatus(u.id, targetDate);
         const avail = getUserAvailability(u.id, targetDate);
         const bookings = getUserBookingsOnDate(u.id, targetDate);
+        const tags = getTechTags(u);
         let bucket = 'nodata';
         if (live.booked) bucket = 'booked';
         else if (live.available === true) bucket = 'available';
         else if (live.available === false) bucket = 'unavailable';
-        return { user: u, name: auth.displayName(u), live, avail, bookings, bucket };
+        return { user: u, name: auth.displayName(u), tags, live, avail, bookings, bucket };
       });
 
       const availCount = techEntries.filter((t) => t.bucket === 'available').length;
@@ -3688,8 +4066,17 @@ RMTP.views.rota = (function () {
       const availFilter = state.dayPlannerAvailFilter || 'all';
       const filteredTechs = techEntries.filter((t) => {
         if (availFilter !== 'all' && t.bucket !== availFilter) return false;
+        if (activeTagFilters.length > 0) {
+          const uTagLower = new Set(t.tags.map((x) => x.toLowerCase()));
+          for (const reqTag of activeTagSet) {
+            if (!uTagLower.has(reqTag)) return false;
+          }
+        }
         if (techSearch) {
-          const hay = [t.name, t.user.position, t.user.discipline, t.live.label, t.avail && t.avail.notes].filter(Boolean).join(' ').toLowerCase();
+          const hay = [
+            t.name, t.user.position, t.user.discipline,
+            t.tags.join(' '), t.live.label, t.avail && t.avail.notes
+          ].filter(Boolean).join(' ').toLowerCase();
           if (!hay.includes(techSearch)) return false;
         }
         return true;
@@ -3710,17 +4097,18 @@ RMTP.views.rota = (function () {
         const timesStr = (item.startTime || 'TBC') + (item.finishTime ? (' \u2013 ' + item.finishTime) : '');
         const isTakeover = item.type === 'takeover';
         const isBooking = item.type === 'booking';
+        const isGap = !!(item.needsCovering || item.isUnfilled);
         const statusMeta = item.isNoTech
           ? { label: 'No Tech Required', cls: 'text-muted', icon: 'slash' }
-          : (item.isUnfilled
-            ? { label: 'Unfilled Gap', cls: 'text-danger font-semibold', icon: 'alert' }
+          : (isGap
+            ? { label: (isTakeover && item.totalCrewAssigned > 0 ? 'Needs Covering' : 'Unfilled Gap'), cls: 'text-danger font-semibold', icon: 'alert' }
             : (item.status === 'confirmed'
               ? { label: 'Confirmed', cls: 'text-ok font-semibold', icon: 'check' }
               : { label: 'Pencil', cls: 'text-warning font-semibold', icon: 'clock' }));
 
         if (isTakeover) {
           return `
-            <div class="p-3.5 ${item.isUnfilled ? 'bg-danger/[0.03]' : ''} space-y-2.5">
+            <div class="p-3.5 ${isGap ? 'bg-danger/[0.025]' : ''} space-y-2.5">
               <div class="flex items-start justify-between gap-2 flex-wrap">
                 <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-2 flex-wrap text-[11px] text-muted mb-0.5">
@@ -3728,45 +4116,55 @@ RMTP.views.rota = (function () {
                     <span aria-hidden="true">\u00b7</span>
                     <span class="font-semibold text-warning">Multi-Room Takeover</span>
                     <span aria-hidden="true">\u00b7</span>
-                    <span class="inline-flex items-center gap-1 ${statusMeta.cls}">${ui.icon(statusMeta.icon, 'w-3 h-3')}<span>${ui.esc(statusMeta.label)} (${item.totalCrewAssigned}/${item.totalCrewNeeded} crew)</span></span>
+                    <span class="inline-flex items-center gap-1 ${statusMeta.cls}">${ui.icon(statusMeta.icon, 'w-3 h-3')}<span class="font-mono tabular-nums">${ui.esc(statusMeta.label)} (${item.totalCrewAssigned}/${item.totalCrewNeeded} crew)</span></span>
                   </div>
                   <div class="font-display text-sm font-semibold text-ink">${ui.esc(item.eventName)}</div>
                 </div>
                 ${item.eventId ? `<a href="#/advancing/${encodeURIComponent(item.eventId)}" class="text-[11px] font-semibold text-accent hover:underline shrink-0">Advancing \u2192</a>` : ''}
               </div>
               <div class="divide-y divide-line/50 border-t border-line/60">
-                ${(item.spaceBreakdown || []).map((sb) => `
-                  <div class="py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div class="min-w-0 flex-1">
-                      <div class="flex items-center gap-2 flex-wrap">
-                        <span class="font-semibold text-ink">${ui.esc(sb.space)}</span>
-                        <span class="text-muted text-[11px] font-mono tabular-nums">${sb.assignedCount}/${sb.basicCrew}</span>
-                        ${sb.missingDisciplines && sb.missingDisciplines.length ? `
-                          <span class="text-[11px] font-semibold text-danger">Needs: ${ui.esc(sb.missingDisciplines.join(', '))}</span>
-                        ` : '<span class="text-[11px] text-ok font-medium">Covered</span>'}
-                      </div>
-                      ${sb.assignedTechs && sb.assignedTechs.length ? `
-                        <div class="text-[11px] text-muted mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                          ${sb.assignedTechs.map((t) => (
-                            t.bookingId
-                              ? `<button type="button" data-dp-edit-booking="${ui.esc(t.bookingId)}" class="text-ink hover:text-accent hover:underline cursor-pointer">${ui.esc(t.name)} (${ui.esc(t.role)} · ${ui.esc(t.status)})</button>`
-                              : `<span>${ui.esc(t.name)} (${ui.esc(t.role)})</span>`
-                          )).join('<span aria-hidden="true">\u00b7</span>')}
+                ${(item.spaceBreakdown || []).map((sb) => {
+                  const placeholderId = (sb.placeholderBookings && sb.placeholderBookings.length) ? sb.placeholderBookings[0].bookingId : '';
+                  const roomEvId = resolveTakeoverEventId(item, sb.space) || item.eventId || '';
+                  return `
+                    <div class="py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div class="min-w-0 flex-1">
+                        <div class="flex items-center gap-2 flex-wrap">
+                          <span class="font-semibold text-ink">${ui.esc(sb.space)}</span>
+                          <span class="text-muted text-[11px] font-mono tabular-nums">${sb.assignedCount}/${sb.basicCrew}</span>
+                          ${!sb.isFilled ? `
+                            <span class="text-[11px] font-semibold text-danger">Needs: ${ui.esc((sb.missingDisciplines && sb.missingDisciplines.length) ? sb.missingDisciplines.join(', ') : (sb.gap + ' crew'))}</span>
+                          ` : '<span class="text-[11px] text-ok font-medium">Covered</span>'}
                         </div>
-                      ` : ''}
+                        ${sb.assignedTechs && sb.assignedTechs.length ? `
+                          <div class="text-[11px] text-muted mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                            ${sb.assignedTechs.map((t) => {
+                              const tTags = t.userId ? getTechTags(t.userId) : [];
+                              const tagSuffix = tTags.length ? ` <span class="font-mono text-[10px] text-accent/80">${tTags.slice(0, 3).map(ui.esc).join(' ')}</span>` : '';
+                              return t.bookingId
+                                ? `<button type="button" data-dp-edit-booking="${ui.esc(t.bookingId)}" class="text-ink hover:text-accent hover:underline cursor-pointer">${ui.esc(t.name)} (${ui.esc(t.role)} · ${ui.esc(t.status)})${tagSuffix}</button>`
+                                : `<span>${ui.esc(t.name)} (${ui.esc(t.role)})${tagSuffix}</span>`;
+                            }).join('<span aria-hidden="true">\u00b7</span>')}
+                          </div>
+                        ` : `
+                          <div class="text-[11px] text-danger/85 mt-0.5">Unassigned</div>
+                        `}
+                      </div>
+                      <button type="button" data-dp-assign-shift data-ev-id="${ui.esc(roomEvId)}" data-ev-name="${ui.esc(item.eventName || '')}" data-space="${ui.esc(sb.space)}" data-start="${ui.esc(item.startTime || '17:00')}" data-end="${ui.esc(item.finishTime || '23:30')}" data-role="${ui.esc((sb.missingDisciplines && sb.missingDisciplines[0]) || 'Sound')}" ${placeholderId ? `data-existing-booking-id="${ui.esc(placeholderId)}"` : ''} class="btn ${!sb.isFilled ? 'btn-primary' : 'btn-ghost text-accent border border-accent/30 hover:bg-accent/10'} !py-1 !px-2.5 text-[11px] font-semibold shrink-0">
+                        + Assign
+                      </button>
                     </div>
-                    <button type="button" data-dp-assign-shift data-ev-id="${ui.esc(item.eventId || '')}" data-ev-name="${ui.esc(item.eventName || '')}" data-space="${ui.esc(sb.space)}" data-start="${ui.esc(item.startTime || '17:00')}" data-end="${ui.esc(item.finishTime || '23:30')}" data-role="${ui.esc((sb.missingDisciplines && sb.missingDisciplines[0]) || 'Sound')}" class="btn btn-ghost !py-1 !px-2 text-[11px] font-semibold text-accent border border-accent/30 hover:bg-accent/10 shrink-0">
-                      + Assign
-                    </button>
-                  </div>
-                `).join('')}
+                  `;
+                }).join('')}
               </div>
             </div>
           `;
         }
 
+        const assignedTags = (!isGap && !item.isNoTech && item.userId) ? getTechTags(item.userId) : [];
+
         return `
-          <div class="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${item.isUnfilled ? 'bg-danger/[0.03]' : ''}">
+          <div class="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${isGap ? 'bg-danger/[0.025]' : ''}">
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2 flex-wrap text-[11px] text-muted mb-0.5">
                 <span class="font-mono tabular-nums font-semibold text-ink">${ui.esc(timesStr)}</span>
@@ -3777,7 +4175,7 @@ RMTP.views.rota = (function () {
               </div>
               <div class="font-display text-sm font-semibold text-ink truncate">${ui.esc(item.eventName || 'Venue Shift')}</div>
               <div class="text-xs text-muted mt-0.5 flex items-center gap-2 flex-wrap">
-                ${item.isUnfilled ? `
+                ${isGap ? `
                   <span class="text-danger font-medium">Unassigned · Role needed: ${ui.esc(item.role || 'Tech')}</span>
                 ` : (item.isNoTech ? `
                   <span>Self-service / no technician required</span>
@@ -3785,11 +4183,12 @@ RMTP.views.rota = (function () {
                   <span>Crew: <strong class="text-ink font-medium">${ui.esc(item.userName || 'Technician')}</strong></span>
                   <span aria-hidden="true">\u00b7</span>
                   <span>${ui.esc(item.role || 'Tech')}</span>
+                  ${assignedTags.length ? `<span aria-hidden="true">\u00b7</span><span class="font-mono text-[11px] text-accent/90">${assignedTags.map(ui.esc).join(' · ')}</span>` : ''}
                 `)}
               </div>
             </div>
             <div class="flex items-center gap-1.5 shrink-0 flex-wrap">
-              ${item.isUnfilled ? `
+              ${isGap ? `
                 <button type="button" data-dp-assign-shift data-ev-id="${ui.esc(item.eventId || '')}" data-ev-name="${ui.esc(item.eventName || '')}" data-space="${ui.esc(item.space || 'The Stage')}" data-start="${ui.esc(item.startTime || '17:00')}" data-end="${ui.esc(item.finishTime || '23:30')}" data-role="${ui.esc(item.role || 'Sound')}" ${isBooking && item.id ? `data-existing-booking-id="${ui.esc(item.id)}"` : ''} class="btn btn-primary !py-1 !px-2.5 text-[11px] font-semibold">
                   + Assign Tech
                 </button>
@@ -3824,6 +4223,11 @@ RMTP.views.rota = (function () {
                 <span class="font-semibold text-xs text-ink">${ui.esc(entry.name)}</span>
                 <span class="text-[11px] text-muted">${ui.esc(u.position || 'Tech')}${u.discipline ? (' · ' + ui.esc(u.discipline)) : ''}</span>
               </div>
+              ${entry.tags && entry.tags.length ? `
+                <div class="text-[11px] font-mono text-accent/90 mt-0.5 truncate" title="${ui.esc(entry.tags.join(' '))}">
+                  ${entry.tags.map(ui.esc).join(' · ')}
+                </div>
+              ` : ''}
               ${entry.bucket === 'booked' ? `
                 <div class="mt-1 space-y-1">
                   ${entry.bookings.map((b) => `
@@ -3870,9 +4274,9 @@ RMTP.views.rota = (function () {
                 <h2 class="font-display text-base font-semibold text-ink">${ui.esc(displayHeadingDate)}</h2>
                 <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted mt-0.5">
                   <span class="font-mono tabular-nums font-semibold text-ink">${dayItems.length} venue ${dayItems.length === 1 ? 'shift' : 'shifts'}</span>
-                  ${unfilledShifts.length > 0 ? `
+                  ${needsCoveringItems.length > 0 ? `
                     <span aria-hidden="true">\u00b7</span>
-                    <span class="inline-flex items-center gap-1 font-semibold text-danger">${ui.icon('alert', 'w-3.5 h-3.5')}<span class="font-mono tabular-nums">${unfilledShifts.length}</span> unfilled</span>
+                    <span class="inline-flex items-center gap-1 font-semibold text-danger">${ui.icon('alert', 'w-3.5 h-3.5')}<span class="font-mono tabular-nums">${needsCoveringItems.length}</span> needs covering</span>
                   ` : (dayItems.length > 0 ? `
                     <span aria-hidden="true">\u00b7</span>
                     <span class="inline-flex items-center gap-1 font-semibold text-ok">${ui.icon('check', 'w-3.5 h-3.5')}All shifts covered</span>
@@ -3911,7 +4315,7 @@ RMTP.views.rota = (function () {
                     <span class="font-mono tabular-nums font-semibold ${d.isSelected ? 'text-accent' : 'text-ink'}">${d.dayNum}</span>
                   </div>
                   <div class="mt-1 flex items-center justify-between gap-1 text-[10px] font-mono tabular-nums">
-                    <span class="${d.unfilledCount > 0 ? 'text-danger font-bold' : 'text-muted'}" title="${d.shiftCount} shifts (${d.unfilledCount} unfilled)">${d.shiftCount} sh</span>
+                    <span class="${d.unfilledCount > 0 ? 'text-danger font-bold' : 'text-muted'}" title="${d.shiftCount} shifts (${d.unfilledCount} needs covering)">${d.shiftCount} sh</span>
                     <span class="text-ok" title="${d.availCount} technicians available">${d.availCount} av</span>
                   </div>
                 </button>
@@ -3919,29 +4323,75 @@ RMTP.views.rota = (function () {
             </div>
           </div>
 
-          <!-- Split View: Venue Shifts (Left) & Technician Availability (Right) -->
+          <!-- Split View: Two-Section Venue Shifts (Left) & Technician Availability (Right) -->
           <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-            <!-- Left Column: Venue Shifts That Day -->
-            <div class="lg:col-span-7 panel border border-line overflow-hidden">
-              <div class="px-4 py-3 border-b border-line bg-panel2/40 flex items-center justify-between gap-2 flex-wrap">
-                <div>
-                  <h3 class="font-display text-sm font-semibold text-ink">Venue Shifts &amp; Events</h3>
-                  <p class="text-[11px] text-muted">
-                    ${confirmedShifts.length} confirmed · ${pencilShifts.length} pencil · ${unfilledShifts.length} unfilled
-                  </p>
-                </div>
-                <span class="text-[11px] font-mono tabular-nums text-muted">${ui.esc(formatDisplayDate(targetDate))}</span>
-              </div>
-              ${dayItems.length ? `
-                <div class="divide-y divide-line/60">
-                  ${dayItems.map(renderDayShiftRow).join('')}
-                </div>
-              ` : `
-                <div class="p-8 text-center text-muted space-y-2">
+            <!-- Left Column: Two Clearly Delineated Sections -->
+            <div class="lg:col-span-7 space-y-4">
+              ${dayItems.length === 0 ? `
+                <div class="panel border border-line p-8 text-center text-muted space-y-2">
                   <div class="text-sm font-semibold text-ink">No venue shifts or events scheduled</div>
                   <p class="text-xs">There are no active bookings or advancing events in ${state.showNonCoreSpaces ? 'any space' : 'core spaces'} on ${ui.esc(formatDisplayDate(targetDate))}.</p>
                   <button type="button" id="dp-empty-book-btn" class="btn btn-primary !py-1.5 !px-3 text-xs font-semibold mt-1">+ Book Shift on This Day</button>
                 </div>
+              ` : `
+                <!-- SECTION 1: NEEDS COVERING -->
+                <section class="panel border ${needsCoveringItems.length ? 'border-danger/40' : 'border-line'} overflow-hidden" aria-label="Shifts needing cover">
+                  <div class="px-4 py-3 border-b ${needsCoveringItems.length ? 'border-danger/25 bg-danger/[0.06]' : 'border-line bg-panel2/40'} flex items-center justify-between gap-2 flex-wrap">
+                    <div class="flex items-center gap-2">
+                      <span class="${needsCoveringItems.length ? 'text-danger' : 'text-ok'} shrink-0">
+                        ${ui.icon(needsCoveringItems.length ? 'alert' : 'check', 'w-4 h-4')}
+                      </span>
+                      <div>
+                        <h3 class="font-display text-sm font-semibold text-ink">Needs Covering</h3>
+                        <p class="text-[11px] text-muted">
+                          ${needsCoveringItems.length
+                            ? 'Unassigned shifts and multi-room spaces still missing crew'
+                            : 'No staffing gaps remaining on ' + ui.esc(formatDisplayDate(targetDate))}
+                        </p>
+                      </div>
+                    </div>
+                    <span class="text-xs font-mono tabular-nums font-semibold ${needsCoveringItems.length ? 'text-danger' : 'text-ok'}">
+                      ${needsCoveringItems.length ? (needsCoveringItems.length + ' ' + (needsCoveringItems.length === 1 ? 'shift' : 'shifts')) : 'All Covered'}
+                    </span>
+                  </div>
+                  ${needsCoveringItems.length ? `
+                    <div class="divide-y divide-line/60">
+                      ${needsCoveringItems.map(renderDayShiftRow).join('')}
+                    </div>
+                  ` : `
+                    <div class="px-4 py-3.5 text-xs text-muted flex items-center justify-between gap-2">
+                      <span>Every event on this date has crew assigned or requires no technical staff.</span>
+                      <span class="font-mono tabular-nums text-[11px] text-ok font-semibold">0 gaps</span>
+                    </div>
+                  `}
+                </section>
+
+                <!-- SECTION 2: COVERED & BOOKED SHIFTS -->
+                <section class="panel border border-line overflow-hidden" aria-label="Covered and booked shifts">
+                  <div class="px-4 py-3 border-b border-line bg-panel2/50 flex items-center justify-between gap-2 flex-wrap">
+                    <div class="flex items-center gap-2">
+                      <span class="text-ok shrink-0">${ui.icon('check', 'w-4 h-4')}</span>
+                      <div>
+                        <h3 class="font-display text-sm font-semibold text-ink">Covered &amp; Booked Shifts</h3>
+                        <p class="text-[11px] text-muted font-mono tabular-nums">
+                          ${confirmedShifts.length} confirmed · ${pencilShifts.length} pencil${selfServiceShifts.length ? (' · ' + selfServiceShifts.length + ' self-service') : ''}
+                        </p>
+                      </div>
+                    </div>
+                    <span class="text-xs font-mono tabular-nums font-semibold text-muted">
+                      ${coveredItems.length} ${coveredItems.length === 1 ? 'shift' : 'shifts'}
+                    </span>
+                  </div>
+                  ${coveredItems.length ? `
+                    <div class="divide-y divide-line/60">
+                      ${coveredItems.map(renderDayShiftRow).join('')}
+                    </div>
+                  ` : `
+                    <div class="px-4 py-5 text-center text-xs text-muted">
+                      No covered shifts booked yet on ${ui.esc(formatDisplayDate(targetDate))}.
+                    </div>
+                  `}
+                </section>
               `}
             </div>
 
@@ -3965,7 +4415,21 @@ RMTP.views.rota = (function () {
                     </button>
                   `).join('')}
                 </div>
-                <input type="text" id="dp-tech-search" class="field !py-1.5 text-xs w-full" placeholder="Filter techs by name, role, or discipline\u2026" value="${ui.esc(state.dayPlannerTechSearch || '')}" />
+                ${venueTags.length ? `
+                  <div class="pt-2 border-t border-line/50 space-y-1.5">
+                    <div class="flex items-center justify-between text-[10px] uppercase tracking-wider text-muted font-semibold">
+                      <span>Filter by Tech Tag</span>
+                      ${activeTagFilters.length ? `<button type="button" id="dp-clear-tag-filters" class="text-accent hover:underline normal-case font-medium cursor-pointer">Reset (${activeTagFilters.length})</button>` : ''}
+                    </div>
+                    <div class="flex items-center gap-1 flex-wrap">
+                      ${venueTags.map((vt) => {
+                        const isOn = activeTagSet.has(vt.tag.toLowerCase());
+                        return `<button type="button" data-dp-tag-filter="${ui.esc(vt.tag)}" class="px-2 py-0.5 rounded border text-[11px] font-mono transition cursor-pointer ${isOn ? 'bg-accent text-accent-ink border-accent font-semibold' : 'bg-panel border-line text-muted hover:text-ink hover:border-accent/50'}">${ui.esc(vt.tag)}</button>`;
+                      }).join('')}
+                    </div>
+                  </div>
+                ` : ''}
+                <input type="text" id="dp-tech-search" class="field !py-1.5 text-xs w-full" placeholder="Filter techs by name, role, or #tag\u2026" value="${ui.esc(state.dayPlannerTechSearch || '')}" />
               </div>
 
               ${filteredTechs.length ? `
@@ -3991,7 +4455,7 @@ RMTP.views.rota = (function () {
                 </div>
               ` : `
                 <div class="p-6 text-center text-xs text-muted">
-                  No technicians match the active availability filter.
+                  No technicians match the active availability or Tech Tag filter.
                 </div>
               `}
             </div>
@@ -4042,6 +4506,22 @@ RMTP.views.rota = (function () {
           state.dayPlannerAvailFilter = btn.getAttribute('data-dp-avail-filter') || 'all';
           renderDayPlannerTab();
         });
+      });
+      tabContainer.querySelectorAll('[data-dp-tag-filter]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const tag = btn.getAttribute('data-dp-tag-filter');
+          if (!tag) return;
+          const cur = Array.isArray(state.dayPlannerTagFilters) ? state.dayPlannerTagFilters.slice() : [];
+          const idx = cur.findIndex((t) => t.toLowerCase() === tag.toLowerCase());
+          if (idx > -1) cur.splice(idx, 1);
+          else cur.push(tag);
+          state.dayPlannerTagFilters = cur;
+          renderDayPlannerTab();
+        });
+      });
+      tabContainer.querySelector('#dp-clear-tag-filters')?.addEventListener('click', () => {
+        state.dayPlannerTagFilters = [];
+        renderDayPlannerTab();
       });
       const techSearchInp = tabContainer.querySelector('#dp-tech-search');
       if (techSearchInp) {
@@ -4521,6 +5001,14 @@ RMTP.views.rota = (function () {
         spaceOptions.push(initialSpace);
       }
 
+      const modalVenueTags = auth.getAllVenueTechTags ? auth.getAllVenueTechTags() : [];
+      const selectedModalTags = new Set();
+
+      function formatTechTagSuffix(u) {
+        const tags = getTechTags(u);
+        return tags.length ? (' [' + tags.join(' ') + ']') : '';
+      }
+
       function getUserOptionsHtml(selectedUserId, targetDate) {
         const dStr = normalizeDate(targetDate) || formatDate(new Date());
         const available = [];
@@ -4529,6 +5017,13 @@ RMTP.views.rota = (function () {
         const general = [];
 
         allUsers.forEach((u) => {
+          if (!u || u.status === 'pending') return;
+          if (selectedModalTags.size > 0 && u.id !== selectedUserId) {
+            const uTags = new Set(getTechTags(u).map((t) => t.toLowerCase()));
+            for (const reqTag of selectedModalTags) {
+              if (!uTags.has(reqTag)) return;
+            }
+          }
           const live = getTechLiveStatus(u.id, dStr);
           if (live.booked) {
             booked.push({ u, live });
@@ -4547,7 +5042,7 @@ RMTP.views.rota = (function () {
           html += '<optgroup label="✓ Available on this Date (' + available.length + ')">';
           available.forEach(({ u, live }) => {
             html += `<option value="${u.id}" ${u.id === selectedUserId ? 'selected' : ''}>` +
-              `✓ ${ui.esc(auth.displayName(u))} — ${ui.esc(live.details || 'Available')} (${ui.esc(u.position || 'Tech')})` +
+              `✓ ${ui.esc(auth.displayName(u))} — ${ui.esc(live.details || 'Available')} (${ui.esc(u.position || 'Tech')})${ui.esc(formatTechTagSuffix(u))}` +
             `</option>`;
           });
           html += '</optgroup>';
@@ -4557,7 +5052,7 @@ RMTP.views.rota = (function () {
           html += '<optgroup label="Other Registered Technicians (' + general.length + ')">';
           general.forEach(({ u }) => {
             html += `<option value="${u.id}" ${u.id === selectedUserId ? 'selected' : ''}>` +
-              `${ui.esc(auth.displayName(u))} (${ui.esc(u.position || 'Tech')})` +
+              `${ui.esc(auth.displayName(u))} (${ui.esc(u.position || 'Tech')})${ui.esc(formatTechTagSuffix(u))}` +
             `</option>`;
           });
           html += '</optgroup>';
@@ -4567,7 +5062,7 @@ RMTP.views.rota = (function () {
           html += '<optgroup label="⚠️ Already Booked on Another Shift (' + booked.length + ')">';
           booked.forEach(({ u, live }) => {
             html += `<option value="${u.id}" ${u.id === selectedUserId ? 'selected' : ''}>` +
-              `⚠️ ${ui.esc(auth.displayName(u))} — ${ui.esc(live.label)}` +
+              `⚠️ ${ui.esc(auth.displayName(u))} — ${ui.esc(live.label)}${ui.esc(formatTechTagSuffix(u))}` +
             `</option>`;
           });
           html += '</optgroup>';
@@ -4577,7 +5072,7 @@ RMTP.views.rota = (function () {
           html += '<optgroup label="✕ Marked Unavailable (' + unavailable.length + ')">';
           unavailable.forEach(({ u, live }) => {
             html += `<option value="${u.id}" ${u.id === selectedUserId ? 'selected' : ''}>` +
-              `✕ ${ui.esc(auth.displayName(u))} — ${ui.esc(live.label)}` +
+              `✕ ${ui.esc(auth.displayName(u))} — ${ui.esc(live.label)}${ui.esc(formatTechTagSuffix(u))}` +
             `</option>`;
           });
           html += '</optgroup>';
@@ -4663,12 +5158,21 @@ RMTP.views.rota = (function () {
               </button>
             </div>
 
-            <!-- Technician Picker with LIVE AVAILABILITY STATUS -->
+            <!-- Technician Picker with LIVE AVAILABILITY STATUS & TECH TAG FILTER -->
             <div>
               <div class="flex items-center justify-between mb-1">
                 <label class="font-semibold text-muted">Technician / Freelancer</label>
                 <span id="b-avail-status-tag" class="text-[11px] font-semibold px-2 py-0.5 rounded border">Live Availability</span>
               </div>
+              ${modalVenueTags.length ? `
+                <div id="b-tech-tag-bar" class="mb-2 flex items-center gap-1 flex-wrap">
+                  <span class="text-[10px] font-semibold uppercase tracking-wider text-muted mr-1">Filter Tag:</span>
+                  <button type="button" data-b-tag-filter="" class="px-2 py-0.5 rounded border text-[11px] font-medium bg-accent text-accent-ink border-accent cursor-pointer">All</button>
+                  ${modalVenueTags.map((vt) => `
+                    <button type="button" data-b-tag-filter="${ui.esc(vt.tag)}" class="px-2 py-0.5 rounded border text-[11px] font-mono bg-panel border-line text-muted hover:text-ink hover:border-accent/50 transition cursor-pointer">${ui.esc(vt.tag)}</button>
+                  `).join('')}
+                </div>
+              ` : ''}
               <select id="b-user" class="field font-medium">
                 ${getUserOptionsHtml(initialData.userId, initialDate)}
               </select>
@@ -4680,6 +5184,7 @@ RMTP.views.rota = (function () {
                 <label class="block font-semibold text-muted mb-1">Freelancer Full Name</label>
                 <input id="b-custom-name" class="field" value="${ui.esc(initialData.userName && initialData.userName !== 'Unassigned' && !initialData.isNoTech ? initialData.userName : '')}" placeholder="e.g. Alex Morgan (Freelance Sound)" />
               </div>
+              <p id="b-selected-tech-tags" class="text-[11px] font-mono text-accent/90 mt-1 hidden"></p>
               <p id="b-avail-details-text" class="text-[11px] text-muted mt-1 italic"></p>
             </div>
 
@@ -4742,14 +5247,55 @@ RMTP.views.rota = (function () {
       const spaceSel = m.root.querySelector('#b-space');
       const tagEl = m.root.querySelector('#b-avail-status-tag');
       const detailsEl = m.root.querySelector('#b-avail-details-text');
+      const techTagsLine = m.root.querySelector('#b-selected-tech-tags');
       const customWrap = m.root.querySelector('#b-custom-wrap');
       const customNameInp = m.root.querySelector('#b-custom-name');
+
+      // Wire Tech Tag filter buttons inside Booking Modal
+      function syncModalTagFilterButtons() {
+        m.root.querySelectorAll('[data-b-tag-filter]').forEach((btn) => {
+          const val = btn.getAttribute('data-b-tag-filter') || '';
+          const active = val === '' ? selectedModalTags.size === 0 : selectedModalTags.has(val.toLowerCase());
+          btn.className = 'px-2 py-0.5 rounded border text-[11px] ' + (val ? 'font-mono ' : 'font-medium ') +
+            (active ? 'bg-accent text-accent-ink border-accent font-semibold cursor-pointer' : 'bg-panel border-line text-muted hover:text-ink hover:border-accent/50 transition cursor-pointer');
+        });
+      }
+      m.root.querySelectorAll('[data-b-tag-filter]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const val = btn.getAttribute('data-b-tag-filter') || '';
+          if (!val) {
+            selectedModalTags.clear();
+          } else {
+            const key = val.toLowerCase();
+            if (selectedModalTags.has(key)) selectedModalTags.delete(key);
+            else selectedModalTags.add(key);
+          }
+          const curVal = userSel.value;
+          userSel.innerHTML = getUserOptionsHtml(curVal, dateInp.value);
+          if (curVal && Array.from(userSel.options).some((o) => o.value === curVal)) {
+            userSel.value = curVal;
+          }
+          syncModalTagFilterButtons();
+          updateAvailabilityCheck();
+        });
+      });
 
       function updateAvailabilityCheck() {
         const uid = userSel.value;
         const dStr = dateInp.value;
         const noTechCheck = m.root.querySelector('#b-is-notech');
         const isNoTechActive = (noTechCheck && noTechCheck.checked) || uid === '__notech__';
+
+        if (techTagsLine) {
+          const tList = (uid && uid !== '__custom__' && uid !== '__notech__') ? getTechTags(uid) : [];
+          if (tList.length) {
+            techTagsLine.textContent = 'Tech Tags: ' + tList.join(' · ');
+            techTagsLine.classList.remove('hidden');
+          } else {
+            techTagsLine.textContent = '';
+            techTagsLine.classList.add('hidden');
+          }
+        }
 
         if (isNoTechActive) {
           if (customWrap) customWrap.classList.add('hidden');
@@ -6678,6 +7224,480 @@ RMTP.views.rota = (function () {
       });
     }
 
+    // ------------------------------------------------------------------------
+    // SEND PDF ROTA MODAL (7-Column A4 Landscape PDF + Pre-Filled Email Draft)
+    // ------------------------------------------------------------------------
+    function openPdfRotaModal() {
+      const wDays = getCurrentWeekDays();
+      const weekStart = wDays[0].date;
+      const weekEnd = wDays[6].date;
+
+      const [rmY, rmM] = (state.rotaMonth || formatDate(new Date()).slice(0, 7)).split('-');
+      const monthStartDate = `${rmY}-${rmM}-01`;
+      const monthLastNum = new Date(parseInt(rmY, 10), parseInt(rmM, 10), 0).getDate();
+      const monthEndDate = `${rmY}-${rmM}-${String(monthLastNum).padStart(2, '0')}`;
+
+      let preset = 'week'; // 'week' | 'month' | 'custom'
+      let startDate = weekStart;
+      let endDate = weekEnd;
+      let statusScope = 'all_booked'; // 'all_booked' (Confirmed + Pencil) | 'confirmed_only'
+      let recipientScope = 'all_techs'; // 'all_techs' | 'booked_only'
+      let includeNonCore = !!state.showNonCoreSpaces;
+
+      function formatPdfDate(isoStr) {
+        const d = parseDate(isoStr);
+        return d.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+      }
+
+      function collectRotaRows() {
+        const usersList = getAllUsers();
+        const usersById = new Map(usersList.map((u) => [u.id, u]));
+        const rows = [];
+        const seenKeys = new Set();
+
+        // 1. Pull booked shifts from bookings table
+        const bookings = getAllBookings(includeNonCore);
+        bookings.forEach((b) => {
+          if (!b || b.isNoTech || b.role === 'None') return;
+          const st = String(b.status || 'pencil').toLowerCase();
+          if (st === 'cancelled' || st === 'declined') return;
+          if (statusScope === 'confirmed_only' && st !== 'confirmed') return;
+          if (isPlaceholderBooking(b, usersList)) return;
+
+          const d = normalizeDate(b.date);
+          if (!d || d < startDate || d > endDate) return;
+
+          const u = b.userId ? usersById.get(b.userId) : null;
+          const techName = b.userName || (u ? auth.displayName(u) : 'Technician');
+          const spaceName = normalizeSpace(b.space) || 'Venue';
+          const startTime = normalizeTime(b.startTime, 'TBC');
+          const endTime = normalizeTime(b.finishTime, 'TBC');
+          const discipline = b.role || (u && u.discipline) || 'Tech';
+
+          const dedupKey = `${d}|${String(b.eventId || b.eventName || '').toLowerCase()}|${spaceName.toLowerCase()}|${(b.userId || techName).toLowerCase()}|${startTime}`;
+          if (seenKeys.has(dedupKey)) return;
+          seenKeys.add(dedupKey);
+
+          rows.push({
+            date: d,
+            dateDisplay: formatPdfDate(d),
+            eventTitle: b.eventName || 'Venue Shift',
+            space: spaceName,
+            techBooked: techName,
+            techUserId: b.userId || '',
+            techEmail: (u && u.email) ? String(u.email).trim() : '',
+            discipline: discipline,
+            startTime: startTime,
+            endTime: endTime,
+            status: st,
+          });
+        });
+
+        // 2. Include any technicians assigned directly on advancing events without a matching booking row
+        const events = getAllEvents(includeNonCore);
+        events.forEach((ev) => {
+          const d = normalizeDate(ev.date);
+          if (!d || d < startDate || d > endDate) return;
+          if (ev.noTechNeeded) return;
+          const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(ev) : [];
+          evTechs.forEach((t) => {
+            if (!t || t.isNoTech || t.role === 'None') return;
+            const st = String(t.bookingStatus || 'confirmed').toLowerCase();
+            if (st === 'cancelled' || st === 'declined') return;
+            if (statusScope === 'confirmed_only' && st !== 'confirmed') return;
+
+            const u = t.userId ? usersById.get(t.userId) : null;
+            const hasReal = !!(u || (t.freelancerName && t.freelancerName.trim() && !/^unassigned(\s+tech)?$/i.test(t.freelancerName.trim())));
+            if (!hasReal) return;
+
+            const techName = t.freelancerName || (u ? auth.displayName(u) : 'Technician');
+            const spaceName = normalizeSpace(t.space || (Array.isArray(ev.space) ? ev.space[0] : ev.space)) || 'Venue';
+            if (!includeNonCore && !isSpaceAllowed(spaceName)) return;
+            const startTime = normalizeTime(t.startTime || ev.startTime, 'TBC');
+            const endTime = normalizeTime(t.finishTime || ev.finishTime, 'TBC');
+            const discipline = t.role || (u && u.discipline) || 'Tech';
+
+            const dedupKey = `${d}|${String(ev.id || ev.name || '').toLowerCase()}|${spaceName.toLowerCase()}|${(t.userId || techName).toLowerCase()}|${startTime}`;
+            if (seenKeys.has(dedupKey)) return;
+            seenKeys.add(dedupKey);
+
+            rows.push({
+              date: d,
+              dateDisplay: formatPdfDate(d),
+              eventTitle: ev.name || 'Venue Event',
+              space: spaceName,
+              techBooked: techName,
+              techUserId: t.userId || '',
+              techEmail: (u && u.email) ? String(u.email).trim() : '',
+              discipline: discipline,
+              startTime: startTime,
+              endTime: endTime,
+              status: st,
+            });
+          });
+        });
+
+        rows.sort((a, b) =>
+          a.date.localeCompare(b.date) ||
+          a.startTime.localeCompare(b.startTime) ||
+          a.space.localeCompare(b.space) ||
+          a.techBooked.localeCompare(b.techBooked)
+        );
+        return rows;
+      }
+
+      function collectRecipientEmails(rows) {
+        const usersList = getAllUsers().filter((u) => u && u.status !== 'pending' && u.email && !(auth.isHiresTeam && auth.isHiresTeam(u)));
+        const emails = new Set();
+        if (recipientScope === 'all_techs') {
+          usersList.forEach((u) => {
+            const em = String(u.email || '').trim();
+            if (em && em.includes('@')) emails.add(em);
+          });
+        } else {
+          rows.forEach((r) => {
+            if (r.techEmail && r.techEmail.includes('@')) emails.add(r.techEmail);
+          });
+        }
+        return Array.from(emails).sort((a, b) => a.localeCompare(b));
+      }
+
+      function buildPrintableDom(rows) {
+        const rangeLabel = `${formatPdfDate(startDate)} – ${formatPdfDate(endDate)}`;
+        const generatedAt = new Date().toLocaleString('en-GB', { timeZone: 'Europe/London', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'width: 1040px; padding: 20px 24px; background: #ffffff; color: #111827; font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif; box-sizing: border-box;';
+
+        wrap.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:flex-end; border-bottom:2px solid #111827; padding-bottom:10px; margin-bottom:14px;">
+            <div>
+              <div style="font-size:11px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#6b7280;">Rich Mix Technical Department</div>
+              <div style="font-size:20px; font-weight:700; color:#111827; margin-top:2px;">Technical Shift Rota</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:13px; font-weight:700; color:#111827;">${ui.esc(rangeLabel)}</div>
+              <div style="font-size:10px; color:#6b7280; margin-top:2px;">${rows.length} booked ${rows.length === 1 ? 'shift' : 'shifts'} · Generated ${ui.esc(generatedAt)} (UK)</div>
+            </div>
+          </div>
+          <table style="width:100%; border-collapse:collapse; font-size:11px; line-height:1.35;">
+            <thead>
+              <tr style="background:#f3f4f6; border-bottom:1.5px solid #111827; text-align:left;">
+                <th style="padding:7px 8px; font-weight:700; color:#111827; white-space:nowrap;">Date</th>
+                <th style="padding:7px 8px; font-weight:700; color:#111827;">Event Title</th>
+                <th style="padding:7px 8px; font-weight:700; color:#111827; white-space:nowrap;">Space</th>
+                <th style="padding:7px 8px; font-weight:700; color:#111827; white-space:nowrap;">Tech Booked</th>
+                <th style="padding:7px 8px; font-weight:700; color:#111827; white-space:nowrap;">Tech Discipline</th>
+                <th style="padding:7px 8px; font-weight:700; color:#111827; white-space:nowrap; text-align:center;">Start Time</th>
+                <th style="padding:7px 8px; font-weight:700; color:#111827; white-space:nowrap; text-align:center;">End Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map((r, idx) => `
+                <tr style="border-bottom:1px solid #e5e7eb; background:${idx % 2 === 1 ? '#f9fafb' : '#ffffff'}; page-break-inside:avoid;">
+                  <td style="padding:6px 8px; font-family:'IBM Plex Mono', monospace; white-space:nowrap; color:#111827;">${ui.esc(r.dateDisplay)}</td>
+                  <td style="padding:6px 8px; font-weight:600; color:#111827;">${ui.esc(r.eventTitle)}</td>
+                  <td style="padding:6px 8px; white-space:nowrap; color:#374151;">${ui.esc(r.space)}</td>
+                  <td style="padding:6px 8px; white-space:nowrap; font-weight:600; color:#111827;">${ui.esc(r.techBooked)}${r.status === 'pencil' ? ' <span style="font-weight:500;color:#b45309;font-size:10px;">(Pencil)</span>' : ''}</td>
+                  <td style="padding:6px 8px; white-space:nowrap; color:#374151;">${ui.esc(r.discipline)}</td>
+                  <td style="padding:6px 8px; font-family:'IBM Plex Mono', monospace; white-space:nowrap; text-align:center; color:#111827;">${ui.esc(r.startTime)}</td>
+                  <td style="padding:6px 8px; font-family:'IBM Plex Mono', monospace; white-space:nowrap; text-align:center; color:#111827;">${ui.esc(r.endTime)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+        return wrap;
+      }
+
+      async function generatePdfFile(rows) {
+        if (!window.html2pdf) {
+          ui.toast('PDF generator library is still loading — please try again in a moment.', 'danger');
+          return null;
+        }
+        const filename = `Rich-Mix-Rota-${startDate}-to-${endDate}.pdf`;
+        const printNode = buildPrintableDom(rows);
+        const host = document.createElement('div');
+        host.style.cssText = 'position:fixed; left:-10000px; top:0; z-index:-1; pointer-events:none;';
+        host.appendChild(printNode);
+        document.body.appendChild(host);
+        try {
+          await window.html2pdf().set({
+            margin: [8, 8, 10, 8],
+            filename: filename,
+            image: { type: 'jpeg', quality: 0.96 },
+            html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
+            jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
+            pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+          }).from(printNode).save();
+          return filename;
+        } finally {
+          document.body.removeChild(host);
+        }
+      }
+
+      function launchEmailDraft(emails, filename, rows) {
+        const rangeLabel = `${formatPdfDate(startDate)} – ${formatPdfDate(endDate)}`;
+        const subject = `Rich Mix Technical Rota (${rangeLabel})`;
+        const body = [
+          'Hi all,',
+          '',
+          `Please find attached the latest Rich Mix Technical Rota for ${rangeLabel} (${rows.length} booked ${rows.length === 1 ? 'shift' : 'shifts'}).`,
+          '',
+          `Attached file: ${filename}`,
+          '',
+          'Please double-check your shift timings and reply if you spot any discrepancies or need a swap.',
+          '',
+          'Thanks,',
+          (me ? auth.displayName(me) : 'Rich Mix Technical Team'),
+        ].join('\n');
+
+        const bccStr = emails.join(',');
+        const mailtoUrl = `mailto:?bcc=${encodeURIComponent(bccStr)}&subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+
+        if (mailtoUrl.length > 1900) {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(emails.join(', ')).catch(() => {});
+          }
+          const shortMailto = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+          const a = document.createElement('a');
+          a.href = shortMailto;
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          ui.toast(`PDF downloaded & email draft opened. ${emails.length} tech emails copied to clipboard for BCC.`, 'ok');
+          return;
+        }
+
+        const a = document.createElement('a');
+        a.href = mailtoUrl;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+
+      const m = ui.modal({
+        title: 'Send PDF Rota to Technicians',
+        size: 'md:max-w-5xl',
+        body: '<div id="pdf-rota-body" class="space-y-4 text-xs"></div>',
+        footer:
+          '<button type="button" id="pdf-rota-copy-emails" class="btn btn-ghost border border-line text-xs mr-auto flex items-center gap-1.5">' + ui.icon('copy', 'w-3.5 h-3.5') + '<span>Copy Emails</span></button>' +
+          '<button type="button" class="btn btn-ghost text-xs" data-close>Close</button>' +
+          '<button type="button" id="pdf-rota-download-only" class="btn btn-ghost border border-line text-xs font-semibold flex items-center gap-1.5">' + ui.icon('download', 'w-3.5 h-3.5') + '<span>Download PDF Only</span></button>' +
+          '<button type="button" id="pdf-rota-send" class="btn btn-primary text-xs font-semibold flex items-center gap-1.5" data-primary>' + ui.icon('mail', 'w-3.5 h-3.5') + '<span>Download PDF &amp; Draft Email</span></button>',
+      });
+
+      function renderPdfModalBody() {
+        const bodyEl = m.root.querySelector('#pdf-rota-body');
+        if (!bodyEl) return;
+        const invalidRange = startDate > endDate;
+        const rows = invalidRange ? [] : collectRotaRows();
+        const emails = collectRecipientEmails(rows);
+        const uniqueTechs = new Set(rows.map((r) => r.techBooked)).size;
+
+        bodyEl.innerHTML = `
+          <!-- Controls Bar -->
+          <div class="p-3.5 rounded-lg bg-panel2/50 border border-line space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2.5">
+              <div class="inline-flex items-center gap-1 p-1 rounded-lg bg-panel border border-line">
+                <button type="button" data-pdf-preset="week" class="px-2.5 py-1 rounded-md text-xs font-semibold transition cursor-pointer ${preset === 'week' ? 'bg-accent text-accent-ink' : 'text-muted hover:text-ink'}">Current Week</button>
+                <button type="button" data-pdf-preset="month" class="px-2.5 py-1 rounded-md text-xs font-semibold transition cursor-pointer ${preset === 'month' ? 'bg-accent text-accent-ink' : 'text-muted hover:text-ink'}">Current Month</button>
+                <button type="button" data-pdf-preset="custom" class="px-2.5 py-1 rounded-md text-xs font-semibold transition cursor-pointer ${preset === 'custom' ? 'bg-accent text-accent-ink' : 'text-muted hover:text-ink'}">Custom Range</button>
+              </div>
+              <div class="flex items-center gap-2 flex-wrap">
+                <label class="flex items-center gap-1.5 text-muted">
+                  <span>From</span>
+                  <input type="date" id="pdf-start-date" class="field !py-1 !px-2 text-xs font-mono tabular-nums !w-auto" value="${ui.esc(startDate)}" />
+                </label>
+                <label class="flex items-center gap-1.5 text-muted">
+                  <span>To</span>
+                  <input type="date" id="pdf-end-date" class="field !py-1 !px-2 text-xs font-mono tabular-nums !w-auto" value="${ui.esc(endDate)}" />
+                </label>
+              </div>
+            </div>
+
+            <div class="flex flex-wrap items-center justify-between gap-2.5 pt-2 border-t border-line/60">
+              <div class="flex items-center gap-3 flex-wrap">
+                <label class="flex items-center gap-1.5 text-muted">
+                  <span>Shifts:</span>
+                  <select id="pdf-status-scope" class="field !py-1 !px-2 text-xs !w-auto">
+                    <option value="all_booked" ${statusScope === 'all_booked' ? 'selected' : ''}>Confirmed + Pencil</option>
+                    <option value="confirmed_only" ${statusScope === 'confirmed_only' ? 'selected' : ''}>Confirmed Only</option>
+                  </select>
+                </label>
+                <label class="flex items-center gap-1.5 text-muted">
+                  <span>Recipients:</span>
+                  <select id="pdf-recipient-scope" class="field !py-1 !px-2 text-xs !w-auto">
+                    <option value="all_techs" ${recipientScope === 'all_techs' ? 'selected' : ''}>All Active Technicians</option>
+                    <option value="booked_only" ${recipientScope === 'booked_only' ? 'selected' : ''}>Booked in Range Only</option>
+                  </select>
+                </label>
+                <label class="inline-flex items-center gap-1.5 text-muted cursor-pointer select-none">
+                  <input type="checkbox" id="pdf-include-noncore" class="w-3.5 h-3.5 accent-[var(--accent)]" ${includeNonCore ? 'checked' : ''} />
+                  <span>Include Non-Core Spaces</span>
+                </label>
+              </div>
+              <div class="font-mono tabular-nums text-[11px] text-muted">
+                <strong class="text-ink">${rows.length}</strong> ${rows.length === 1 ? 'shift' : 'shifts'} · <strong class="text-ink">${uniqueTechs}</strong> crew · <strong class="text-accent">${emails.length}</strong> ${emails.length === 1 ? 'recipient' : 'recipients'}
+              </div>
+            </div>
+          </div>
+
+          ${invalidRange ? `
+            <div class="p-4 rounded-lg border border-danger/40 bg-danger/10 text-danger text-xs font-medium">
+              Start date must be on or before the end date.
+            </div>
+          ` : (rows.length === 0 ? `
+            <div class="p-8 rounded-lg border border-line bg-panel text-center text-muted space-y-1">
+              <div class="text-sm font-semibold text-ink">No booked technician shifts in this date range</div>
+              <p class="text-xs">Adjust the date range or switch the shift filter to include pencil holds.</p>
+            </div>
+          ` : `
+            <!-- Live 7-Column Table Preview -->
+            <div class="border border-line rounded-lg overflow-hidden bg-panel">
+              <div class="max-h-[380px] overflow-auto">
+                <table class="w-full text-left border-collapse text-xs">
+                  <thead class="bg-panel2/70 border-b border-line sticky top-0 z-10 text-[11px] text-muted">
+                    <tr>
+                      <th class="px-3 py-2 font-semibold whitespace-nowrap">Date</th>
+                      <th class="px-3 py-2 font-semibold">Event Title</th>
+                      <th class="px-3 py-2 font-semibold whitespace-nowrap">Space</th>
+                      <th class="px-3 py-2 font-semibold whitespace-nowrap">Tech Booked</th>
+                      <th class="px-3 py-2 font-semibold whitespace-nowrap">Tech Discipline</th>
+                      <th class="px-3 py-2 font-semibold whitespace-nowrap text-center">Start Time</th>
+                      <th class="px-3 py-2 font-semibold whitespace-nowrap text-center">End Time</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-line/60">
+                    ${rows.map((r) => `
+                      <tr class="hover:bg-panel2/30">
+                        <td class="px-3 py-2 font-mono tabular-nums whitespace-nowrap text-ink">${ui.esc(r.dateDisplay)}</td>
+                        <td class="px-3 py-2 font-medium text-ink">${ui.esc(r.eventTitle)}</td>
+                        <td class="px-3 py-2 whitespace-nowrap text-muted">${ui.esc(r.space)}</td>
+                        <td class="px-3 py-2 whitespace-nowrap font-medium text-ink">
+                          ${ui.esc(r.techBooked)}
+                          ${r.status === 'pencil' ? '<span class="text-[10px] text-warning ml-1">(Pencil)</span>' : ''}
+                        </td>
+                        <td class="px-3 py-2 whitespace-nowrap text-muted">${ui.esc(r.discipline)}</td>
+                        <td class="px-3 py-2 font-mono tabular-nums whitespace-nowrap text-center text-ink">${ui.esc(r.startTime)}</td>
+                        <td class="px-3 py-2 font-mono tabular-nums whitespace-nowrap text-center text-ink">${ui.esc(r.endTime)}</td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <p class="text-[11px] text-muted">
+              Clicking <strong class="text-ink">Download PDF &amp; Draft Email</strong> saves the A4 landscape PDF to your device and opens a pre-addressed BCC email draft to ${emails.length} technician${emails.length === 1 ? '' : 's'} so you can attach the PDF and hit send.
+            </p>
+          `)}
+        `;
+
+        const sendBtn = m.root.querySelector('#pdf-rota-send');
+        const dlBtn = m.root.querySelector('#pdf-rota-download-only');
+        const copyBtn = m.root.querySelector('#pdf-rota-copy-emails');
+        if (sendBtn) sendBtn.disabled = invalidRange || rows.length === 0;
+        if (dlBtn) dlBtn.disabled = invalidRange || rows.length === 0;
+        if (copyBtn) copyBtn.disabled = emails.length === 0;
+
+        bodyEl.querySelectorAll('[data-pdf-preset]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            preset = btn.getAttribute('data-pdf-preset') || 'week';
+            if (preset === 'week') {
+              startDate = weekStart;
+              endDate = weekEnd;
+            } else if (preset === 'month') {
+              startDate = monthStartDate;
+              endDate = monthEndDate;
+            }
+            renderPdfModalBody();
+          });
+        });
+
+        bodyEl.querySelector('#pdf-start-date')?.addEventListener('change', (e) => {
+          if (e.target.value) {
+            startDate = normalizeDate(e.target.value);
+            preset = 'custom';
+            renderPdfModalBody();
+          }
+        });
+        bodyEl.querySelector('#pdf-end-date')?.addEventListener('change', (e) => {
+          if (e.target.value) {
+            endDate = normalizeDate(e.target.value);
+            preset = 'custom';
+            renderPdfModalBody();
+          }
+        });
+        bodyEl.querySelector('#pdf-status-scope')?.addEventListener('change', (e) => {
+          statusScope = e.target.value;
+          renderPdfModalBody();
+        });
+        bodyEl.querySelector('#pdf-recipient-scope')?.addEventListener('change', (e) => {
+          recipientScope = e.target.value;
+          renderPdfModalBody();
+        });
+        bodyEl.querySelector('#pdf-include-noncore')?.addEventListener('change', (e) => {
+          includeNonCore = e.target.checked;
+          renderPdfModalBody();
+        });
+      }
+
+      renderPdfModalBody();
+
+      m.root.querySelector('#pdf-rota-copy-emails')?.addEventListener('click', () => {
+        const rows = collectRotaRows();
+        const emails = collectRecipientEmails(rows);
+        if (!emails.length) { ui.toast('No technician email addresses found.', 'info'); return; }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(emails.join(', ')).then(() => {
+            ui.toast(`Copied ${emails.length} technician email${emails.length === 1 ? '' : 's'} to clipboard`, 'ok');
+          }).catch(() => {
+            ui.toast('Could not access clipboard — use Draft Email instead.', 'info');
+          });
+        }
+      });
+
+      m.root.querySelector('#pdf-rota-download-only')?.addEventListener('click', async () => {
+        const rows = collectRotaRows();
+        if (!rows.length) return;
+        const btn = m.root.querySelector('#pdf-rota-download-only');
+        if (btn) btn.disabled = true;
+        try {
+          const filename = await generatePdfFile(rows);
+          if (filename) ui.toast(`Downloaded ${filename}`, 'ok');
+        } catch (err) {
+          console.error('[rota] PDF export error', err);
+          ui.toast('Could not generate PDF rota. Please try again.', 'danger');
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+      });
+
+      m.root.querySelector('#pdf-rota-send')?.addEventListener('click', async () => {
+        const rows = collectRotaRows();
+        if (!rows.length) return;
+        const emails = collectRecipientEmails(rows);
+        const btn = m.root.querySelector('#pdf-rota-send');
+        if (btn) btn.disabled = true;
+        try {
+          const filename = await generatePdfFile(rows);
+          if (!filename) return;
+          if (emails.length) {
+            launchEmailDraft(emails, filename, rows);
+            ui.toast(`Downloaded ${filename} & opened email draft for ${emails.length} tech${emails.length === 1 ? '' : 's'}`, 'ok');
+          } else {
+            ui.toast(`Downloaded ${filename} (no technician emails on file to draft)`, 'info');
+          }
+        } catch (err) {
+          console.error('[rota] PDF export error', err);
+          ui.toast('Could not generate PDF rota. Please try again.', 'danger');
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+      });
+    }
+
     // Wire Top Buttons
     el.querySelector('#btn-submit-avail')?.addEventListener('click', () => {
       openAvailabilityModal();
@@ -6707,6 +7727,10 @@ RMTP.views.rota = (function () {
       renderActiveTab();
     });
 
+    el.querySelector('#btn-pdf-rota')?.addEventListener('click', () => {
+      openPdfRotaModal();
+    });
+
     el.querySelector('#btn-add-booking')?.addEventListener('click', () => {
       openBookingModal();
     });
@@ -6719,6 +7743,7 @@ RMTP.views.rota = (function () {
       if (!force && RMTP._lastRotaAvailPullAt && (now - RMTP._lastRotaAvailPullAt) < 8000) return;
       RMTP._lastRotaAvailPullAt = now;
       RMTP.syncSb.pullCollection('availability').catch(() => {});
+      if (auth.pullTechTags) auth.pullTechTags().catch(() => {});
     }
 
     el.querySelectorAll('[data-tab]').forEach((tabBtn) => {
@@ -6741,24 +7766,29 @@ RMTP.views.rota = (function () {
       try { RMTP._rotaCleanup(); } catch (e) {}
     }
 
-    // Listen for live venue crew specification updates and cloud availability refreshes
+    // Listen for live venue crew specification updates, Tech Tag updates, and cloud availability refreshes
     let isRenderingFromStore = false;
     const onVenuesUpdated = () => {
       if (!el.isConnected) return;
       renderActiveTab();
     };
+    const onTechTagsUpdated = () => {
+      if (!el.isConnected) return;
+      renderActiveTab();
+    };
     window.addEventListener('rmtp:venues-updated', onVenuesUpdated);
+    window.addEventListener('rmtp:tech-tags-updated', onTechTagsUpdated);
 
     const unsubStore = store.onChange((collName) => {
       if (collName !== 'availability' && collName !== 'bookings') return;
       if (!el.isConnected || isRenderingFromStore) return;
-      // Don't blow away an open modal's underlying interaction; safe to re-render tab view
       isRenderingFromStore = true;
       try { renderActiveTab(); } finally { isRenderingFromStore = false; }
     });
 
     RMTP._rotaCleanup = () => {
       window.removeEventListener('rmtp:venues-updated', onVenuesUpdated);
+      window.removeEventListener('rmtp:tech-tags-updated', onTechTagsUpdated);
       if (typeof unsubStore === 'function') unsubStore();
     };
 

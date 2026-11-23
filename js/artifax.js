@@ -1641,7 +1641,7 @@ RMTP.artifax = (function () {
       }
 
       const data = res.data;
-      // Detect old v1/v2 Edge Function that ignored `action: "push_event"`
+      // Detect old v1/v2 Edge Function that ignored `action: "push_event"` and returned a sync response
       if (!data || Array.isArray(data) || (data.syncedServerSide === true && data.action !== 'push_event')) {
         const msg = 'Redeploy the v3 artifax-sync Edge Function to enable Artifax write-back.';
         if (!silent && ui) ui.toast(msg, 'info');
@@ -1649,40 +1649,44 @@ RMTP.artifax = (function () {
       }
 
       if (data.notConfigured) {
+        const cfgErr = data.error || data.message || 'Custom Form secrets not configured yet';
         updateLocalEventPackageMeta(ev.id, {
           artifaxLastPushStatus: 'not_configured',
-          artifaxLastPushError: data.error || 'Custom Form secrets not configured yet',
+          artifaxLastPushError: cfgErr,
         });
         if (!silent && ui) {
           ui.toast('Artifax write-back needs setup: open Sync Log → Discover Artifax Schema.', 'info');
         }
-        return { ok: false, notConfigured: true, missingSecrets: data.missingSecrets || [], error: data.error };
+        return { ok: false, notConfigured: true, missingSecrets: data.missingSecrets || [], error: cfgErr };
       }
 
-      if (data.error && !data.ok) {
+      if ((data.error || data.message) && !data.ok) {
+        const errMsg = data.error || data.message || 'Write-back rejected by Artifax';
         updateLocalEventPackageMeta(ev.id, {
           artifaxLastPushStatus: 'error',
-          artifaxLastPushError: data.error,
+          artifaxLastPushError: errMsg,
         });
-        if (!silent && ui) ui.toast('Artifax push failed: ' + data.error, 'danger');
-        return { ok: false, error: data.error };
+        if (!silent && ui) ui.toast('Artifax push failed: ' + errMsg, 'danger');
+        return { ok: false, error: errMsg };
       }
 
-      if (data.skipped) {
+      if (data.skipped || data.skippedUnchanged) {
+        const ts = data.pushedAt || data.lastPushedAt || null;
         if (!silent && ui) ui.toast('Artifax is already up to date (no new portal changes).', 'info');
-        return { ok: true, skipped: true, hash: data.hash, pushedAt: data.pushedAt };
+        return { ok: true, skipped: true, hash: data.hash, pushedAt: ts };
       }
 
+      const pushedAt = data.pushedAt || data.lastPushedAt || new Date().toISOString();
       updateLocalEventPackageMeta(ev.id, {
         artifaxLastPushHash: data.hash || null,
-        artifaxLastPushedAt: data.pushedAt || new Date().toISOString(),
+        artifaxLastPushedAt: pushedAt,
         artifaxLastPushStatus: 'ok',
         artifaxLastPushError: null,
         artifaxLastPushEndpoint: data.endpoint || null,
       });
 
       if (!silent && ui) ui.toast('Pushed portal advancing info to Artifax', 'ok');
-      return { ok: true, pushedAt: data.pushedAt, hash: data.hash, endpoint: data.endpoint };
+      return { ok: true, pushedAt, hash: data.hash, endpoint: data.endpoint };
     } catch (err) {
       const msg = (err && err.message) || String(err);
       updateLocalEventPackageMeta(ev.id, {
@@ -1720,18 +1724,29 @@ RMTP.artifax = (function () {
       });
       if (!res.ok) return { ok: false, documents: [], error: res.message || 'Could not load Artifax documents' };
       const data = res.data;
-      if (!data || Array.isArray(data) || data.action !== 'list_documents') {
+      const isListDocsResp = data && !Array.isArray(data) && (
+        data.action === 'list_documents' ||
+        (!data.syncedServerSide && (Array.isArray(data.documents) || data.error))
+      );
+      if (!isListDocsResp) {
         return { ok: false, documents: Array.isArray(pkg.artifaxDocuments) ? pkg.artifaxDocuments : [], needsRedeploy: true, error: 'Redeploy v3 artifax-sync Edge Function to load Artifax PDFs.' };
       }
       if (data.error && !data.ok) {
         return { ok: false, documents: Array.isArray(pkg.artifaxDocuments) ? pkg.artifaxDocuments : [], error: data.error };
       }
-      const docs = Array.isArray(data.documents) ? data.documents : [];
+      const docs = (Array.isArray(data.documents) ? data.documents : []).map((d) => {
+        if (!d || typeof d !== 'object') return d;
+        const origin = d.origin || (d.direction === 'portal_to_artifax' ? 'portal' : 'artifax');
+        return Object.assign({}, d, {
+          origin,
+          uploadedAt: d.uploadedAt || d.updatedAt || '',
+        });
+      });
       updateLocalEventPackageMeta(ev.id, {
         artifaxDocuments: docs,
         artifaxDocsCheckedAt: new Date().toISOString(),
       });
-      return { ok: true, documents: docs, probes: data.probes || [] };
+      return { ok: true, documents: docs, probes: data.probes || data.probeErrors || [] };
     } catch (err) {
       return { ok: false, documents: Array.isArray(pkg.artifaxDocuments) ? pkg.artifaxDocuments : [], error: (err && err.message) || String(err) };
     }
@@ -1863,7 +1878,11 @@ RMTP.artifax = (function () {
       }
 
       const data = res.data;
-      if (!data || Array.isArray(data) || data.action !== 'upload_document') {
+      const isUploadResp = data && !Array.isArray(data) && (
+        data.action === 'upload_document' ||
+        (!data.syncedServerSide && (data.artifaxDocId || data.document || data.skipped || data.skippedDuplicate || data.error))
+      );
+      if (!isUploadResp) {
         const msg = 'Redeploy the v3 artifax-sync Edge Function to upload PDFs to Artifax.';
         if (!silent && ui) ui.toast(msg, 'info');
         return { ok: false, needsRedeploy: true, error: msg };
@@ -1872,24 +1891,43 @@ RMTP.artifax = (function () {
         if (!silent && ui) ui.toast('Artifax PDF upload failed: ' + data.error, 'danger');
         return { ok: false, error: data.error };
       }
-      if (data.skipped) {
+      const normalizedDoc = data.document
+        ? Object.assign({}, data.document, {
+            origin: data.document.origin || 'portal',
+            uploadedAt: data.document.uploadedAt || data.document.updatedAt || data.uploadedAt || new Date().toISOString(),
+          })
+        : (data.artifaxDocId
+            ? {
+                artifaxDocId: data.artifaxDocId,
+                name: data.filename || o.filename || 'portal-document.pdf',
+                size: data.size || null,
+                mimeType: 'application/pdf',
+                origin: 'portal',
+                direction: 'portal_to_artifax',
+                uploadedAt: data.uploadedAt || new Date().toISOString(),
+                updatedAt: data.uploadedAt || new Date().toISOString(),
+                sha256: data.sha256 || undefined,
+              }
+            : null);
+
+      if (data.skipped || data.skippedDuplicate) {
         if (!silent && ui) ui.toast('This PDF is already uploaded to Artifax.', 'info');
-        return { ok: true, skipped: true, sha256: data.sha256, document: data.document };
+        return { ok: true, skipped: true, sha256: data.sha256, document: normalizedDoc };
       }
 
-      if (data.document) {
+      if (normalizedDoc) {
         const currentDocs = Array.isArray(pkg.artifaxDocuments) ? pkg.artifaxDocuments.slice() : [];
         const existsIdx = currentDocs.findIndex((d) =>
-          (data.document.artifaxDocId && d.artifaxDocId === data.document.artifaxDocId) ||
-          (data.document.sha256 && d.sha256 === data.document.sha256)
+          (normalizedDoc.artifaxDocId && d.artifaxDocId === normalizedDoc.artifaxDocId) ||
+          (normalizedDoc.sha256 && d.sha256 === normalizedDoc.sha256)
         );
-        if (existsIdx >= 0) currentDocs[existsIdx] = data.document;
-        else currentDocs.push(data.document);
+        if (existsIdx >= 0) currentDocs[existsIdx] = normalizedDoc;
+        else currentDocs.push(normalizedDoc);
         updateLocalEventPackageMeta(ev.id, { artifaxDocuments: currentDocs });
       }
 
       if (!silent && ui) ui.toast('Uploaded PDF to Artifax: ' + (o.filename || 'document.pdf'), 'ok');
-      return { ok: true, document: data.document, sha256: data.sha256, endpoint: data.endpoint };
+      return { ok: true, document: normalizedDoc, sha256: data.sha256, endpoint: data.endpoint };
     } catch (err) {
       const msg = (err && err.message) || String(err);
       if (!silent && ui) ui.toast('Artifax PDF upload failed: ' + msg, 'danger');
@@ -2001,7 +2039,11 @@ RMTP.artifax = (function () {
       const res = await RMTP.supabase.invokeFunction('artifax-sync', { action: 'discover_schema' });
       if (!res.ok) return { ok: false, error: res.message || 'Schema probe failed' };
       const data = res.data;
-      if (!data || Array.isArray(data) || data.action !== 'discover_schema') {
+      const isSchemaResp = data && !Array.isArray(data) && (
+        data.action === 'discover_schema' ||
+        (!data.syncedServerSide && (Array.isArray(data.discoveredForms) || data.configuredWriteBack || data.configuredSecrets))
+      );
+      if (!isSchemaResp) {
         return {
           ok: false,
           needsRedeploy: true,
@@ -2053,11 +2095,22 @@ RMTP.artifax = (function () {
     }
 
     const cfg = schemaResult.configuredWriteBack || {};
+    const rawSecrets = schemaResult.configuredSecrets || {};
     const forms = Array.isArray(schemaResult.discoveredForms) ? schemaResult.discoveredForms : [];
-    const docProbes = Array.isArray(schemaResult.documentEndpointProbes) ? schemaResult.documentEndpointProbes : [];
+    let docProbes = Array.isArray(schemaResult.documentEndpointProbes) ? schemaResult.documentEndpointProbes : [];
+    if (!docProbes.length && typeof schemaResult.sampleDocEndpointStatus === 'string' && schemaResult.sampleDocEndpointStatus.includes('->')) {
+      docProbes = schemaResult.sampleDocEndpointStatus.split('|').map((chunk) => {
+        const parts = chunk.split('->');
+        const path = (parts[0] || '').trim();
+        const stMatch = (parts[1] || '').match(/(\d{3})/);
+        const status = stMatch ? Number(stMatch[1]) : 0;
+        return { path, status, ok: status >= 200 && status < 300 };
+      }).filter((p) => p.path);
+    }
+    const probeNotes = Array.isArray(schemaResult.probeNotes) ? schemaResult.probeNotes : [];
 
     // Find a form matching "Tech Portal" to generate ready-to-paste secrets command
-    const portalForm = forms.find((f) => /tech\s*portal/i.test(String(f.name || '')));
+    const portalForm = forms.find((f) => f.isTechPortalMatch || /tech\s*portal/i.test(String(f.name || '')));
     const findElemId = (f, re) => {
       if (!f || !Array.isArray(f.elements)) return '<ELEMENT_ID>';
       const m = f.elements.find((e) => re.test(String(e.name || '')));
@@ -2065,43 +2118,56 @@ RMTP.artifax = (function () {
     };
 
     const secretFlags = [
-      { key: 'ARTIFAX_PORTAL_FORM_ID', val: cfg.formId },
-      { key: 'ARTIFAX_FIELD_TECH_NOTES_ID', val: cfg.techNotesFieldId },
-      { key: 'ARTIFAX_FIELD_TIMINGS_ID', val: cfg.timingsFieldId },
-      { key: 'ARTIFAX_FIELD_CREW_ID', val: cfg.crewFieldId },
-      { key: 'ARTIFAX_FIELD_SPEC_SUMMARY_ID', val: cfg.specSummaryFieldId },
+      { key: 'ARTIFAX_PORTAL_FORM_ID', val: cfg.formId || rawSecrets.ARTIFAX_PORTAL_FORM_ID },
+      { key: 'ARTIFAX_FIELD_TECH_NOTES_ID', val: cfg.techNotesFieldId || rawSecrets.ARTIFAX_FIELD_TECH_NOTES_ID || rawSecrets.ARTIFAX_PORTAL_FIELD_NOTES_ID },
+      { key: 'ARTIFAX_FIELD_TIMINGS_ID', val: cfg.timingsFieldId || rawSecrets.ARTIFAX_FIELD_TIMINGS_ID || rawSecrets.ARTIFAX_PORTAL_FIELD_TIMINGS_ID },
+      { key: 'ARTIFAX_FIELD_CREW_ID', val: cfg.crewFieldId || rawSecrets.ARTIFAX_FIELD_CREW_ID || rawSecrets.ARTIFAX_PORTAL_FIELD_CREW_ID },
+      { key: 'ARTIFAX_FIELD_SPEC_SUMMARY_ID', val: cfg.specSummaryFieldId || rawSecrets.ARTIFAX_FIELD_SPEC_SUMMARY_ID || rawSecrets.ARTIFAX_PORTAL_FIELD_SPEC_ID },
     ];
+
+    const detectedFormId = portalForm && portalForm.id ? String(portalForm.id) : '';
+    const notesElId = findElemId(portalForm, /note/i);
+    const timingsElId = findElemId(portalForm, /timing|schedule/i);
+    const crewElId = findElemId(portalForm, /crew|staff|assigned/i);
+    const specElId = findElemId(portalForm, /spec|summary|package/i);
 
     const suggestedCmd = portalForm
       ? [
-          `supabase secrets set ARTIFAX_PORTAL_FORM_ID="${portalForm.id}" \\`,
-          `  ARTIFAX_FIELD_TECH_NOTES_ID="${findElemId(portalForm, /note|tech/i)}" \\`,
-          `  ARTIFAX_FIELD_TIMINGS_ID="${findElemId(portalForm, /timing|schedule/i)}" \\`,
-          `  ARTIFAX_FIELD_CREW_ID="${findElemId(portalForm, /crew|staff|tech/i)}" \\`,
-          `  ARTIFAX_FIELD_SPEC_SUMMARY_ID="${findElemId(portalForm, /spec|summary|package/i)}"`,
+          `ARTIFAX_PORTAL_FORM_ID=${detectedFormId || '<COPY_FORM_ID_FROM_ARTIFAX_URL>'}`,
+          `ARTIFAX_FIELD_TECH_NOTES_ID=${notesElId}`,
+          `ARTIFAX_FIELD_TIMINGS_ID=${timingsElId}`,
+          `ARTIFAX_FIELD_CREW_ID=${crewElId}`,
+          `ARTIFAX_FIELD_SPEC_SUMMARY_ID=${specElId}`,
         ].join('\n')
       : '';
+
+    const sampleEvLabel = schemaResult.sampleEventId ||
+      (typeof schemaResult.sampleDocEndpointStatus === 'string' && (schemaResult.sampleDocEndpointStatus.match(/\/events\/([^\/\s]+)/) || [])[1]) ||
+      'none';
 
     return (
       '<div class="border border-accent/30 rounded-xl p-3.5 bg-panel space-y-3">' +
         '<div class="flex items-center justify-between gap-2">' +
           '<div class="text-xs font-semibold uppercase tracking-wider text-accent">Artifax Write-Back &amp; Document Schema Probe</div>' +
-          '<span class="text-[11px] font-mono text-muted">Sample Event ID: ' + ui.esc(schemaResult.sampleEventId || 'none') + '</span>' +
+          '<span class="text-[11px] font-mono text-muted">Sample Event ID: ' + ui.esc(sampleEvLabel) + '</span>' +
         '</div>' +
         '<div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-[11px]">' +
           secretFlags.map((s) => (
             '<div class="flex items-center justify-between px-2.5 py-1.5 rounded bg-panel2 border border-line">' +
               '<code class="font-mono text-ink">' + ui.esc(s.key) + '</code>' +
               (s.val
-                ? '<span class="text-ok font-semibold">Set (' + ui.esc(String(s.val)) + ')</span>'
+                ? '<span class="text-ok font-semibold">' + (s.val === true ? 'Set' : 'Set (' + ui.esc(String(s.val)) + ')') + '</span>'
                 : '<span class="text-warning font-semibold">Not set</span>') +
             '</div>'
           )).join('') +
         '</div>' +
         (suggestedCmd ? (
-          '<div class="p-2.5 rounded-lg bg-ok/10 border border-ok/30 text-[11px] space-y-1">' +
-            '<div class="font-semibold text-ok">Found "Tech Portal" Custom Form! Copy these IDs into Supabase Edge Function Secrets:</div>' +
+          '<div class="p-2.5 rounded-lg bg-ok/10 border border-ok/30 text-[11px] space-y-1.5">' +
+            '<div class="font-semibold text-ok">Found "' + ui.esc(portalForm.name || 'Tech Portal') + '" Custom Form! Add these values in Supabase → Edge Functions → Secrets:</div>' +
             '<pre class="font-mono text-[10px] overflow-x-auto p-2 rounded bg-bg border border-line text-ink">' + ui.esc(suggestedCmd) + '</pre>' +
+            (!detectedFormId
+              ? '<div class="text-[10px] text-muted">Note: Artifax did not include the form\'s numeric ID in the event payload — open <strong class="text-ink">Admin → Configuration → Custom Forms → Tech Portal Advancing</strong> in Artifax and grab the numeric ID from the browser URL (or leave it blank once v3.1 is deployed to target element IDs directly).</div>'
+              : '') +
           '</div>'
         ) : (
           '<div class="p-2.5 rounded-lg bg-panel2 border border-line text-xs text-muted">' +
@@ -2116,7 +2182,7 @@ RMTP.artifax = (function () {
                 '<div class="p-2.5 rounded-lg bg-panel2/70 border border-line text-xs">' +
                   '<div class="flex items-center justify-between gap-2 font-semibold text-ink">' +
                     '<span>' + ui.esc(f.name || '(unnamed form)') + '</span>' +
-                    '<span class="font-mono text-[11px] text-accent">form_id: ' + ui.esc(String(f.id)) + '</span>' +
+                    '<span class="font-mono text-[11px] text-accent">form_id: ' + ui.esc(f.id ? String(f.id) : '(not in payload)') + '</span>' +
                   '</div>' +
                   (Array.isArray(f.elements) && f.elements.length ? (
                     '<div class="mt-1.5 grid gap-1 pl-2 border-l border-line">' +
@@ -2140,11 +2206,14 @@ RMTP.artifax = (function () {
               docProbes.map((p) => (
                 '<div class="flex items-center justify-between px-2 py-1 rounded bg-panel2 border border-line">' +
                   '<code class="font-mono text-ink truncate">' + ui.esc(p.path) + '</code>' +
-                  '<span class="font-mono ' + (p.ok ? 'text-ok' : 'text-muted') + '">HTTP ' + ui.esc(String(p.status)) + (p.ok ? ' (' + (p.count || 0) + ' docs)' : '') + '</span>' +
+                  '<span class="font-mono ' + (p.ok ? 'text-ok' : 'text-muted') + '">HTTP ' + ui.esc(String(p.status)) + (p.ok && p.count !== undefined ? ' (' + p.count + ' docs)' : '') + '</span>' +
                 '</div>'
               )).join('') +
             '</div>' +
           '</div>'
+        ) : '') +
+        (probeNotes.length ? (
+          '<div class="text-[10px] font-mono text-muted">Probes: ' + ui.esc(probeNotes.join(' · ')) + '</div>'
         ) : '') +
       '</div>'
     );

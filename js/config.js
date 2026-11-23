@@ -65,6 +65,10 @@ RMTP.normalizeDateStr = function (raw) {
   }
   const d = new Date(s);
   if (!isNaN(d.getTime())) {
+    try {
+      const london = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(london)) return london;
+    } catch (e) {}
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');

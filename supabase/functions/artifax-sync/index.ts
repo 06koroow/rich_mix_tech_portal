@@ -42,13 +42,13 @@
 //    ARTIFAX_PASSWORD  Artifax API password (optional if key-only)
 //
 //  Optional Supabase Secrets (Two-Way Write-Back & PDFs):
-//    ARTIFAX_PORTAL_FORM_ID          Numeric ID of "Tech Portal Advancing" custom form
-//    ARTIFAX_PORTAL_FIELD_NOTES_ID   Element ID for "Portal Tech Notes"
-//    ARTIFAX_PORTAL_FIELD_TIMINGS_ID Element ID for "Technical Schedule & Timings"
-//    ARTIFAX_PORTAL_FIELD_CREW_ID    Element ID for "Assigned Technical Crew"
-//    ARTIFAX_PORTAL_FIELD_SPEC_ID    Element ID for "Spec & Package Summary"
-//    ARTIFAX_WRITE_TARGET            "event" (default) or "arrangement"
-//    ARTIFAX_FORM_POST_PATH          Override path template e.g. /api/events/{eventId}/custom_forms
+//    ARTIFAX_PORTAL_FORM_ID          Numeric ID of "Tech Portal Advancing" custom form (optional if all 4 element IDs are set)
+//    ARTIFAX_FIELD_TECH_NOTES_ID     Element ID for "Portal Tech Notes" (alias: ARTIFAX_PORTAL_FIELD_NOTES_ID)
+//    ARTIFAX_FIELD_TIMINGS_ID        Element ID for "Technical Schedule & Timings" (alias: ARTIFAX_PORTAL_FIELD_TIMINGS_ID)
+//    ARTIFAX_FIELD_CREW_ID           Element ID for "Assigned Technical Crew" (alias: ARTIFAX_PORTAL_FIELD_CREW_ID)
+//    ARTIFAX_FIELD_SPEC_SUMMARY_ID   Element ID for "Spec & Package Summary" (alias: ARTIFAX_PORTAL_FIELD_SPEC_ID)
+//    ARTIFAX_PORTAL_FORM_SCOPE       "event" (default) or "arrangement" (alias: ARTIFAX_WRITE_TARGET)
+//    ARTIFAX_WRITE_PATH              Override path template e.g. /api/events/{eventId}/custom_forms (alias: ARTIFAX_FORM_POST_PATH)
 //    ARTIFAX_FORM_POST_METHOD        "POST" (default) or "PUT"
 //    ARTIFAX_DOCS_LIST_PATH          Override path template e.g. /api/arrangements/{arrangementId}/documents
 //    ARTIFAX_DOCS_UPLOAD_PATH        Override path template e.g. /api/arrangements/{arrangementId}/documents
@@ -383,14 +383,14 @@ function base64ToBytes(b64: string): Uint8Array {
 }
 
 // Strip any portal-owned sentinel blocks so portal-pushed text can NEVER recursively re-enter pull notes
-const PORTAL_SENTINEL_RE = /---\s*\[TECH PORTAL(?: SYNC)? START\]\s*---[\s\S]*?---\s*\[TECH PORTAL(?: SYNC)? END\]\s*---/gi;
+const PORTAL_SENTINEL_RE = /(?:---\s*\[TECH PORTAL(?: SYNC)? START\]\s*---[\s\S]*?---\s*\[TECH PORTAL(?: SYNC)? END\]\s*---|\[RMTP_PORTAL_SYNC_START\][\s\S]*?\[RMTP_PORTAL_SYNC_END\])/gi;
 
 function stripPortalSentinelBlocks(text: string): string {
   return text.replace(PORTAL_SENTINEL_RE, "").trim();
 }
 
 function isPortalOwnedCustomForm(form: Record<string, unknown>, configuredFormId: string): boolean {
-  const formId = String(form.custom_form_id ?? form.form_id ?? form.id ?? "").trim();
+  const formId = String(form.custom_form_id ?? form.custom_form_type_id ?? form.form_id ?? form.id ?? "").trim();
   if (configuredFormId && formId && formId === configuredFormId) return true;
   const formTitle = String(form.custom_form_name ?? form.form_name ?? form.name ?? form.title ?? form.label ?? "").trim();
   if (/^tech\s*portal\b/i.test(formTitle)) return true;
@@ -595,14 +595,15 @@ function getArtifaxAuthConfig() {
 }
 
 function getPortalWriteConfig() {
+  const scopeRaw = (Deno.env.get("ARTIFAX_PORTAL_FORM_SCOPE") || Deno.env.get("ARTIFAX_WRITE_TARGET") || "event").trim().toLowerCase();
   return {
     formId: (Deno.env.get("ARTIFAX_PORTAL_FORM_ID") || "").trim(),
-    fieldNotesId: (Deno.env.get("ARTIFAX_PORTAL_FIELD_NOTES_ID") || "").trim(),
-    fieldTimingsId: (Deno.env.get("ARTIFAX_PORTAL_FIELD_TIMINGS_ID") || "").trim(),
-    fieldCrewId: (Deno.env.get("ARTIFAX_PORTAL_FIELD_CREW_ID") || "").trim(),
-    fieldSpecId: (Deno.env.get("ARTIFAX_PORTAL_FIELD_SPEC_ID") || "").trim(),
-    writeTarget: ((Deno.env.get("ARTIFAX_WRITE_TARGET") || "event").trim().toLowerCase() === "arrangement") ? "arrangement" : "event",
-    formPostPath: (Deno.env.get("ARTIFAX_FORM_POST_PATH") || "").trim(),
+    fieldNotesId: (Deno.env.get("ARTIFAX_FIELD_TECH_NOTES_ID") || Deno.env.get("ARTIFAX_PORTAL_FIELD_NOTES_ID") || "").trim(),
+    fieldTimingsId: (Deno.env.get("ARTIFAX_FIELD_TIMINGS_ID") || Deno.env.get("ARTIFAX_PORTAL_FIELD_TIMINGS_ID") || "").trim(),
+    fieldCrewId: (Deno.env.get("ARTIFAX_FIELD_CREW_ID") || Deno.env.get("ARTIFAX_PORTAL_FIELD_CREW_ID") || "").trim(),
+    fieldSpecId: (Deno.env.get("ARTIFAX_FIELD_SPEC_SUMMARY_ID") || Deno.env.get("ARTIFAX_PORTAL_FIELD_SPEC_ID") || "").trim(),
+    writeTarget: scopeRaw === "arrangement" ? "arrangement" : "event",
+    formPostPath: (Deno.env.get("ARTIFAX_WRITE_PATH") || Deno.env.get("ARTIFAX_FORM_POST_PATH") || "").trim(),
     formPostMethod: ((Deno.env.get("ARTIFAX_FORM_POST_METHOD") || "POST").trim().toUpperCase() === "PUT") ? "PUT" : "POST",
     docsListPath: (Deno.env.get("ARTIFAX_DOCS_LIST_PATH") || "").trim(),
     docsUploadPath: (Deno.env.get("ARTIFAX_DOCS_UPLOAD_PATH") || "").trim(),
@@ -634,8 +635,10 @@ interface NormalizedArtifaxDoc {
   size: number | null;
   mimeType: string;
   updatedAt: string;
+  uploadedAt?: string;
   downloadPath: string;
   direction: "artifax_to_portal" | "portal_to_artifax";
+  origin: "artifax" | "portal";
   sha256?: string;
 }
 
@@ -659,14 +662,17 @@ function extractInlinePdfDocuments(r: Record<string, unknown>): NormalizedArtifa
       seen.add(key);
 
       const rawPath = String(d.download_path ?? d.path ?? d.relative_url ?? "").trim();
+      const ts = String(d.updated_at ?? d.created_at ?? d.uploaded_at ?? "").trim();
       out.push({
         artifaxDocId: docId || slugify(name),
         name: name || `Document-${docId}.pdf`,
         size: d.size !== undefined && d.size !== null ? Number(d.size) || null : (d.file_size ? Number(d.file_size) || null : null),
         mimeType: "application/pdf",
-        updatedAt: String(d.updated_at ?? d.created_at ?? d.uploaded_at ?? "").trim(),
+        updatedAt: ts,
+        uploadedAt: ts,
         downloadPath: rawPath.startsWith("/") && !rawPath.includes("..") ? rawPath : "",
         direction: "artifax_to_portal",
+        origin: "artifax",
       });
     }
   }
@@ -994,10 +1000,14 @@ async function handleSyncAction(
       }
 
       const existingTechInfo = String(existing.techInfo || "").trim();
+      const preservedGroupId =
+        existing.groupId && !String(existing.groupId).startsWith("implicit-")
+          ? existing.groupId
+          : null;
       const updatedRow: Record<string, unknown> = {
         ...existing,
         artifaxId: booking.artifaxId,
-        groupId: null,
+        groupId: preservedGroupId,
         name: booking.name,
         category: booking.category,
         space: booking.space,
@@ -1189,9 +1199,10 @@ async function handleSyncAction(
   }
 
   const summary = {
+    action: "sync",
     version: SYNC_ENGINE_VERSION,
     syncedServerSide: true,
-    writeBackConfigured: !!writeCfg.formId,
+    writeBackConfigured: Boolean(writeCfg.fieldNotesId && writeCfg.fieldTimingsId && writeCfg.fieldCrewId && writeCfg.fieldSpecId),
     dryRun,
     syncedAt: nowIso,
     window: { startDate, endDate },
@@ -1273,19 +1284,21 @@ async function handlePushEventAction(
 ) {
   const writeCfg = getPortalWriteConfig();
   const missingSecrets: string[] = [];
-  if (!writeCfg.formId) missingSecrets.push("ARTIFAX_PORTAL_FORM_ID");
-  if (!writeCfg.fieldNotesId) missingSecrets.push("ARTIFAX_PORTAL_FIELD_NOTES_ID");
-  if (!writeCfg.fieldTimingsId) missingSecrets.push("ARTIFAX_PORTAL_FIELD_TIMINGS_ID");
-  if (!writeCfg.fieldCrewId) missingSecrets.push("ARTIFAX_PORTAL_FIELD_CREW_ID");
-  if (!writeCfg.fieldSpecId) missingSecrets.push("ARTIFAX_PORTAL_FIELD_SPEC_ID");
+  if (!writeCfg.fieldNotesId) missingSecrets.push("ARTIFAX_FIELD_TECH_NOTES_ID");
+  if (!writeCfg.fieldTimingsId) missingSecrets.push("ARTIFAX_FIELD_TIMINGS_ID");
+  if (!writeCfg.fieldCrewId) missingSecrets.push("ARTIFAX_FIELD_CREW_ID");
+  if (!writeCfg.fieldSpecId) missingSecrets.push("ARTIFAX_FIELD_SPEC_SUMMARY_ID");
 
   if (missingSecrets.length > 0) {
+    const msg = `Artifax write-back custom form secrets not configured yet (${missingSecrets.join(", ")}). Open Sync Log → Discover Artifax Schema to copy your Element IDs into Supabase Secrets.`;
     return jsonResponse(
       {
+        action: "push_event",
         ok: false,
         notConfigured: true,
         missingSecrets,
-        message: `Artifax write-back custom form secrets not configured yet (${missingSecrets.join(", ")}). Run Discover Artifax Schema in Sync Log after creating the "Tech Portal Advancing" custom form in Artifax.`,
+        error: msg,
+        message: msg,
       },
       200,
       corsHeaders
@@ -1310,7 +1323,7 @@ async function handlePushEventAction(
   const arrangementId = safeIdToken(body.arrangementId ?? existingPkg.artifaxArrangementId);
 
   if (!artifaxEventId && !arrangementId) {
-    return jsonResponse({ ok: false, error: "Event is not linked to an Artifax ID" }, 400, corsHeaders);
+    return jsonResponse({ action: "push_event", ok: false, error: "Event is not linked to an Artifax ID" }, 400, corsHeaders);
   }
 
   const nowIso = new Date().toISOString();
@@ -1327,12 +1340,16 @@ async function handlePushEventAction(
   const pushHash = await sha256Hex(canonicalPayload);
 
   if (!force && existingPkg.artifaxLastPushHash === pushHash) {
+    const prevAt = existingPkg.artifaxLastPushedAt || nowIso;
     return jsonResponse(
       {
+        action: "push_event",
         ok: true,
+        skipped: true,
         skippedUnchanged: true,
         hash: pushHash,
-        lastPushedAt: existingPkg.artifaxLastPushedAt || nowIso,
+        pushedAt: prevAt,
+        lastPushedAt: prevAt,
       },
       200,
       corsHeaders
@@ -1374,8 +1391,8 @@ async function handlePushEventAction(
     },
   ];
 
-  const artifaxRequestBody = {
-    custom_form_id: Number(writeCfg.formId) || writeCfg.formId,
+  const artifaxRequestBody: Record<string, unknown> = {
+    ...(writeCfg.formId ? { custom_form_id: Number(writeCfg.formId) || writeCfg.formId } : {}),
     event_id: Number(artifaxEventId) || artifaxEventId,
     ...(arrangementId ? { arrangement_id: Number(arrangementId) || arrangementId } : {}),
     custom_form_elements: elementsPayload,
@@ -1409,6 +1426,7 @@ async function handlePushEventAction(
     }
     return jsonResponse(
       {
+        action: "push_event",
         ok: false,
         status: res.status,
         endpoint: path,
@@ -1431,8 +1449,10 @@ async function handlePushEventAction(
 
   return jsonResponse(
     {
+      action: "push_event",
       ok: true,
       pushedAt: nowIso,
+      lastPushedAt: nowIso,
       hash: pushHash,
       endpoint: path,
       artifaxEventId,
@@ -1466,7 +1486,7 @@ async function handleListDocumentsAction(
   const arrangementId = safeIdToken(body.arrangementId ?? existingPkg.artifaxArrangementId);
 
   if (!artifaxEventId && !arrangementId) {
-    return jsonResponse({ ok: false, error: "Event is not linked to an Artifax ID" }, 400, corsHeaders);
+    return jsonResponse({ action: "list_documents", ok: false, error: "Event is not linked to an Artifax ID" }, 400, corsHeaders);
   }
 
   const candidatePaths: string[] = [];
@@ -1476,37 +1496,45 @@ async function handleListDocumentsAction(
       arrangementId: arrangementId || artifaxEventId,
     }));
   } else {
-    if (artifaxEventId) candidatePaths.push(`/api/events/${encodeURIComponent(artifaxEventId)}/documents`);
-    if (arrangementId) candidatePaths.push(`/api/arrangements/${encodeURIComponent(arrangementId)}/documents`);
+    if (artifaxEventId) {
+      candidatePaths.push(`/api/events/${encodeURIComponent(artifaxEventId)}/documents`);
+      candidatePaths.push(`/api/events/${encodeURIComponent(artifaxEventId)}/attachments`);
+    }
+    if (arrangementId) {
+      candidatePaths.push(`/api/arrangements/${encodeURIComponent(arrangementId)}/documents`);
+      candidatePaths.push(`/api/arrangements/${encodeURIComponent(arrangementId)}/attachments`);
+    }
   }
 
   const discoveredDocs: NormalizedArtifaxDoc[] = [];
   const probeErrors: string[] = [];
+  const probes: Array<{ path: string; ok: boolean; status: number; count?: number }> = [];
 
   for (const p of candidatePaths) {
     try {
       const res = await fetch(`${baseUrl}${p}`, { method: "GET", headers });
       if (!res.ok) {
         probeErrors.push(`${p} -> ${res.status}`);
+        probes.push({ path: p, ok: false, status: res.status });
         continue;
       }
       const data = await res.json().catch(() => null);
       const rawList = Array.isArray(data)
         ? data
         : (data && typeof data === "object"
-            ? ((data as Record<string, unknown>).documents ?? (data as Record<string, unknown>).attachments ?? (data as Record<string, unknown>).data ?? [])
+            ? ((data as Record<string, unknown>).documents ?? (data as Record<string, unknown>).attachments ?? (data as Record<string, unknown>).files ?? (data as Record<string, unknown>).data ?? [])
             : []);
-      if (Array.isArray(rawList)) {
-        const normalized = extractInlinePdfDocuments({ documents: rawList });
-        for (const doc of normalized) {
-          if (!doc.downloadPath && doc.artifaxDocId) {
-            doc.downloadPath = `${p}/${encodeURIComponent(doc.artifaxDocId)}`;
-          }
-          discoveredDocs.push(doc);
+      const normalized = Array.isArray(rawList) ? extractInlinePdfDocuments({ documents: rawList }) : [];
+      probes.push({ path: p, ok: true, status: res.status, count: normalized.length });
+      for (const doc of normalized) {
+        if (!doc.downloadPath && doc.artifaxDocId) {
+          doc.downloadPath = `${p}/${encodeURIComponent(doc.artifaxDocId)}`;
         }
+        discoveredDocs.push(doc);
       }
     } catch (e) {
       probeErrors.push(`${p} -> ${e instanceof Error ? e.message : String(e)}`);
+      probes.push({ path: p, ok: false, status: 0 });
     }
   }
 
@@ -1522,9 +1550,11 @@ async function handleListDocumentsAction(
 
   return jsonResponse(
     {
+      action: "list_documents",
       ok: true,
       documents: merged,
       fetchedFromArtifax: discoveredDocs.length,
+      probes,
       probeErrors,
     },
     200,
@@ -1602,6 +1632,7 @@ async function handleDownloadDocumentAction(
 
     return jsonResponse(
       {
+        action: "download_document",
         ok: true,
         filename: filename.endsWith(".pdf") ? filename : `${filename}.pdf`,
         contentType: "application/pdf",
@@ -1613,7 +1644,7 @@ async function handleDownloadDocumentAction(
     );
   }
 
-  return jsonResponse({ ok: false, error: lastError }, 200, corsHeaders);
+  return jsonResponse({ action: "download_document", ok: false, error: lastError }, 200, corsHeaders);
 }
 
 // ---------- Action 5: UPLOAD PORTAL PDF TO ARTIFAX (`action: "upload_document"`) ----------
@@ -1689,11 +1720,14 @@ async function handleUploadDocumentAction(
     if (already) {
       return jsonResponse(
         {
+          action: "upload_document",
           ok: true,
+          skipped: true,
           skippedDuplicate: true,
           artifaxDocId: already.artifaxDocId,
           sha256: fileSha,
           filename: already.name,
+          document: already,
         },
         200,
         corsHeaders
@@ -1745,6 +1779,7 @@ async function handleUploadDocumentAction(
   if (!res.ok) {
     return jsonResponse(
       {
+        action: "upload_document",
         ok: false,
         status: res.status,
         endpoint: path,
@@ -1769,8 +1804,10 @@ async function handleUploadDocumentAction(
     size: pdfBytes.byteLength,
     mimeType: "application/pdf",
     updatedAt: nowIso,
+    uploadedAt: nowIso,
     downloadPath: `${path}/${encodeURIComponent(artifaxDocId)}`,
     direction: "portal_to_artifax",
+    origin: "portal",
     sha256: fileSha,
   };
 
@@ -1783,6 +1820,7 @@ async function handleUploadDocumentAction(
 
   return jsonResponse(
     {
+      action: "upload_document",
       ok: true,
       artifaxDocId,
       sha256: fileSha,
@@ -1790,6 +1828,7 @@ async function handleUploadDocumentAction(
       size: pdfBytes.byteLength,
       uploadedAt: nowIso,
       endpoint: path,
+      document: docEntry,
     },
     200,
     corsHeaders
@@ -1810,7 +1849,9 @@ async function handleDiscoverSchemaAction(corsHeaders: Record<string, string>) {
   const formMap = new Map<string, { id: string; name: string; elements: Map<string, string> }>();
 
   const collectForm = (f: Record<string, unknown>) => {
-    const fid = String(f.custom_form_id ?? f.form_id ?? f.id ?? "").trim();
+    const fid = String(
+      f.custom_form_id ?? f.custom_form_type_id ?? f.custom_form_template_id ?? f.form_id ?? f.form_type_id ?? f.id ?? ""
+    ).trim();
     const fname = String(f.custom_form_name ?? f.form_name ?? f.name ?? f.title ?? "").trim();
     if (!fid && !fname) return;
     const key = fid || fname;
@@ -1818,6 +1859,7 @@ async function handleDiscoverSchemaAction(corsHeaders: Record<string, string>) {
       formMap.set(key, { id: fid, name: fname, elements: new Map() });
     }
     const entry = formMap.get(key)!;
+    if (fid && !entry.id) entry.id = fid;
     const allEls: unknown[] = [];
     const sections = Array.isArray(f.custom_form_sections) ? f.custom_form_sections : (Array.isArray(f.sections) ? f.sections : []);
     for (const sec of sections) {
@@ -1838,6 +1880,8 @@ async function handleDiscoverSchemaAction(corsHeaders: Record<string, string>) {
   };
 
   const probeNotes: string[] = [];
+  const documentEndpointProbes: Array<{ path: string; ok: boolean; status: number; count?: number }> = [];
+  let sampleEventId = "";
 
   // 1. Try GET /api/custom_forms directly
   try {
@@ -1856,7 +1900,7 @@ async function handleDiscoverSchemaAction(corsHeaders: Record<string, string>) {
     probeNotes.push(`GET /api/custom_forms -> ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // 2. Also inspect upcoming events to pick up embedded custom_forms + sample document endpoint test
+  // 2. Inspect upcoming events for embedded custom_forms + probe document/attachment endpoints
   let sampleDocEndpointStatus = "Not tested (no upcoming event found)";
   try {
     const today = new Date().toISOString().slice(0, 10);
@@ -1871,14 +1915,37 @@ async function handleDiscoverSchemaAction(corsHeaders: Record<string, string>) {
     if (sampleEv) {
       const sid = safeIdToken(sampleEv.event_id ?? sampleEv.id);
       const aid = safeIdToken(sampleEv.arrangement_id ?? sampleEv.arrangementId);
-      const tests: string[] = [];
+      sampleEventId = sid;
+
+      const probePaths: string[] = [];
       if (sid) {
-        const r1 = await fetch(`${baseUrl}/api/events/${encodeURIComponent(sid)}/documents`, { method: "GET", headers });
-        tests.push(`/api/events/${sid}/documents -> HTTP ${r1.status}`);
+        probePaths.push(`/api/events/${encodeURIComponent(sid)}/documents`);
+        probePaths.push(`/api/events/${encodeURIComponent(sid)}/attachments`);
       }
       if (aid) {
-        const r2 = await fetch(`${baseUrl}/api/arrangements/${encodeURIComponent(aid)}/documents`, { method: "GET", headers });
-        tests.push(`/api/arrangements/${aid}/documents -> HTTP ${r2.status}`);
+        probePaths.push(`/api/arrangements/${encodeURIComponent(aid)}/documents`);
+        probePaths.push(`/api/arrangements/${encodeURIComponent(aid)}/attachments`);
+      }
+
+      const tests: string[] = [];
+      for (const p of probePaths) {
+        try {
+          const r = await fetch(`${baseUrl}${p}`, { method: "GET", headers });
+          let count: number | undefined = undefined;
+          if (r.ok) {
+            const payload = await r.json().catch(() => null);
+            if (Array.isArray(payload)) count = payload.length;
+            else if (payload && typeof payload === "object") {
+              const arr = (payload as Record<string, unknown>).documents ?? (payload as Record<string, unknown>).attachments ?? (payload as Record<string, unknown>).data;
+              if (Array.isArray(arr)) count = arr.length;
+            }
+          }
+          documentEndpointProbes.push({ path: p, ok: r.ok, status: r.status, count });
+          tests.push(`${p} -> HTTP ${r.status}`);
+        } catch (err) {
+          documentEndpointProbes.push({ path: p, ok: false, status: 0 });
+          tests.push(`${p} -> ${err instanceof Error ? err.message : "error"}`);
+        }
       }
       sampleDocEndpointStatus = tests.join(" | ");
     }
@@ -1895,15 +1962,28 @@ async function handleDiscoverSchemaAction(corsHeaders: Record<string, string>) {
     });
   }
 
-  // Sort Tech Portal matches to the top
   discoveredForms.sort((a, b) => Number(b.isTechPortalMatch) - Number(a.isTechPortalMatch) || a.name.localeCompare(b.name));
 
   return jsonResponse(
     {
+      action: "discover_schema",
       ok: true,
       version: SYNC_ENGINE_VERSION,
+      sampleEventId,
+      configuredWriteBack: {
+        formId: writeCfg.formId || null,
+        techNotesFieldId: writeCfg.fieldNotesId || null,
+        timingsFieldId: writeCfg.fieldTimingsId || null,
+        crewFieldId: writeCfg.fieldCrewId || null,
+        specSummaryFieldId: writeCfg.fieldSpecId || null,
+        writeTarget: writeCfg.writeTarget,
+      },
       configuredSecrets: {
         ARTIFAX_PORTAL_FORM_ID: !!writeCfg.formId,
+        ARTIFAX_FIELD_TECH_NOTES_ID: !!writeCfg.fieldNotesId,
+        ARTIFAX_FIELD_TIMINGS_ID: !!writeCfg.fieldTimingsId,
+        ARTIFAX_FIELD_CREW_ID: !!writeCfg.fieldCrewId,
+        ARTIFAX_FIELD_SPEC_SUMMARY_ID: !!writeCfg.fieldSpecId,
         ARTIFAX_PORTAL_FIELD_NOTES_ID: !!writeCfg.fieldNotesId,
         ARTIFAX_PORTAL_FIELD_TIMINGS_ID: !!writeCfg.fieldTimingsId,
         ARTIFAX_PORTAL_FIELD_CREW_ID: !!writeCfg.fieldCrewId,
@@ -1912,6 +1992,7 @@ async function handleDiscoverSchemaAction(corsHeaders: Record<string, string>) {
         ARTIFAX_DOCS_UPLOAD_FORMAT: writeCfg.docsUploadFormat,
       },
       discoveredForms,
+      documentEndpointProbes,
       sampleDocEndpointStatus,
       probeNotes,
     },

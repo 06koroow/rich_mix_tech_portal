@@ -79,6 +79,43 @@ RMTP.syncSb = (function () {
     }
   }
 
+  /* Fallback persistence for subtasks (tasks & maintenance) in app_settings when the remote
+     Supabase table does not yet have a `subtasks` JSONB column. */
+  const subtasksFallbackCache = { tasks: null, maintenance: null };
+  function subtasksSettingKey(coll) {
+    return coll === 'maintenance' ? 'rmtp_subtasks_maintenance' : 'rmtp_subtasks_tasks';
+  }
+  async function loadSubtasksFallbackMap(coll) {
+    if (coll !== 'tasks' && coll !== 'maintenance') return {};
+    if (!sb || !sb.isConfigured()) return {};
+    const remoteVal = await getAppSetting(subtasksSettingKey(coll));
+    const map = (remoteVal && typeof remoteVal === 'object' && !Array.isArray(remoteVal)) ? remoteVal : {};
+    subtasksFallbackCache[coll] = map;
+    return map;
+  }
+  async function persistSubtasksFallbackEntry(coll, recordId, subtasksList) {
+    if ((coll !== 'tasks' && coll !== 'maintenance') || !recordId) return;
+    if (!sb || !sb.isConfigured()) return;
+    try {
+      const current = subtasksFallbackCache[coll]
+        ? { ...subtasksFallbackCache[coll] }
+        : { ...(await loadSubtasksFallbackMap(coll)) };
+      const normalized = Array.isArray(subtasksList) ? subtasksList : [];
+      if (normalized.length > 0) {
+        current[String(recordId)] = {
+          subtasks: normalized,
+          updatedAt: Date.now(),
+        };
+      } else {
+        delete current[String(recordId)];
+      }
+      subtasksFallbackCache[coll] = current;
+      await setAppSetting(subtasksSettingKey(coll), current);
+    } catch (e) {
+      console.warn('[syncSb] Subtasks fallback persistence skipped for', coll, e && e.message);
+    }
+  }
+
   let unsupportedTables = {};
   try {
     const savedT = localStorage.getItem('rmtp_unsupported_tables');
@@ -1029,8 +1066,8 @@ RMTP.syncSb = (function () {
         }
       } else if (coll === 'tasks' && existing) {
         // If local task was completed or updated more recently, keep local state
-        const localTime = existing.updatedAt || existing.createdAt || 0;
-        const remoteTime = r.updatedAt || r.createdAt || 0;
+        const localTime = Date.parse(existing.updatedAt || existing.createdAt || '') || Number(existing.updatedAt || existing.createdAt || 0) || 0;
+        const remoteTime = Date.parse(r.updatedAt || r.createdAt || '') || Number(r.updatedAt || r.createdAt || 0) || 0;
         if (localTime > remoteTime && existing.status === 'Completed' && r.status !== 'Completed') {
           r.status = existing.status;
           r.completedAt = existing.completedAt;
@@ -1038,6 +1075,19 @@ RMTP.syncSb = (function () {
         }
         if (existing.hiresMeta && !r.hiresMeta) {
           r.hiresMeta = existing.hiresMeta;
+        }
+        if (Array.isArray(existing.subtasks) && existing.subtasks.length) {
+          if (!Array.isArray(r.subtasks) || !r.subtasks.length || localTime > remoteTime) {
+            r.subtasks = existing.subtasks;
+          }
+        }
+      } else if (coll === 'maintenance' && existing) {
+        const localTime = Date.parse(existing.updatedAt || '') || Number(existing.updatedAt || existing.createdAt || 0) || 0;
+        const remoteTime = Date.parse(r.updatedAt || '') || Number(r.updatedAt || r.createdAt || 0) || 0;
+        if (Array.isArray(existing.subtasks) && existing.subtasks.length) {
+          if (!Array.isArray(r.subtasks) || !r.subtasks.length || localTime > remoteTime) {
+            r.subtasks = existing.subtasks;
+          }
         }
       } else if (coll === 'dcps' && existing) {
         // Timestamp-aware QC merge: never wipe fresher local QC progress or criteria on pull
@@ -1084,6 +1134,27 @@ RMTP.syncSb = (function () {
           mutated = true;
         }
       }
+    }
+
+    if (coll === 'tasks' || coll === 'maintenance') {
+      try {
+        const fallbackMap = await loadSubtasksFallbackMap(coll);
+        if (fallbackMap && typeof fallbackMap === 'object') {
+          Object.keys(fallbackMap).forEach((recId) => {
+            const entry = fallbackMap[recId];
+            const fbList = Array.isArray(entry) ? entry : (entry && Array.isArray(entry.subtasks) ? entry.subtasks : null);
+            const fbTime = (entry && Number(entry.updatedAt)) || 0;
+            if (!fbList || !fbList.length) return;
+            const rec = byId.get(recId);
+            if (!rec) return;
+            const recTime = Date.parse(rec.updatedAt || '') || Number(rec.updatedAt || 0) || 0;
+            if (!Array.isArray(rec.subtasks) || !rec.subtasks.length || (fbTime > recTime && !isRecentLocalUpsert(coll, recId))) {
+              rec.subtasks = fbList;
+              mutated = true;
+            }
+          });
+        }
+      } catch (e) {}
     }
 
     if (mutated) {
@@ -1241,6 +1312,10 @@ RMTP.syncSb = (function () {
                if (unsupportedCols[table][col]) delete payload[col];
              });
            }
+
+           if ((name === 'tasks' || name === 'maintenance') && isColumnUnsupported(table, 'subtasks') && record && record.id) {
+             persistSubtasksFallbackEntry(name, record.id, Array.isArray(record.subtasks) ? record.subtasks : []).catch(() => {});
+           }
            
            const attemptUpsert = async (currentPayload, attempt) => {
              const result = await sb.upsertRow(table, currentPayload);
@@ -1249,6 +1324,9 @@ RMTP.syncSb = (function () {
                const missingCol = extractMissingColumn(result.error);
                if (missingCol && attempt < 15 && Object.prototype.hasOwnProperty.call(currentPayload, missingCol)) {
                  markColumnUnsupported(table, missingCol);
+                 if (missingCol === 'subtasks' && (name === 'tasks' || name === 'maintenance') && record && record.id) {
+                   persistSubtasksFallbackEntry(name, record.id, Array.isArray(record.subtasks) ? record.subtasks : []).catch(() => {});
+                 }
                  const nextPayload = { ...currentPayload };
                  delete nextPayload[missingCol];
                  return attemptUpsert(nextPayload, attempt + 1);
@@ -1309,6 +1387,9 @@ RMTP.syncSb = (function () {
 
       if (sb && sb.isConfigured() && COLLS.includes(name)) {
         const table = tables()[name];
+        if ((name === 'tasks' || name === 'maintenance') && id && isColumnUnsupported(table, 'subtasks')) {
+          persistSubtasksFallbackEntry(name, id, []).catch(() => {});
+        }
         if (!isTableUnsupported(table)) {
            sb.deleteRow(table, id).then(result => {
               if (result && !result.ok) {

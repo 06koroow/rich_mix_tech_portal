@@ -72,6 +72,8 @@ RMTP.maintenance = (function () {
     // Image state (persist only on save)
     const originalImg = r.image || null;
     let imgMeta = originalImg, pendingImg = null, imgCleared = false;
+    let draftSubtasks = RMTP.subtasks ? RMTP.subtasks.normalize(r.subtasks) : [];
+    const SUB_PRIORITIES = RMTP.SUBTASK_PRIORITIES || ['Urgent', 'High', 'Medium', 'Low'];
 
     const userOptionsHtml = (selectedId) =>
       '<option value="">\u2014 Unassigned (Anyone) \u2014</option>' +
@@ -168,6 +170,26 @@ RMTP.maintenance = (function () {
           '</div>' +
 
           field('Description / Notes / Supplier Links', '<textarea id="f-desc" class="field" rows="3" placeholder="' + (currentTaskType === 'consumables' ? 'Supplier details, urgency justification, catalogue links, or delivery instructions\u2026' : 'What happened, symptoms, issues found\u2026') + '">' + ui.esc(initialDesc) + '</textarea>') +
+
+          /* Linked Subtasks & Completion Progress */
+          '<div class="p-3.5 rounded-xl bg-panel2/40 border border-line space-y-3 text-xs">' +
+            '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+              '<label class="font-semibold text-ink">Linked Subtasks &amp; Completion Progress</label>' +
+              '<span class="text-[11px] text-muted">Independent priority &amp; deadline per step</span>' +
+            '</div>' +
+            '<div id="f-subtasks-progress"></div>' +
+            '<div id="f-subtasks-list" class="divide-y divide-line/50"></div>' +
+            '<div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-2 border-t border-line/60">' +
+              '<input type="text" id="f-new-sub-title" class="field !py-1.5 text-xs flex-1" placeholder="Add subtask step (e.g. Order replacement fader, Bench test)\u2026" />' +
+              '<select id="f-new-sub-prio" class="field !py-1.5 !w-auto text-xs">' +
+                SUB_PRIORITIES.map((p) => '<option value="' + p + '" ' + (p === 'Medium' ? 'selected' : '') + '>' + p + '</option>').join('') +
+              '</select>' +
+              '<input type="date" id="f-new-sub-date" class="field !py-1.5 !w-auto text-xs font-mono tabular-nums" value="" />' +
+              '<button type="button" id="f-add-sub-btn" class="btn btn-secondary !py-1.5 !px-3 text-xs font-semibold shrink-0 flex items-center gap-1">' +
+                ui.icon('plus', 'w-3.5 h-3.5') + '<span>Add</span>' +
+              '</button>' +
+            '</div>' +
+          '</div>' +
 
           '<div id="f-photo-wrap" class="' + (currentTaskType === 'fault' ? '' : 'hidden') + '">' +
             '<label class="block text-sm font-medium mb-2">Photo <span class="text-muted font-normal">(optional)</span></label>' +
@@ -535,6 +557,113 @@ RMTP.maintenance = (function () {
     }
     wireImage();
 
+    /* --- Subtasks Builder inside Maintenance Modal --- */
+    function renderModalSubtasks() {
+      const progHost = m.root.querySelector('#f-subtasks-progress');
+      const listHost = m.root.querySelector('#f-subtasks-list');
+      const curStatus = m.root.querySelector('#f-status') ? m.root.querySelector('#f-status').value : (r.status || 'Open');
+      if (progHost && RMTP.subtasks) {
+        const prog = RMTP.subtasks.computeProgress({ status: curStatus, subtasks: draftSubtasks });
+        progHost.innerHTML = RMTP.subtasks.renderProgressBar(prog, { statusLabel: curStatus });
+      }
+      if (!listHost) return;
+      if (!draftSubtasks.length) {
+        listHost.innerHTML = '<div class="text-[11px] text-muted py-1.5">No subtasks added yet.</div>';
+        return;
+      }
+      listHost.innerHTML = draftSubtasks.map((s, idx) => (
+        '<div class="flex flex-col sm:flex-row sm:items-center gap-2 py-2">' +
+          '<div class="flex items-center gap-2 flex-1 min-w-0">' +
+            '<input type="checkbox" data-fsub-done="' + idx + '" class="w-4 h-4 rounded accent-[var(--ok)] cursor-pointer shrink-0" ' + (s.completed ? 'checked' : '') + ' />' +
+            '<input type="text" data-fsub-title="' + idx + '" value="' + ui.esc(s.title) + '" class="field !py-1 text-xs flex-1 ' + (s.completed ? 'line-through text-muted' : '') + '" />' +
+          '</div>' +
+          '<div class="flex items-center gap-1.5 pl-6 sm:pl-0 shrink-0">' +
+            '<select data-fsub-prio="' + idx + '" class="field !py-1 !w-auto text-[11px] ' + (RMTP.subtasks ? RMTP.subtasks.priorityTextClass(s.priority) : '') + '">' +
+              SUB_PRIORITIES.map((p) => '<option value="' + p + '" ' + (s.priority === p ? 'selected' : '') + '>' + p + '</option>').join('') +
+            '</select>' +
+            '<input type="date" data-fsub-date="' + idx + '" value="' + ui.esc(s.dueDate || '') + '" class="field !py-1 !w-auto text-[11px] font-mono tabular-nums" />' +
+            '<button type="button" data-fsub-del="' + idx + '" class="p-1 rounded text-muted hover:text-danger hover:bg-danger/10 transition" title="Remove subtask">' +
+              ui.icon('trash', 'w-3.5 h-3.5') +
+            '</button>' +
+          '</div>' +
+        '</div>'
+      )).join('');
+
+      listHost.querySelectorAll('[data-fsub-done]').forEach((cb) => {
+        cb.addEventListener('change', () => {
+          const i = Number(cb.getAttribute('data-fsub-done'));
+          if (!draftSubtasks[i]) return;
+          draftSubtasks[i].completed = cb.checked;
+          draftSubtasks[i].completedAt = cb.checked ? new Date().toISOString() : '';
+          draftSubtasks[i].completedBy = cb.checked ? (auth.displayName(auth.current()) || 'Staff Tech') : '';
+          const statusSel = m.root.querySelector('#f-status');
+          if (statusSel && draftSubtasks.length) {
+            const doneCount = draftSubtasks.filter((x) => x.completed).length;
+            if (doneCount === draftSubtasks.length) statusSel.value = 'Resolved';
+            else if (doneCount > 0 && (statusSel.value === 'Open' || statusSel.value === 'Resolved')) statusSel.value = 'In progress';
+            else if (doneCount === 0 && statusSel.value === 'Resolved') statusSel.value = 'Open';
+          }
+          renderModalSubtasks();
+        });
+      });
+      listHost.querySelectorAll('[data-fsub-title]').forEach((inp) => {
+        inp.addEventListener('input', () => {
+          const i = Number(inp.getAttribute('data-fsub-title'));
+          if (draftSubtasks[i]) draftSubtasks[i].title = inp.value;
+        });
+      });
+      listHost.querySelectorAll('[data-fsub-prio]').forEach((sel) => {
+        sel.addEventListener('change', () => {
+          const i = Number(sel.getAttribute('data-fsub-prio'));
+          if (draftSubtasks[i]) { draftSubtasks[i].priority = sel.value; renderModalSubtasks(); }
+        });
+      });
+      listHost.querySelectorAll('[data-fsub-date]').forEach((inp) => {
+        inp.addEventListener('change', () => {
+          const i = Number(inp.getAttribute('data-fsub-date'));
+          if (draftSubtasks[i]) { draftSubtasks[i].dueDate = inp.value; renderModalSubtasks(); }
+        });
+      });
+      listHost.querySelectorAll('[data-fsub-del]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const i = Number(btn.getAttribute('data-fsub-del'));
+          draftSubtasks.splice(i, 1);
+          renderModalSubtasks();
+        });
+      });
+    }
+
+    function addModalSubtaskFromInputs() {
+      const tInp = m.root.querySelector('#f-new-sub-title');
+      const pSel = m.root.querySelector('#f-new-sub-prio');
+      const dInp = m.root.querySelector('#f-new-sub-date');
+      const val = tInp ? tInp.value.trim() : '';
+      if (!val) { if (tInp) tInp.focus(); return; }
+      const sub = RMTP.subtasks ? RMTP.subtasks.normalizeOne({
+        title: val,
+        priority: pSel ? pSel.value : 'Medium',
+        dueDate: dInp ? dInp.value : '',
+        completed: false,
+      }) : null;
+      if (sub) {
+        draftSubtasks.push(sub);
+        if (tInp) { tInp.value = ''; tInp.focus(); }
+        renderModalSubtasks();
+      }
+    }
+
+    const addSubBtn = m.root.querySelector('#f-add-sub-btn');
+    if (addSubBtn) addSubBtn.addEventListener('click', addModalSubtaskFromInputs);
+    const newSubTitleInp = m.root.querySelector('#f-new-sub-title');
+    if (newSubTitleInp) {
+      newSubTitleInp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); addModalSubtaskFromInputs(); }
+      });
+    }
+    const statusSelForSub = m.root.querySelector('#f-status');
+    if (statusSelForSub) statusSelForSub.addEventListener('change', renderModalSubtasks);
+    renderModalSubtasks();
+
     /* --- Save Handler --- */
     m.root.querySelector('[data-cancel]').addEventListener('click', m.close);
     m.root.querySelector('[data-save]').addEventListener('click', () => {
@@ -543,6 +672,8 @@ RMTP.maintenance = (function () {
         ui.toast(currentTaskType === 'consumables' ? 'Add a title or summary for the consumables order' : 'Add a short description of the fault', 'danger');
         return;
       }
+      const pendingSubVal = m.root.querySelector('#f-new-sub-title') ? m.root.querySelector('#f-new-sub-title').value.trim() : '';
+      if (pendingSubVal) addModalSubtaskFromInputs();
 
       let finalImg = imgCleared ? null : imgMeta;
       if (pendingImg) {
@@ -650,9 +781,21 @@ RMTP.maintenance = (function () {
       const assignedTechSelect = m.root.querySelector('#f-assigned-tech');
       const selectedTechUser = assignedTechSelect && assignedTechSelect.value ? store.find('users', assignedTechSelect.value) : null;
 
+      const nextStatusVal = m.root.querySelector('#f-status') ? m.root.querySelector('#f-status').value : (r.status || 'Open');
+      const actorName = auth.displayName(auth.current()) || 'Staff Tech';
+      const nowIso = new Date().toISOString();
+      let cleanSubtasks = RMTP.subtasks ? RMTP.subtasks.normalize(draftSubtasks) : [];
+      if (nextStatusVal === 'Resolved' && cleanSubtasks.length) {
+        cleanSubtasks = cleanSubtasks.map((s) => Object.assign({}, s, {
+          completed: true,
+          completedAt: s.completedAt || nowIso,
+          completedBy: s.completedBy || actorName,
+        }));
+      }
+
       const record = Object.assign({
         id: r.id || store.uid('fault'),
-        status: m.root.querySelector('#f-status') ? m.root.querySelector('#f-status').value : (r.status || 'Open'),
+        status: nextStatusVal,
         createdAt: r.createdAt || Date.now(),
       }, {
         taskType: currentTaskType,
@@ -664,6 +807,7 @@ RMTP.maintenance = (function () {
         assignedTechId: selectedTechUser ? selectedTechUser.id : '',
         assignedTechName: selectedTechUser ? auth.displayName(selectedTechUser) : '',
         consumableItems: currentTaskType === 'consumables' ? consumableItems.filter((it) => it.name && it.name.trim()) : [],
+        subtasks: cleanSubtasks,
         description: m.root.querySelector('#f-desc').value.trim(),
         itemId: currentTaskType === 'fault' ? targetItemId : '',
         itemTag: currentTaskType === 'fault' ? targetItemTag : '',
@@ -673,6 +817,7 @@ RMTP.maintenance = (function () {
         previousLocation: r.previousLocation || originLoc,
         originLocation: r.originLocation || originLoc,
         image: currentTaskType === 'fault' ? finalImg : null,
+        updatedAt: Date.now(),
       });
 
       if (finalImg && !finalImg.url && RMTP.files && RMTP.files.toRemote) {
@@ -688,6 +833,17 @@ RMTP.maintenance = (function () {
       }
 
       store.upsert('maintenance', record);
+      // Keep any linked Jobs & Tasks items synchronized with maintenance subtasks & status
+      if (RMTP.tasks && RMTP.tasks.forMaintenance) {
+        RMTP.tasks.forMaintenance(record.id).forEach((jt) => {
+          const updatedJob = Object.assign({}, jt, {
+            subtasks: cleanSubtasks,
+            status: record.status === 'Resolved' ? 'Completed' : (record.status === 'In progress' ? 'In Progress' : (jt.status === 'Completed' ? 'Pending' : jt.status)),
+            updatedAt: Date.now(),
+          });
+          store.upsert('tasks', updatedJob);
+        });
+      }
       m.close();
       const msg = existing
         ? (currentTaskType === 'consumables' ? 'Consumables order updated' : 'Fault updated')
@@ -1074,6 +1230,41 @@ RMTP.views.maintenance = function (el, params, query) {
   let currentTab = (params && params[0]) || (query && query.status) || 'open';
   let searchQuery = '';
   let selectedTicketIds = new Set();
+  const expandedMaintSubIds = new Set();
+  const collapsedMaintSubIds = new Set();
+  let pendingMaintSubFocusId = null;
+
+  function isMaintSubsExpanded(r) {
+    if (expandedMaintSubIds.has(r.id)) return true;
+    if (collapsedMaintSubIds.has(r.id)) return false;
+    const subs = RMTP.subtasks ? RMTP.subtasks.normalize(r.subtasks) : [];
+    return subs.length > 0;
+  }
+
+  function syncLinkedJobsFromMaint(rec) {
+    if (!rec || !rec.id || !RMTP.tasks || !RMTP.tasks.forMaintenance) return;
+    const cleanSubs = RMTP.subtasks ? RMTP.subtasks.normalize(rec.subtasks) : [];
+    RMTP.tasks.forMaintenance(rec.id).forEach((jt) => {
+      const nextJob = Object.assign({}, jt, {
+        subtasks: cleanSubs,
+        updatedAt: Date.now(),
+      });
+      if (rec.status === 'Resolved') {
+        nextJob.status = 'Completed';
+        nextJob.completedAt = nextJob.completedAt || new Date().toISOString();
+        nextJob.completedBy = nextJob.completedBy || (auth.displayName(me) || 'Staff Tech');
+      } else if (rec.status === 'In progress') {
+        if (nextJob.status === 'Pending' || nextJob.status === 'Completed') nextJob.status = 'In Progress';
+        delete nextJob.completedAt;
+        delete nextJob.completedBy;
+      } else if (rec.status === 'Open' && nextJob.status === 'Completed') {
+        nextJob.status = 'Pending';
+        delete nextJob.completedAt;
+        delete nextJob.completedBy;
+      }
+      store.upsert('tasks', nextJob);
+    });
+  }
 
   function renderView() {
     const allRows = store.all('maintenance').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
@@ -1100,7 +1291,8 @@ RMTP.views.maintenance = function (el, params, query) {
       const rep = String(r.reportedBy || '').toLowerCase();
       const tech = String(r.assignedTechName || '').toLowerCase();
       const itemsStr = Array.isArray(r.consumableItems) ? r.consumableItems.map((ci) => ci.name + ' ' + ci.notes).join(' ').toLowerCase() : '';
-      return eq.includes(q) || desc.includes(q) || tag.includes(q) || kitName.includes(q) || sp.includes(q) || rep.includes(q) || tech.includes(q) || itemsStr.includes(q);
+      const subsStr = Array.isArray(r.subtasks) ? r.subtasks.map((s) => s.title || '').join(' ').toLowerCase() : '';
+      return eq.includes(q) || desc.includes(q) || tag.includes(q) || kitName.includes(q) || sp.includes(q) || rep.includes(q) || tech.includes(q) || itemsStr.includes(q) || subsStr.includes(q);
     });
 
     const counts = {
@@ -1169,6 +1361,12 @@ RMTP.views.maintenance = function (el, params, query) {
       '</div>';
 
     wireEvents(finalShown);
+
+    if (pendingMaintSubFocusId) {
+      const fInp = el.querySelector('[data-maint-sub-title="' + pendingMaintSubFocusId + '"]');
+      pendingMaintSubFocusId = null;
+      if (fInp) fInp.focus();
+    }
   }
 
   function wireEvents(finalShown) {
@@ -1252,13 +1450,134 @@ RMTP.views.maintenance = function (el, params, query) {
               space: r.space || 'Screen One',
               priority: r.priority || 'Medium',
               linkedFaultId: r.id,
-              description: r.description || ''
+              description: r.description || '',
+              subtasks: RMTP.subtasks ? RMTP.subtasks.normalize(r.subtasks) : []
             }, () => {
               renderView();
             });
           }
         });
       }
+
+      const toggleMaintSubBtn = qSel('[data-maint-sub-expand="' + r.id + '"]');
+      if (toggleMaintSubBtn) {
+        toggleMaintSubBtn.addEventListener('click', () => {
+          if (isMaintSubsExpanded(r)) {
+            expandedMaintSubIds.delete(r.id);
+            collapsedMaintSubIds.add(r.id);
+          } else {
+            collapsedMaintSubIds.delete(r.id);
+            expandedMaintSubIds.add(r.id);
+            pendingMaintSubFocusId = r.id;
+          }
+          renderView();
+        });
+      }
+
+      const addMaintSubForm = qSel('[data-maint-sub-form="' + r.id + '"]');
+      if (addMaintSubForm) {
+        addMaintSubForm.addEventListener('submit', (ev) => {
+          ev.preventDefault();
+          const tInp = addMaintSubForm.querySelector('[data-maint-sub-title]');
+          const pSel = addMaintSubForm.querySelector('[data-maint-sub-prio]');
+          const dInp = addMaintSubForm.querySelector('[data-maint-sub-date]');
+          const titleVal = tInp ? tInp.value.trim() : '';
+          if (!titleVal) { if (tInp) tInp.focus(); return; }
+          if (!RMTP.subtasks) return;
+          const nextSub = RMTP.subtasks.normalizeOne({
+            title: titleVal,
+            priority: pSel ? pSel.value : 'Medium',
+            dueDate: dInp ? dInp.value : '',
+            completed: false,
+          });
+          if (!nextSub) return;
+          const fresh = store.find('maintenance', r.id) || r;
+          const updated = Object.assign({}, fresh, {
+            subtasks: RMTP.subtasks.normalize(fresh.subtasks).concat(nextSub),
+            updatedAt: Date.now(),
+          });
+          RMTP.subtasks.syncMainStatus(updated, 'maintenance', auth.displayName(me) || 'Staff Tech');
+          store.upsert('maintenance', updated);
+          syncLinkedJobsFromMaint(updated);
+          collapsedMaintSubIds.delete(r.id);
+          expandedMaintSubIds.add(r.id);
+          pendingMaintSubFocusId = r.id;
+          renderView();
+        });
+      }
+
+      el.querySelectorAll('[data-maint-sub-toggle^="' + r.id + '|"]').forEach((cb) => {
+        cb.addEventListener('change', () => {
+          const sid = String(cb.getAttribute('data-maint-sub-toggle') || '').split('|')[1];
+          const fresh = store.find('maintenance', r.id) || r;
+          if (!fresh || !RMTP.subtasks || !sid) return;
+          const actorName = auth.displayName(me) || 'Staff Tech';
+          const nowIso = new Date().toISOString();
+          const updated = Object.assign({}, fresh, {
+            subtasks: RMTP.subtasks.normalize(fresh.subtasks).map((s) => (
+              s.id === sid
+                ? Object.assign({}, s, { completed: cb.checked, completedAt: cb.checked ? nowIso : '', completedBy: cb.checked ? actorName : '' })
+                : s
+            )),
+            updatedAt: Date.now(),
+          });
+          RMTP.subtasks.syncMainStatus(updated, 'maintenance', actorName);
+          store.upsert('maintenance', updated);
+          syncLinkedJobsFromMaint(updated);
+          renderView();
+        });
+      });
+
+      el.querySelectorAll('[data-maint-sub-prio-edit^="' + r.id + '|"]').forEach((sel) => {
+        sel.addEventListener('change', () => {
+          const sid = String(sel.getAttribute('data-maint-sub-prio-edit') || '').split('|')[1];
+          const fresh = store.find('maintenance', r.id) || r;
+          if (!fresh || !RMTP.subtasks || !sid) return;
+          const updated = Object.assign({}, fresh, {
+            subtasks: RMTP.subtasks.normalize(fresh.subtasks).map((s) => (
+              s.id === sid ? Object.assign({}, s, { priority: sel.value }) : s
+            )),
+            updatedAt: Date.now(),
+          });
+          store.upsert('maintenance', updated);
+          syncLinkedJobsFromMaint(updated);
+          renderView();
+        });
+      });
+
+      el.querySelectorAll('[data-maint-sub-date-edit^="' + r.id + '|"]').forEach((inp) => {
+        inp.addEventListener('change', () => {
+          const sid = String(inp.getAttribute('data-maint-sub-date-edit') || '').split('|')[1];
+          const fresh = store.find('maintenance', r.id) || r;
+          if (!fresh || !RMTP.subtasks || !sid) return;
+          const updated = Object.assign({}, fresh, {
+            subtasks: RMTP.subtasks.normalize(fresh.subtasks).map((s) => (
+              s.id === sid ? Object.assign({}, s, { dueDate: inp.value }) : s
+            )),
+            updatedAt: Date.now(),
+          });
+          store.upsert('maintenance', updated);
+          syncLinkedJobsFromMaint(updated);
+          renderView();
+        });
+      });
+
+      el.querySelectorAll('[data-maint-sub-del^="' + r.id + '|"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const sid = String(btn.getAttribute('data-maint-sub-del') || '').split('|')[1];
+          const fresh = store.find('maintenance', r.id) || r;
+          if (!fresh || !RMTP.subtasks || !sid) return;
+          const nextSubs = RMTP.subtasks.normalize(fresh.subtasks).filter((s) => s.id !== sid);
+          const updated = Object.assign({}, fresh, {
+            subtasks: nextSubs,
+            updatedAt: Date.now(),
+          });
+          if (nextSubs.length > 0) RMTP.subtasks.syncMainStatus(updated, 'maintenance', auth.displayName(me) || 'Staff Tech');
+          store.upsert('maintenance', updated);
+          syncLinkedJobsFromMaint(updated);
+          renderView();
+        });
+      });
 
       const imgBtn = qSel('[data-img="' + r.id + '"]');
       if (imgBtn) imgBtn.addEventListener('click', () => files.open(r.image));
@@ -1369,6 +1688,67 @@ RMTP.views.maintenance = function (el, params, query) {
     ) : '';
 
     const isChecked = selectedTicketIds.has(r.id);
+    const maintSubsExpanded = isMaintSubsExpanded(r);
+    const maintProgress = RMTP.subtasks ? RMTP.subtasks.computeProgress(r) : { list: [], total: 0, completed: 0, percent: r.status === 'Resolved' ? 100 : 0, hasSubtasks: false, overdueCount: 0 };
+    const todayStr = RMTP.localDateStr ? RMTP.localDateStr() : new Date().toISOString().slice(0, 10);
+    const SUB_PRIOS = RMTP.SUBTASK_PRIORITIES || ['Urgent', 'High', 'Medium', 'Low'];
+
+    const maintSubtasksHtml =
+      '<div class="mt-3 pt-2.5 border-t border-line/50 space-y-2">' +
+        '<div class="flex items-center justify-between gap-3 flex-wrap">' +
+          '<div class="flex-1 min-w-[200px] max-w-xl">' +
+            (RMTP.subtasks ? RMTP.subtasks.renderProgressBar(maintProgress, { statusLabel: r.status || 'Open' }) : '') +
+          '</div>' +
+          '<button type="button" data-maint-sub-expand="' + r.id + '" class="btn btn-ghost !py-1 !px-2 text-[11px] font-semibold text-ink hover:text-accent border border-line/80 flex items-center gap-1 shrink-0">' +
+            ui.icon('plus', 'w-3 h-3') +
+            '<span>' + (maintSubsExpanded ? 'Hide Subtasks' : (maintProgress.hasSubtasks ? ('Subtasks (' + maintProgress.completed + '/' + maintProgress.total + ')') : 'Add Subtask')) + '</span>' +
+          '</button>' +
+        '</div>' +
+        (maintSubsExpanded ? (
+          '<div class="rounded-lg bg-panel2/35 border border-line/60 px-3 py-2.5 space-y-2">' +
+            (maintProgress.list.length > 0 ? (
+              '<div class="divide-y divide-line/50">' +
+                maintProgress.list.map((s) => {
+                  const subOverdue = RMTP.subtasks.isSubtaskOverdue(s, todayStr);
+                  const subDueToday = !s.completed && s.dueDate && s.dueDate === todayStr;
+                  return (
+                    '<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-1.5">' +
+                      '<div class="flex items-start gap-2 min-w-0 flex-1">' +
+                        '<input type="checkbox" data-maint-sub-toggle="' + r.id + '|' + s.id + '" class="w-4 h-4 mt-0.5 rounded accent-[var(--ok)] cursor-pointer shrink-0" ' + (s.completed ? 'checked' : '') + ' />' +
+                        '<div class="min-w-0 flex-1">' +
+                          '<div class="text-xs font-medium ' + (s.completed ? 'line-through text-muted' : 'text-ink') + '">' + ui.esc(s.title) + '</div>' +
+                          (subOverdue ? '<div class="text-[10.5px] text-danger font-semibold">Overdue deadline</div>' : (subDueToday ? '<div class="text-[10.5px] text-accent font-semibold">Due today</div>' : '')) +
+                        '</div>' +
+                      '</div>' +
+                      '<div class="flex items-center gap-1.5 pl-6 sm:pl-0 shrink-0 flex-wrap">' +
+                        '<select data-maint-sub-prio-edit="' + r.id + '|' + s.id + '" aria-label="Subtask priority" class="bg-panel border border-line rounded px-2 py-0.5 text-[11px] cursor-pointer ' + RMTP.subtasks.priorityTextClass(s.priority) + '">' +
+                          SUB_PRIOS.map((p) => '<option value="' + p + '" ' + (s.priority === p ? 'selected' : '') + '>' + p + '</option>').join('') +
+                        '</select>' +
+                        '<input type="date" data-maint-sub-date-edit="' + r.id + '|' + s.id + '" aria-label="Subtask deadline" value="' + ui.esc(s.dueDate || '') + '" class="bg-panel border ' + (subOverdue ? 'border-danger/60 text-danger' : 'border-line text-muted') + ' rounded px-2 py-0.5 text-[11px] font-mono tabular-nums" />' +
+                        '<button type="button" data-maint-sub-del="' + r.id + '|' + s.id + '" class="p-1 rounded text-muted hover:text-danger hover:bg-danger/10 transition" title="Remove subtask">' +
+                          ui.icon('trash', 'w-3.5 h-3.5') +
+                        '</button>' +
+                      '</div>' +
+                    '</div>'
+                  );
+                }).join('') +
+              '</div>'
+            ) : '<div class="text-xs text-muted">No subtasks yet. Add steps below with their own priority and deadline.</div>') +
+            '<form data-maint-sub-form="' + r.id + '" class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-2 border-t border-line/50">' +
+              '<input type="text" data-maint-sub-title="' + r.id + '" class="field !py-1 text-xs flex-1" placeholder="Add linked subtask\u2026" />' +
+              '<div class="flex items-center gap-1.5 shrink-0">' +
+                '<select data-maint-sub-prio="' + r.id + '" class="field !py-1 !w-auto text-xs">' +
+                  SUB_PRIOS.map((p) => '<option value="' + p + '" ' + (p === 'Medium' ? 'selected' : '') + '>' + p + '</option>').join('') +
+                '</select>' +
+                '<input type="date" data-maint-sub-date="' + r.id + '" class="field !py-1 !w-auto text-xs font-mono tabular-nums" />' +
+                '<button type="submit" class="btn btn-secondary !py-1 !px-2.5 text-xs font-semibold shrink-0 flex items-center gap-1">' +
+                  ui.icon('plus', 'w-3 h-3') + '<span>Add</span>' +
+                '</button>' +
+              '</div>' +
+            '</form>' +
+          '</div>'
+        ) : '') +
+      '</div>';
 
     return (
       '<div class="panel p-4 ' + (isChecked ? 'border-accent bg-accent/5' : '') + '">' +
@@ -1415,6 +1795,8 @@ RMTP.views.maintenance = function (el, params, query) {
             consumableChecklistHtml +
 
             (r.description ? '<p class="text-sm text-ink/85 mt-2 whitespace-pre-wrap">' + ui.esc(r.description) + '</p>' : '') +
+
+            maintSubtasksHtml +
 
             (isAdmin && r.status === 'Resolved' && r.resolution ?
               '<div class="mt-2.5 panel bg-panel2/40 p-2.5 rounded-lg border border-line">' +
@@ -1539,13 +1921,23 @@ RMTP.views.maintenance = function (el, params, query) {
       const shouldMerge = mergeCheckbox && mergeCheckbox.checked && parentItem;
       const by = auth.displayName(me) || 'Admin';
 
-      store.upsert('maintenance', Object.assign({}, r, {
+      const resolvedSubs = RMTP.subtasks ? RMTP.subtasks.normalize(r.subtasks).map((s) => Object.assign({}, s, {
+        completed: true,
+        completedAt: s.completedAt || now,
+        completedBy: s.completedBy || by,
+      })) : (r.subtasks || []);
+
+      const resolvedRecord = Object.assign({}, r, {
         status: 'Resolved',
         resolution: notes,
         resolvedBy: by,
         resolvedAt: now,
         returnedTo: targetDestination,
-      }));
+        subtasks: resolvedSubs,
+        updatedAt: Date.now(),
+      });
+      store.upsert('maintenance', resolvedRecord);
+      syncLinkedJobsFromMaint(resolvedRecord);
 
       if (item && !isConsumable) {
         const fresh = store.find('inventory', item.id) || item;

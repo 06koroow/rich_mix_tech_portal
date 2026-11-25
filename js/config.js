@@ -286,13 +286,19 @@ RMTP.eventAssignedTo = function (ev, userId) {
   return RMTP.eventTechnicians(ev).some((t) => t.userId === userId);
 };
 
+/* Timezone-safe local YYYY-MM-DD helper (avoids UTC midnight date drift in BST/non-UTC zones) */
+RMTP.localDateStr = function (d) {
+  const dt = d instanceof Date ? d : new Date();
+  return dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
+};
+
 /* Standard helper for event selection dropdowns across the portal.
    Excludes past events, excludes cancelled events, and sorts in date order soonest first.
    Optionally preserves an already-selected event ID so existing links do not break. */
 RMTP.getUpcomingActiveEvents = function (includeEventId = null) {
   const store = RMTP.store;
   if (!store || typeof store.all !== 'function') return [];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = RMTP.localDateStr();
   const all = store.all('advancing') || [];
 
   return all.filter((e) => {
@@ -322,7 +328,7 @@ RMTP.getUpcomingActiveEvents = function (includeEventId = null) {
 RMTP.getUpcomingActiveScreenings = function (includeScreeningId = null) {
   const store = RMTP.store;
   if (!store || typeof store.all !== 'function') return [];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = RMTP.localDateStr();
   const all = store.all('dcps') || [];
   const cancelledEventIds = new Set(
     (store.all('advancing') || [])
@@ -356,7 +362,7 @@ RMTP.getUpcomingActiveScreenings = function (includeScreeningId = null) {
 RMTP.cancelUnworkedShiftsForEvent = function (eventId, reason) {
   if (!eventId || !RMTP.store) return 0;
   const store = RMTP.store;
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = RMTP.localDateStr();
   const nowIso = new Date().toISOString();
   const existingBookings = (store.all('bookings') || []).filter((b) => b && b.eventId === eventId);
   let cancelledCount = 0;
@@ -387,7 +393,14 @@ RMTP.syncAdvancingToRota = function (ev) {
   if (!ev || !RMTP.store) return [];
   const store = RMTP.store;
   const existingBookings = (store.all('bookings') || []).filter((b) => b.eventId === ev.id);
-  const spaces = Array.isArray(ev.space) ? ev.space : [ev.space || 'The Stage'];
+  const rawSpaces = Array.isArray(ev.spaces) && ev.spaces.length
+    ? ev.spaces
+    : (Array.isArray(ev.space)
+      ? ev.space
+      : String(ev.space || 'The Stage').split(/[,;]+/).map((s) => s.trim()).filter(Boolean));
+  const spaces = rawSpaces.length
+    ? rawSpaces.map((s) => (RMTP.normalizeSpaceName ? RMTP.normalizeSpaceName(s) : String(s).trim())).filter((s, i, arr) => s && arr.indexOf(s) === i)
+    : ['The Stage'];
   const createdShifts = [];
 
   const stLower = String(ev.status || '').trim().toLowerCase();
@@ -436,7 +449,7 @@ RMTP.syncAdvancingToRota = function (ev) {
         id: existing ? existing.id : 'b_' + ev.id + '_' + idx,
         eventId: ev.id,
         eventName: ev.name,
-        space: spaces[0] || 'The Stage',
+        space: (t.space && (RMTP.normalizeSpaceName ? RMTP.normalizeSpaceName(t.space) : t.space)) || spaces[0] || 'The Stage',
         date: ev.date,
         startTime: t.startTime || ev.startTime || '18:00',
         finishTime: t.finishTime || ev.finishTime || '23:00',
@@ -915,4 +928,226 @@ RMTP.equipmentBookings = {
     return bookings;
   }
 };
+
+/* ---- Shared Subtasks & Main-Task Progress Helpers (Jobs & Tasks + Maintenance) ---- */
+RMTP.SUBTASK_PRIORITIES = ['Urgent', 'High', 'Medium', 'Low'];
+
+RMTP.subtasks = (function () {
+  const PRIORITY_RANK = { Urgent: 0, High: 1, Medium: 2, Low: 3 };
+
+  function uid() {
+    return 'sub_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+  }
+
+  function normalizeOne(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const title = String(raw.title || '').trim();
+    if (!title) return null;
+    const prio = RMTP.SUBTASK_PRIORITIES.indexOf(raw.priority) > -1 ? raw.priority : 'Medium';
+    const dueDate = raw.dueDate
+      ? (RMTP.normalizeDateStr ? RMTP.normalizeDateStr(raw.dueDate) : String(raw.dueDate).slice(0, 10))
+      : '';
+    const dueTime = String(raw.dueTime || '').trim();
+    const completed = !!raw.completed;
+    return {
+      id: raw.id ? String(raw.id) : uid(),
+      title: title,
+      priority: prio,
+      dueDate: dueDate,
+      dueTime: dueTime,
+      completed: completed,
+      completedAt: completed ? (raw.completedAt || '') : '',
+      completedBy: completed ? (raw.completedBy || '') : '',
+      createdAt: raw.createdAt || new Date().toISOString(),
+    };
+  }
+
+  function normalize(list) {
+    if (!Array.isArray(list)) return [];
+    const seen = new Set();
+    const out = [];
+    list.forEach((item) => {
+      const n = normalizeOne(item);
+      if (!n) return;
+      if (seen.has(n.id)) n.id = uid();
+      seen.add(n.id);
+      out.push(n);
+    });
+    return out;
+  }
+
+  function priorityTextClass(prio) {
+    if (prio === 'Urgent') return 'text-danger font-semibold';
+    if (prio === 'High') return 'text-accent font-semibold';
+    if (prio === 'Medium') return 'text-info font-medium';
+    return 'text-muted';
+  }
+
+  function isSubtaskOverdue(sub, todayStr) {
+    if (!sub || sub.completed || !sub.dueDate) return false;
+    const today = todayStr || (RMTP.localDateStr ? RMTP.localDateStr() : new Date().toISOString().slice(0, 10));
+    return sub.dueDate < today;
+  }
+
+  function computeProgress(record) {
+    const list = normalize(record && record.subtasks);
+    const total = list.length;
+    const completed = list.filter((s) => s.completed).length;
+    const remaining = total - completed;
+    const status = String((record && record.status) || '').trim();
+    const isMainDone = status === 'Completed' || status === 'Resolved';
+    const isMainInProgress = status === 'In Progress' || status === 'In progress';
+
+    let percent = 0;
+    if (total > 0) {
+      percent = Math.round((completed / total) * 100);
+    } else if (isMainDone) {
+      percent = 100;
+    } else if (isMainInProgress) {
+      percent = 50;
+    } else {
+      percent = 0;
+    }
+
+    const today = RMTP.localDateStr ? RMTP.localDateStr() : new Date().toISOString().slice(0, 10);
+    let overdueCount = 0;
+    let dueTodayCount = 0;
+    let nextDeadline = '';
+    let highestOpenPriority = '';
+    let bestRank = 99;
+
+    list.forEach((s) => {
+      if (s.completed) return;
+      if (s.dueDate) {
+        if (s.dueDate < today) overdueCount++;
+        else if (s.dueDate === today) dueTodayCount++;
+        if (!nextDeadline || s.dueDate < nextDeadline) nextDeadline = s.dueDate;
+      }
+      const rank = PRIORITY_RANK[s.priority] !== undefined ? PRIORITY_RANK[s.priority] : 2;
+      if (rank < bestRank) {
+        bestRank = rank;
+        highestOpenPriority = s.priority;
+      }
+    });
+
+    return {
+      list: list,
+      total: total,
+      completed: completed,
+      remaining: remaining,
+      percent: Math.max(0, Math.min(100, percent)),
+      hasSubtasks: total > 0,
+      isMainDone: isMainDone,
+      overdueCount: overdueCount,
+      dueTodayCount: dueTodayCount,
+      nextDeadline: nextDeadline,
+      highestOpenPriority: highestOpenPriority,
+    };
+  }
+
+  /* Derives main task / maintenance status when linked subtasks change */
+  function syncMainStatus(record, mode, actorName) {
+    if (!record) return record;
+    const list = normalize(record.subtasks);
+    record.subtasks = list;
+    if (!list.length) return record;
+
+    const total = list.length;
+    const completed = list.filter((s) => s.completed).length;
+    const nowIso = new Date().toISOString();
+
+    if (mode === 'maintenance') {
+      if (completed === total) {
+        record.status = 'Resolved';
+        if (!record.resolvedAt) record.resolvedAt = Date.now();
+      } else if (completed > 0) {
+        if (record.status === 'Open' || record.status === 'Resolved' || !record.status) {
+          record.status = 'In progress';
+        }
+        record.resolvedAt = null;
+      } else {
+        if (record.status === 'Resolved') {
+          record.status = 'Open';
+        }
+        record.resolvedAt = null;
+      }
+    } else {
+      if (completed === total) {
+        record.status = 'Completed';
+        record.completedAt = record.completedAt || nowIso;
+        if (actorName && !record.completedBy) record.completedBy = actorName;
+      } else if (completed > 0) {
+        if (record.status === 'Pending' || record.status === 'Completed' || !record.status) {
+          record.status = 'In Progress';
+        }
+        record.completedAt = null;
+        record.completedBy = null;
+      } else {
+        if (record.status === 'Completed') {
+          record.status = 'Pending';
+        }
+        record.completedAt = null;
+        record.completedBy = null;
+      }
+    }
+    return record;
+  }
+
+  /* Shared crisp progress bar HTML (zero pills, tabular numerals, color + text state) */
+  function renderProgressBar(progress, opts) {
+    const p = progress || { total: 0, completed: 0, percent: 0, hasSubtasks: false, overdueCount: 0 };
+    const compact = !!(opts && opts.compact);
+    const pct = Math.max(0, Math.min(100, Number(p.percent) || 0));
+    const fillClass = pct === 100
+      ? 'bg-ok'
+      : (pct > 0 ? 'bg-accent' : 'bg-muted/30');
+    const pctTextClass = pct === 100
+      ? 'text-ok'
+      : (pct > 0 ? 'text-ink' : 'text-muted');
+    const statusLabel = (opts && opts.statusLabel) ? String(opts.statusLabel) : '';
+
+    const detailParts = [];
+    if (p.hasSubtasks) {
+      detailParts.push(
+        '<span class="font-mono tabular-nums">' + p.completed + '/' + p.total + '</span> ' +
+        (p.total === 1 ? 'subtask' : 'subtasks')
+      );
+      if (p.overdueCount > 0) {
+        detailParts.push(
+          '<span class="text-danger font-semibold font-mono tabular-nums">' +
+          p.overdueCount + ' overdue</span>'
+        );
+      }
+    } else if (statusLabel) {
+      detailParts.push('<span>' + (RMTP.ui ? RMTP.ui.esc(statusLabel) : statusLabel) + '</span>');
+    } else {
+      detailParts.push('<span>No subtasks</span>');
+    }
+
+    return (
+      '<div class="flex items-center gap-3 ' + (compact ? 'w-full' : 'w-full') + '">' +
+        '<div class="flex-1 min-w-[72px] ' + (compact ? 'h-1.5' : 'h-2') + ' rounded-full bg-panel2 border border-line/70 overflow-hidden" role="progressbar" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100">' +
+          '<div class="h-full rounded-full transition-all duration-300 ' + fillClass + '" style="width:' + pct + '%"></div>' +
+        '</div>' +
+        '<div class="flex items-center gap-1.5 shrink-0 ' + (compact ? 'text-[11px]' : 'text-xs') + ' text-muted">' +
+          '<span class="font-mono tabular-nums font-semibold ' + pctTextClass + '">' + pct + '%</span>' +
+          '<span class="text-line">\u00b7</span>' +
+          detailParts.join('<span class="text-line">\u00b7</span>') +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  return {
+    uid,
+    normalize,
+    normalizeOne,
+    priorityTextClass,
+    isSubtaskOverdue,
+    computeProgress,
+    syncMainStatus,
+    renderProgressBar,
+  };
+})();
+
 

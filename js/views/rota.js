@@ -98,16 +98,38 @@ RMTP.views.rota = (function () {
       return fallback || '17:00';
     }
 
+    function extractNormalizedSpaces(raw) {
+      const list = Array.isArray(raw)
+        ? raw
+        : String(raw || '').split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
+      const out = [];
+      const seen = new Set();
+      list.forEach((entry) => {
+        const ns = RMTP.normalizeSpaceName ? RMTP.normalizeSpaceName(entry) : String(entry || '').trim();
+        if (ns && !seen.has(ns)) {
+          seen.add(ns);
+          out.push(ns);
+        }
+      });
+      return out;
+    }
+
     function normalizeSpace(raw) {
-      const first = Array.isArray(raw) ? (raw[0] || '') : String(raw || '').split(',')[0].trim();
-      if (!first) return '';
-      return RMTP.normalizeSpaceName ? RMTP.normalizeSpaceName(first) : first;
+      const spaces = extractNormalizedSpaces(raw);
+      return spaces[0] || '';
     }
 
     function isSpaceAllowed(space) {
       if (state.showNonCoreSpaces) return true;
       if (!space) return true;
-      return !(RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(space));
+      const spaces = extractNormalizedSpaces(space);
+      if (spaces.length === 0) return true;
+      return spaces.some((sp) => !(RMTP.isAuxiliarySpace && RMTP.isAuxiliarySpace(sp)));
+    }
+
+    function isUnassignedName(name) {
+      const s = String(name || '').trim();
+      return !s || /^unassigned(\s+tech)?$/i.test(s);
     }
 
     function getVisibleSpacesList() {
@@ -567,8 +589,8 @@ RMTP.views.rota = (function () {
       const normTarget = normalizeSpace(targetSpace).toLowerCase();
       if (Array.isArray(item.clusterEvents) && normTarget) {
         const matched = item.clusterEvents.find((e) => {
-          const spList = Array.isArray(e.space) ? e.space : [e.space];
-          return spList.some((s) => normalizeSpace(s).toLowerCase() === normTarget);
+          const spList = extractNormalizedSpaces(Array.isArray(e.spaces) && e.spaces.length ? e.spaces : e.space);
+          return spList.some((s) => s.toLowerCase() === normTarget);
         });
         if (matched) return matched.id;
       }
@@ -611,7 +633,8 @@ RMTP.views.rota = (function () {
       allEv.forEach((ev) => {
         if (usedEventIdsForTakeover.has(ev.id)) return;
 
-        const isExplicitMulti = (Array.isArray(ev.space) && ev.space.length > 1) || (Array.isArray(ev.spaces) && ev.spaces.length > 1) || ev.isTakeover;
+        const evSpaces = extractNormalizedSpaces(Array.isArray(ev.spaces) && ev.spaces.length ? ev.spaces : ev.space);
+        const isExplicitMulti = evSpaces.length > 1 || !!ev.isTakeover;
         const groupEvents = (ev.groupId && byGroupId[ev.groupId] && byGroupId[ev.groupId].length > 1) ? byGroupId[ev.groupId] : null;
 
         // Check matching name on same date across different spaces (e.g. Artifax multi-room arrangement)
@@ -619,17 +642,19 @@ RMTP.views.rota = (function () {
 
         if (isExplicitMulti || groupEvents || nameMatches.length > 0) {
           const clusterEvents = groupEvents ? groupEvents : (nameMatches.length > 0 ? [ev, ...nameMatches] : [ev]);
-          clusterEvents.forEach((e) => usedEventIdsForTakeover.add(e.id));
 
           // Collect spaces (normalized & respecting Core Spaces filter)
           const spacesSet = new Set();
           clusterEvents.forEach((e) => {
-            if (Array.isArray(e.spaces)) e.spaces.forEach((s) => { const ns = normalizeSpace(s); if (ns && isSpaceAllowed(ns)) spacesSet.add(ns); });
-            if (Array.isArray(e.space)) e.space.forEach((s) => { const ns = normalizeSpace(s); if (ns && isSpaceAllowed(ns)) spacesSet.add(ns); });
-            else if (e.space) { const ns = normalizeSpace(e.space); if (ns && isSpaceAllowed(ns)) spacesSet.add(ns); }
+            if (Array.isArray(e.spaces)) extractNormalizedSpaces(e.spaces).forEach((ns) => { if (ns && isSpaceAllowed(ns)) spacesSet.add(ns); });
+            if (e.space) extractNormalizedSpaces(e.space).forEach((ns) => { if (ns && isSpaceAllowed(ns)) spacesSet.add(ns); });
           });
 
-          if (spacesSet.size === 0) return;
+          // Only form a Multi-Room Takeover when 2+ distinct visible spaces are involved;
+          // same-room same-name showings (e.g. two screenings in Screen One) stay separate single-room shifts.
+          if (spacesSet.size <= 1) return;
+
+          clusterEvents.forEach((e) => usedEventIdsForTakeover.add(e.id));
 
           takeoverClusters.push({
             primaryEvent: ev,
@@ -664,7 +689,8 @@ RMTP.views.rota = (function () {
         const allEvTechs = [];
         cl.events.forEach((e) => {
           const techs = RMTP.eventTechnicians ? RMTP.eventTechnicians(e) : [];
-          techs.forEach((t) => allEvTechs.push({ ...t, eventSpace: Array.isArray(e.space) ? e.space[0] : e.space }));
+          const fallbackEvSpace = normalizeSpace(Array.isArray(e.spaces) && e.spaces.length ? e.spaces[0] : e.space);
+          techs.forEach((t) => allEvTechs.push({ ...t, eventId: e.id, eventSpace: fallbackEvSpace }));
         });
 
         // Compute space breakdown with real-crew counting, per-room No Tech Needed, and dual-role collapsing
@@ -673,10 +699,14 @@ RMTP.views.rota = (function () {
           const basic = specs.total;
           const spBookings = takeoverBookings.filter((b) => normalizeSpace(b.space) === sp && b.status !== 'cancelled' && b.status !== 'declined');
           const spEvents = cl.events.filter((e) => {
-            const spList = Array.isArray(e.spaces) && e.spaces.length ? e.spaces : (Array.isArray(e.space) ? e.space : [e.space]);
-            return spList.some((s) => normalizeSpace(s) === sp);
+            const spList = extractNormalizedSpaces(Array.isArray(e.spaces) && e.spaces.length ? e.spaces : e.space);
+            return spList.includes(sp);
           });
-          const spTechs = allEvTechs.filter((t) => (normalizeSpace(t.space) === sp || normalizeSpace(t.eventSpace) === sp) && (t.bookingStatus || 'confirmed') !== 'cancelled' && (t.bookingStatus || 'confirmed') !== 'declined');
+          // Match explicit tech.space when set; only fall back to eventSpace when tech.space is absent
+          const spTechs = allEvTechs.filter((t) => {
+            const targetSp = normalizeSpace(t.space || t.eventSpace);
+            return targetSp === sp && (t.bookingStatus || 'confirmed') !== 'cancelled' && (t.bookingStatus || 'confirmed') !== 'declined';
+          });
 
           const noTechBooking = spBookings.find((b) => isBookingNoTechRecord(b)) || null;
           const spAllEventsNoTech = spEvents.length > 0 && spEvents.every((e) => !!e.noTechNeeded);
@@ -704,20 +734,26 @@ RMTP.views.rota = (function () {
             const prev = assignedByTechKey.get(collapseKey);
             if (prev) {
               prev.role = mergeShiftRoles(prev.role, b.role);
-              if (String(b.status || '').toLowerCase() === 'confirmed') prev.status = 'confirmed';
+              if (String(b.status || 'pencil').toLowerCase() !== 'confirmed') prev.status = 'pencil';
               if (!prev.bookingIds) prev.bookingIds = [prev.bookingId];
               prev.bookingIds.push(b.id);
+              if (String(b.status || 'pencil').toLowerCase() === 'pencil') {
+                if (!prev.pencilBookingIds) prev.pencilBookingIds = [];
+                prev.pencilBookingIds.push(b.id);
+              }
               return;
             }
 
+            const bSt = String(b.status || 'pencil').toLowerCase();
             const entry = {
               id: b.userId || b.id,
               userId: b.userId || '',
               name: resolvedName,
               role: b.role || 'Tech',
-              status: b.status || 'pencil',
+              status: bSt,
               bookingId: b.id,
               bookingIds: [b.id],
+              pencilBookingIds: bSt === 'pencil' ? [b.id] : [],
             };
             assignedByTechKey.set(collapseKey, entry);
             assignedTechs.push(entry);
@@ -726,7 +762,7 @@ RMTP.views.rota = (function () {
           spTechs.forEach((t) => {
             if (t.isNoTech || t.role === 'None') return;
             const u = allUsers.find((u) => u.id === t.userId);
-            const hasReal = !!(u || (t.freelancerName && t.freelancerName.trim() && !/^unassigned(\s+tech)?$/i.test(t.freelancerName.trim())));
+            const hasReal = !!(u || (t.freelancerName && !isUnassignedName(t.freelancerName)));
             if (!hasReal) return;
             const resolvedName = t.freelancerName || (u ? auth.displayName(u) : 'Technician');
             const techKey = t.userId ? ('u:' + t.userId) : ('n:' + resolvedName.trim().toLowerCase());
@@ -738,9 +774,11 @@ RMTP.views.rota = (function () {
             const entry = {
               id: t.userId || techKey,
               userId: t.userId || '',
+              eventId: t.eventId || '',
               name: resolvedName,
               role: t.role || 'Tech',
-              status: t.bookingStatus || 'confirmed',
+              status: String(t.bookingStatus || 'confirmed').toLowerCase(),
+              isAdvTech: true,
             };
             assignedByTechKey.set(techKey, entry);
             assignedTechs.push(entry);
@@ -770,13 +808,13 @@ RMTP.views.rota = (function () {
           // Discipline fulfillment status for this space (supports dual-role techs e.g. "Sound & Lighting")
           const disciplineStatus = (specs.disciplines || []).map((cd) => {
             const reqCount = cd.count || 1;
-            const assignedCount = assignedTechs.filter((t) => roleCoversDiscipline(t.role, cd.role)).length;
+            const discAssigned = assignedTechs.filter((t) => roleCoversDiscipline(t.role, cd.role)).length;
             return {
               role: cd.role,
               required: reqCount,
-              assigned: assignedCount,
-              isFilled: assignedCount >= reqCount,
-              gap: Math.max(0, reqCount - assignedCount),
+              assigned: discAssigned,
+              isFilled: discAssigned >= reqCount,
+              gap: Math.max(0, reqCount - discAssigned),
             };
           });
 
@@ -790,9 +828,11 @@ RMTP.views.rota = (function () {
             ? disciplineStatus.reduce((sum, ds) => sum + Math.min(ds.assigned, ds.required), 0)
             : assignedCount;
           const allDisciplinesCovered = disciplineStatus.length > 0 && missingDisciplines.length === 0;
-          const isFilled = allDisciplinesCovered || (assignedCount >= basic && missingDisciplines.length === 0);
+          // Filled if room requires 0 crew, OR all required disciplines are covered (supports single-tech dual-role understaffing),
+          // OR numeric headcount meets/exceeds required minimum crew (prevents 2/2 or 1/1 getting stuck in Needs Covering).
+          const isFilled = (basic === 0) || allDisciplinesCovered || (assignedCount >= basic);
           const isDualRoleCover = isFilled && assignedCount > 0 && assignedCount < basic;
-          const gap = isFilled ? 0 : Math.max(missingDisciplines.length, basic - Math.max(assignedCount, coveredSlots));
+          const gap = isFilled ? 0 : Math.max(1, missingDisciplines.length, basic - Math.max(assignedCount, coveredSlots));
 
           return {
             space: sp,
@@ -817,18 +857,30 @@ RMTP.views.rota = (function () {
         const totalCrewAssigned = spaceBreakdown.reduce((sum, sb) => sum + sb.assignedCount, 0);
         const allAssignedTechs = spaceBreakdown.flatMap((sb) => sb.assignedTechs || []);
         const allConfirmed = allAssignedTechs.length > 0 && allAssignedTechs.every((t) => String(t.status || '').toLowerCase() === 'confirmed');
+        const allBookingIds = [];
+        const pencilBookingIds = [];
+        allAssignedTechs.forEach((t) => {
+          (t.bookingIds || (t.bookingId ? [t.bookingId] : [])).forEach((id) => {
+            if (id && !allBookingIds.includes(id)) allBookingIds.push(id);
+          });
+          (t.pencilBookingIds || (t.bookingId && String(t.status || '').toLowerCase() === 'pencil' ? [t.bookingId] : [])).forEach((id) => {
+            if (id && !pencilBookingIds.includes(id)) pencilBookingIds.push(id);
+          });
+        });
+        const hasPencilAdvTech = allAssignedTechs.some((t) => t.isAdvTech && String(t.status || '').toLowerCase() === 'pencil');
         const unfilledSpaces = spaceBreakdown.filter((sb) => !sb.isFilled).map((sb) => sb.space);
         const isAllNoTech = spaceBreakdown.length > 0 && spaceBreakdown.every((sb) => sb.isNoTech);
         const hasDualRoleCover = spaceBreakdown.some((sb) => sb.isDualRoleCover);
         const needsCovering = !isAllNoTech && unfilledSpaces.length > 0;
         const isFullyStaffed = !needsCovering;
+        const isAllCoveredZeroCrew = isAllNoTech || totalCrewNeeded === 0;
 
         // Apply filters
         if (state.spaceFilter && !spaces.includes(state.spaceFilter)) return;
         if (state.unfilledOnly && !needsCovering) return;
         if (state.eventsFilter === 'staffed' && needsCovering && totalCrewAssigned === 0) return;
         if (state.statusFilter) {
-          const derivedStatus = isAllNoTech ? 'confirmed' : (needsCovering ? 'unfilled' : (allConfirmed ? 'confirmed' : 'pencil'));
+          const derivedStatus = isAllCoveredZeroCrew ? 'confirmed' : (needsCovering ? 'unfilled' : (allConfirmed ? 'confirmed' : 'pencil'));
           const matchesStatus = (state.statusFilter === derivedStatus) ||
                                 (state.statusFilter === 'pencil' && needsCovering && totalCrewAssigned > 0);
           if (!matchesStatus) return;
@@ -846,7 +898,7 @@ RMTP.views.rota = (function () {
         }
 
         const primary = cl.primaryEvent;
-        const itemStatus = isAllNoTech ? 'confirmed' : (needsCovering ? 'unfilled' : (allConfirmed ? 'confirmed' : 'pencil'));
+        const itemStatus = isAllCoveredZeroCrew ? 'confirmed' : (needsCovering ? 'unfilled' : (allConfirmed ? 'confirmed' : 'pencil'));
         const item = {
           key: 'takeover_' + (cl.groupId || primary.id),
           type: 'takeover',
@@ -864,6 +916,9 @@ RMTP.views.rota = (function () {
           totalCrewAssigned: totalCrewAssigned,
           spaceBreakdown: spaceBreakdown,
           unfilledSpaces: unfilledSpaces,
+          allBookingIds: allBookingIds,
+          pencilBookingIds: pencilBookingIds,
+          hasPencilAdvTech: hasPencilAdvTech,
           isFullyStaffed: isFullyStaffed,
           isUnfilled: needsCovering,
           needsCovering: needsCovering,
@@ -884,9 +939,10 @@ RMTP.views.rota = (function () {
         return true;
       });
 
-      // Pre-scan which (event/space) combos are No-Tech or have covered roles so stale placeholders are suppressed
+      // Pre-scan which (event/space) combos are No-Tech, have covered roles, or already meet room crew count
       const noTechEventSpaceKeys = new Set();
       const coveredRolesByEventSpace = new Map();
+      const assignedTechKeysByEventSpace = new Map();
       remainingBookings.forEach((b) => {
         const bSpace = normalizeSpace(b.space) || 'Venue';
         const esKey = noTechDedupKey(b.eventId, b.eventName, bSpace);
@@ -897,6 +953,9 @@ RMTP.views.rota = (function () {
         if (!isPlaceholderBooking(b, allUsers)) {
           if (!coveredRolesByEventSpace.has(esKey)) coveredRolesByEventSpace.set(esKey, []);
           coveredRolesByEventSpace.get(esKey).push(b.role || 'Tech');
+          if (!assignedTechKeysByEventSpace.has(esKey)) assignedTechKeysByEventSpace.set(esKey, new Set());
+          const pKey = b.userId ? ('u:' + b.userId) : ('n:' + String(b.userName || '').trim().toLowerCase());
+          assignedTechKeysByEventSpace.get(esKey).add(pKey);
         }
       });
 
@@ -909,12 +968,17 @@ RMTP.views.rota = (function () {
         const linkedAdv = b.eventId ? allEv.find((e) => e.id === b.eventId) : null;
         const esKey = noTechDedupKey(b.eventId, b.eventName, bSpace);
 
-        // Suppress stale unassigned placeholder if this event/space is marked No Tech Needed
-        // OR if assigned crew (e.g. a dual-role Sound & Lighting tech) already covers its discipline
+        // Suppress stale unassigned placeholder if this event/space is marked No Tech Needed,
+        // OR if assigned crew (e.g. a dual-role Sound & Lighting tech) already covers its discipline,
+        // OR if the room's minimum crew count is already met by assigned technicians.
         if (isPlaceholderTech) {
           if ((linkedAdv && linkedAdv.noTechNeeded) || noTechEventSpaceKeys.has(esKey)) return;
           const coveredRoles = coveredRolesByEventSpace.get(esKey) || [];
           if (coveredRoles.length > 0 && b.role && coveredRoles.some((r) => roleCoversDiscipline(r, b.role))) {
+            return;
+          }
+          const assignedSet = assignedTechKeysByEventSpace.get(esKey);
+          if (assignedSet && assignedSet.size >= getSpaceBasicCrew(bSpace)) {
             return;
           }
         }
@@ -946,7 +1010,7 @@ RMTP.views.rota = (function () {
           const existingItem = regularCollapsedByKey.get(collapseKey);
           if (existingItem) {
             existingItem.role = mergeShiftRoles(existingItem.role, b.role);
-            if (b.status === 'confirmed') existingItem.status = 'confirmed';
+            if (String(b.status || 'pencil').toLowerCase() !== 'confirmed') existingItem.status = 'pencil';
             if (!existingItem.collapsedBookingIds) existingItem.collapsedBookingIds = [existingItem.id];
             existingItem.collapsedBookingIds.push(b.id);
             existingItem.isDualRole = parseShiftRoles(existingItem.role).length > 1;
@@ -1326,7 +1390,7 @@ RMTP.views.rota = (function () {
                 ${!isFull ? `
                   <button type="button" data-assign-space-crew="${item.key}|${ui.esc(item.unfilledSpaces[0] || item.spaces[0])}" class="w-full mt-1 py-1.5 px-2 rounded text-[10px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center justify-center gap-1 transition shadow-2xs">
                     ${ui.icon('plus', 'w-3 h-3 text-amber-300')}
-                    <span>+ Assign Crew (${totalNeeded - totalAssigned} needed)</span>
+                    <span>+ Assign Crew (${Math.max(1, (item.spaceBreakdown || []).reduce((s, sb) => s + (sb.gap || 0), 0))} needed)</span>
                   </button>
                 ` : ''}
               </div>
@@ -1590,7 +1654,11 @@ RMTP.views.rota = (function () {
       const wStart = wDays[0].date;
       const wEnd = wDays[6].date;
 
-      const totalWeekBookings = allB.filter((b) => { const d = normalizeDate(b.date); return d >= wStart && d <= wEnd && b.status !== 'cancelled' && b.status !== 'declined'; });
+      const usersNow = getAllUsers();
+      const totalWeekBookings = allB.filter((b) => {
+        const d = normalizeDate(b.date);
+        return d >= wStart && d <= wEnd && b.status !== 'cancelled' && b.status !== 'declined' && !isPlaceholderBooking(b, usersNow);
+      });
       const confirmedCount = totalWeekBookings.filter((b) => b.status === 'confirmed').length;
       const pencilCount = totalWeekBookings.filter((b) => b.status === 'pencil').length;
       const activeFreelancers = new Set(totalWeekBookings.map((b) => b.userId).filter(Boolean)).size;
@@ -1598,8 +1666,8 @@ RMTP.views.rota = (function () {
       const weekEvents = allEv.filter((e) => { const d = normalizeDate(e.date); return d >= wStart && d <= wEnd; });
       const unfilledWeekEvents = weekEvents.filter((e) => {
         if (e.noTechNeeded) return false;
-        const assigned = allB.filter((b) => b.eventId === e.id && b.status !== 'cancelled' && b.status !== 'declined' && (b.userId || (b.userName && !/^unassigned(\s+tech)?$/i.test(String(b.userName).trim()))));
-        const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(e).filter((t) => t.userId || (t.freelancerName && t.freelancerName.trim()) || t.isNoTech) : [];
+        const assigned = allB.filter((b) => b.eventId === e.id && b.status !== 'cancelled' && b.status !== 'declined' && !isPlaceholderBooking(b, usersNow));
+        const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(e).filter((t) => t.userId || (t.freelancerName && !isUnassignedName(t.freelancerName)) || t.isNoTech) : [];
         return assigned.length === 0 && evTechs.length === 0;
       });
 
@@ -1616,25 +1684,26 @@ RMTP.views.rota = (function () {
 
       const now = new Date();
       const currentMonthActive = (state.rotaMonth || formatDate(now).slice(0, 7));
-      const monthBookings = allB.filter((b) => normalizeDate(b.date).startsWith(currentMonthActive) && b.status !== 'cancelled' && b.status !== 'declined');
+      const monthBookings = allB.filter((b) => normalizeDate(b.date).startsWith(currentMonthActive) && b.status !== 'cancelled' && b.status !== 'declined' && !isPlaceholderBooking(b, usersNow));
       const monthShiftsCount = monthBookings.length;
 
       // Calculate all advancing events for active month to detect gaps
       const monthEvents = allEv.filter((e) => normalizeDate(e.date).startsWith(currentMonthActive));
       const monthUnfilledEvents = monthEvents.filter((e) => {
         if (e.noTechNeeded) return false;
-        const assigned = allB.filter((b) => b.eventId === e.id && b.status !== 'cancelled' && b.status !== 'declined' && (b.userId || (b.userName && !/^unassigned(\s+tech)?$/i.test(String(b.userName).trim()))));
-        const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(e).filter((t) => t.userId || (t.freelancerName && t.freelancerName.trim()) || t.isNoTech) : [];
+        const assigned = allB.filter((b) => b.eventId === e.id && b.status !== 'cancelled' && b.status !== 'declined' && !isPlaceholderBooking(b, usersNow));
+        const evTechs = RMTP.eventTechnicians ? RMTP.eventTechnicians(e).filter((t) => t.userId || (t.freelancerName && !isUnassignedName(t.freelancerName)) || t.isNoTech) : [];
         return assigned.length === 0 && evTechs.length === 0;
       });
       const activeGapsCount = state.boardView === 'month' ? monthUnfilledEvents.length : unfilledWeekEvents.length;
+      const activePeriodShiftCount = state.boardView === 'month' ? monthShiftsCount : totalWeekBookings.length;
 
       stripEl.innerHTML = `
         <div class="flex items-center gap-2.5 flex-wrap">
           <span class="font-semibold text-ink flex items-center gap-1.5">
             ${ui.icon('calendar', 'w-4 h-4 text-accent')}
             <span>${state.boardView === 'month' ? 'This Month:' : 'This Week:'}</span>
-            <span class="font-mono font-bold text-accent">${monthShiftsCount} venue shifts</span>
+            <span class="font-mono font-bold text-accent">${activePeriodShiftCount} venue shifts</span>
           </span>
           <span class="text-line hidden sm:inline">|</span>
           <span class="text-xs font-semibold ${myShifts.length > 0 ? 'text-accent' : 'text-muted'} flex items-center gap-1">
@@ -1652,7 +1721,7 @@ RMTP.views.rota = (function () {
             <span class="text-line hidden sm:inline">|</span>
             <button id="strip-swaps-btn" class="flex items-center gap-1.5 px-2.5 py-0.5 rounded transition cursor-pointer bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40 hover:bg-amber-500/30">
               <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
-              <span>${openSwaps.length} Shift Swap${openSwaps.length > 1 ? 's' : ''} Available</span>
+              <span>${openSwaps.length} Shift Swap${openSwaps.length === 1 ? '' : 's'} Available</span>
             </button>
           ` : ''}
           <span class="text-line hidden sm:inline">|</span>
@@ -1673,28 +1742,34 @@ RMTP.views.rota = (function () {
       // Wire strip buttons
       stripEl.querySelector('#strip-swaps-btn')?.addEventListener('click', () => {
         state.tab = 'swaps';
-        el.querySelectorAll('[data-tab]').forEach((b) => {
-          b.className = 'shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 text-muted hover:text-ink hover:bg-panel2';
-        });
-        const swapTabBtn = el.querySelector('[data-tab="swaps"]');
-        if (swapTabBtn) {
-          swapTabBtn.className = 'shrink-0 px-3.5 py-2 font-semibold rounded-lg transition-colors flex items-center gap-1.5 bg-accent text-accent-ink shadow-xs';
-        }
+        syncTabButtons();
         renderActiveTab();
       });
       stripEl.querySelector('#strip-unfilled-btn')?.addEventListener('click', () => {
         state.unfilledOnly = !state.unfilledOnly;
         state.statusFilter = '';
+        if (state.tab !== 'board' && state.tab !== 'list') {
+          state.tab = 'board';
+          syncTabButtons();
+        }
         renderActiveTab();
       });
       stripEl.querySelector('#strip-confirmed')?.addEventListener('click', () => {
         state.statusFilter = state.statusFilter === 'confirmed' ? '' : 'confirmed';
         state.unfilledOnly = false;
+        if (state.tab !== 'board' && state.tab !== 'list') {
+          state.tab = 'board';
+          syncTabButtons();
+        }
         renderActiveTab();
       });
       stripEl.querySelector('#strip-pencil')?.addEventListener('click', () => {
         state.statusFilter = state.statusFilter === 'pencil' ? '' : 'pencil';
         state.unfilledOnly = false;
+        if (state.tab !== 'board' && state.tab !== 'list') {
+          state.tab = 'board';
+          syncTabButtons();
+        }
         renderActiveTab();
       });
     }
@@ -2267,15 +2342,23 @@ RMTP.views.rota = (function () {
           const isRoomUnfilled = unfilledItems.length > 0;
           const isRoomFilled = spaceItems.length > 0 && unfilledItems.length === 0;
 
-          // Determine missing disciplines for this space
+          // Determine missing disciplines for this space (supports dual-role techs & takeover room breakdowns)
           const missingDiscs = [];
           if (specs.disciplines && specs.disciplines.length) {
             specs.disciplines.forEach((cd) => {
               const req = cd.count || 1;
-              const assigned = spaceItems.filter((it) => {
-                const r = (it.role || '').toLowerCase();
-                return r === cd.role.toLowerCase() || (cd.role.toLowerCase().includes('sound') && r.includes('sound'));
-              }).length;
+              let assigned = 0;
+              spaceItems.forEach((it) => {
+                if (it.isNoTech) return;
+                if (it.type === 'takeover' && Array.isArray(it.spaceBreakdown)) {
+                  const sb = it.spaceBreakdown.find((s) => s.space === spaceName);
+                  if (sb && Array.isArray(sb.assignedTechs)) {
+                    assigned += sb.assignedTechs.filter((t) => roleCoversDiscipline(t.role, cd.role)).length;
+                  }
+                } else if (!it.isUnfilled && roleCoversDiscipline(it.role, cd.role)) {
+                  assigned += 1;
+                }
+              });
               if (assigned < req) {
                 missingDiscs.push(cd.role);
               }
@@ -4317,6 +4400,7 @@ RMTP.views.rota = (function () {
           const crewRatioLabel = item.isNoTech
             ? 'No Tech Required'
             : `${statusMeta.label} (${item.totalCrewAssigned}/${item.totalCrewNeeded} crew${item.hasDualRoleCover ? ' · dual role' : ''})`;
+          const canConfirmTakeover = !isGap && !item.isNoTech && item.status === 'pencil' && ((item.pencilBookingIds && item.pencilBookingIds.length > 0) || item.hasPencilAdvTech);
           return `
             <div class="p-3.5 ${isGap ? 'bg-danger/[0.025]' : ''} space-y-2.5">
               <div class="flex items-start justify-between gap-2 flex-wrap">
@@ -4330,11 +4414,21 @@ RMTP.views.rota = (function () {
                   </div>
                   <div class="font-display text-sm font-semibold text-ink">${ui.esc(item.eventName)}</div>
                 </div>
-                ${item.eventId ? `<a href="#/advancing/${encodeURIComponent(item.eventId)}" class="text-[11px] font-semibold text-accent hover:underline shrink-0">Advancing \u2192</a>` : ''}
+                <div class="flex items-center gap-1.5 shrink-0 flex-wrap">
+                  ${canConfirmTakeover ? `
+                    <button type="button" data-dp-confirm-takeover="${ui.esc(item.key)}" class="btn btn-ghost !py-1 !px-2.5 text-[11px] font-semibold text-ok border border-ok/30 hover:bg-ok/10">Confirm All</button>
+                  ` : ''}
+                  ${item.eventId ? `<a href="#/advancing/${encodeURIComponent(item.eventId)}" class="text-[11px] font-semibold text-accent hover:underline shrink-0 px-1">Advancing \u2192</a>` : ''}
+                </div>
               </div>
               <div class="divide-y divide-line/50 border-t border-line/60">
                 ${(item.spaceBreakdown || []).map((sb) => {
-                  const placeholderId = (sb.placeholderBookings && sb.placeholderBookings.length) ? sb.placeholderBookings[0].bookingId : '';
+                  const desiredRole = (sb.missingDisciplines && sb.missingDisciplines[0]) || (sb.specsDisciplines && sb.specsDisciplines[0] && sb.specsDisciplines[0].role) || 'Sound';
+                  let placeholderId = '';
+                  if (!sb.isFilled && sb.placeholderBookings && sb.placeholderBookings.length) {
+                    const matchedPh = sb.placeholderBookings.find((pb) => pb.role && desiredRole && roleCoversDiscipline(pb.role, desiredRole));
+                    placeholderId = (matchedPh || sb.placeholderBookings[0]).bookingId || '';
+                  }
                   const roomEvId = resolveTakeoverEventId(item, sb.space) || item.eventId || '';
                   return `
                     <div class="py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -4359,9 +4453,15 @@ RMTP.views.rota = (function () {
                             ${sb.assignedTechs.map((t) => {
                               const tTags = t.userId ? getTechTags(t.userId) : [];
                               const tagSuffix = tTags.length ? ` <span class="font-mono text-[10px] text-accent/80">${tTags.slice(0, 3).map(ui.esc).join(' ')}</span>` : '';
+                              const tPencilIds = (t.pencilBookingIds && t.pencilBookingIds.length)
+                                ? t.pencilBookingIds
+                                : (t.bookingId && String(t.status || '').toLowerCase() === 'pencil' ? [t.bookingId] : []);
+                              const confirmChip = tPencilIds.length
+                                ? ` <button type="button" data-dp-confirm-booking="${ui.esc(tPencilIds.join(','))}" class="ml-0.5 text-[10px] font-semibold text-ok hover:underline cursor-pointer" title="Confirm this tech">Confirm</button>`
+                                : '';
                               return t.bookingId
-                                ? `<button type="button" data-dp-edit-booking="${ui.esc(t.bookingId)}" class="text-ink hover:text-accent hover:underline cursor-pointer">${ui.esc(t.name)} (${ui.esc(t.role)} · ${ui.esc(t.status)})${tagSuffix}</button>`
-                                : `<span>${ui.esc(t.name)} (${ui.esc(t.role)})${tagSuffix}</span>`;
+                                ? `<span class="inline-flex items-center gap-1"><button type="button" data-dp-edit-booking="${ui.esc(t.bookingId)}" class="text-ink hover:text-accent hover:underline cursor-pointer">${ui.esc(t.name)} (${ui.esc(t.role)} · ${ui.esc(t.status)})${tagSuffix}</button>${confirmChip}</span>`
+                                : `<span>${ui.esc(t.name)} (${ui.esc(t.role)} · ${ui.esc(t.status || 'confirmed')})${tagSuffix}</span>`;
                             }).join('<span aria-hidden="true">\u00b7</span>')}
                           </div>
                         ` : `
@@ -4371,7 +4471,7 @@ RMTP.views.rota = (function () {
                       ${sb.isNoTech && sb.noTechBookingId ? `
                         <button type="button" data-dp-edit-booking="${ui.esc(sb.noTechBookingId)}" class="btn btn-ghost !py-1 !px-2 text-[11px] font-medium border border-line shrink-0">Edit</button>
                       ` : `
-                        <button type="button" data-dp-assign-shift data-ev-id="${ui.esc(roomEvId)}" data-ev-name="${ui.esc(item.eventName || '')}" data-space="${ui.esc(sb.space)}" data-start="${ui.esc(item.startTime || '17:00')}" data-end="${ui.esc(item.finishTime || '23:30')}" data-role="${ui.esc((sb.missingDisciplines && sb.missingDisciplines[0]) || 'Sound')}" ${placeholderId ? `data-existing-booking-id="${ui.esc(placeholderId)}"` : ''} class="btn ${!sb.isFilled ? 'btn-primary' : 'btn-ghost text-accent border border-accent/30 hover:bg-accent/10'} !py-1 !px-2.5 text-[11px] font-semibold shrink-0">
+                        <button type="button" data-dp-assign-shift data-ev-id="${ui.esc(roomEvId)}" data-ev-name="${ui.esc(item.eventName || '')}" data-space="${ui.esc(sb.space)}" data-start="${ui.esc(item.startTime || '17:00')}" data-end="${ui.esc(item.finishTime || '23:30')}" data-role="${ui.esc(desiredRole)}" ${placeholderId ? `data-existing-booking-id="${ui.esc(placeholderId)}"` : ''} class="btn ${!sb.isFilled ? 'btn-primary' : 'btn-ghost text-accent border border-accent/30 hover:bg-accent/10'} !py-1 !px-2.5 text-[11px] font-semibold shrink-0">
                           ${sb.isNoTech ? 'Edit' : '+ Assign'}
                         </button>
                       `}
@@ -4384,6 +4484,10 @@ RMTP.views.rota = (function () {
         }
 
         const assignedTags = (!isGap && !item.isNoTech && item.userId) ? getTechTags(item.userId) : [];
+        const confirmIdsAttr = (isBooking && item.collapsedBookingIds && item.collapsedBookingIds.length)
+          ? item.collapsedBookingIds.join(',')
+          : (item.id || '');
+        const isAdvTech = item.type === 'adv_tech';
 
         return `
           <div class="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${isGap ? 'bg-danger/[0.025]' : ''}">
@@ -4416,14 +4520,19 @@ RMTP.views.rota = (function () {
                 </button>
               ` : (isBooking && item.id ? `
                 ${!item.isNoTech && item.status === 'pencil' ? `
-                  <button type="button" data-dp-confirm-booking="${ui.esc(item.id)}" class="btn btn-ghost !py-1 !px-2 text-[11px] font-semibold text-ok border border-ok/30 hover:bg-ok/10">Confirm</button>
+                  <button type="button" data-dp-confirm-booking="${ui.esc(confirmIdsAttr)}" class="btn btn-ghost !py-1 !px-2 text-[11px] font-semibold text-ok border border-ok/30 hover:bg-ok/10">Confirm</button>
                 ` : ''}
                 <button type="button" data-dp-edit-booking="${ui.esc(item.id)}" class="btn btn-ghost !py-1 !px-2 text-[11px] font-medium border border-line">Edit</button>
               ` : (item.isNoTech ? `
                 <button type="button" data-dp-assign-shift data-ev-id="${ui.esc(item.eventId || '')}" data-ev-name="${ui.esc(item.eventName || '')}" data-space="${ui.esc(item.space || 'The Stage')}" data-start="${ui.esc(item.startTime || '17:00')}" data-end="${ui.esc(item.finishTime || '23:30')}" data-role="None" data-is-notech="true" class="btn btn-ghost !py-1 !px-2 text-[11px] font-medium border border-line">Edit</button>
+              ` : (isAdvTech ? `
+                ${item.status === 'pencil' ? `
+                  <button type="button" data-dp-confirm-adv-tech="${ui.esc(item.key)}" class="btn btn-ghost !py-1 !px-2 text-[11px] font-semibold text-ok border border-ok/30 hover:bg-ok/10">Confirm</button>
+                ` : ''}
+                <button type="button" data-dp-edit-adv-tech="${ui.esc(item.key)}" class="btn btn-ghost !py-1 !px-2 text-[11px] font-medium border border-line">Edit</button>
               ` : `
                 <button type="button" data-dp-assign-shift data-ev-id="${ui.esc(item.eventId || '')}" data-ev-name="${ui.esc(item.eventName || '')}" data-space="${ui.esc(item.space || 'The Stage')}" data-start="${ui.esc(item.startTime || '17:00')}" data-end="${ui.esc(item.finishTime || '23:30')}" data-role="${ui.esc(item.role || 'Sound')}" class="btn btn-ghost !py-1 !px-2 text-[11px] font-medium border border-line">+ Add Crew</button>
-              `))}
+              `)))}
               ${item.eventId ? `<a href="#/advancing/${encodeURIComponent(item.eventId)}" class="text-[11px] font-medium text-accent hover:underline px-1">Event \u2192</a>` : ''}
             </div>
           </div>
@@ -4455,13 +4564,13 @@ RMTP.views.rota = (function () {
               ${entry.bucket === 'booked' ? `
                 <div class="mt-1 space-y-1">
                   ${entry.bookings.map((b) => `
-                    <div class="text-[11px] text-warning flex items-center gap-1.5 flex-wrap">
+                    <button type="button" data-dp-edit-booking="${ui.esc(b.id)}" class="text-[11px] text-warning hover:text-accent flex items-center gap-1.5 flex-wrap text-left cursor-pointer">
                       <span class="font-mono tabular-nums">${ui.esc(b.startTime || 'TBC')}\u2013${ui.esc(b.finishTime || 'TBC')}</span>
                       <span aria-hidden="true">\u00b7</span>
                       <span class="font-medium text-ink">${ui.esc(b.space || 'Shift')}</span>
                       ${b.eventName ? `<span aria-hidden="true">\u00b7</span><span class="text-muted truncate max-w-[180px]">${ui.esc(b.eventName)}</span>` : ''}
                       <span class="text-[10px] uppercase tracking-wider text-muted">(${ui.esc(b.status || 'pencil')})</span>
-                    </div>
+                    </button>
                   `).join('')}
                 </div>
               ` : (entry.bucket === 'available' ? `
@@ -4479,6 +4588,7 @@ RMTP.views.rota = (function () {
             <div class="shrink-0 flex items-center gap-1">
               ${entry.bucket === 'booked' && entry.bookings[0] ? `
                 <button type="button" data-dp-edit-booking="${ui.esc(entry.bookings[0].id)}" class="btn btn-ghost !py-1 !px-2 text-[11px] border border-line">Edit Shift</button>
+                <button type="button" data-dp-book-tech="${ui.esc(u.id)}" data-start="${ui.esc(availStart)}" data-end="${ui.esc(availEnd)}" class="btn btn-ghost !py-1 !px-2 text-[11px] border border-line text-accent" title="Add another shift or dual role for ${ui.esc(entry.name)}">+ Add</button>
               ` : (entry.bucket !== 'unavailable' ? `
                 <button type="button" data-dp-book-tech="${ui.esc(u.id)}" data-start="${ui.esc(availStart)}" data-end="${ui.esc(availEnd)}" class="btn ${entry.bucket === 'available' ? 'btn-primary' : 'btn-ghost border border-line'} !py-1 !px-2.5 text-[11px] font-semibold">
                   + Book
@@ -4688,36 +4798,67 @@ RMTP.views.rota = (function () {
       `;
 
       // Wire Day Planner controls
+      function selectPlannerDay(newDateStr) {
+        if (!newDateStr) return;
+        state.selectedDay = normalizeDate(newDateStr);
+        state.weekOffset = getWeekOffsetForDate(state.selectedDay);
+        renderDayPlannerTab();
+        updateTopMetrics();
+      }
       function shiftSelectedDay(deltaDays) {
         const d = parseDate(state.selectedDay);
         d.setDate(d.getDate() + deltaDays);
-        state.selectedDay = formatDate(d);
-        renderDayPlannerTab();
+        selectPlannerDay(formatDate(d));
       }
+      function confirmBookingIds(rawIds, toastMsg) {
+        const ids = (Array.isArray(rawIds) ? rawIds : String(rawIds || '').split(','))
+          .map((x) => String(x || '').trim())
+          .filter(Boolean);
+        if (!ids.length) return 0;
+        const nowIso = new Date().toISOString();
+        const affectedEventIds = new Set();
+        let confirmedCount = 0;
+        ids.forEach((id) => {
+          const b = store.find('bookings', id);
+          if (!b) return;
+          const updated = Object.assign({}, b, {
+            status: 'confirmed',
+            confirmedAt: b.confirmedAt || nowIso,
+            updatedAt: nowIso,
+          });
+          store.upsert('bookings', updated);
+          confirmedCount++;
+          if (updated.eventId) affectedEventIds.add(updated.eventId);
+        });
+        if (RMTP.syncRotaToAdvancing) {
+          affectedEventIds.forEach((evId) => RMTP.syncRotaToAdvancing(evId));
+        }
+        if (RMTP.syncSb && typeof RMTP.syncSb.drain === 'function') {
+          try { RMTP.syncSb.drain(); } catch (e) {}
+        }
+        if (confirmedCount > 0) {
+          ui.toast(toastMsg || (confirmedCount > 1 ? `${confirmedCount} shifts confirmed` : 'Shift confirmed'), 'ok');
+          renderActiveTab();
+        }
+        return confirmedCount;
+      }
+
       tabContainer.querySelector('#dp-prev-day')?.addEventListener('click', () => shiftSelectedDay(-1));
       tabContainer.querySelector('#dp-next-day')?.addEventListener('click', () => shiftSelectedDay(1));
-      tabContainer.querySelector('#dp-today-btn')?.addEventListener('click', () => {
-        state.selectedDay = formatDate(new Date());
-        renderDayPlannerTab();
-      });
+      tabContainer.querySelector('#dp-today-btn')?.addEventListener('click', () => selectPlannerDay(formatDate(new Date())));
       tabContainer.querySelector('#dp-date-picker')?.addEventListener('change', (e) => {
-        if (e.target.value) {
-          state.selectedDay = normalizeDate(e.target.value);
-          renderDayPlannerTab();
-        }
+        if (e.target.value) selectPlannerDay(e.target.value);
       });
       tabContainer.querySelectorAll('[data-dp-pick-date]').forEach((btn) => {
         btn.addEventListener('click', () => {
           const d = btn.getAttribute('data-dp-pick-date');
-          if (d) {
-            state.selectedDay = d;
-            renderDayPlannerTab();
-          }
+          if (d) selectPlannerDay(d);
         });
       });
       tabContainer.querySelector('#dp-noncore-toggle')?.addEventListener('change', (e) => {
         state.showNonCoreSpaces = e.target.checked;
         renderDayPlannerTab();
+        updateTopMetrics();
       });
       tabContainer.querySelector('#dp-new-shift-btn')?.addEventListener('click', () => {
         openBookingModal({ date: targetDate, status: 'pencil' });
@@ -4773,10 +4914,21 @@ RMTP.views.rota = (function () {
       });
       tabContainer.querySelectorAll('[data-dp-assign-shift]').forEach((btn) => {
         btn.addEventListener('click', () => {
+          const desiredRole = btn.getAttribute('data-role') || 'Sound';
           const existingId = btn.getAttribute('data-existing-booking-id');
           if (existingId) {
             const existingB = store.find('bookings', existingId);
-            if (existingB) { openBookingModal(existingB); return; }
+            if (existingB) {
+              if (isPlaceholderBooking(existingB, getAllUsers())) {
+                openBookingModal(Object.assign({}, existingB, {
+                  role: desiredRole || existingB.role || 'Sound',
+                  userName: '',
+                }));
+              } else {
+                openBookingModal(existingB);
+              }
+              return;
+            }
           }
           openBookingModal({
             eventId: btn.getAttribute('data-ev-id') || '',
@@ -4785,7 +4937,7 @@ RMTP.views.rota = (function () {
             date: targetDate,
             startTime: btn.getAttribute('data-start') || '17:00',
             finishTime: btn.getAttribute('data-end') || '23:30',
-            role: btn.getAttribute('data-role') || 'Sound',
+            role: desiredRole,
             isNoTech: btn.getAttribute('data-is-notech') === 'true',
             status: 'pencil',
           });
@@ -4800,15 +4952,112 @@ RMTP.views.rota = (function () {
       });
       tabContainer.querySelectorAll('[data-dp-confirm-booking]').forEach((btn) => {
         btn.addEventListener('click', () => {
-          const id = btn.getAttribute('data-dp-confirm-booking');
-          const b = id ? store.find('bookings', id) : null;
-          if (b) {
-            b.status = 'confirmed';
-            b.updatedAt = Date.now();
-            store.upsert('bookings', b);
-            ui.toast('Shift confirmed', 'ok');
+          confirmBookingIds(btn.getAttribute('data-dp-confirm-booking'));
+        });
+      });
+      tabContainer.querySelectorAll('[data-dp-confirm-takeover]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const key = btn.getAttribute('data-dp-confirm-takeover');
+          const item = key ? allScheduleItemsMap.get(key) : null;
+          if (!item) return;
+          const nowIso = new Date().toISOString();
+          let updatedAny = false;
+          const affectedEventIds = new Set();
+          (item.pencilBookingIds || []).forEach((id) => {
+            const b = store.find('bookings', id);
+            if (!b) return;
+            store.upsert('bookings', Object.assign({}, b, {
+              status: 'confirmed',
+              confirmedAt: b.confirmedAt || nowIso,
+              updatedAt: nowIso,
+            }));
+            updatedAny = true;
+            if (b.eventId) affectedEventIds.add(b.eventId);
+          });
+          // Also confirm any pencil Advancing-only crew entries across takeover cluster events
+          (item.clusterEvents || []).forEach((ce) => {
+            const liveEv = store.find('advancing', ce.id);
+            if (!liveEv || !Array.isArray(liveEv.technicians)) return;
+            let changedEv = false;
+            const nextTechs = liveEv.technicians.map((t) => {
+              if (t && String(t.bookingStatus || '').toLowerCase() === 'pencil') {
+                changedEv = true;
+                return Object.assign({}, t, { bookingStatus: 'confirmed' });
+              }
+              return t;
+            });
+            if (changedEv) {
+              store.upsert('advancing', Object.assign({}, liveEv, { technicians: nextTechs }));
+              updatedAny = true;
+            }
+          });
+          if (RMTP.syncRotaToAdvancing) {
+            affectedEventIds.forEach((evId) => RMTP.syncRotaToAdvancing(evId));
+          }
+          if (RMTP.syncSb && typeof RMTP.syncSb.drain === 'function') {
+            try { RMTP.syncSb.drain(); } catch (e) {}
+          }
+          if (updatedAny) {
+            ui.toast(`Confirmed all crew for ${item.eventName}`, 'ok');
             renderActiveTab();
           }
+        });
+      });
+      tabContainer.querySelectorAll('[data-dp-confirm-adv-tech]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const key = btn.getAttribute('data-dp-confirm-adv-tech');
+          const item = key ? allScheduleItemsMap.get(key) : null;
+          if (!item) return;
+          const nowIso = new Date().toISOString();
+          const newBooking = {
+            id: store.uid('book'),
+            eventId: item.eventId || '',
+            eventName: item.eventName || 'Venue Shift',
+            space: normalizeSpace(item.space) || 'The Stage',
+            date: normalizeDate(item.date) || targetDate,
+            startTime: normalizeTime(item.startTime, '17:00'),
+            finishTime: normalizeTime(item.finishTime, '23:30'),
+            userId: item.userId || '',
+            userName: item.userName || 'Technician',
+            isFreelancer: !item.userId,
+            isNoTech: false,
+            role: item.role || 'Tech',
+            status: 'confirmed',
+            rate: '',
+            notes: item.notes || '',
+            createdAt: nowIso,
+            confirmedAt: nowIso,
+            updatedAt: nowIso,
+          };
+          store.upsert('bookings', newBooking);
+          if (newBooking.eventId && RMTP.syncRotaToAdvancing) {
+            RMTP.syncRotaToAdvancing(newBooking.eventId, { clearNoTech: true });
+          }
+          if (RMTP.syncSb && typeof RMTP.syncSb.drain === 'function') {
+            try { RMTP.syncSb.drain(); } catch (e) {}
+          }
+          ui.toast(`Confirmed ${newBooking.userName} on ${newBooking.eventName}`, 'ok');
+          renderActiveTab();
+        });
+      });
+      tabContainer.querySelectorAll('[data-dp-edit-adv-tech]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const key = btn.getAttribute('data-dp-edit-adv-tech');
+          const item = key ? allScheduleItemsMap.get(key) : null;
+          if (!item) return;
+          openBookingModal({
+            eventId: item.eventId || '',
+            eventName: item.eventName || '',
+            space: item.space || 'The Stage',
+            date: normalizeDate(item.date) || targetDate,
+            startTime: normalizeTime(item.startTime, '17:00'),
+            finishTime: normalizeTime(item.finishTime, '23:30'),
+            userId: item.userId || '',
+            userName: item.userName || '',
+            role: item.role || 'Sound',
+            status: item.status || 'confirmed',
+            notes: item.notes || '',
+          });
         });
       });
     }
@@ -4821,7 +5070,7 @@ RMTP.views.rota = (function () {
       let bookings = getAllBookings().slice().sort((a, b) => (a.date < b.date ? 1 : -1));
 
       if (state.spaceFilter) bookings = bookings.filter((b) => normalizeSpace(b.space) === normalizeSpace(state.spaceFilter));
-      if (state.roleFilter) bookings = bookings.filter((b) => b.role === state.roleFilter);
+      if (state.roleFilter) bookings = bookings.filter((b) => roleCoversDiscipline(b.role, state.roleFilter) || b.role === state.roleFilter);
       if (state.statusFilter) bookings = bookings.filter((b) => b.status === state.statusFilter);
       if (state.techFilter) bookings = bookings.filter((b) => b.userId === state.techFilter);
 
@@ -4890,7 +5139,7 @@ RMTP.views.rota = (function () {
               <td class="p-3 font-mono font-bold text-ink whitespace-nowrap">${formatDisplayDate(b.date)}</td>
               <td class="p-3 text-accent font-semibold whitespace-nowrap">${ui.esc(b.space || '—')}</td>
               <td class="p-3 font-semibold text-ink">${ui.esc(b.eventName || 'Shift')}</td>
-              <td class="p-3 font-mono tabular-nums text-muted whitespace-nowrap">${b.startTime} – ${b.finishTime}</td>
+              <td class="p-3 font-mono tabular-nums text-muted whitespace-nowrap">${ui.esc(b.startTime || 'TBC')} – ${ui.esc(b.finishTime || 'TBC')}</td>
               <td class="p-3 whitespace-nowrap">
                 <div class="font-medium text-ink">${ui.esc(techName)}</div>
                 ${techObj && techObj.position ? `<div class="text-[10px] text-muted">${ui.esc(techObj.position)}</div>` : ''}
@@ -4902,6 +5151,9 @@ RMTP.views.rota = (function () {
               <td class="p-3">${renderStatusPill(b.status, b.cancellationReason)}</td>
               <td class="p-3 text-right whitespace-nowrap">
                 <div class="flex items-center justify-end gap-1.5">
+                  ${isManagerOrSenior && b.status === 'pencil' && !isBookingNoTechRecord(b) && !isPlaceholderBooking(b, allUsers) ? `
+                    <button data-list-confirm-booking="${b.id}" class="btn btn-ghost !py-1 !px-2 text-xs text-ok font-semibold">Confirm</button>
+                  ` : ''}
                   <button data-edit-booking="${b.id}" class="btn btn-ghost !py-1 !px-2 text-xs">Edit</button>
                   ${isTechManager && b.status !== 'cancelled' ? `
                     <button data-cancel-booking="${b.id}" class="btn btn-ghost !py-1 !px-2 text-xs text-danger">Cancel</button>
@@ -4934,6 +5186,26 @@ RMTP.views.rota = (function () {
       tabContainer.querySelector('#list-flt-tech')?.addEventListener('change', (e) => {
         state.techFilter = e.target.value;
         renderListTab();
+      });
+
+      tabContainer.querySelectorAll('[data-list-confirm-booking]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const id = btn.getAttribute('data-list-confirm-booking');
+          const b = id ? store.find('bookings', id) : null;
+          if (!b) return;
+          const nowIso = new Date().toISOString();
+          store.upsert('bookings', Object.assign({}, b, {
+            status: 'confirmed',
+            confirmedAt: b.confirmedAt || nowIso,
+            updatedAt: nowIso,
+          }));
+          if (b.eventId && RMTP.syncRotaToAdvancing) RMTP.syncRotaToAdvancing(b.eventId);
+          if (RMTP.syncSb && typeof RMTP.syncSb.drain === 'function') {
+            try { RMTP.syncSb.drain(); } catch (e) {}
+          }
+          ui.toast('Shift confirmed', 'ok');
+          renderActiveTab();
+        });
       });
 
       tabContainer.querySelectorAll('[data-edit-booking]').forEach((btn) => {
@@ -5215,14 +5487,27 @@ RMTP.views.rota = (function () {
     function openBookingModal(initialData = {}) {
       const isNew = !initialData.id;
       const initialIsNoTech = isBookingNoTechRecord(initialData);
+      const initialDate = normalizeDate(initialData.date) || formatDate(new Date());
       const rawEvents = (RMTP.getUpcomingActiveEvents ? RMTP.getUpcomingActiveEvents(initialData.eventId) : getAllEvents());
       const events = rawEvents.filter((e) => (initialData.eventId && e.id === initialData.eventId) || isSpaceAllowed(e.space));
+      // Also include non-cancelled events on initialDate even when planning/editing a past date
+      getAllEvents().forEach((e) => {
+        if (normalizeDate(e.date) === initialDate && !events.some((x) => x.id === e.id)) {
+          events.push(e);
+        }
+      });
       if (initialData.eventId && !events.some((e) => e.id === initialData.eventId)) {
         const directEv = store.find('advancing', initialData.eventId);
         if (directEv && !directEv.deleted) events.unshift(directEv);
       }
+      events.sort((a, b) => {
+        const da = normalizeDate(a.date) || '9999-99-99';
+        const db = normalizeDate(b.date) || '9999-99-99';
+        if (da !== db) return da.localeCompare(db);
+        return String(a.startTime || '').localeCompare(String(b.startTime || ''));
+      });
       const allUsers = getAllUsers();
-      const initialDate = normalizeDate(initialData.date) || formatDate(new Date());
+      const initialHasCustomName = !initialData.userId && !initialIsNoTech && !isUnassignedName(initialData.userName);
       const initialStart = normalizeTime(initialData.startTime, '17:00');
       const initialEnd = normalizeTime(initialData.finishTime, '23:30');
       const initialSpace = normalizeSpace(Array.isArray(initialData.space) ? initialData.space[0] : initialData.space) || 'The Stage';
@@ -5315,7 +5600,7 @@ RMTP.views.rota = (function () {
         }
 
         html += '<optgroup label="Custom / Other">';
-        html += `<option value="__custom__" ${(!selectedUserId && initialData.userName && initialData.userName !== 'Unassigned' && !initialIsNoTech) ? 'selected' : ''}>+ Other / External Freelancer (Type Name)</option>`;
+        html += `<option value="__custom__" ${(!selectedUserId && initialHasCustomName) ? 'selected' : ''}>+ Other / External Freelancer (Type Name)</option>`;
         html += `<option value="__notech__" ${initialIsNoTech ? 'selected' : ''}>No Tech Needed (Self-Service)</option>`;
         html += '</optgroup>';
 
@@ -5416,9 +5701,9 @@ RMTP.views.rota = (function () {
                 <input type="checkbox" id="b-is-notech" class="rounded border-line" ${initialIsNoTech ? 'checked' : ''} />
                 <span>Mark as Self-Service (No Tech Needed)</span>
               </label>
-              <div id="b-custom-wrap" class="${(!initialData.userId && initialData.userName && initialData.userName !== 'Unassigned' && !initialIsNoTech) ? 'block' : 'hidden'} mt-2">
+              <div id="b-custom-wrap" class="${initialHasCustomName ? 'block' : 'hidden'} mt-2">
                 <label class="block font-semibold text-muted mb-1">Freelancer Full Name</label>
-                <input id="b-custom-name" class="field" value="${ui.esc(initialData.userName && initialData.userName !== 'Unassigned' && !initialIsNoTech ? initialData.userName : '')}" placeholder="e.g. Alex Morgan (Freelance Sound)" />
+                <input id="b-custom-name" class="field" value="${ui.esc(initialHasCustomName ? initialData.userName : '')}" placeholder="e.g. Alex Morgan (Freelance Sound)" />
               </div>
               <p id="b-selected-tech-tags" class="text-[11px] font-mono text-accent/90 mt-1 hidden"></p>
               <p id="b-avail-details-text" class="text-[11px] text-muted mt-1 italic"></p>
@@ -5871,8 +6156,8 @@ RMTP.views.rota = (function () {
           isFreelancerFlag = false;
         } else if (userId === '__custom__') {
           const cName = (customNameInp ? customNameInp.value : '').trim();
-          if (!cName) {
-            ui.toast('Please enter the freelancer\'s name', 'danger');
+          if (!cName || isUnassignedName(cName)) {
+            ui.toast('Please enter the freelancer\'s real name', 'danger');
             if (customNameInp) customNameInp.focus();
             return;
           }
@@ -5903,9 +6188,7 @@ RMTP.views.rota = (function () {
             if (st === 'cancelled' || st === 'canceled') return false;
             if (normalizeDate(ev.date) !== bookingDate) return false;
             if (String(ev.name || '').trim().toLowerCase() !== titleLower) return false;
-            const spList = Array.isArray(ev.space)
-              ? ev.space.map((s) => normalizeSpace(s))
-              : String(ev.space || '').split(',').map((s) => normalizeSpace(s)).filter(Boolean);
+            const spList = extractNormalizedSpaces(Array.isArray(ev.spaces) && ev.spaces.length ? ev.spaces : ev.space);
             return spList.includes(bookedSpace);
           });
           if (matchedAdv) resolvedEventId = matchedAdv.id;
@@ -6029,8 +6312,19 @@ RMTP.views.rota = (function () {
             store.upsert('bookings', record);
           }
 
-          // Clean up any leftover unassigned placeholder or obsolete No-Tech booking on this room covered by this tech's role(s)
+          // Clean up any leftover unassigned placeholder or obsolete No-Tech booking on this room
+          // covered by this tech's role(s) OR once the room's minimum crew count is met.
           const coveredRoles = parseShiftRoles(record.role);
+          const sameRoomRealCrew = new Set();
+          getAllBookingsRaw().forEach((other) => {
+            if (!other || other.status === 'cancelled' || other.status === 'declined') return;
+            if (!isSameEventAndSpace(other, record)) return;
+            if (isBookingNoTechRecord(other) || isPlaceholderBooking(other, allUsers)) return;
+            const pk = other.userId ? ('u:' + other.userId) : ('n:' + String(other.userName || '').trim().toLowerCase());
+            sameRoomRealCrew.add(pk);
+          });
+          const roomHeadcountMet = sameRoomRealCrew.size >= getSpaceBasicCrew(bookedSpace);
+
           getAllBookingsRaw().forEach((other) => {
             if (!other || other.id === record.id) return;
             if (other.status === 'cancelled' || other.status === 'declined') return;
@@ -6039,8 +6333,8 @@ RMTP.views.rota = (function () {
               store.remove('bookings', other.id);
               return;
             }
-            if (isPlaceholderBooking(other, allUsers) && coveredRoles.length > 0) {
-              if (!other.role || roleCoversDiscipline(record.role, other.role)) {
+            if (isPlaceholderBooking(other, allUsers)) {
+              if (roomHeadcountMet || !other.role || (coveredRoles.length > 0 && roleCoversDiscipline(record.role, other.role))) {
                 store.remove('bookings', other.id);
               }
             }
@@ -6170,7 +6464,7 @@ RMTP.views.rota = (function () {
                   <span>📅 ${formatDisplayDate(date)}</span>
                   <span>⏰ Window: ${origStart} – ${origEnd}</span>
                   <span class="font-bold text-accent">(${originalDur}h Total)</span>
-                  ${initialShift.userName && initialShift.userName !== 'Unassigned' && initialShift.userName !== 'No Tech Required' ? `<span class="text-ink font-sans">👤 Assigned: <b>${ui.esc(initialShift.userName)}</b></span>` : '<span class="text-amber-400 font-sans italic">Unassigned slot</span>'}
+                  ${!isUnassignedName(initialShift.userName) && initialShift.userName !== 'No Tech Required' ? `<span class="text-ink font-sans">👤 Assigned: <b>${ui.esc(initialShift.userName)}</b></span>` : '<span class="text-amber-400 font-sans italic">Unassigned slot</span>'}
                 </div>
               </div>
               <div class="shrink-0 flex items-center gap-1.5">

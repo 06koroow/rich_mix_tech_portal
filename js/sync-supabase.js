@@ -1119,6 +1119,10 @@ RMTP.syncSb = (function () {
         }
       }
 
+      if (coll === 'tasks' && !Array.isArray(r.spaces) && r.space) {
+        r.spaces = String(r.space).split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
+      }
+
       if (!byId.has(r.id)) order.push(r.id);
       byId.set(r.id, r);
       mutated = true;
@@ -1281,6 +1285,15 @@ RMTP.syncSb = (function () {
            if (name === 'dcps') {
              delete payload.linkedEventIds;
              delete payload.slotKey;
+           }
+
+           // For tasks, multi-space selections persist canonically in the existing `space` TEXT column
+           // (comma-separated) so no extra `spaces` schema column is required in Supabase
+           if (name === 'tasks') {
+             if (Array.isArray(payload.spaces)) {
+               payload.space = payload.spaces.join(', ');
+               delete payload.spaces;
+             }
            }
 
            // For advancing, safely mirror artifaxHistory inside production_package JSONB

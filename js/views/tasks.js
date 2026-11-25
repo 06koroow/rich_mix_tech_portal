@@ -19,6 +19,43 @@ window.RMTP = window.RMTP || {};
   const PRIORITIES = ['Urgent', 'High', 'Medium', 'Low'];
   const STATUSES = ['Pending', 'In Progress', 'Blocked', 'Completed'];
 
+  function parseSpaceList(raw) {
+    if (!raw) return [];
+    const arr = Array.isArray(raw) ? raw : String(raw).split(/[,;]+/);
+    const seen = new Set();
+    const out = [];
+    arr.forEach((s) => {
+      const clean = String(s || '').trim();
+      if (!clean) return;
+      const norm = RMTP.normalizeSpaceName ? RMTP.normalizeSpaceName(clean) : clean;
+      const key = norm.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(norm);
+    });
+    return out;
+  }
+
+  function getTaskSpaces(task) {
+    if (!task) return [];
+    if (Array.isArray(task.spaces) && task.spaces.length) {
+      return parseSpaceList(task.spaces);
+    }
+    return parseSpaceList(task.space);
+  }
+
+  function formatTaskSpaces(task) {
+    const list = getTaskSpaces(task);
+    return list.length ? list.join(', ') : 'Venue-wide';
+  }
+
+  function taskMatchesSpace(task, targetSpace) {
+    if (!targetSpace || targetSpace === 'all') return true;
+    const targetNorm = (RMTP.normalizeSpaceName ? RMTP.normalizeSpaceName(targetSpace) : String(targetSpace).trim()).toLowerCase();
+    if (!targetNorm) return true;
+    return getTaskSpaces(task).some((sp) => sp.toLowerCase() === targetNorm);
+  }
+
   const SEED_TITLES = [
     'Past Lives: Verify 5.1 Center Channel Dialogue Anchor',
     'Anatomy of a Fall: Ingest Updated CPL & Supplemental Subtitle Pack',
@@ -255,9 +292,11 @@ window.RMTP = window.RMTP || {};
       if (!faultId) return [];
       return (store.all('tasks') || []).filter(t => t.linkedFaultId === faultId);
     },
+    getSpaces: getTaskSpaces,
+    formatSpaces: formatTaskSpaces,
     forSpace: function (spaceName) {
       if (!spaceName) return [];
-      return (store.all('tasks') || []).filter(t => t.space === spaceName);
+      return (store.all('tasks') || []).filter(t => taskMatchesSpace(t, spaceName));
     },
     forUser: function (user) {
       if (!user) return [];
@@ -474,7 +513,7 @@ window.RMTP = window.RMTP || {};
         filtered = filtered.filter(t => t.category === activeCategoryFilter);
       }
       if (activeSpaceFilter !== 'all') {
-        filtered = filtered.filter(t => t.space === activeSpaceFilter);
+        filtered = filtered.filter(t => taskMatchesSpace(t, activeSpaceFilter));
       }
       if (activePriorityFilter !== 'all') {
         filtered = filtered.filter(t => {
@@ -504,10 +543,11 @@ window.RMTP = window.RMTP || {};
         filtered = filtered.filter(t => {
           const subs = RMTP.subtasks ? RMTP.subtasks.normalize(t.subtasks) : [];
           const subMatch = subs.some(s => s.title.toLowerCase().includes(q));
+          const spaceText = formatTaskSpaces(t).toLowerCase();
           return subMatch ||
             (t.title && t.title.toLowerCase().includes(q)) ||
             (t.description && t.description.toLowerCase().includes(q)) ||
-            (t.space && t.space.toLowerCase().includes(q)) ||
+            spaceText.includes(q) ||
             (t.filmTitle && t.filmTitle.toLowerCase().includes(q)) ||
             (t.linkedEventName && t.linkedEventName.toLowerCase().includes(q)) ||
             (t.assignedTechName && t.assignedTechName.toLowerCase().includes(q)) ||
@@ -835,9 +875,9 @@ window.RMTP = window.RMTP || {};
 
           // Space & Due Details
           '<div class="flex items-center justify-between gap-2 text-[10.5px] font-mono text-muted pt-1.5 border-t border-line/40 flex-wrap">' +
-            '<span class="text-ink font-medium flex items-center gap-1 truncate">' +
+            '<span class="text-ink font-medium flex items-center gap-1 min-w-0 max-w-full" title="' + ui.esc(formatTaskSpaces(t)) + '">' +
               ui.icon('mapPin', 'w-3 h-3 text-accent shrink-0') +
-              '<span class="truncate">' + ui.esc(t.space || 'Venue') + '</span>' +
+              '<span class="truncate">' + ui.esc(formatTaskSpaces(t)) + '</span>' +
             '</span>' +
             (t.dueDate ? (
               '<span class="flex items-center gap-1 tabular-nums ' + (isOverdue ? 'text-danger font-bold' : '') + '">' +
@@ -939,7 +979,7 @@ window.RMTP = window.RMTP || {};
               getPriorityBadge(t.priority),
               '<span class="' + statusTextClass + '">' + ui.esc(t.status || 'Pending') + '</span>',
               '<span>' + ui.esc(t.category || 'General') + '</span>',
-              '<span class="text-ink font-medium">' + ui.esc(t.space || 'Venue') + '</span>',
+              '<span class="text-ink font-medium">' + ui.esc(formatTaskSpaces(t)) + '</span>',
               '<span>' + (t.assignedTechName ? ui.esc(t.assignedTechName) : '<span class="italic">Unassigned</span>') +
                 (Array.isArray(t.taggedUserNames) && t.taggedUserNames.length ? (' (+' + t.taggedUserNames.length + ' tagged)') : '') +
               '</span>'
@@ -1423,10 +1463,37 @@ window.RMTP = window.RMTP || {};
       updatedAt: Date.now()
     }, defaults || {});
 
-    // Ensure tagged & subtasks arrays exist
+    // Ensure tagged, spaces & subtasks arrays exist
     if (!Array.isArray(task.taggedUserIds)) task.taggedUserIds = [];
     if (!Array.isArray(task.taggedUserNames)) task.taggedUserNames = [];
+    let selectedSpaces = getTaskSpaces(task);
     let draftSubtasks = RMTP.subtasks ? RMTP.subtasks.normalize(task.subtasks) : [];
+
+    const allSpaceChoices = (() => {
+      const base = Array.isArray(RMTP.SPACES) ? RMTP.SPACES.slice() : [];
+      const seen = new Set(base.map((s) => s.toLowerCase()));
+      selectedSpaces.forEach((s) => {
+        if (!seen.has(s.toLowerCase())) {
+          seen.add(s.toLowerCase());
+          base.push(s);
+        }
+      });
+      return base;
+    })();
+
+    const renderSpaceCheckboxes = (activeList) => {
+      const activeSet = new Set((activeList || []).map((s) => s.toLowerCase()));
+      return allSpaceChoices.map((s) => {
+        const checked = activeSet.has(s.toLowerCase());
+        return (
+          '<label class="flex items-center gap-2 p-1.5 rounded-lg border cursor-pointer transition select-none ' +
+            (checked ? 'bg-accent/10 border-accent/60 text-ink' : 'bg-panel border-line hover:border-accent/50 text-muted') + '">' +
+            '<input type="checkbox" name="tk-space-item" value="' + ui.esc(s) + '" class="w-3.5 h-3.5 accent-[var(--accent)] shrink-0" ' + (checked ? 'checked' : '') + ' />' +
+            '<span class="truncate text-[11px] font-medium ' + (checked ? 'text-ink' : '') + '">' + ui.esc(s) + '</span>' +
+          '</label>'
+        );
+      }).join('');
+    };
 
     const isHiresTaskMode = (catVal) => task.source === 'hires' || catVal === 'Hires';
     const getEligibleUsersForCategory = (catVal) => {
@@ -1479,24 +1546,14 @@ window.RMTP = window.RMTP || {};
             '<input id="tk-title" class="field font-semibold text-sm" value="' + ui.esc(task.title) + '" placeholder="e.g. Screen 1: Align Left Masking &amp; Ingest KDM" />' +
           '</div>' +
 
-          // Category & Space
-          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">' +
+          // Category, Priority & Status
+          '<div class="grid grid-cols-1 sm:grid-cols-3 gap-3">' +
             '<div>' +
               '<label class="block font-semibold text-muted mb-1">Category</label>' +
               '<select id="tk-cat" class="field">' +
                 CATEGORIES.map((c) => '<option value="' + c + '" ' + (task.category === c ? 'selected' : '') + '>' + c + '</option>').join('') +
               '</select>' +
             '</div>' +
-            '<div>' +
-              '<label class="block font-semibold text-muted mb-1">Venue Space / Room</label>' +
-              '<select id="tk-space" class="field font-semibold">' +
-                RMTP.SPACES.map((s) => '<option value="' + s + '" ' + (task.space === s ? 'selected' : '') + '>' + s + '</option>').join('') +
-              '</select>' +
-            '</div>' +
-          '</div>' +
-
-          // Priority & Status
-          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">' +
             '<div>' +
               '<label class="block font-semibold text-muted mb-1">Priority</label>' +
               '<select id="tk-prio" class="field font-semibold">' +
@@ -1508,6 +1565,27 @@ window.RMTP = window.RMTP || {};
               '<select id="tk-status" class="field font-semibold">' +
                 STATUSES.map((s) => '<option value="' + s + '" ' + (task.status === s ? 'selected' : '') + '>' + s + '</option>').join('') +
               '</select>' +
+            '</div>' +
+          '</div>' +
+
+          // Multi-Space Picker
+          '<div class="p-3 bg-panel2/50 rounded-xl border border-line">' +
+            '<div class="flex items-center justify-between gap-2 flex-wrap mb-2">' +
+              '<label class="font-semibold text-muted flex items-center gap-1.5">' +
+                ui.icon('mapPin', 'w-3.5 h-3.5 text-accent') +
+                '<span>Venue Spaces / Rooms</span>' +
+                '<span id="tk-spaces-summary" class="font-mono tabular-nums text-[11px] font-semibold text-accent">' +
+                  (selectedSpaces.length ? ('(' + selectedSpaces.length + ' selected)') : '(Venue-wide)') +
+                '</span>' +
+              '</label>' +
+              '<div class="flex items-center gap-2 text-[11px]">' +
+                '<button type="button" id="tk-spaces-all" class="text-accent hover:underline font-medium">Select all</button>' +
+                '<span class="text-line">\u00b7</span>' +
+                '<button type="button" id="tk-spaces-clear" class="text-muted hover:text-ink hover:underline">Clear</button>' +
+              '</div>' +
+            '</div>' +
+            '<div class="grid grid-cols-2 sm:grid-cols-3 gap-1.5" id="tk-spaces-container">' +
+              renderSpaceCheckboxes(selectedSpaces) +
             '</div>' +
           '</div>' +
 
@@ -1666,32 +1744,73 @@ window.RMTP = window.RMTP || {};
       }
     });
 
-    // Auto-fill Space when a linked event or screening is selected
+    // Multi-space selection state helpers
+    function syncSpacesUI() {
+      const box = m.root.querySelector('#tk-spaces-container');
+      const summary = m.root.querySelector('#tk-spaces-summary');
+      if (box) {
+        box.innerHTML = renderSpaceCheckboxes(selectedSpaces);
+        box.querySelectorAll('input[name="tk-space-item"]').forEach((cb) => {
+          cb.addEventListener('change', () => {
+            selectedSpaces = Array.from(box.querySelectorAll('input[name="tk-space-item"]:checked')).map((el) => el.value);
+            syncSpacesUI();
+          });
+        });
+      }
+      if (summary) {
+        summary.textContent = selectedSpaces.length
+          ? ('(' + selectedSpaces.length + ' selected)')
+          : '(Venue-wide)';
+      }
+    }
+    syncSpacesUI();
+
+    m.root.querySelector('#tk-spaces-all')?.addEventListener('click', () => {
+      selectedSpaces = allSpaceChoices.slice();
+      syncSpacesUI();
+    });
+    m.root.querySelector('#tk-spaces-clear')?.addEventListener('click', () => {
+      selectedSpaces = [];
+      syncSpacesUI();
+    });
+
+    // Auto-fill Spaces when a linked event, screening, or maintenance fault is selected
     m.root.querySelector('#tk-link-select')?.addEventListener('change', (e) => {
       const val = e.target.value;
       if (!val) return;
       const [type, id] = val.split('|');
-      const spaceSel = m.root.querySelector('#tk-space');
       const dateInp = m.root.querySelector('#tk-date');
       const titleInp = m.root.querySelector('#tk-title');
       if (type === 'adv') {
         const ev = store.find('advancing', id);
         if (ev) {
-          if (spaceSel && ev.space) spaceSel.value = Array.isArray(ev.space) ? ev.space[0] : ev.space;
+          const evSpaces = parseSpaceList(ev.spaces && ev.spaces.length ? ev.spaces : ev.space);
+          if (evSpaces.length) {
+            selectedSpaces = evSpaces;
+            syncSpacesUI();
+          }
           if (dateInp && ev.date) dateInp.value = ev.date;
           if (titleInp && !titleInp.value.trim()) titleInp.value = 'Prep for ' + ev.name;
         }
       } else if (type === 'dcp') {
         const sc = store.find('dcps', id);
         if (sc) {
-          if (spaceSel && sc.screen) spaceSel.value = sc.screen;
+          const scSpaces = parseSpaceList(sc.screen);
+          if (scSpaces.length) {
+            selectedSpaces = scSpaces;
+            syncSpacesUI();
+          }
           if (dateInp && sc.eventDate) dateInp.value = sc.eventDate;
           if (titleInp && !titleInp.value.trim()) titleInp.value = (sc.filmTitle || sc.eventName) + ' Pre-Screening Follow-up';
         }
       } else if (type === 'fault') {
         const flt = store.find('maintenance', id);
         if (flt) {
-          if (spaceSel && flt.space) spaceSel.value = flt.space;
+          const fltSpaces = parseSpaceList(flt.space);
+          if (fltSpaces.length) {
+            selectedSpaces = fltSpaces;
+            syncSpacesUI();
+          }
           if (titleInp && !titleInp.value.trim()) titleInp.value = 'Repair: ' + (flt.equipment || flt.description);
         }
       }
@@ -1881,9 +2000,13 @@ window.RMTP = window.RMTP || {};
         }));
       }
 
+      const checkedSpaces = Array.from(m.root.querySelectorAll('input[name="tk-space-item"]:checked')).map((cb) => cb.value);
+      const finalSpaces = parseSpaceList(checkedSpaces);
+
       task.title = titleVal;
       task.category = m.root.querySelector('#tk-cat').value;
-      task.space = m.root.querySelector('#tk-space').value;
+      task.spaces = finalSpaces;
+      task.space = finalSpaces.join(', ');
       task.priority = m.root.querySelector('#tk-prio').value;
       task.status = newStatus;
       task.assignedTechId = assignedId;
